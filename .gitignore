@@ -1,4 +1,5 @@
-target/
+.gradle/
+build/
 .idea/
 .settings/
 *.iml
@@ -11,5 +12,3 @@ target/
 node_modules
 package-lock.json
 node
-build/
-.mvn/.develocity
