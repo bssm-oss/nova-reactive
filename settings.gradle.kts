@@ -1,4 +1,4 @@
-rootProject.name = "nova"
+rootProject.name = "nova-build"
 
 dependencyResolutionManagement {
     repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
@@ -8,7 +8,9 @@ dependencyResolutionManagement {
 }
 
 include(
-    "nova-core",
-    "nova-dialect-postgresql",
-    "nova-dialect-mysql",
+    ":nova-project:nova",
+    ":nova-project:nova-core",
+    ":nova-project:nova-r2dbc",
+    ":nova-project:nova-dialects:nova-dialect-postgresql",
+    ":nova-project:nova-dialects:nova-dialect-mysql",
 )

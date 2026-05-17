@@ -294,10 +294,10 @@ String ddl = dialect.schemaGenerator().createTable(metadata);
 ./gradlew test
 
 # 코어만 빌드 (의존 모듈 포함)
-./gradlew :nova-core:build
+./gradlew :nova-project:nova-core:build
 
 # 특정 다이얼렉트만 테스트
-./gradlew :nova-dialect-postgresql:test
+./gradlew :nova-project:nova-dialects:nova-dialect-postgresql:test
 
 # 깨끗하게 다시 빌드
 ./gradlew clean build
@@ -312,25 +312,28 @@ String ddl = dialect.schemaGenerator().createTable(metadata);
 
 ```
 nova/
-├── settings.gradle.kts           # 모듈 선언, dependencyResolutionManagement
-├── build.gradle.kts              # subprojects 공통 설정 (Java 21 Toolchain, JUnit5)
-├── gradle/wrapper/               # Gradle Wrapper (8.10.2)
-├── gradlew, gradlew.bat          # Wrapper 실행 스크립트
-├── nova-core/                    # 코어 추상화
-│   ├── build.gradle.kts
-│   └── src/main/java/io/nova/
-│       ├── annotation/           # @Entity, @Id, @Table, @Column, @GeneratedValue ...
-│       ├── core/                 # ReactiveEntityOperations, SqlExecutor, RowAccessor ...
-│       ├── convert/              # AttributeConverter SPI
-│       ├── metadata/             # EntityMetadata, NamingStrategy
-│       ├── query/                # Criteria, Predicate, QuerySpec, Sort, Pageable
-│       ├── sql/                  # Dialect, SqlRenderer, SchemaGenerator ...
-│       └── tx/                   # ReactiveTransactionOperations, TransactionContext
-├── nova-dialect-postgresql/      # PostgreSQL 다이얼렉트
-│   └── build.gradle.kts
-└── nova-dialect-mysql/           # MySQL 다이얼렉트
-    └── build.gradle.kts
+├── settings.gradle.kts                                 # 모듈 선언, dependencyResolutionManagement
+├── build.gradle.kts                                    # subprojects 공통 설정 (Java 21 Toolchain, JUnit5)
+├── gradle/wrapper/                                     # Gradle Wrapper (8.10.2)
+├── gradlew, gradlew.bat                                # Wrapper 실행 스크립트
+└── nova-project/                                       # spring-boot 스타일 모듈 컨테이너
+    ├── nova/                                           # 엄브렐러 — 모든 모듈 재노출
+    ├── nova-core/                                      # 코어 추상화
+    │   └── src/main/java/io/nova/
+    │       ├── annotation/                             # @Entity, @Id, @Table, @Column, @GeneratedValue ...
+    │       ├── core/                                   # ReactiveEntityOperations, SqlExecutor, RowAccessor ...
+    │       ├── convert/                                # AttributeConverter SPI
+    │       ├── metadata/                               # EntityMetadata, NamingStrategy
+    │       ├── query/                                  # Criteria, Predicate, QuerySpec, Sort, Pageable
+    │       ├── sql/                                    # Dialect, SqlRenderer, SchemaGenerator ...
+    │       └── tx/                                     # ReactiveTransactionOperations, TransactionContext
+    ├── nova-r2dbc/                                     # R2DBC SPI 어댑터
+    └── nova-dialects/
+        ├── nova-dialect-postgresql/                    # PostgreSQL 다이얼렉트
+        └── nova-dialect-mysql/                         # MySQL 다이얼렉트
 ```
+
+> Maven 좌표는 평탄(`io.nova:nova-core`)하게 유지됩니다 — Gradle 경로만 `:nova-project:...`로 중첩.
 
 ---
 
