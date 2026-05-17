@@ -43,16 +43,38 @@ class PostgresqlDialectTest {
     }
 
     @Test
-    void rendersInsertWithNumberedBindMarkers() {
+    void rendersInsertWithNumberedBindMarkersAndReturningClauseForIdentityId() {
         SqlStatement statement = dialect.sqlRenderer().insert(
                 metadata,
                 new PostgresqlSampleAccount("pg@nova.io", true)
         );
 
         assertEquals(
-                "insert into \"accounts\" (\"email_address\", \"active\") values ($1, $2)",
+                "insert into \"accounts\" (\"email_address\", \"active\") values ($1, $2) returning \"id\"",
                 statement.sql()
         );
         assertEquals(java.util.List.of("pg@nova.io", true), statement.bindings());
+    }
+
+    @Test
+    void omitsReturningClauseForAssignedId() {
+        EntityMetadata<PostgresqlAssignedIdAccount> assigned = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(PostgresqlAssignedIdAccount.class);
+
+        SqlStatement statement = dialect.sqlRenderer().insert(
+                assigned,
+                new PostgresqlAssignedIdAccount(7L, "assigned@nova.io")
+        );
+
+        assertEquals(
+                "insert into \"assigned_accounts\" (\"id\", \"email_address\") values ($1, $2)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(7L, "assigned@nova.io"), statement.bindings());
+    }
+
+    @Test
+    void reportsUseOfReturningClauseForGeneratedKeys() {
+        org.junit.jupiter.api.Assertions.assertTrue(dialect.usesReturningForGeneratedKeys());
     }
 }

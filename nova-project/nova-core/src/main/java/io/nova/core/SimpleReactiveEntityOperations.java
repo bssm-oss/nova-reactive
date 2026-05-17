@@ -42,7 +42,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <T> Mono<T> save(T entity) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
-        SqlStatement statement = entityStateDetector.isNew(entity, metadata)
+        boolean isNew = entityStateDetector.isNew(entity, metadata);
+        if (isNew && metadata.idProperty().generated()) {
+            SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+            PersistentProperty idProperty = metadata.idProperty();
+            return sqlExecutor.executeAndReturnGeneratedKey(statement, idProperty.columnName(), idProperty.javaType())
+                    .map(key -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(key));
+                        return entity;
+                    })
+                    .defaultIfEmpty(entity);
+        }
+        SqlStatement statement = isNew
                 ? dialect.sqlRenderer().insert(metadata, entity)
                 : dialect.sqlRenderer().update(metadata, entity);
         return sqlExecutor.execute(statement).thenReturn(entity);

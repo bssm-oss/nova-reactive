@@ -1,5 +1,7 @@
 package io.nova.dialect.postgresql;
 
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.PersistentProperty;
 import io.nova.sql.AbstractSchemaGenerator;
 import io.nova.sql.AbstractSqlRenderer;
 import io.nova.sql.BindMarkerStrategy;
@@ -40,9 +42,23 @@ public final class PostgresqlDialect implements Dialect {
         return schemaGenerator;
     }
 
+    @Override
+    public boolean usesReturningForGeneratedKeys() {
+        return true;
+    }
+
     private static final class PostgresqlSqlRenderer extends AbstractSqlRenderer {
         private PostgresqlSqlRenderer(Dialect dialect) {
             super(dialect);
+        }
+
+        @Override
+        protected String insertSuffix(EntityMetadata<?> metadata) {
+            PersistentProperty idProperty = metadata.idProperty();
+            if (idProperty == null || !idProperty.generated()) {
+                return "";
+            }
+            return " returning " + column(idProperty);
         }
     }
 

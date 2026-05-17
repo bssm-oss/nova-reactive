@@ -12,6 +12,7 @@ import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
+import io.nova.support.fixtures.FixtureEntities.AssignedIdAccount;
 import io.nova.support.fixtures.FixtureEntities.NoDefaultConstructorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.tx.ReactiveTransactionOperations;
@@ -35,13 +36,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SimpleReactiveEntityOperationsTest {
     @Test
-    void saveUsesInsertForNewEntity() {
+    void saveUsesInsertWithGeneratedKeyForNewIdentityEntity() {
         CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 42L;
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         SampleAccount account = new SampleAccount(null, "new@nova.io", true);
 
         StepVerifier.create(operations.save(account))
-                .expectNext(account)
+                .expectNextMatches(saved -> saved == account && Objects.equals(saved.getId(), 42L))
                 .verifyComplete();
 
         assertEquals(
@@ -49,6 +51,26 @@ class SimpleReactiveEntityOperationsTest {
                 executor.lastStatement.sql()
         );
         assertEquals(List.of("new@nova.io", true), executor.lastStatement.bindings());
+        assertEquals("id", executor.lastGeneratedIdColumn);
+        assertEquals(Long.class, executor.lastGeneratedIdType);
+    }
+
+    @Test
+    void saveUsesPlainUpdateForAssignedIdEntity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        AssignedIdAccount account = new AssignedIdAccount(99L, "assigned@nova.io");
+
+        StepVerifier.create(operations.save(account))
+                .expectNext(account)
+                .verifyComplete();
+
+        assertEquals(
+                "update assigned_accounts set email_address = ? where id = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of("assigned@nova.io", 99L), executor.lastStatement.bindings());
+        assertEquals(0, executor.generatedKeyCalls);
     }
 
     @Test
@@ -263,6 +285,10 @@ class SimpleReactiveEntityOperationsTest {
         private final Deque<List<RowAccessor>> queryManyResults = new ArrayDeque<>();
         private boolean emptyQueryOne;
         private SqlStatement lastStatement;
+        private Object generatedKey;
+        private String lastGeneratedIdColumn;
+        private Class<?> lastGeneratedIdType;
+        private int generatedKeyCalls;
 
         @Override
         public Mono<Long> execute(SqlStatement statement) {
@@ -284,6 +310,19 @@ class SimpleReactiveEntityOperationsTest {
             this.lastStatement = statement;
             List<RowAccessor> rows = queryManyResults.removeFirst();
             return Flux.fromIterable(rows).map(mapper);
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> Mono<T> executeAndReturnGeneratedKey(SqlStatement statement, String idColumn, Class<T> idType) {
+            this.lastStatement = statement;
+            this.lastGeneratedIdColumn = idColumn;
+            this.lastGeneratedIdType = idType;
+            this.generatedKeyCalls++;
+            if (generatedKey == null) {
+                return Mono.empty();
+            }
+            return Mono.just((T) generatedKey);
         }
     }
 

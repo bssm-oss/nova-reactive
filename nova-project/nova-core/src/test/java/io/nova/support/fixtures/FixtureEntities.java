@@ -47,6 +47,32 @@ public final class FixtureEntities {
     }
 
     @Entity
+    @Table("assigned_accounts")
+    public static class AssignedIdAccount {
+        @Id
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        public AssignedIdAccount() {
+        }
+
+        public AssignedIdAccount(Long id, String email) {
+            this.id = id;
+            this.email = email;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+    }
+
+    @Entity
     public static class DefaultNamedEntity {
         @Id
         private Long entityId;

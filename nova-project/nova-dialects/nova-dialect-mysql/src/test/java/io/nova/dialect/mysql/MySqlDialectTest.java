@@ -50,4 +50,19 @@ class MySqlDialectTest {
         );
         assertEquals(java.util.List.of("mysql@nova.io", false, 4L), statement.bindings());
     }
+
+    @Test
+    void insertOmitsReturningClauseAndDialectReportsNoReturningKeySupport() {
+        SqlStatement statement = dialect.sqlRenderer().insert(
+                metadata,
+                new MySqlSampleAccount(null, "mysql@nova.io", true)
+        );
+
+        assertEquals(
+                "insert into `accounts` (`email_address`, `active`) values (?, ?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("mysql@nova.io", true), statement.bindings());
+        org.junit.jupiter.api.Assertions.assertFalse(dialect.usesReturningForGeneratedKeys());
+    }
 }

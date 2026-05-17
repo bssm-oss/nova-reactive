@@ -27,7 +27,7 @@ public final class Nova {
 
     public static ReactiveEntityOperations create(ConnectionFactory connectionFactory, Dialect dialect) {
         EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
-        R2dbcSqlExecutor executor = new R2dbcSqlExecutor(connectionFactory);
+        R2dbcSqlExecutor executor = new R2dbcSqlExecutor(connectionFactory, dialect);
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
         return new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
