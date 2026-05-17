@@ -1,5 +1,9 @@
 package io.nova.r2dbc;
 
+import io.nova.sql.BindMarkerStrategy;
+import io.nova.sql.Dialect;
+import io.nova.sql.SchemaGenerator;
+import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
 import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactories;
@@ -23,6 +27,17 @@ import static org.junit.jupiter.api.Assertions.assertSame;
  * R2dbcSqlExecutor의 batch 경로를 r2dbc-h2 in-memory DB로 직접 검증한다.
  */
 class R2dbcSqlExecutorTest {
+    /**
+     * executeBatch 경로는 dialect를 사용하지 않으므로, 통합 테스트에서는 모든 메서드가 noop인 최소 dialect를 사용한다.
+     */
+    private static final Dialect NOOP_DIALECT = new Dialect() {
+        @Override public String name() { return "noop"; }
+        @Override public String quote(String identifier) { return identifier; }
+        @Override public BindMarkerStrategy bindMarkers() { return index -> "?"; }
+        @Override public SqlRenderer sqlRenderer() { throw new UnsupportedOperationException(); }
+        @Override public SchemaGenerator schemaGenerator() { throw new UnsupportedOperationException(); }
+    };
+
     private ConnectionFactory connectionFactory;
     private R2dbcSqlExecutor executor;
 
@@ -31,7 +46,7 @@ class R2dbcSqlExecutorTest {
         // 매 테스트마다 새로운 in-memory DB 인스턴스를 사용한다 (이름 유니크).
         String dbName = "test_" + UUID.randomUUID().toString().replace("-", "");
         connectionFactory = ConnectionFactories.get("r2dbc:h2:mem:///" + dbName + "?DB_CLOSE_DELAY=-1");
-        executor = new R2dbcSqlExecutor(connectionFactory);
+        executor = new R2dbcSqlExecutor(connectionFactory, NOOP_DIALECT);
 
         StepVerifier.create(executor.execute(new SqlStatement(
                         "create table accounts (id bigint primary key, email varchar(255) not null unique, active boolean not null)",
@@ -64,7 +79,7 @@ class R2dbcSqlExecutorTest {
     void executeBatchWithEmptyBindingsShortCircuitsWithoutTouchingDriver() {
         AtomicInteger createConnectionCount = new AtomicInteger();
         ConnectionFactory counting = countingFactory(connectionFactory, createConnectionCount);
-        R2dbcSqlExecutor countingExecutor = new R2dbcSqlExecutor(counting);
+        R2dbcSqlExecutor countingExecutor = new R2dbcSqlExecutor(counting, NOOP_DIALECT);
 
         StepVerifier.create(countingExecutor.executeBatch(
                         "insert into accounts (id, email, active) values (?, ?, ?)", List.of()))
@@ -85,7 +100,7 @@ class R2dbcSqlExecutorTest {
     void executeBatchReusesConnectionFromTransactionContext() {
         AtomicInteger createConnectionCount = new AtomicInteger();
         ConnectionFactory counting = countingFactory(connectionFactory, createConnectionCount);
-        R2dbcSqlExecutor txExecutor = new R2dbcSqlExecutor(counting);
+        R2dbcSqlExecutor txExecutor = new R2dbcSqlExecutor(counting, NOOP_DIALECT);
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(counting);
 
         Mono<Long> work = txManager.inTransaction(ctx -> txExecutor.executeBatch(
@@ -115,7 +130,7 @@ class R2dbcSqlExecutorTest {
         AtomicReference<Connection> firstSeen = new AtomicReference<>();
         AtomicReference<Connection> secondSeen = new AtomicReference<>();
         ConnectionFactory counting = countingFactory(connectionFactory, createConnectionCount);
-        R2dbcSqlExecutor txExecutor = new R2dbcSqlExecutor(counting);
+        R2dbcSqlExecutor txExecutor = new R2dbcSqlExecutor(counting, NOOP_DIALECT);
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(counting);
 
         Mono<Long> work = txManager.inTransaction(ctx -> {
