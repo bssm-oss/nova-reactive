@@ -5,5 +5,7 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:5.12.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("io.projectreactor:reactor-test:3.7.0")
+    testImplementation("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
