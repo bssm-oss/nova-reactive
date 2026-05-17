@@ -4,6 +4,7 @@ import io.nova.sql.SqlStatement;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.function.Function;
 
 public interface SqlExecutor {
@@ -19,5 +20,18 @@ public interface SqlExecutor {
      */
     default <T> Mono<T> executeAndReturnGeneratedKey(SqlStatement statement, String idColumn, Class<T> idType) {
         return execute(statement).then(Mono.empty());
+    }
+
+    /**
+     * 동일한 SQL을 여러 바인딩 집합으로 일괄 실행한다. 기본 구현은 {@link #execute(SqlStatement)}로 한 건씩
+     * 폴백한다. R2DBC와 같은 어댑터는 {@code Statement.add()} 기반의 진짜 배치 경로로 override한다.
+     */
+    default Mono<Long> executeBatch(String sql, List<List<Object>> bindingsList) {
+        if (bindingsList.isEmpty()) {
+            return Mono.just(0L);
+        }
+        return Flux.fromIterable(bindingsList)
+                .concatMap(bindings -> execute(new SqlStatement(sql, bindings)))
+                .reduce(0L, Long::sum);
     }
 }

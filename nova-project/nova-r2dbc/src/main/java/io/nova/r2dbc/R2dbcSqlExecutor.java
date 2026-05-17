@@ -30,6 +30,25 @@ public final class R2dbcSqlExecutor implements SqlExecutor {
     }
 
     @Override
+    public Mono<Long> executeBatch(String sql, List<List<Object>> bindingsList) {
+        if (bindingsList.isEmpty()) {
+            return Mono.just(0L);
+        }
+        return withConnectionMono(conn -> {
+            Statement stmt = conn.createStatement(sql);
+            for (int i = 0; i < bindingsList.size(); i++) {
+                bind(stmt, bindingsList.get(i));
+                if (i < bindingsList.size() - 1) {
+                    stmt.add();
+                }
+            }
+            return Flux.from(stmt.execute())
+                    .flatMap(result -> Mono.from(result.getRowsUpdated()))
+                    .reduce(0L, Long::sum);
+        });
+    }
+
+    @Override
     public <T> Mono<T> queryOne(SqlStatement statement, Function<RowAccessor, T> mapper) {
         return withConnectionFlux(conn -> Flux.from(bind(conn.createStatement(statement.sql()), statement.bindings()).execute())
                 .flatMap(result -> result.map((row, meta) -> mapper.apply(new R2dbcRowAccessor(row)))))

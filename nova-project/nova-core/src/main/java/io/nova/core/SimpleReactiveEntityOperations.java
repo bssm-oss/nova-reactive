@@ -12,6 +12,10 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Constructor;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -104,6 +108,127 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
         return transactionOperations.inTransaction(ignored -> callback.apply(this));
+    }
+
+    @Override
+    public <T> Flux<T> saveAll(Iterable<T> entities) {
+        List<T> materialized = toList(entities);
+        if (materialized.isEmpty()) {
+            return Flux.empty();
+        }
+        // (entityClass, isNew) 별로 그룹화한 뒤 그룹 안에서 SQL이 동일하면 batch, 아니면 단건 fallback로 처리한다.
+        Map<GroupKey, List<T>> groups = new LinkedHashMap<>();
+        for (T entity : materialized) {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
+            boolean isNew = entityStateDetector.isNew(entity, metadata);
+            groups.computeIfAbsent(new GroupKey(entity.getClass(), isNew), ignored -> new ArrayList<>()).add(entity);
+        }
+        return Flux.fromIterable(groups.entrySet())
+                .concatMap(entry -> saveGroup(entry.getKey(), entry.getValue()));
+    }
+
+    @Override
+    public <T> Mono<Long> deleteAll(Iterable<T> entities) {
+        List<T> materialized = toList(entities);
+        if (materialized.isEmpty()) {
+            return Mono.just(0L);
+        }
+        Map<Class<?>, List<Object>> idsByType = new LinkedHashMap<>();
+        for (T entity : materialized) {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
+            Object id = metadata.idProperty().read(entity);
+            if (id == null) {
+                return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
+            }
+            idsByType.computeIfAbsent(entity.getClass(), ignored -> new ArrayList<>()).add(id);
+        }
+        return Flux.fromIterable(idsByType.entrySet())
+                .concatMap(entry -> deleteGroup(entry.getKey(), entry.getValue()))
+                .reduce(0L, Long::sum);
+    }
+
+    @Override
+    public <T, ID> Mono<Long> deleteAllById(Class<T> entityType, Iterable<ID> ids) {
+        List<ID> materialized = toList(ids);
+        if (materialized.isEmpty()) {
+            return Mono.just(0L);
+        }
+        for (ID id : materialized) {
+            Objects.requireNonNull(id, "id must not be null");
+        }
+        return deleteGroup(entityType, new ArrayList<>(materialized));
+    }
+
+    private <T> Flux<T> saveGroup(GroupKey key, List<T> entities) {
+        @SuppressWarnings("unchecked")
+        EntityMetadata<T> metadata = (EntityMetadata<T>) metadataFactory.getEntityMetadata(key.entityClass());
+        List<SqlStatement> statements = new ArrayList<>(entities.size());
+        String sharedSql = null;
+        boolean uniformShape = true;
+        for (T entity : entities) {
+            SqlStatement statement = key.isNew()
+                    ? dialect.sqlRenderer().insert(metadata, entity)
+                    : dialect.sqlRenderer().update(metadata, entity);
+            statements.add(statement);
+            if (sharedSql == null) {
+                sharedSql = statement.sql();
+            } else if (!sharedSql.equals(statement.sql())) {
+                uniformShape = false;
+            }
+        }
+        if (!uniformShape) {
+            // SQL 셰이프가 그룹 안에서 다르면 안전하게 단건 fallback로 처리한다.
+            return Flux.fromIterable(statements)
+                    .concatMap(sqlExecutor::execute)
+                    .thenMany(Flux.fromIterable(entities));
+        }
+        List<List<Object>> bindingsList = new ArrayList<>(statements.size());
+        for (SqlStatement statement : statements) {
+            bindingsList.add(statement.bindings());
+        }
+        return sqlExecutor.executeBatch(sharedSql, bindingsList)
+                .thenMany(Flux.fromIterable(entities));
+    }
+
+    private <T> Mono<Long> deleteGroup(Class<T> entityType, List<Object> ids) {
+        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        List<SqlStatement> statements = new ArrayList<>(ids.size());
+        String sharedSql = null;
+        boolean uniformShape = true;
+        for (Object id : ids) {
+            SqlStatement statement = dialect.sqlRenderer().deleteById(metadata, id);
+            statements.add(statement);
+            if (sharedSql == null) {
+                sharedSql = statement.sql();
+            } else if (!sharedSql.equals(statement.sql())) {
+                uniformShape = false;
+            }
+        }
+        if (!uniformShape) {
+            return Flux.fromIterable(statements)
+                    .concatMap(sqlExecutor::execute)
+                    .reduce(0L, Long::sum);
+        }
+        List<List<Object>> bindingsList = new ArrayList<>(statements.size());
+        for (SqlStatement statement : statements) {
+            bindingsList.add(statement.bindings());
+        }
+        return sqlExecutor.executeBatch(sharedSql, bindingsList);
+    }
+
+    private static <T> List<T> toList(Iterable<T> iterable) {
+        Objects.requireNonNull(iterable, "iterable must not be null");
+        if (iterable instanceof List<T> list) {
+            return list;
+        }
+        List<T> result = new ArrayList<>();
+        for (T item : iterable) {
+            result.add(item);
+        }
+        return result;
+    }
+
+    private record GroupKey(Class<?> entityClass, boolean isNew) {
     }
 
     /**

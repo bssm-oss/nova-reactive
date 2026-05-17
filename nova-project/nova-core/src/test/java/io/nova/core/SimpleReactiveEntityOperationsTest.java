@@ -225,6 +225,144 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void saveAllBatchesNewEntitiesIntoSingleExecuteBatchCall() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<SampleAccount> accounts = List.of(
+                new SampleAccount(null, "a@nova.io", true),
+                new SampleAccount(null, "b@nova.io", false),
+                new SampleAccount(null, "c@nova.io", true)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNext(accounts.get(0), accounts.get(1), accounts.get(2))
+                .verifyComplete();
+
+        assertEquals(1, executor.batchCalls.size(), "new 엔티티 3건은 단일 executeBatch 호출로 묶여야 한다");
+        BatchCall call = executor.batchCalls.get(0);
+        assertEquals("insert into accounts (email_address, active) values (?, ?)", call.sql());
+        assertEquals(3, call.bindingsList().size());
+        assertEquals(List.of("a@nova.io", true), call.bindingsList().get(0));
+        assertEquals(List.of("b@nova.io", false), call.bindingsList().get(1));
+        assertEquals(List.of("c@nova.io", true), call.bindingsList().get(2));
+        assertTrue(executor.executedStatements.isEmpty(), "단건 execute 경로는 호출되지 않아야 한다");
+    }
+
+    @Test
+    void saveAllBatchesExistingEntitiesIntoSingleExecuteBatchCall() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<SampleAccount> accounts = List.of(
+                new SampleAccount(1L, "a@nova.io", true),
+                new SampleAccount(2L, "b@nova.io", false)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNext(accounts.get(0), accounts.get(1))
+                .verifyComplete();
+
+        assertEquals(1, executor.batchCalls.size());
+        BatchCall call = executor.batchCalls.get(0);
+        assertEquals("update accounts set email_address = ?, active = ? where id = ?", call.sql());
+        assertEquals(2, call.bindingsList().size());
+    }
+
+    @Test
+    void saveAllSplitsBatchesByEntityStateGroup() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<SampleAccount> accounts = List.of(
+                new SampleAccount(null, "new1@nova.io", true),
+                new SampleAccount(5L, "existing@nova.io", false),
+                new SampleAccount(null, "new2@nova.io", false)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNextCount(3)
+                .verifyComplete();
+
+        assertEquals(2, executor.batchCalls.size(), "new와 existing은 별도 배치로 분리되어야 한다");
+        assertEquals("insert into accounts (email_address, active) values (?, ?)", executor.batchCalls.get(0).sql());
+        assertEquals(2, executor.batchCalls.get(0).bindingsList().size());
+        assertEquals("update accounts set email_address = ?, active = ? where id = ?", executor.batchCalls.get(1).sql());
+        assertEquals(1, executor.batchCalls.get(1).bindingsList().size());
+    }
+
+    @Test
+    void saveAllOnEmptyInputShortCircuits() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.saveAll(List.<SampleAccount>of()))
+                .verifyComplete();
+
+        assertTrue(executor.batchCalls.isEmpty());
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void deleteAllBatchesDeletesIntoSingleExecuteBatchCall() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<SampleAccount> accounts = List.of(
+                new SampleAccount(1L, "a@nova.io", true),
+                new SampleAccount(2L, "b@nova.io", false),
+                new SampleAccount(3L, "c@nova.io", true)
+        );
+
+        StepVerifier.create(operations.deleteAll(accounts))
+                .expectNext(3L)
+                .verifyComplete();
+
+        assertEquals(1, executor.batchCalls.size());
+        BatchCall call = executor.batchCalls.get(0);
+        assertEquals("delete from accounts where id = ?", call.sql());
+        assertEquals(3, call.bindingsList().size());
+        assertEquals(List.of(1L), call.bindingsList().get(0));
+        assertEquals(List.of(2L), call.bindingsList().get(1));
+        assertEquals(List.of(3L), call.bindingsList().get(2));
+    }
+
+    @Test
+    void deleteAllOnEmptyInputShortCircuits() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.deleteAll(List.<SampleAccount>of()))
+                .expectNext(0L)
+                .verifyComplete();
+
+        assertTrue(executor.batchCalls.isEmpty());
+    }
+
+    @Test
+    void deleteAllByIdBatchesIdsIntoSingleExecuteBatchCall() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.deleteAllById(SampleAccount.class, List.of(10L, 20L, 30L)))
+                .expectNext(3L)
+                .verifyComplete();
+
+        assertEquals(1, executor.batchCalls.size());
+        BatchCall call = executor.batchCalls.get(0);
+        assertEquals("delete from accounts where id = ?", call.sql());
+        assertEquals(List.of(List.of(10L), List.of(20L), List.of(30L)), call.bindingsList());
+    }
+
+    @Test
+    void deleteAllByIdOnEmptyInputShortCircuits() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.deleteAllById(SampleAccount.class, List.<Long>of()))
+                .expectNext(0L)
+                .verifyComplete();
+
+        assertTrue(executor.batchCalls.isEmpty());
+    }
+
+    @Test
     void propagatesInstantiationFailuresForEntitiesWithoutDefaultConstructor() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "name", "nova")));
@@ -283,6 +421,8 @@ class SimpleReactiveEntityOperationsTest {
     private static final class CapturingExecutor implements SqlExecutor {
         private final Deque<RowAccessor> queryOneResults = new ArrayDeque<>();
         private final Deque<List<RowAccessor>> queryManyResults = new ArrayDeque<>();
+        private final List<BatchCall> batchCalls = new ArrayList<>();
+        private final List<SqlStatement> executedStatements = new ArrayList<>();
         private boolean emptyQueryOne;
         private SqlStatement lastStatement;
         private Object generatedKey;
@@ -293,6 +433,7 @@ class SimpleReactiveEntityOperationsTest {
         @Override
         public Mono<Long> execute(SqlStatement statement) {
             this.lastStatement = statement;
+            this.executedStatements.add(statement);
             return Mono.just(1L);
         }
 
@@ -324,6 +465,15 @@ class SimpleReactiveEntityOperationsTest {
             }
             return Mono.just((T) generatedKey);
         }
+
+        @Override
+        public Mono<Long> executeBatch(String sql, List<List<Object>> bindingsList) {
+            this.batchCalls.add(new BatchCall(sql, List.copyOf(bindingsList)));
+            return Mono.just((long) bindingsList.size());
+        }
+    }
+
+    private record BatchCall(String sql, List<List<Object>> bindingsList) {
     }
 
     private record MapRowAccessor(Map<String, Object> values) implements RowAccessor {

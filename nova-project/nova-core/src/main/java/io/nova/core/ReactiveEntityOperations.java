@@ -49,4 +49,28 @@ public interface ReactiveEntityOperations {
      * 설정된 transaction operations를 사용해 콜백을 트랜잭션 경계 안에서 실행한다.
      */
     <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback);
+
+    /**
+     * 여러 엔티티를 한 번에 저장한다. 기본 구현은 단건 {@link #save(Object)}로 폴백한다.
+     * 같은 SQL 셰이프끼리 묶어 배치로 실행하는 최적화는 구현체에서 override한다.
+     */
+    default <T> Flux<T> saveAll(Iterable<T> entities) {
+        return Flux.fromIterable(entities).concatMap(this::save);
+    }
+
+    /**
+     * 여러 엔티티를 한 번에 삭제한다. 기본 구현은 단건 {@link #delete(Object)}로 폴백한다.
+     * 반환값은 영향 받은 총 행 수의 합이다.
+     */
+    default <T> Mono<Long> deleteAll(Iterable<T> entities) {
+        return Flux.fromIterable(entities).concatMap(this::delete).reduce(0L, Long::sum);
+    }
+
+    /**
+     * 여러 식별자에 해당하는 엔티티를 한 번에 삭제한다. 기본 구현은 단건 {@link #deleteById(Class, Object)}로 폴백한다.
+     * 반환값은 영향 받은 총 행 수의 합이다.
+     */
+    default <T, ID> Mono<Long> deleteAllById(Class<T> entityType, Iterable<ID> ids) {
+        return Flux.fromIterable(ids).concatMap(id -> deleteById(entityType, id)).reduce(0L, Long::sum);
+    }
 }
