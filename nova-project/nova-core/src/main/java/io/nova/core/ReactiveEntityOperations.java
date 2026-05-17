@@ -12,6 +12,8 @@ import java.util.function.Function;
 public interface ReactiveEntityOperations {
     /**
      * 식별자 상태를 기준으로 insert 또는 update를 선택해 엔티티를 저장한다.
+     * 주의: 이 메서드는 데이터베이스가 생성한 ID를 entity에 다시 set하지 않는다.
+     * 호출자가 ID를 미리 채워두거나, 저장 후 별도로 조회해야 한다.
      */
     <T> Mono<T> save(T entity);
 
@@ -53,6 +55,12 @@ public interface ReactiveEntityOperations {
     /**
      * 여러 엔티티를 한 번에 저장한다. 기본 구현은 단건 {@link #save(Object)}로 폴백한다.
      * 같은 SQL 셰이프끼리 묶어 배치로 실행하는 최적화는 구현체에서 override한다.
+     * 주의: 이 메서드는 데이터베이스가 생성한 ID를 entity에 다시 set하지 않는다.
+     * 호출자가 ID를 미리 채워두거나, 저장 후 별도로 조회해야 한다.
+     * <p>
+     * 입력 Iterable이 List가 아닌 경우 내부에서 한 번 수집하므로, 호출 이후 같은 인스턴스를
+     * 다시 사용하려는 경우에는 List로 미리 만들어 전달하는 것을 권장한다. 또한 입력 List를
+     * 호출자가 동시에 수정하지 않을 책임이 있다 (방어 카피를 수행하지 않는다).
      */
     default <T> Flux<T> saveAll(Iterable<T> entities) {
         return Flux.fromIterable(entities).concatMap(this::save);

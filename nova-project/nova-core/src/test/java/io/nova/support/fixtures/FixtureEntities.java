@@ -46,6 +46,41 @@ public final class FixtureEntities {
         }
     }
 
+    @Entity(name = "order_entity")
+    @Table("orders")
+    public static class SampleOrder {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column("customer_email")
+        private String customerEmail;
+
+        @Column("total_cents")
+        private long totalCents;
+
+        public SampleOrder() {
+        }
+
+        public SampleOrder(Long id, String customerEmail, long totalCents) {
+            this.id = id;
+            this.customerEmail = customerEmail;
+            this.totalCents = totalCents;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getCustomerEmail() {
+            return customerEmail;
+        }
+
+        public long getTotalCents() {
+            return totalCents;
+        }
+    }
+
     @Entity
     @Table("assigned_accounts")
     public static class AssignedIdAccount {

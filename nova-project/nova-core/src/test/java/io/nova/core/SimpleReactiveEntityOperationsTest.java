@@ -15,6 +15,7 @@ import io.nova.sql.SqlStatement;
 import io.nova.support.fixtures.FixtureEntities.AssignedIdAccount;
 import io.nova.support.fixtures.FixtureEntities.NoDefaultConstructorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
+import io.nova.support.fixtures.FixtureEntities.SampleOrder;
 import io.nova.tx.ReactiveTransactionOperations;
 import io.nova.tx.TransactionContext;
 import org.junit.jupiter.api.Test;
@@ -363,6 +364,126 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void saveAllSplitsBatchesAcrossDifferentEntityTypes() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<Object> mixed = List.of(
+                new SampleAccount(null, "a@nova.io", true),
+                new SampleOrder(null, "buyer@nova.io", 1500L),
+                new SampleAccount(null, "b@nova.io", false),
+                new SampleOrder(null, "buyer2@nova.io", 2500L)
+        );
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        ReactiveEntityOperations ops = operations;
+        StepVerifier.create(ops.saveAll((Iterable) mixed))
+                .expectNextCount(4)
+                .verifyComplete();
+
+        assertEquals(2, executor.batchCalls.size(), "다른 entity 타입은 각자 별도 배치로 분리되어야 한다");
+        assertEquals("insert into accounts (email_address, active) values (?, ?)", executor.batchCalls.get(0).sql());
+        assertEquals(2, executor.batchCalls.get(0).bindingsList().size());
+        assertEquals("insert into orders (customer_email, total_cents) values (?, ?)", executor.batchCalls.get(1).sql());
+        assertEquals(2, executor.batchCalls.get(1).bindingsList().size());
+        assertTrue(executor.executedStatements.isEmpty(), "단건 fallback 경로는 호출되지 않아야 한다");
+    }
+
+    @Test
+    void deleteAllSplitsBatchesAcrossDifferentEntityTypes() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<Object> mixed = List.of(
+                new SampleAccount(1L, "a@nova.io", true),
+                new SampleOrder(101L, "buyer@nova.io", 1500L),
+                new SampleAccount(2L, "b@nova.io", false)
+        );
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        ReactiveEntityOperations ops = operations;
+        StepVerifier.create(ops.deleteAll((Iterable) mixed))
+                .expectNext(3L)
+                .verifyComplete();
+
+        assertEquals(2, executor.batchCalls.size(), "다른 entity 타입은 각자 별도 배치로 분리되어야 한다");
+        assertEquals("delete from accounts where id = ?", executor.batchCalls.get(0).sql());
+        assertEquals(List.of(List.of(1L), List.of(2L)), executor.batchCalls.get(0).bindingsList());
+        assertEquals("delete from orders where id = ?", executor.batchCalls.get(1).sql());
+        assertEquals(List.of(List.of(101L)), executor.batchCalls.get(1).bindingsList());
+    }
+
+    @Test
+    void deleteAllReportsIndexAndTypeOfFirstNullId() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<SampleAccount> accounts = new ArrayList<>();
+        accounts.add(new SampleAccount(1L, "a@nova.io", true));
+        accounts.add(new SampleAccount(null, "b@nova.io", false));
+        accounts.add(new SampleAccount(3L, "c@nova.io", true));
+
+        StepVerifier.create(operations.deleteAll(accounts))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("index 1"),
+                            "오류 메시지가 'index 1'을 포함해야 한다: " + error.getMessage());
+                    assertTrue(error.getMessage().contains(SampleAccount.class.getName()),
+                            "오류 메시지가 entity 타입명을 포함해야 한다: " + error.getMessage());
+                })
+                .verify();
+
+        assertTrue(executor.batchCalls.isEmpty());
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void deleteAllByIdReportsIndexAndTypeOfFirstNullId() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<Long> ids = new ArrayList<>();
+        ids.add(10L);
+        ids.add(null);
+        ids.add(30L);
+
+        StepVerifier.create(operations.deleteAllById(SampleAccount.class, ids))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("index 1"),
+                            "오류 메시지가 'index 1'을 포함해야 한다: " + error.getMessage());
+                    assertTrue(error.getMessage().contains(SampleAccount.class.getName()),
+                            "오류 메시지가 entity 타입명을 포함해야 한다: " + error.getMessage());
+                })
+                .verify();
+
+        assertTrue(executor.batchCalls.isEmpty());
+    }
+
+    @Test
+    void saveAllFallsBackToSingleExecuteWhenBindingSizeDiffersWithinGroup() {
+        CapturingExecutor executor = new CapturingExecutor();
+        DivergentBindingsDialect divergentDialect = new DivergentBindingsDialect();
+        SimpleReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
+                new EntityMetadataFactory(new DefaultNamingStrategy()),
+                divergentDialect,
+                executor,
+                new EntityStateDetector(),
+                new RecordingTransactions()
+        );
+        List<SampleAccount> accounts = List.of(
+                new SampleAccount(null, "a@nova.io", true),
+                new SampleAccount(null, "b@nova.io", false)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNext(accounts.get(0), accounts.get(1))
+                .verifyComplete();
+
+        assertTrue(executor.batchCalls.isEmpty(),
+                "SQL은 같지만 binding size가 다르면 batch 경로 대신 단건 fallback로 처리되어야 한다");
+        assertEquals(2, executor.executedStatements.size());
+        assertEquals(1, executor.executedStatements.get(0).bindings().size());
+        assertEquals(2, executor.executedStatements.get(1).bindings().size());
+    }
+
+    @Test
     void propagatesInstantiationFailuresForEntitiesWithoutDefaultConstructor() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "name", "nova")));
@@ -415,6 +536,86 @@ class SimpleReactiveEntityOperationsTest {
         @Override
         public SchemaGenerator schemaGenerator() {
             return schemaGenerator;
+        }
+    }
+
+    /**
+     * SQL은 항상 같지만 binding 개수가 호출마다 1, 2, 3... 으로 달라지는 가짜 dialect.
+     * uniformShape 위반 시 fallback 동작을 검증하기 위해 사용.
+     */
+    private static final class DivergentBindingsDialect implements Dialect {
+        private final BindMarkerStrategy bindMarkers = index -> "?";
+        private final SchemaGenerator schemaGenerator = metadata -> "create table " + metadata.tableName();
+        private final SqlRenderer renderer = new DivergentBindingsRenderer();
+
+        @Override
+        public String name() {
+            return "divergent";
+        }
+
+        @Override
+        public String quote(String identifier) {
+            return identifier;
+        }
+
+        @Override
+        public BindMarkerStrategy bindMarkers() {
+            return bindMarkers;
+        }
+
+        @Override
+        public SqlRenderer sqlRenderer() {
+            return renderer;
+        }
+
+        @Override
+        public SchemaGenerator schemaGenerator() {
+            return schemaGenerator;
+        }
+    }
+
+    private static final class DivergentBindingsRenderer implements SqlRenderer {
+        private int insertCalls;
+
+        @Override
+        public SqlStatement insert(io.nova.metadata.EntityMetadata<?> metadata, Object entity) {
+            insertCalls++;
+            // SQL은 항상 같음. binding size는 호출마다 다르게.
+            List<Object> bindings = new ArrayList<>();
+            for (int i = 0; i < insertCalls; i++) {
+                bindings.add("v" + i);
+            }
+            return new SqlStatement("insert into accounts (a) values (?)", bindings);
+        }
+
+        @Override
+        public SqlStatement update(io.nova.metadata.EntityMetadata<?> metadata, Object entity) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public SqlStatement deleteById(io.nova.metadata.EntityMetadata<?> metadata, Object id) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public SqlStatement selectById(io.nova.metadata.EntityMetadata<?> metadata, Object id) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public SqlStatement select(io.nova.metadata.EntityMetadata<?> metadata, QuerySpec querySpec) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public SqlStatement count(io.nova.metadata.EntityMetadata<?> metadata, QuerySpec querySpec) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public SqlStatement exists(io.nova.metadata.EntityMetadata<?> metadata, QuerySpec querySpec) {
+            throw new UnsupportedOperationException();
         }
     }
 

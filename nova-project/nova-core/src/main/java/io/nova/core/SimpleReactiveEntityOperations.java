@@ -134,11 +134,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.just(0L);
         }
         Map<Class<?>, List<Object>> idsByType = new LinkedHashMap<>();
-        for (T entity : materialized) {
+        for (int i = 0; i < materialized.size(); i++) {
+            T entity = materialized.get(i);
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
             Object id = metadata.idProperty().read(entity);
             if (id == null) {
-                return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
+                int index = i;
+                return Mono.error(new IllegalArgumentException(
+                        "Entity at index " + index + " of type " + entity.getClass().getName()
+                                + " has null id; deleteAll requires non-null ids"));
             }
             idsByType.computeIfAbsent(entity.getClass(), ignored -> new ArrayList<>()).add(id);
         }
@@ -153,17 +157,28 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (materialized.isEmpty()) {
             return Mono.just(0L);
         }
-        for (ID id : materialized) {
-            Objects.requireNonNull(id, "id must not be null");
+        for (int i = 0; i < materialized.size(); i++) {
+            if (materialized.get(i) == null) {
+                int index = i;
+                return Mono.error(new IllegalArgumentException(
+                        "Id at index " + index + " for type " + entityType.getName()
+                                + " is null; deleteAllById requires non-null ids"));
+            }
         }
         return deleteGroup(entityType, new ArrayList<>(materialized));
     }
 
+    /**
+     * 같은 (entityType, isNew) 그룹에서 SqlRenderer가 만드는 SQL이 동일하면 binding의
+     * size·타입 순서도 동일하다는 EntityMetadata contract에 의존한다. 동일성 위반은 fallback로
+     * 단건 처리한다.
+     */
     private <T> Flux<T> saveGroup(GroupKey key, List<T> entities) {
         @SuppressWarnings("unchecked")
         EntityMetadata<T> metadata = (EntityMetadata<T>) metadataFactory.getEntityMetadata(key.entityClass());
         List<SqlStatement> statements = new ArrayList<>(entities.size());
         String sharedSql = null;
+        int sharedBindingsSize = -1;
         boolean uniformShape = true;
         for (T entity : entities) {
             SqlStatement statement = key.isNew()
@@ -172,12 +187,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             statements.add(statement);
             if (sharedSql == null) {
                 sharedSql = statement.sql();
-            } else if (!sharedSql.equals(statement.sql())) {
+                sharedBindingsSize = statement.bindings().size();
+            } else if (!sharedSql.equals(statement.sql()) || sharedBindingsSize != statement.bindings().size()) {
                 uniformShape = false;
             }
         }
         if (!uniformShape) {
-            // SQL 셰이프가 그룹 안에서 다르면 안전하게 단건 fallback로 처리한다.
+            // SQL 셰이프 혹은 binding 개수가 그룹 안에서 다르면 안전하게 단건 fallback로 처리한다.
             return Flux.fromIterable(statements)
                     .concatMap(sqlExecutor::execute)
                     .thenMany(Flux.fromIterable(entities));
@@ -190,17 +206,24 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 .thenMany(Flux.fromIterable(entities));
     }
 
+    /**
+     * 같은 entityType 그룹에서 SqlRenderer가 만드는 deleteById SQL이 동일하면 binding의
+     * size·타입 순서도 동일하다는 EntityMetadata contract에 의존한다. 동일성 위반은 fallback로
+     * 단건 처리한다.
+     */
     private <T> Mono<Long> deleteGroup(Class<T> entityType, List<Object> ids) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
         List<SqlStatement> statements = new ArrayList<>(ids.size());
         String sharedSql = null;
+        int sharedBindingsSize = -1;
         boolean uniformShape = true;
         for (Object id : ids) {
             SqlStatement statement = dialect.sqlRenderer().deleteById(metadata, id);
             statements.add(statement);
             if (sharedSql == null) {
                 sharedSql = statement.sql();
-            } else if (!sharedSql.equals(statement.sql())) {
+                sharedBindingsSize = statement.bindings().size();
+            } else if (!sharedSql.equals(statement.sql()) || sharedBindingsSize != statement.bindings().size()) {
                 uniformShape = false;
             }
         }
