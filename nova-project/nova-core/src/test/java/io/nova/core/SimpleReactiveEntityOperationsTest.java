@@ -1284,6 +1284,54 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void deleteAllByQueryOnSoftDeletableEntityYieldsZeroWhenAllRowsAlreadyDeleted() {
+        // SoftDeleteByQuery는 SQL에 "and <deletedAt> is null" 가드를 붙이므로 이미 deleted된 행은
+        // WHERE 매칭에서 자연 제외되어 affected count == 0이 그대로 ops 경로를 통해 emit돼야 한다.
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(0L);
+        Instant now = Instant.parse("2026-05-19T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+
+        StepVerifier.create(operations.deleteAll(
+                        SoftDeletableAccount.class,
+                        QuerySpec.empty().where(Criteria.eq("email", "ghost@nova.io"))))
+                .expectNext(0L)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size(),
+                "soft-delete UPDATE는 단 한 번만 실행되어야 한다 — affected 0이라고 추가 쿼리를 던지면 안 된다");
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where email_address = ? and deleted_at is null",
+                statement.sql(),
+                "이미 deleted된 행을 다시 update하지 않도록 'deleted_at is null' 가드가 WHERE에 포함되어야 한다");
+    }
+
+    @Test
+    void updatePartialAutoOverridesVersionEvenWhenCallerPassesVersionInFields() {
+        // 호출자가 fields에 "version"을 명시했더라도 ops는 자동으로 nextVersion(current)을 binding하고
+        // SET 절을 한 번만 출력해야 한다 — version은 caller가 임의로 set할 수 없는 ops 관리 컬럼이다.
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedAccount account = new VersionedAccount(7L, "x@nova.io", 3L);
+
+        StepVerifier.create(operations.update(account, List.of("email", "version")))
+                .expectNext(account)
+                .verifyComplete();
+
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals(
+                "update versioned_accounts set email_address = ?, version = ? where id = ? and version = ?",
+                statement.sql(),
+                "augmentWithExtraField가 LinkedHashSet으로 dedup하므로 version SET이 중복 출력되면 안 된다");
+        assertEquals(List.of("x@nova.io", 4L, 7L, 3L), statement.bindings(),
+                "version binding은 caller의 current(3L)가 아니라 nextVersion(4L)이어야 한다");
+        assertEquals(Long.valueOf(4L), account.getVersion(), "성공 시 version 필드는 nextVersion으로 업데이트되어야 한다");
+    }
+
+    @Test
     void deleteAllOnVersionedSoftDeletableEntitiesFallsBackToPerEntityDeletes() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.executeResults.addLast(1L);
