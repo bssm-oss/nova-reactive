@@ -460,6 +460,23 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         for (SqlStatement statement : statements) {
             bindingsList.add(statement.bindings());
         }
+        if (key.isNew() && metadata.idProperty().generated()) {
+            // generated id 그룹은 batch 결과로 키를 회수해 각 entity에 순서대로 주입한다.
+            PersistentProperty idProperty = metadata.idProperty();
+            String finalSharedSql = sharedSql;
+            return Flux.defer(() -> {
+                int[] index = {0};
+                return sqlExecutor.executeBatchAndReturnGeneratedKeys(
+                                finalSharedSql, bindingsList, idProperty.columnName(), idProperty.javaType())
+                        .doOnNext(key0 -> {
+                            int i = index[0]++;
+                            if (i < entities.size()) {
+                                idProperty.write(entities.get(i), idProperty.toPropertyValue(key0));
+                            }
+                        })
+                        .thenMany(Flux.fromIterable(entities));
+            });
+        }
         return sqlExecutor.executeBatch(sharedSql, bindingsList)
                 .thenMany(Flux.fromIterable(entities));
     }

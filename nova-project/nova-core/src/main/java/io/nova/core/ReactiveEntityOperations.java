@@ -100,10 +100,9 @@ public interface ReactiveEntityOperations {
      * 여러 엔티티를 한 번에 저장한다. 기본 구현은 단건 {@link #save(Object)}로 폴백한다.
      * 같은 SQL 셰이프끼리 묶어 배치로 실행하는 최적화는 구현체에서 override한다.
      * <p>
-     * 주의: 배치 최적화 경로(단일 {@code Statement.add()} 기반)에서는 데이터베이스가 생성한
-     * ID를 entity에 다시 set하지 않는다. 생성 ID가 필요한 경우에는 단건 {@link #save(Object)}를
-     * 사용하거나 ID를 미리 채워서 전달해야 한다. 기본 구현(단건 fallback)에서는
-     * {@link #save(Object)}와 동일하게 생성 ID가 entity에 주입된다.
+     * 배치 경로에서도 데이터베이스가 생성한 ID는 입력 순서대로 각 entity에 다시 주입된다 ({@code @Id}가
+     * {@code @GeneratedValue}로 표시된 경우). 따라서 {@link #save(Object)}와 동일하게 호출 이후
+     * 반환된 entity 또는 입력 entity 인스턴스에서 생성 ID를 즉시 사용할 수 있다.
      * <p>
      * 입력 Iterable이 List가 아닌 경우 내부에서 한 번 수집하므로, 호출 이후 같은 인스턴스를
      * 다시 사용하려는 경우에는 List로 미리 만들어 전달하는 것을 권장한다. 또한 입력 List를

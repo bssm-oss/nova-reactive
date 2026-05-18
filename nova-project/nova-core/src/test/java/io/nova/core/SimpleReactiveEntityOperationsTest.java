@@ -1349,6 +1349,53 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void saveAllPopulatesGeneratedIdsOntoEntitiesInBatch() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.batchGeneratedKeys.addLast(List.of(101L, 102L, 103L));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<SampleAccount> accounts = List.of(
+                new SampleAccount(null, "a@nova.io", true),
+                new SampleAccount(null, "b@nova.io", false),
+                new SampleAccount(null, "c@nova.io", true)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNext(accounts.get(0), accounts.get(1), accounts.get(2))
+                .verifyComplete();
+
+        assertEquals(Long.valueOf(101L), accounts.get(0).getId());
+        assertEquals(Long.valueOf(102L), accounts.get(1).getId());
+        assertEquals(Long.valueOf(103L), accounts.get(2).getId());
+        assertEquals(1, executor.batchCalls.size(), "generated-id 그룹도 단일 batch 호출로 묶여야 한다");
+        BatchCall call = executor.batchCalls.get(0);
+        assertEquals("insert into accounts (email_address, active) values (?, ?)", call.sql());
+        assertEquals(3, call.bindingsList().size());
+        assertEquals(List.of("id"), executor.batchGeneratedIdColumns,
+                "generated-id batch는 id 컬럼을 명시해 키를 회수해야 한다");
+        assertEquals(List.of(Long.class), executor.batchGeneratedIdTypes);
+        assertTrue(executor.executedStatements.isEmpty(),
+                "generated-id 그룹은 단건 fallback 경로를 거치지 않아야 한다");
+    }
+
+    @Test
+    void saveAllSkipsGeneratedKeyPathForAssignedIdEntities() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<AssignedIdAccount> accounts = List.of(
+                new AssignedIdAccount(11L, "a@nova.io"),
+                new AssignedIdAccount(22L, "b@nova.io")
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNext(accounts.get(0), accounts.get(1))
+                .verifyComplete();
+
+        assertEquals(1, executor.batchCalls.size());
+        assertTrue(executor.batchGeneratedIdColumns.isEmpty(),
+                "assigned-id 엔티티 batch는 generated-keys 경로를 호출하지 않아야 한다");
+    }
+
+    @Test
     void findAllWithProjectionRecordMapsRowsViaCanonicalConstructor() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryManyResults.addLast(List.of(
@@ -1668,6 +1715,9 @@ class SimpleReactiveEntityOperationsTest {
         private final Deque<Long> executeResults = new ArrayDeque<>();
         private final List<BatchCall> batchCalls = new ArrayList<>();
         private final List<SqlStatement> executedStatements = new ArrayList<>();
+        private final Deque<List<Object>> batchGeneratedKeys = new ArrayDeque<>();
+        private final List<String> batchGeneratedIdColumns = new ArrayList<>();
+        private final List<Class<?>> batchGeneratedIdTypes = new ArrayList<>();
         private boolean emptyQueryOne;
         private SqlStatement lastStatement;
         private Object generatedKey;
@@ -1716,6 +1766,17 @@ class SimpleReactiveEntityOperationsTest {
         public Mono<Long> executeBatch(String sql, List<List<Object>> bindingsList) {
             this.batchCalls.add(new BatchCall(sql, List.copyOf(bindingsList)));
             return Mono.just((long) bindingsList.size());
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> Flux<T> executeBatchAndReturnGeneratedKeys(
+                String sql, List<List<Object>> bindingsList, String idColumn, Class<T> idType) {
+            this.batchCalls.add(new BatchCall(sql, List.copyOf(bindingsList)));
+            this.batchGeneratedIdColumns.add(idColumn);
+            this.batchGeneratedIdTypes.add(idType);
+            List<Object> keys = batchGeneratedKeys.isEmpty() ? List.of() : batchGeneratedKeys.removeFirst();
+            return Flux.fromIterable(keys).map(value -> (T) value);
         }
     }
 
