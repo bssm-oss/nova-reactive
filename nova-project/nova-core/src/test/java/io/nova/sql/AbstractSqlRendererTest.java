@@ -108,6 +108,24 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersDeleteByIdsAsSingleInDelete() {
+        SqlStatement statement = dialect.sqlRenderer().deleteByIds(metadata, java.util.List.of(10L, 20L, 30L));
+
+        assertEquals("delete from accounts where id in (?, ?, ?)", statement.sql());
+        assertEquals(java.util.List.of(10L, 20L, 30L), statement.bindings());
+    }
+
+    @Test
+    void deleteByIdsRejectsEmptyList() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().deleteByIds(metadata, java.util.List.of())
+        );
+
+        assertEquals("deleteByIds requires at least one id", exception.getMessage());
+    }
+
+    @Test
     void rejectsUnknownPropertiesInPredicates() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,

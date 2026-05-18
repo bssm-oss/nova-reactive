@@ -67,6 +67,30 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement deleteByIds(EntityMetadata<?> metadata, List<Object> ids) {
+        if (ids.isEmpty()) {
+            throw new IllegalArgumentException("deleteByIds requires at least one id");
+        }
+        PersistentProperty idProperty = metadata.idProperty();
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("delete from ").append(table(metadata))
+                .append(" where ").append(column(idProperty)).append(" in (");
+        for (int i = 0; i < ids.size(); i++) {
+            Object id = ids.get(i);
+            if (id == null) {
+                throw new IllegalArgumentException("deleteByIds id at index " + i + " is null");
+            }
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(idProperty.toColumnValue(id));
+        }
+        sql.append(")");
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
     public SqlStatement selectById(EntityMetadata<?> metadata, Object id) {
         return new SqlStatement(
                 "select " + selectList(metadata) + " from " + table(metadata) + " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(1),
