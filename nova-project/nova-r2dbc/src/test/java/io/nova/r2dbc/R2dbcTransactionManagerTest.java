@@ -313,6 +313,87 @@ class R2dbcTransactionManagerTest {
         StepVerifier.create(work).expectNext("ok").verifyComplete();
     }
 
+    @Test
+    void readOnlyAbsorbsR2dbcExceptionButPropagatesGenericRuntimeException() {
+        // SET TRANSACTION READ ONLY 시도가 일반 RuntimeException(예: 권한 오류·드라이버 내부 오류)을
+        // 던지면 흡수하지 않고 그대로 전파해야 한다. R2dbcException만 silently absorb 한다.
+        ConnectionFactory faulty = readOnlyFaultyFactory(connectionFactory, new IllegalStateException("permission denied"));
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(faulty);
+
+        Mono<String> work = txManager.inTransaction(TransactionDefinition.asReadOnly(), ctx -> Mono.just("ok"));
+
+        StepVerifier.create(work)
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && "permission denied".equals(error.getMessage()))
+                .verify();
+    }
+
+    @Test
+    void readOnlyAbsorbsR2dbcExceptionFromSetTransactionReadOnly() {
+        // R2dbcException 계열은 driver/문법 미지원으로 보고 흡수해야 한다.
+        ConnectionFactory faulty = readOnlyFaultyFactory(connectionFactory, new io.r2dbc.spi.R2dbcNonTransientResourceException("syntax not supported"));
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(faulty);
+
+        Mono<String> work = txManager.inTransaction(TransactionDefinition.asReadOnly(), ctx -> Mono.just("ok"));
+
+        StepVerifier.create(work).expectNext("ok").verifyComplete();
+    }
+
+    @Test
+    void runWithoutTransactionContextReportsNoActiveTransaction() {
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
+
+        Mono<Boolean> active = txManager.inTransaction(
+                TransactionDefinition.DEFAULT.with(Propagation.NEVER),
+                ctx -> Mono.just(ctx.hasActiveTransaction()));
+
+        StepVerifier.create(active).expectNext(false).verifyComplete();
+    }
+
+    @Test
+    void activeTransactionContextReportsActiveTrue() {
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
+
+        Mono<Boolean> active = txManager.inTransaction(
+                TransactionDefinition.DEFAULT,
+                ctx -> Mono.just(ctx.hasActiveTransaction()));
+
+        StepVerifier.create(active).expectNext(true).verifyComplete();
+    }
+
+    /**
+     * SET TRANSACTION READ ONLY 통계 호출에서 주어진 예외를 던지는 connection을 반환한다.
+     * 다른 모든 method는 delegate로 위임한다.
+     */
+    private static ConnectionFactory readOnlyFaultyFactory(ConnectionFactory delegate, RuntimeException toThrow) {
+        return new ConnectionFactory() {
+            @Override
+            public Mono<? extends Connection> create() {
+                return Mono.from(delegate.create())
+                        .map(conn -> (Connection) java.lang.reflect.Proxy.newProxyInstance(
+                                Connection.class.getClassLoader(),
+                                new Class<?>[]{Connection.class},
+                                (proxy, method, args) -> {
+                                    if ("createStatement".equals(method.getName())
+                                            && args != null && args.length == 1
+                                            && "SET TRANSACTION READ ONLY".equals(args[0])) {
+                                        throw toThrow;
+                                    }
+                                    try {
+                                        return method.invoke(conn, args);
+                                    } catch (java.lang.reflect.InvocationTargetException e) {
+                                        throw e.getCause();
+                                    }
+                                }));
+            }
+
+            @Override
+            public ConnectionFactoryMetadata getMetadata() {
+                return delegate.getMetadata();
+            }
+        };
+    }
+
     private static ConnectionFactory countingFactory(ConnectionFactory delegate, AtomicInteger counter) {
         return new ConnectionFactory() {
             @Override

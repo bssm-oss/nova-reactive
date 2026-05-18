@@ -7,6 +7,7 @@ import io.nova.tx.TransactionContext;
 import io.nova.tx.TransactionDefinition;
 import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactory;
+import io.r2dbc.spi.R2dbcException;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
 import reactor.util.context.Context;
@@ -142,9 +143,15 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         });
     }
 
+    /**
+     * SUPPORTS/NOT_SUPPORTED/NEVER에서 활성 트랜잭션 없이 callback을 실행하는 경로다.
+     * 전달되는 {@link TransactionContext}는 {@link R2dbcTransactionContext}이지만
+     * connection은 {@code null}이고 {@link TransactionContext#hasActiveTransaction()}이
+     * {@code false}이므로 callback이 resource에 접근하기 전에 반드시 확인해야 한다.
+     * Reactor context의 {@link #CONNECTION_KEY}도 함께 비워 안쪽 executor가
+     * 부모 트랜잭션 connection을 재사용하지 않고 새 auto-commit connection을 열게 한다.
+     */
     private <T> Mono<T> runWithoutTransaction(Function<TransactionContext, Mono<T>> callback) {
-        // 활성 트랜잭션이 없는 경로: connection 키를 명시적으로 비워서
-        // 안쪽 executor가 새 connection을 만들도록 한다 (auto-commit 사용).
         TransactionContext ctx = new R2dbcTransactionContext(null);
         return Mono.defer(() -> callback.apply(ctx))
                 .contextWrite(c -> c.delete(CONNECTION_KEY));
@@ -159,21 +166,19 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         return chain;
     }
 
+    /**
+     * 기본 {@code SET TRANSACTION READ ONLY} 시도. R2DBC SPI 1.0에는 read-only를 위한
+     * 표준 hook이 없으므로 표준 SQL로 처리한다. 드라이버나 문법이 이 구문을 지원하지 않아
+     * 발생하는 {@link R2dbcException}만 silently absorb 하고, 권한 오류·네트워크 단절 등
+     * 일반 {@link RuntimeException}은 호출자에 그대로 전파한다.
+     */
     private Mono<Void> applyReadOnly(Connection conn, TransactionDefinition definition) {
         if (!definition.readOnly()) {
             return Mono.empty();
         }
-        // R2DBC SPI 1.0에는 read-only 트랜잭션을 위한 표준 hook이 없으므로 표준 SQL로 처리한다.
-        // 일부 driver는 이 구문을 지원하지 않거나 in-memory 모드에서 무시하므로 실패는 흡수한다.
-        return Mono.defer(() -> {
-                    try {
-                        return Mono.from(conn.createStatement("SET TRANSACTION READ ONLY").execute())
-                                .flatMap(result -> Mono.from(result.getRowsUpdated()));
-                    } catch (RuntimeException ignored) {
-                        return Mono.empty();
-                    }
-                })
-                .onErrorResume(error -> Mono.empty())
+        return Mono.defer(() -> Mono.from(conn.createStatement("SET TRANSACTION READ ONLY").execute()))
+                .flatMap(result -> Mono.from(result.getRowsUpdated()))
+                .onErrorResume(R2dbcException.class, ignored -> Mono.empty())
                 .then();
     }
 
