@@ -20,6 +20,8 @@ import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
 import io.nova.support.fixtures.FixtureEntities.AssignedIdAccount;
 import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
+import io.nova.support.fixtures.FixtureEntities.CallbackThrowingEntity;
+import io.nova.support.fixtures.FixtureEntities.EntityWithCallbacks;
 import io.nova.support.fixtures.FixtureEntities.NoDefaultConstructorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.exception.OptimisticLockingFailureException;
@@ -51,6 +53,7 @@ import java.util.Objects;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -1976,6 +1979,139 @@ class SimpleReactiveEntityOperationsTest {
                 () -> operations.aggregate(null, AggregateSpec.of(Aggregation.count("id"))));
         assertThrows(NullPointerException.class,
                 () -> operations.aggregate(SampleAccount.class, (AggregateSpec) null));
+    }
+
+    @Test
+    void saveFiresPrePersistCallbackBeforeInsertBindings() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 42L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(null, "  callback@nova.io  ");
+
+        StepVerifier.create(operations.save(entity))
+                .expectNext(entity)
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.prePersistCount.get());
+        // callback의 trim() 결과가 INSERT bindings에 반영되어야 한다.
+        assertEquals(List.of("callback@nova.io"), executor.lastStatement.bindings());
+        assertEquals("callback@nova.io", entity.getEmail());
+    }
+
+    @Test
+    void saveFiresPreUpdateCallbackBeforeUpdateBindings() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "USER@NOVA.IO");
+
+        StepVerifier.create(operations.save(entity))
+                .expectNext(entity)
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.preUpdateCount.get());
+        // callback의 toLowerCase() 결과가 UPDATE bindings에 반영되어야 한다.
+        assertEquals(List.of("user@nova.io", 7L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void updatePartialFiresPreUpdateCallback() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "USER@NOVA.IO");
+
+        StepVerifier.create(operations.update(entity, List.of("email")))
+                .expectNext(entity)
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.preUpdateCount.get());
+        assertEquals(List.of("user@nova.io", 7L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void deleteFiresPreRemoveCallback() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(11L, "x@nova.io");
+
+        StepVerifier.create(operations.delete(entity))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.preRemoveCount.get());
+    }
+
+    @Test
+    void findByIdFiresPostLoadCallbackAfterHydration() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(
+                new MapRowAccessor(Map.of("id", 7L, "email_address", "x@nova.io")));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.findById(EntityWithCallbacks.class, 7L))
+                .expectNextMatches(loaded -> Objects.equals(loaded.getId(), 7L)
+                        && "x@nova.io".equals(loaded.getEmail()))
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.postLoadCount.get());
+    }
+
+    @Test
+    void findAllFiresPostLoadCallbackForEachRow() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 1L, "email_address", "a@nova.io")),
+                new MapRowAccessor(Map.of("id", 2L, "email_address", "b@nova.io")),
+                new MapRowAccessor(Map.of("id", 3L, "email_address", "c@nova.io"))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.findAll(EntityWithCallbacks.class, QuerySpec.empty()))
+                .expectNextCount(3)
+                .verifyComplete();
+
+        assertEquals(3, EntityWithCallbacks.postLoadCount.get());
+    }
+
+    @Test
+    void saveSurfacesPrePersistCallbackFailureAsMonoError() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackThrowingEntity entity = new CallbackThrowingEntity(null);
+
+        StepVerifier.create(operations.save(entity))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalStateException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("@PrePersist"));
+                    assertSame(IllegalArgumentException.class, error.getCause().getClass());
+                })
+                .verify();
+    }
+
+    @Test
+    void saveAllFiresPrePersistCallbackForEachEntityInBatch() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<EntityWithCallbacks> entities = List.of(
+                new EntityWithCallbacks(null, "  a@nova.io  "),
+                new EntityWithCallbacks(null, "  b@nova.io  ")
+        );
+
+        StepVerifier.create(operations.saveAll(entities))
+                .expectNextCount(2)
+                .verifyComplete();
+
+        assertEquals(2, EntityWithCallbacks.prePersistCount.get());
+        for (EntityWithCallbacks entity : entities) {
+            assertEquals(false, entity.getEmail().startsWith(" "));
+        }
     }
 
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {

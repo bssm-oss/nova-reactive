@@ -47,6 +47,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final ReactiveTransactionOperations transactionOperations;
     private final Clock clock;
     private final AuditApplier auditApplier;
+    private final EntityListenerInvoker listenerInvoker;
 
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
@@ -73,6 +74,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         this.transactionOperations = transactionOperations;
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.auditApplier = new AuditApplier(this.clock);
+        this.listenerInvoker = new EntityListenerInvoker();
     }
 
     @Override
@@ -80,11 +82,24 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
         boolean isNew = entityStateDetector.isNew(entity, metadata);
         if (isNew) {
-            auditApplier.applyOnInsert(entity, metadata);
-            initializeVersionIfAbsent(metadata, entity);
+            // audit applier가 먼저 실행되어 createdAt/updatedAt에 기본값이 채워진 뒤,
+            // 사용자 @PrePersist callback이 호출되어 audit 필드 포함 entity 상태를 마지막에 결정한다.
+            // 콜백이 예외를 던지면 sync error가 Mono.error로 흘러가게 try/catch로 감싼다.
+            try {
+                auditApplier.applyOnInsert(entity, metadata);
+                listenerInvoker.invokePrePersist(entity, metadata);
+                initializeVersionIfAbsent(metadata, entity);
+            } catch (RuntimeException exception) {
+                return Mono.error(exception);
+            }
             return insertNew(metadata, entity);
         }
-        auditApplier.applyOnUpdate(entity, metadata);
+        try {
+            auditApplier.applyOnUpdate(entity, metadata);
+            listenerInvoker.invokePreUpdate(entity, metadata);
+        } catch (RuntimeException exception) {
+            return Mono.error(exception);
+        }
         return updateExisting(metadata, entity);
     }
 
@@ -165,7 +180,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (id == null) {
             return Mono.error(new IllegalArgumentException("Entity id must not be null for update"));
         }
-        auditApplier.applyOnUpdate(entity, metadata);
+        try {
+            auditApplier.applyOnUpdate(entity, metadata);
+            listenerInvoker.invokePreUpdate(entity, metadata);
+        } catch (RuntimeException exception) {
+            return Mono.error(exception);
+        }
         Iterable<String> effectiveFields = fields;
         Optional<String> updatedAtName = auditApplier.updatedAtPropertyName(metadata);
         if (updatedAtName.isPresent()) {
@@ -251,6 +271,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         Object id = metadata.idProperty().read(entity);
         if (id == null) {
             return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
+        }
+        // soft-delete UPDATE 경로에서도 동일하게 @PreRemove를 호출해 hard/soft 차이를 콜백 관점에서는 숨긴다.
+        try {
+            listenerInvoker.invokePreRemove(entity, metadata);
+        } catch (RuntimeException exception) {
+            return Mono.error(exception);
         }
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         Optional<PersistentProperty> version = metadata.versionProperty();
@@ -426,10 +452,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     Optional<PersistentProperty> version = metadata.versionProperty();
                     if (softDelete.isPresent() && version.isPresent()) {
                         // @SoftDelete + @Version: 단일 IN-UPDATE로 묶으면 entity별 version 검증이 불가능하므로
-                        // 안전하게 단건 delete(entity) 경로로 폴백한다.
+                        // 안전하게 단건 delete(entity) 경로로 폴백한다. @PreRemove는 단건 delete가 호출한다.
                         return Flux.fromIterable(entitiesByType.get(entry.getKey()))
                                 .concatMap(this::delete)
                                 .reduce(0L, Long::sum);
+                    }
+                    // entity 인스턴스가 있는 batch 경로에서는 @PreRemove를 SQL 발화 직전에 entity 순서대로 호출한다.
+                    for (T entity : entitiesByType.get(entry.getKey())) {
+                        listenerInvoker.invokePreRemove(entity, metadata);
                     }
                     if (softDelete.isPresent()) {
                         Object deletedAt = currentTimeFor(softDelete.get());
@@ -561,8 +591,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         for (T entity : entities) {
             if (key.isNew()) {
                 auditApplier.applyOnInsert(entity, metadata);
+                listenerInvoker.invokePrePersist(entity, metadata);
             } else {
                 auditApplier.applyOnUpdate(entity, metadata);
+                listenerInvoker.invokePreUpdate(entity, metadata);
             }
             SqlStatement statement = key.isNew()
                     ? dialect.sqlRenderer().insert(metadata, entity)
@@ -647,6 +679,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object value = row.get(property.columnName(), property.javaType());
             property.write(instance, property.toPropertyValue(value));
         }
+        // hydration이 모두 끝난 다음 한 번만 @PostLoad를 발화해, 사용자 callback에서 다른 필드를 같이 읽을 수 있게 한다.
+        listenerInvoker.invokePostLoad(instance, metadata);
         return instance;
     }
 
