@@ -1,6 +1,9 @@
 package io.nova.metadata;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public final class EntityMetadata<T> {
@@ -8,6 +11,7 @@ public final class EntityMetadata<T> {
     private final String entityName;
     private final String tableName;
     private final List<PersistentProperty> properties;
+    private final Map<String, PersistentProperty> propertiesByName;
     private final PersistentProperty idProperty;
     private final PersistentProperty createdAtProperty;
     private final PersistentProperty updatedAtProperty;
@@ -25,6 +29,15 @@ public final class EntityMetadata<T> {
         this.entityName = entityName;
         this.tableName = tableName;
         this.properties = List.copyOf(properties);
+        LinkedHashMap<String, PersistentProperty> index = new LinkedHashMap<>();
+        for (PersistentProperty property : this.properties) {
+            PersistentProperty previous = index.put(property.propertyName(), property);
+            if (previous != null) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " declares duplicate property name " + property.propertyName());
+            }
+        }
+        this.propertiesByName = Collections.unmodifiableMap(index);
         this.idProperty = idProperty;
         this.createdAtProperty = this.properties.stream()
                 .filter(PersistentProperty::createdAt)
@@ -58,6 +71,13 @@ public final class EntityMetadata<T> {
 
     public List<PersistentProperty> properties() {
         return properties;
+    }
+
+    /**
+     * property 이름으로 {@link PersistentProperty}를 O(1)에 조회한다. 미존재 시 빈 {@link Optional}.
+     */
+    public Optional<PersistentProperty> findProperty(String propertyName) {
+        return Optional.ofNullable(propertiesByName.get(propertyName));
     }
 
     public PersistentProperty idProperty() {

@@ -508,9 +508,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     private PersistentProperty findProperty(EntityMetadata<?> metadata, String propertyName) {
-        return metadata.properties().stream()
-                .filter(property -> property.propertyName().equals(propertyName))
-                .findFirst()
+        return metadata.findProperty(propertyName)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown property " + propertyName + " on " + metadata.entityType().getName()));
     }
 

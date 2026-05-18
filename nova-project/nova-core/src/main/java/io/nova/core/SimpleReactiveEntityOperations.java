@@ -524,9 +524,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private List<PersistentProperty> resolveProjectionProperties(EntityMetadata<?> metadata, List<String> fields) {
         List<PersistentProperty> resolved = new ArrayList<>(fields.size());
         for (String fieldName : fields) {
-            PersistentProperty property = metadata.properties().stream()
-                    .filter(candidate -> candidate.propertyName().equals(fieldName))
-                    .findFirst()
+            PersistentProperty property = metadata.findProperty(fieldName)
                     .orElseThrow(() -> new IllegalArgumentException(
                             "Unknown property " + fieldName + " on " + metadata.entityType().getName()));
             resolved.add(property);
