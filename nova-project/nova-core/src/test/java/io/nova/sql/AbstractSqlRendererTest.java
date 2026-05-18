@@ -65,6 +65,49 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersInOperatorWithMultipleValues() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.in("id", java.util.List.of(1L, 2L, 3L)))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where id in (?, ?, ?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(1L, 2L, 3L), statement.bindings());
+    }
+
+    @Test
+    void rendersEmptyInListAsAlwaysFalsePredicate() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.in("id", java.util.List.of()))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where 1 = 0",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void rejectsNullElementInInList() {
+        java.util.List<Object> idsWithNull = new java.util.ArrayList<>();
+        idsWithNull.add(1L);
+        idsWithNull.add(null);
+        idsWithNull.add(3L);
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> Criteria.in("id", idsWithNull)
+        );
+
+        assertEquals("Criteria.in value at index 1 for property id is null", exception.getMessage());
+    }
+
+    @Test
     void rejectsUnknownPropertiesInPredicates() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,

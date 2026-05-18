@@ -10,6 +10,7 @@ import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -137,6 +138,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             if (operator == ComparisonOperator.IS_NULL || operator == ComparisonOperator.IS_NOT_NULL) {
                 return column(property) + " " + operator.sql();
             }
+            if (operator == ComparisonOperator.IN) {
+                return renderInPredicate(context, property, condition.value());
+            }
             String marker = dialect.bindMarkers().marker(context.nextIndex());
             context.addBinding(property.toColumnValue(condition.value()));
             return column(property) + " " + operator.sql() + " " + marker;
@@ -145,6 +149,32 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         return compound.predicates().stream()
                 .map(child -> "(" + renderPredicate(context, metadata, child) + ")")
                 .collect(Collectors.joining(" " + compound.operator().name().toLowerCase() + " "));
+    }
+
+    /**
+     * IN 조건을 col in (?, ?, ?) 로 펼친다. 빈 컬렉션은 Hibernate 6.3+/jOOQ와 동일하게
+     * {@code 1 = 0}(항상 거짓)으로 치환해 0행 매칭을 보장한다.
+     */
+    private String renderInPredicate(RenderContext context, PersistentProperty property, Object value) {
+        if (!(value instanceof Collection<?> collection)) {
+            throw new IllegalArgumentException(
+                    "IN operator requires a Collection value for property " + property.propertyName());
+        }
+        if (collection.isEmpty()) {
+            return "1 = 0";
+        }
+        StringBuilder builder = new StringBuilder(column(property)).append(" in (");
+        int index = 0;
+        for (Object element : collection) {
+            if (index > 0) {
+                builder.append(", ");
+            }
+            builder.append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(property.toColumnValue(element));
+            index++;
+        }
+        builder.append(")");
+        return builder.toString();
     }
 
     private void appendOrderBy(StringBuilder sql, EntityMetadata<?> metadata, Sort sort) {

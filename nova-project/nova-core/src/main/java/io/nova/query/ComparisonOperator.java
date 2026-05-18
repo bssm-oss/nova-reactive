@@ -9,7 +9,8 @@ public enum ComparisonOperator {
     LTE("<="),
     LIKE("like"),
     IS_NULL("is null"),
-    IS_NOT_NULL("is not null");
+    IS_NOT_NULL("is not null"),
+    IN("in");
 
     private final String sql;
 
