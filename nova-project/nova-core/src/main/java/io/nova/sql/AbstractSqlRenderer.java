@@ -12,8 +12,10 @@ import io.nova.query.Sort;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -145,6 +147,42 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("delete from ").append(table(metadata));
         appendWhereClause(sql, context, metadata, querySpec.predicate());
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
+    public SqlStatement updateByQuery(
+            EntityMetadata<?> metadata,
+            LinkedHashMap<String, Object> fieldValues,
+            QuerySpec querySpec
+    ) {
+        if (fieldValues == null || fieldValues.isEmpty()) {
+            throw new IllegalArgumentException("updateByQuery requires at least one field assignment");
+        }
+        if (querySpec == null || querySpec.predicate() == null) {
+            throw new IllegalArgumentException("updateByQuery requires a non-null where predicate");
+        }
+        if (querySpec.sort() != null && !querySpec.sort().orders().isEmpty()) {
+            throw new IllegalArgumentException("updateByQuery does not support sort");
+        }
+        if (querySpec.pageable() != null) {
+            throw new IllegalArgumentException("updateByQuery does not support pageable");
+        }
+        RenderContext context = new RenderContext();
+        List<String> assignments = new ArrayList<>(fieldValues.size());
+        for (Map.Entry<String, Object> entry : fieldValues.entrySet()) {
+            PersistentProperty property = findProperty(metadata, entry.getKey());
+            if (property.id()) {
+                throw new IllegalArgumentException(
+                        "Cannot update id property " + property.propertyName() + " on " + metadata.entityType().getName());
+            }
+            String marker = dialect.bindMarkers().marker(context.nextIndex());
+            assignments.add(column(property) + " = " + marker);
+            context.addBinding(property.toColumnValue(entry.getValue()));
+        }
+        StringBuilder sql = new StringBuilder("update ").append(table(metadata))
+                .append(" set ").append(String.join(", ", assignments))
+                .append(" where ").append(renderPredicate(context, metadata, querySpec.predicate()));
         return new SqlStatement(sql.toString(), context.bindings());
     }
 

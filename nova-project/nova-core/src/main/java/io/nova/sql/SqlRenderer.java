@@ -3,6 +3,7 @@ package io.nova.sql;
 import io.nova.metadata.EntityMetadata;
 import io.nova.query.QuerySpec;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 
 /**
@@ -53,5 +54,22 @@ public interface SqlRenderer {
     default SqlStatement deleteByQuery(EntityMetadata<?> metadata, QuerySpec querySpec) {
         throw new UnsupportedOperationException(
                 "SqlRenderer.deleteByQuery must be overridden by the implementation");
+    }
+
+    /**
+     * Updater builder가 만든 {@code (field -> value)} 쌍과 WHERE 절로 부분 UPDATE SQL을 렌더한다.
+     * 입력 순서를 보존하기 위해 {@link LinkedHashMap}을 받는다. {@code querySpec}의 predicate만
+     * 의미가 있으며 sort/pageable은 사용되지 않는다.
+     * <p>
+     * 기본 구현은 외부 SqlRenderer 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
+     * {@link AbstractSqlRenderer}는 이 메서드를 override한다.
+     */
+    default SqlStatement updateByQuery(
+            EntityMetadata<?> metadata,
+            LinkedHashMap<String, Object> fieldValues,
+            QuerySpec querySpec
+    ) {
+        throw new UnsupportedOperationException(
+                "SqlRenderer.updateByQuery must be overridden by the implementation");
     }
 }

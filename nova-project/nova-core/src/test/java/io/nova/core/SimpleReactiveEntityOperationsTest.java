@@ -6,6 +6,7 @@ import io.nova.query.Criteria;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
+import io.nova.query.Updater;
 import io.nova.sql.AbstractSqlRenderer;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
@@ -394,6 +395,107 @@ class SimpleReactiveEntityOperationsTest {
         SimpleReactiveEntityOperations operations = newOperations(new CapturingExecutor(), new RecordingTransactions());
 
         assertThrows(NullPointerException.class, () -> operations.deleteById(SampleAccount.class, null));
+    }
+
+    @Test
+    void updateWithUpdaterRendersPartialUpdateAndReturnsAffectedRows() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(7L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.update(
+                        SampleAccount.class,
+                        Updater.of(SampleAccount.class)
+                                .set("email", "x@nova.io")
+                                .set("active", true)
+                                .where(Criteria.gte("id", 10L))
+                ))
+                .expectNext(7L)
+                .verifyComplete();
+
+        assertEquals(
+                "update accounts set email_address = ?, active = ? where id >= ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of("x@nova.io", true, 10L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void updateWithUpdaterRejectsEmptyFields() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.update(
+                        SampleAccount.class,
+                        Updater.of(SampleAccount.class).where(Criteria.eq("id", 1L))
+                ))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertEquals("Updater requires at least one set(...) assignment", error.getMessage());
+                })
+                .verify();
+
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void updateWithUpdaterRejectsMissingWhere() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.update(
+                        SampleAccount.class,
+                        Updater.of(SampleAccount.class).set("email", "x@nova.io")
+                ))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertEquals("Updater requires a where(...) predicate", error.getMessage());
+                })
+                .verify();
+
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void updateWithUpdaterPropagatesIdFieldRejection() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.update(
+                        SampleAccount.class,
+                        Updater.of(SampleAccount.class)
+                                .set("id", 99L)
+                                .where(Criteria.eq("email", "x@nova.io"))
+                ))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("id property id"),
+                            "오류 메시지가 id property 거부를 나타내야 한다: " + error.getMessage());
+                })
+                .verify();
+
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void updateWithUpdaterPropagatesUnknownFieldRejection() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.update(
+                        SampleAccount.class,
+                        Updater.of(SampleAccount.class)
+                                .set("nope", "value")
+                                .where(Criteria.eq("id", 1L))
+                ))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("Unknown property nope"),
+                            "오류 메시지가 미지의 property nope를 나타내야 한다: " + error.getMessage());
+                })
+                .verify();
+
+        assertTrue(executor.executedStatements.isEmpty());
     }
 
     @Test

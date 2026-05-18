@@ -1,6 +1,7 @@
 package io.nova.core;
 
 import io.nova.query.QuerySpec;
+import io.nova.query.Updater;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -121,5 +122,17 @@ public interface ReactiveEntityOperations {
     default <T> Mono<Long> deleteAll(Class<T> entityType, QuerySpec querySpec) {
         return Mono.error(new UnsupportedOperationException(
                 "ReactiveEntityOperations.deleteAll(Class, QuerySpec) must be overridden by the implementation"));
+    }
+
+    /**
+     * Updater builder로 지정한 부분 UPDATE를 실행한다. SET 절은 최소 1개의 field 할당과 non-null
+     * WHERE 절을 요구한다. 반환값은 영향 받은 행 수다.
+     * <p>
+     * 기본 구현은 외부 {@link ReactiveEntityOperations} 직접 구현자가 자동으로 깨지지 않도록
+     * 명시적 예외를 던지며, {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
+     */
+    default <T> Mono<Long> update(Class<T> entityType, Updater<T> updater) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.update(Class, Updater) must be overridden by the implementation"));
     }
 }

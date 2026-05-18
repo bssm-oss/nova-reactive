@@ -5,6 +5,7 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.Criteria;
 import io.nova.query.QuerySpec;
+import io.nova.query.Updater;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlStatement;
@@ -217,6 +218,28 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     public <T> Mono<Long> deleteAll(Class<T> entityType, QuerySpec querySpec) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
         return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(metadata, querySpec));
+    }
+
+    @Override
+    public <T> Mono<Long> update(Class<T> entityType, Updater<T> updater) {
+        Objects.requireNonNull(entityType, "entityType must not be null");
+        Objects.requireNonNull(updater, "updater must not be null");
+        if (!entityType.equals(updater.entityType())) {
+            return Mono.error(new IllegalArgumentException(
+                    "Updater entity type " + updater.entityType().getName()
+                            + " does not match call entityType " + entityType.getName()));
+        }
+        LinkedHashMap<String, Object> fieldValues = updater.fields();
+        if (fieldValues.isEmpty()) {
+            return Mono.error(new IllegalArgumentException("Updater requires at least one set(...) assignment"));
+        }
+        if (updater.where() == null) {
+            return Mono.error(new IllegalArgumentException("Updater requires a where(...) predicate"));
+        }
+        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        QuerySpec querySpec = QuerySpec.empty().where(updater.where());
+        return Mono.fromCallable(() -> dialect.sqlRenderer().updateByQuery(metadata, fieldValues, querySpec))
+                .flatMap(sqlExecutor::execute);
     }
 
     @Override

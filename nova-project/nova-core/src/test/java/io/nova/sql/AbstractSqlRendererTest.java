@@ -343,6 +343,116 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersUpdateByQueryWithLinkedHashMapOrder() {
+        java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("email", "x@nova.io");
+        fields.put("active", true);
+
+        SqlStatement statement = dialect.sqlRenderer().updateByQuery(
+                metadata,
+                fields,
+                QuerySpec.empty().where(Criteria.gte("id", 10L))
+        );
+
+        assertEquals(
+                "update accounts set email_address = ?, active = ? where id >= ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("x@nova.io", true, 10L), statement.bindings());
+    }
+
+    @Test
+    void updateByQueryRejectsEmptyFieldValues() {
+        java.util.LinkedHashMap<String, Object> empty = new java.util.LinkedHashMap<>();
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().updateByQuery(metadata, empty, QuerySpec.empty().where(Criteria.eq("id", 1L)))
+        );
+
+        assertEquals("updateByQuery requires at least one field assignment", exception.getMessage());
+    }
+
+    @Test
+    void updateByQueryRejectsNullPredicate() {
+        java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("email", "x@nova.io");
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().updateByQuery(metadata, fields, QuerySpec.empty())
+        );
+
+        assertEquals("updateByQuery requires a non-null where predicate", exception.getMessage());
+    }
+
+    @Test
+    void updateByQueryRejectsSort() {
+        java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("email", "x@nova.io");
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().updateByQuery(
+                        metadata,
+                        fields,
+                        QuerySpec.empty().where(Criteria.eq("id", 1L)).orderBy(Sort.by(Sort.Order.asc("id")))
+                )
+        );
+
+        assertEquals("updateByQuery does not support sort", exception.getMessage());
+    }
+
+    @Test
+    void updateByQueryRejectsPageable() {
+        java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("email", "x@nova.io");
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().updateByQuery(
+                        metadata,
+                        fields,
+                        QuerySpec.empty().where(Criteria.eq("id", 1L)).page(Pageable.of(10, 0))
+                )
+        );
+
+        assertEquals("updateByQuery does not support pageable", exception.getMessage());
+    }
+
+    @Test
+    void updateByQueryRejectsIdField() {
+        java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("id", 99L);
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().updateByQuery(metadata, fields, QuerySpec.empty().where(Criteria.eq("email", "x@nova.io")))
+        );
+
+        assertEquals(
+                "Cannot update id property id on " + SampleAccount.class.getName(),
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void updateByQueryRejectsUnknownField() {
+        java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("nope", "value");
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().updateByQuery(metadata, fields, QuerySpec.empty().where(Criteria.eq("id", 1L)))
+        );
+
+        assertEquals(
+                "Unknown property nope on " + SampleAccount.class.getName(),
+                exception.getMessage()
+        );
+    }
+
+    @Test
     void rejectsUnknownPropertiesInPredicates() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,
