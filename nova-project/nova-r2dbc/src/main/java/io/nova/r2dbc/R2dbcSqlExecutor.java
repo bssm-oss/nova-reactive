@@ -97,6 +97,36 @@ public final class R2dbcSqlExecutor implements SqlExecutor {
     }
 
     @Override
+    public <T> Flux<T> executeBatchAndReturnGeneratedKeys(
+            String sql, List<List<Object>> bindingsList, String idColumn, Class<T> idType) {
+        if (bindingsList.isEmpty()) {
+            return Flux.empty();
+        }
+        SqlStatement batchStatement = new SqlStatement(sql, List.of());
+        return Flux.defer(() -> {
+            long startNanos = beforeExecution(batchStatement);
+            AtomicLong rowCount = new AtomicLong();
+            return withConnectionFlux(conn -> {
+                Statement stmt = conn.createStatement(sql);
+                if (!dialect.usesReturningForGeneratedKeys()) {
+                    stmt.returnGeneratedValues(idColumn);
+                }
+                for (int i = 0; i < bindingsList.size(); i++) {
+                    bind(stmt, bindingsList.get(i));
+                    if (i < bindingsList.size() - 1) {
+                        stmt.add();
+                    }
+                }
+                return Flux.from(stmt.execute())
+                        .flatMap(result -> result.map((row, meta) -> row.get(idColumn, idType)));
+            })
+                    .doOnNext(value -> rowCount.incrementAndGet())
+                    .doOnComplete(() -> afterExecution(batchStatement, startNanos, rowCount.get()))
+                    .doOnError(error -> errored(batchStatement, startNanos, error));
+        });
+    }
+
+    @Override
     public <T> Mono<T> executeAndReturnGeneratedKey(SqlStatement statement, String idColumn, Class<T> idType) {
         return Mono.defer(() -> {
             long startNanos = beforeExecution(statement);

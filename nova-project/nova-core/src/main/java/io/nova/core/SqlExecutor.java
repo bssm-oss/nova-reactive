@@ -34,4 +34,15 @@ public interface SqlExecutor {
                 .concatMap(bindings -> execute(new SqlStatement(sql, bindings)))
                 .reduce(0L, Long::sum);
     }
+
+    /**
+     * 동일한 SQL을 여러 바인딩 집합으로 일괄 실행하면서 데이터베이스가 생성한 키를 반환한다.
+     * 기본 구현은 키를 반환하지 않으며, dialect/driver 차이를 처리할 수 있는 executor가 재정의해야 한다.
+     * 반환되는 키는 입력 바인딩과 동일한 순서를 따른다.
+     */
+    default <T> Flux<T> executeBatchAndReturnGeneratedKeys(
+            String sql, List<List<Object>> bindingsList, String idColumn, Class<T> idType) {
+        return Flux.error(new UnsupportedOperationException(
+                "executeBatchAndReturnGeneratedKeys must be overridden"));
+    }
 }
