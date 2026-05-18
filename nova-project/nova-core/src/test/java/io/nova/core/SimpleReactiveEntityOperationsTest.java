@@ -326,6 +326,25 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void findAllByIdOnSoftDeletableEntityAppendsAliveGuard() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 10L, "email_address", "a@nova.io"))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.findAllById(SoftDeletableAccount.class, List.of(10L, 20L, 30L)))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        assertEquals(
+                "select id as id, email_address as email_address, deleted_at as deleted_at from soft_deletable_accounts where id in (?, ?, ?) and deleted_at is null",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(10L, 20L, 30L), executor.lastStatement.bindings());
+    }
+
+    @Test
     void findAllByIdOnEmptyInputShortCircuits() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
