@@ -1,24 +1,33 @@
 package io.nova.metadata;
 
 import io.nova.annotation.Column;
+import io.nova.annotation.CreatedAt;
 import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
 import io.nova.annotation.Table;
+import io.nova.annotation.UpdatedAt;
 import io.nova.convert.AttributeConverter;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Nova 매핑 어노테이션이 선언된 엔티티 클래스의 리플렉션 메타데이터를 생성하고 캐시한다.
  */
 public final class EntityMetadataFactory {
+    private static final Set<Class<?>> SUPPORTED_AUDIT_TYPES =
+            Set.of(Instant.class, LocalDateTime.class, OffsetDateTime.class);
+
     private final NamingStrategy namingStrategy;
     private final Map<Class<?>, EntityMetadata<?>> cache = new ConcurrentHashMap<>();
     private final Map<Class<?>, AttributeConverter<?, ?>> converters = new ConcurrentHashMap<>();
@@ -60,6 +69,8 @@ public final class EntityMetadataFactory {
 
         List<PersistentProperty> properties = new ArrayList<>();
         PersistentProperty idProperty = null;
+        PersistentProperty createdAtProperty = null;
+        PersistentProperty updatedAtProperty = null;
         for (Field field : entityType.getDeclaredFields()) {
             if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
                 continue;
@@ -71,6 +82,38 @@ public final class EntityMetadataFactory {
                     throw new IllegalArgumentException(entityType.getName() + " declares multiple @Id properties");
                 }
                 idProperty = property;
+            }
+            if (property.createdAt()) {
+                if (property.id()) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + "." + property.propertyName() + " cannot be both @Id and @CreatedAt");
+                }
+                if (!SUPPORTED_AUDIT_TYPES.contains(property.javaType())) {
+                    throw new IllegalArgumentException(
+                            "Unsupported audit type " + property.javaType().getName()
+                                    + " on " + entityType.getName() + "." + property.propertyName()
+                                    + "; supported: Instant, LocalDateTime, OffsetDateTime");
+                }
+                if (createdAtProperty != null) {
+                    throw new IllegalArgumentException(entityType.getName() + " declares multiple @CreatedAt properties");
+                }
+                createdAtProperty = property;
+            }
+            if (property.updatedAt()) {
+                if (property.id()) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + "." + property.propertyName() + " cannot be both @Id and @UpdatedAt");
+                }
+                if (!SUPPORTED_AUDIT_TYPES.contains(property.javaType())) {
+                    throw new IllegalArgumentException(
+                            "Unsupported audit type " + property.javaType().getName()
+                                    + " on " + entityType.getName() + "." + property.propertyName()
+                                    + "; supported: Instant, LocalDateTime, OffsetDateTime");
+                }
+                if (updatedAtProperty != null) {
+                    throw new IllegalArgumentException(entityType.getName() + " declares multiple @UpdatedAt properties");
+                }
+                updatedAtProperty = property;
             }
         }
 
@@ -96,7 +139,9 @@ public final class EntityMetadataFactory {
                 field.isAnnotationPresent(Id.class),
                 column == null || column.nullable(),
                 generatedValue == null ? GenerationType.NONE : generatedValue.strategy(),
-                converters.get(field.getType())
+                converters.get(field.getType()),
+                field.isAnnotationPresent(CreatedAt.class),
+                field.isAnnotationPresent(UpdatedAt.class)
         );
     }
 }

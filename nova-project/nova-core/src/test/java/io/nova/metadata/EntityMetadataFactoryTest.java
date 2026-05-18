@@ -1,13 +1,16 @@
 package io.nova.metadata;
 
+import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.ConvertibleEntity;
 import io.nova.support.fixtures.FixtureEntities.DefaultNamedEntity;
+import io.nova.support.fixtures.FixtureEntities.DuplicateCreatedAtEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateIdEntity;
 import io.nova.support.fixtures.FixtureEntities.MissingEntityAnnotation;
 import io.nova.support.fixtures.FixtureEntities.MissingIdEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.StaticFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.Status;
+import io.nova.support.fixtures.FixtureEntities.UnsupportedAuditTypeEntity;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -90,6 +93,48 @@ class EntityMetadataFactoryTest {
         );
 
         assertTrue(exception.getMessage().contains("declares multiple @Id properties"));
+    }
+
+    @Test
+    void identifiesCreatedAtAndUpdatedAtProperties() {
+        EntityMetadata<AuditedAccount> metadata = factory.getEntityMetadata(AuditedAccount.class);
+
+        assertTrue(metadata.createdAtProperty().isPresent());
+        assertEquals("createdAt", metadata.createdAtProperty().get().propertyName());
+        assertTrue(metadata.createdAtProperty().get().createdAt());
+
+        assertTrue(metadata.updatedAtProperty().isPresent());
+        assertEquals("updatedAt", metadata.updatedAtProperty().get().propertyName());
+        assertTrue(metadata.updatedAtProperty().get().updatedAt());
+    }
+
+    @Test
+    void entitiesWithoutAuditAnnotationsReportEmptyAuditProperties() {
+        EntityMetadata<SampleAccount> metadata = factory.getEntityMetadata(SampleAccount.class);
+
+        assertTrue(metadata.createdAtProperty().isEmpty());
+        assertTrue(metadata.updatedAtProperty().isEmpty());
+    }
+
+    @Test
+    void rejectsUnsupportedAuditFieldType() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(UnsupportedAuditTypeEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("Unsupported audit type java.lang.Long"));
+        assertTrue(exception.getMessage().contains("createdAtEpoch"));
+    }
+
+    @Test
+    void rejectsEntitiesWithDuplicateCreatedAt() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DuplicateCreatedAtEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("declares multiple @CreatedAt properties"));
     }
 
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {

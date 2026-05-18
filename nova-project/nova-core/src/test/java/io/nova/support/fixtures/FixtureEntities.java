@@ -1,11 +1,17 @@
 package io.nova.support.fixtures;
 
 import io.nova.annotation.Column;
+import io.nova.annotation.CreatedAt;
 import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
 import io.nova.annotation.Table;
+import io.nova.annotation.UpdatedAt;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 public final class FixtureEntities {
     private FixtureEntities() {
@@ -201,5 +207,118 @@ public final class FixtureEntities {
     public enum Status {
         ACTIVE,
         INACTIVE
+    }
+
+    @Entity
+    @Table("audited_accounts")
+    public static class AuditedAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        @CreatedAt
+        @Column("created_at")
+        private Instant createdAt;
+
+        @UpdatedAt
+        @Column("updated_at")
+        private Instant updatedAt;
+
+        public AuditedAccount() {
+        }
+
+        public AuditedAccount(Long id, String email) {
+            this.id = id;
+            this.email = email;
+        }
+
+        public AuditedAccount(Long id, String email, Instant createdAt, Instant updatedAt) {
+            this.id = id;
+            this.email = email;
+            this.createdAt = createdAt;
+            this.updatedAt = updatedAt;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public Instant getCreatedAt() {
+            return createdAt;
+        }
+
+        public Instant getUpdatedAt() {
+            return updatedAt;
+        }
+    }
+
+    @Entity
+    @Table("local_audited_accounts")
+    public static class LocalDateTimeAuditedAccount {
+        @Id
+        private Long id;
+
+        @UpdatedAt
+        @Column("updated_at")
+        private LocalDateTime updatedAt;
+
+        public LocalDateTimeAuditedAccount() {
+        }
+
+        public LocalDateTime getUpdatedAt() {
+            return updatedAt;
+        }
+    }
+
+    @Entity
+    @Table("offset_audited_accounts")
+    public static class OffsetDateTimeAuditedAccount {
+        @Id
+        private Long id;
+
+        @UpdatedAt
+        @Column("updated_at")
+        private OffsetDateTime updatedAt;
+
+        public OffsetDateTimeAuditedAccount() {
+        }
+
+        public OffsetDateTime getUpdatedAt() {
+            return updatedAt;
+        }
+    }
+
+    @Entity
+    public static class UnsupportedAuditTypeEntity {
+        @Id
+        private Long id;
+
+        @CreatedAt
+        private Long createdAtEpoch;
+
+        public UnsupportedAuditTypeEntity() {
+        }
+    }
+
+    @Entity
+    public static class DuplicateCreatedAtEntity {
+        @Id
+        private Long id;
+
+        @CreatedAt
+        private Instant first;
+
+        @CreatedAt
+        private Instant second;
+
+        public DuplicateCreatedAtEntity() {
+        }
     }
 }

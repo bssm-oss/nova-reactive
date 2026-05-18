@@ -1,6 +1,7 @@
 package io.nova.metadata;
 
 import java.util.List;
+import java.util.Optional;
 
 public final class EntityMetadata<T> {
     private final Class<T> entityType;
@@ -8,6 +9,8 @@ public final class EntityMetadata<T> {
     private final String tableName;
     private final List<PersistentProperty> properties;
     private final PersistentProperty idProperty;
+    private final PersistentProperty createdAtProperty;
+    private final PersistentProperty updatedAtProperty;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -21,6 +24,14 @@ public final class EntityMetadata<T> {
         this.tableName = tableName;
         this.properties = List.copyOf(properties);
         this.idProperty = idProperty;
+        this.createdAtProperty = this.properties.stream()
+                .filter(PersistentProperty::createdAt)
+                .findFirst()
+                .orElse(null);
+        this.updatedAtProperty = this.properties.stream()
+                .filter(PersistentProperty::updatedAt)
+                .findFirst()
+                .orElse(null);
     }
 
     public Class<T> entityType() {
@@ -53,5 +64,13 @@ public final class EntityMetadata<T> {
         return properties.stream()
                 .filter(property -> !property.id())
                 .toList();
+    }
+
+    public Optional<PersistentProperty> createdAtProperty() {
+        return Optional.ofNullable(createdAtProperty);
+    }
+
+    public Optional<PersistentProperty> updatedAtProperty() {
+        return Optional.ofNullable(updatedAtProperty);
     }
 }

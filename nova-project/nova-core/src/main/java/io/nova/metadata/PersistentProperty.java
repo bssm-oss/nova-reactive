@@ -15,6 +15,8 @@ public final class PersistentProperty {
     private final boolean nullable;
     private final GenerationType generationType;
     private final AttributeConverter<Object, Object> converter;
+    private final boolean createdAt;
+    private final boolean updatedAt;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -25,7 +27,9 @@ public final class PersistentProperty {
             boolean id,
             boolean nullable,
             GenerationType generationType,
-            AttributeConverter<?, ?> converter
+            AttributeConverter<?, ?> converter,
+            boolean createdAt,
+            boolean updatedAt
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -36,6 +40,8 @@ public final class PersistentProperty {
         this.nullable = nullable;
         this.generationType = generationType;
         this.converter = (AttributeConverter<Object, Object>) converter;
+        this.createdAt = createdAt;
+        this.updatedAt = updatedAt;
     }
 
     public Field field() {
@@ -68,6 +74,14 @@ public final class PersistentProperty {
 
     public boolean generated() {
         return generationType != GenerationType.NONE;
+    }
+
+    public boolean createdAt() {
+        return createdAt;
+    }
+
+    public boolean updatedAt() {
+        return updatedAt;
     }
 
     public Object read(Object instance) {
