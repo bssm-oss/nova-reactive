@@ -67,6 +67,38 @@ public final class Criteria {
         return new Condition(property, ComparisonOperator.IN, copy);
     }
 
+    /**
+     * 컬렉션의 모든 원소와 일치하지 않는 행을 매칭하는 NOT IN 조건을 만든다.
+     * <p>
+     * 빈 컬렉션은 허용되며, 렌더 시점에 {@code 1 = 1}(항상 참)로 치환된다 — Hibernate 6.3+/jOOQ와
+     * 동일한 동작이다. 원소 {@code null}은 SQL {@code NOT IN (..., NULL, ...)}이 항상 unknown으로
+     * 0행을 반환하는 silent buggy 동작을 피하기 위해 빌드 시점에 거부한다.
+     */
+    public static Condition notIn(String property, Iterable<?> values) {
+        Objects.requireNonNull(values, "values must not be null");
+        List<Object> copy = new ArrayList<>();
+        int index = 0;
+        for (Object value : values) {
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "Criteria.notIn value at index " + index + " for property " + property + " is null");
+            }
+            copy.add(value);
+            index++;
+        }
+        return new Condition(property, ComparisonOperator.NOT_IN, copy);
+    }
+
+    /**
+     * 양 끝값 inclusive인 BETWEEN 조건을 만든다. {@code low}와 {@code high}는 모두 non-null이어야 한다.
+     * {@code low > high}는 SQL 의미상 자연스럽게 0행 매치이므로 빌드 시점에 별도로 검증하지 않는다.
+     */
+    public static Condition between(String property, Object low, Object high) {
+        Objects.requireNonNull(low, "low must not be null");
+        Objects.requireNonNull(high, "high must not be null");
+        return new Condition(property, ComparisonOperator.BETWEEN, List.of(low, high));
+    }
+
     public static CompoundPredicate and(Predicate... predicates) {
         return new CompoundPredicate(LogicalOperator.AND, List.of(predicates));
     }

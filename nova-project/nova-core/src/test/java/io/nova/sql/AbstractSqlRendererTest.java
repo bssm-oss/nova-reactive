@@ -108,6 +108,68 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersNotInOperatorWithMultipleValues() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.notIn("id", java.util.List.of(1L, 2L, 3L)))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where id not in (?, ?, ?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(1L, 2L, 3L), statement.bindings());
+    }
+
+    @Test
+    void rendersEmptyNotInListAsAlwaysTruePredicate() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.notIn("id", java.util.List.of()))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where 1 = 1",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void rejectsNullElementInNotInList() {
+        java.util.List<Object> idsWithNull = new java.util.ArrayList<>();
+        idsWithNull.add(1L);
+        idsWithNull.add(null);
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> Criteria.notIn("id", idsWithNull)
+        );
+
+        assertEquals("Criteria.notIn value at index 1 for property id is null", exception.getMessage());
+    }
+
+    @Test
+    void rendersBetweenOperator() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.between("id", 10L, 20L))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where id between ? and ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(10L, 20L), statement.bindings());
+    }
+
+    @Test
+    void rejectsNullLowOrHighInBetween() {
+        assertThrows(NullPointerException.class, () -> Criteria.between("id", null, 20L));
+        assertThrows(NullPointerException.class, () -> Criteria.between("id", 10L, null));
+    }
+
+    @Test
     void rendersDeleteByIdsAsSingleInDelete() {
         SqlStatement statement = dialect.sqlRenderer().deleteByIds(metadata, java.util.List.of(10L, 20L, 30L));
 

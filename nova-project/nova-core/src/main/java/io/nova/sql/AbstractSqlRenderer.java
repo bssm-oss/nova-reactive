@@ -165,6 +165,12 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             if (operator == ComparisonOperator.IN) {
                 return renderInPredicate(context, property, condition.value());
             }
+            if (operator == ComparisonOperator.NOT_IN) {
+                return renderNotInPredicate(context, property, condition.value());
+            }
+            if (operator == ComparisonOperator.BETWEEN) {
+                return renderBetweenPredicate(context, property, condition.value());
+            }
             String marker = dialect.bindMarkers().marker(context.nextIndex());
             context.addBinding(property.toColumnValue(condition.value()));
             return column(property) + " " + operator.sql() + " " + marker;
@@ -199,6 +205,47 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         builder.append(")");
         return builder.toString();
+    }
+
+    /**
+     * NOT IN 조건을 col not in (?, ?, ?) 로 펼친다. 빈 컬렉션은 Hibernate 6.3+/jOOQ와 동일하게
+     * {@code 1 = 1}(항상 참)로 치환한다 — "0개 ID 중 어느 것과도 다른 행"은 모든 행에 해당.
+     */
+    private String renderNotInPredicate(RenderContext context, PersistentProperty property, Object value) {
+        if (!(value instanceof Collection<?> collection)) {
+            throw new IllegalArgumentException(
+                    "NOT IN operator requires a Collection value for property " + property.propertyName());
+        }
+        if (collection.isEmpty()) {
+            return "1 = 1";
+        }
+        StringBuilder builder = new StringBuilder(column(property)).append(" not in (");
+        int index = 0;
+        for (Object element : collection) {
+            if (index > 0) {
+                builder.append(", ");
+            }
+            builder.append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(property.toColumnValue(element));
+            index++;
+        }
+        builder.append(")");
+        return builder.toString();
+    }
+
+    /**
+     * BETWEEN 조건을 col between ? and ? 로 펼친다. 양 끝 값 inclusive (SQL 표준).
+     */
+    private String renderBetweenPredicate(RenderContext context, PersistentProperty property, Object value) {
+        if (!(value instanceof List<?> list) || list.size() != 2) {
+            throw new IllegalArgumentException(
+                    "BETWEEN operator requires a List of exactly two values for property " + property.propertyName());
+        }
+        String lowMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(property.toColumnValue(list.get(0)));
+        String highMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(property.toColumnValue(list.get(1)));
+        return column(property) + " between " + lowMarker + " and " + highMarker;
     }
 
     private void appendOrderBy(StringBuilder sql, EntityMetadata<?> metadata, Sort sort) {
