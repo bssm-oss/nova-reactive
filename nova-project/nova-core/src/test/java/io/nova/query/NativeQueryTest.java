@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,5 +74,28 @@ class NativeQueryTest {
         NativeQuery query = NativeQuery.of("select ?", List.of("a"));
 
         assertThrows(UnsupportedOperationException.class, () -> query.bindings().add("b"));
+    }
+
+    @Test
+    void equalsAndHashCodeAreValueBased() {
+        NativeQuery a = NativeQuery.of("select ?", List.of(1));
+        NativeQuery b = NativeQuery.of("select ?", List.of(1));
+        NativeQuery differentSql = NativeQuery.of("select ?, ?", List.of(1, 2));
+        NativeQuery differentBinding = NativeQuery.of("select ?", List.of(2));
+
+        assertEquals(a, b);
+        assertEquals(a.hashCode(), b.hashCode());
+        assertNotEquals(a, differentSql);
+        assertNotEquals(a, differentBinding);
+    }
+
+    @Test
+    void toStringIncludesSqlAndBindings() {
+        NativeQuery query = NativeQuery.of("select ?", List.of("x"));
+
+        String text = query.toString();
+
+        assertTrue(text.contains("select ?"), text);
+        assertTrue(text.contains("x"), text);
     }
 }
