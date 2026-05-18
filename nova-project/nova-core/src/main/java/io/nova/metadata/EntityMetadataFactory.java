@@ -6,13 +6,19 @@ import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
+import io.nova.annotation.PostLoad;
+import io.nova.annotation.PrePersist;
+import io.nova.annotation.PreRemove;
+import io.nova.annotation.PreUpdate;
 import io.nova.annotation.SoftDelete;
 import io.nova.annotation.Table;
 import io.nova.annotation.UpdatedAt;
 import io.nova.annotation.Version;
 import io.nova.convert.AttributeConverter;
 
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -156,7 +162,65 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(entityType.getName() + " must declare a field annotated with @Id");
         }
 
-        return new EntityMetadata<>(entityType, entityName, tableName, properties, idProperty);
+        List<Method> prePersistCallbacks = new ArrayList<>();
+        List<Method> preUpdateCallbacks = new ArrayList<>();
+        List<Method> postLoadCallbacks = new ArrayList<>();
+        List<Method> preRemoveCallbacks = new ArrayList<>();
+        for (Method method : entityType.getDeclaredMethods()) {
+            if (method.isSynthetic()) {
+                continue;
+            }
+            collectCallback(entityType, method, PrePersist.class, prePersistCallbacks);
+            collectCallback(entityType, method, PreUpdate.class, preUpdateCallbacks);
+            collectCallback(entityType, method, PostLoad.class, postLoadCallbacks);
+            collectCallback(entityType, method, PreRemove.class, preRemoveCallbacks);
+        }
+
+        return new EntityMetadata<>(
+                entityType,
+                entityName,
+                tableName,
+                properties,
+                idProperty,
+                prePersistCallbacks,
+                preUpdateCallbacks,
+                postLoadCallbacks,
+                preRemoveCallbacks
+        );
+    }
+
+    /**
+     * 콜백 어노테이션이 붙은 메서드의 시그니처를 검증한 뒤 컬렉터에 추가한다. 검증 실패 시
+     * {@link IllegalArgumentException}을 던지며, 통과한 메서드는 {@code setAccessible(true)}로
+     * 한 번만 열어 invoker가 매 호출마다 접근 검사를 반복하지 않게 한다.
+     */
+    private static <A extends Annotation> void collectCallback(
+            Class<?> entityType,
+            Method method,
+            Class<A> annotationType,
+            List<Method> target
+    ) {
+        if (!method.isAnnotationPresent(annotationType)) {
+            return;
+        }
+        String label = "@" + annotationType.getSimpleName();
+        if (Modifier.isStatic(method.getModifiers())) {
+            throw new IllegalArgumentException(
+                    label + " method " + entityType.getName() + "." + method.getName()
+                            + " must be non-static, no-arg, void-returning");
+        }
+        if (method.getParameterCount() != 0) {
+            throw new IllegalArgumentException(
+                    label + " method " + entityType.getName() + "." + method.getName()
+                            + " must be non-static, no-arg, void-returning");
+        }
+        if (method.getReturnType() != void.class) {
+            throw new IllegalArgumentException(
+                    label + " method " + entityType.getName() + "." + method.getName()
+                            + " must be non-static, no-arg, void-returning");
+        }
+        method.setAccessible(true);
+        target.add(method);
     }
 
     private PersistentProperty createProperty(Class<?> entityType, Field field) {

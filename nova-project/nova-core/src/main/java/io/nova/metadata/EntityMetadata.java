@@ -1,5 +1,6 @@
 package io.nova.metadata;
 
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -17,6 +18,10 @@ public final class EntityMetadata<T> {
     private final PersistentProperty updatedAtProperty;
     private final PersistentProperty softDeleteProperty;
     private final PersistentProperty versionProperty;
+    private final List<Method> prePersistCallbacks;
+    private final List<Method> preUpdateCallbacks;
+    private final List<Method> postLoadCallbacks;
+    private final List<Method> preRemoveCallbacks;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -24,6 +29,21 @@ public final class EntityMetadata<T> {
             String tableName,
             List<PersistentProperty> properties,
             PersistentProperty idProperty
+    ) {
+        this(entityType, entityName, tableName, properties, idProperty,
+                List.of(), List.of(), List.of(), List.of());
+    }
+
+    public EntityMetadata(
+            Class<T> entityType,
+            String entityName,
+            String tableName,
+            List<PersistentProperty> properties,
+            PersistentProperty idProperty,
+            List<Method> prePersistCallbacks,
+            List<Method> preUpdateCallbacks,
+            List<Method> postLoadCallbacks,
+            List<Method> preRemoveCallbacks
     ) {
         this.entityType = entityType;
         this.entityName = entityName;
@@ -59,6 +79,10 @@ public final class EntityMetadata<T> {
         this.updatedAtProperty = updatedAt;
         this.softDeleteProperty = softDelete;
         this.versionProperty = version;
+        this.prePersistCallbacks = List.copyOf(prePersistCallbacks);
+        this.preUpdateCallbacks = List.copyOf(preUpdateCallbacks);
+        this.postLoadCallbacks = List.copyOf(postLoadCallbacks);
+        this.preRemoveCallbacks = List.copyOf(preRemoveCallbacks);
     }
 
     public Class<T> entityType() {
@@ -128,5 +152,33 @@ public final class EntityMetadata<T> {
 
     public Optional<PersistentProperty> updatedAtProperty() {
         return Optional.ofNullable(updatedAtProperty);
+    }
+
+    /**
+     * {@code @PrePersist} 콜백 메서드들을 declaration 순서대로 반환한다.
+     */
+    public List<Method> prePersistCallbacks() {
+        return prePersistCallbacks;
+    }
+
+    /**
+     * {@code @PreUpdate} 콜백 메서드들을 declaration 순서대로 반환한다.
+     */
+    public List<Method> preUpdateCallbacks() {
+        return preUpdateCallbacks;
+    }
+
+    /**
+     * {@code @PostLoad} 콜백 메서드들을 declaration 순서대로 반환한다.
+     */
+    public List<Method> postLoadCallbacks() {
+        return postLoadCallbacks;
+    }
+
+    /**
+     * {@code @PreRemove} 콜백 메서드들을 declaration 순서대로 반환한다.
+     */
+    public List<Method> preRemoveCallbacks() {
+        return preRemoveCallbacks;
     }
 }

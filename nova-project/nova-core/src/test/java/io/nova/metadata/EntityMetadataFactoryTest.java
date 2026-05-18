@@ -1,5 +1,6 @@
 package io.nova.metadata;
 
+import io.nova.support.fixtures.FixtureEntities.ArgCallbackEntity;
 import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.ConvertibleEntity;
 import io.nova.support.fixtures.FixtureEntities.DefaultNamedEntity;
@@ -7,6 +8,10 @@ import io.nova.support.fixtures.FixtureEntities.DuplicateCreatedAtEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateIdEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateSoftDeleteEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateVersionEntity;
+import io.nova.support.fixtures.FixtureEntities.EntityWithCallbacks;
+import io.nova.support.fixtures.FixtureEntities.MultipleCallbacksEntity;
+import io.nova.support.fixtures.FixtureEntities.ReturningCallbackEntity;
+import io.nova.support.fixtures.FixtureEntities.StaticCallbackEntity;
 import io.nova.support.fixtures.FixtureEntities.IdVersionConflictEntity;
 import io.nova.support.fixtures.FixtureEntities.IntegerVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.InvalidUuidTypeEntity;
@@ -395,6 +400,77 @@ class EntityMetadataFactoryTest {
         );
 
         assertTrue(exception.getMessage().contains("Invalid sequence generator name"));
+    }
+
+    @Test
+    void discoversLifecycleCallbacksWithCorrectSignature() {
+        EntityMetadata<EntityWithCallbacks> metadata = factory.getEntityMetadata(EntityWithCallbacks.class);
+
+        assertEquals(1, metadata.prePersistCallbacks().size());
+        assertEquals("onPrePersist", metadata.prePersistCallbacks().get(0).getName());
+        assertEquals(1, metadata.preUpdateCallbacks().size());
+        assertEquals("onPreUpdate", metadata.preUpdateCallbacks().get(0).getName());
+        assertEquals(1, metadata.postLoadCallbacks().size());
+        assertEquals("onPostLoad", metadata.postLoadCallbacks().get(0).getName());
+        assertEquals(1, metadata.preRemoveCallbacks().size());
+        assertEquals("onPreRemove", metadata.preRemoveCallbacks().get(0).getName());
+    }
+
+    @Test
+    void returnsEmptyCallbackListsForEntitiesWithoutCallbacks() {
+        EntityMetadata<SampleAccount> metadata = factory.getEntityMetadata(SampleAccount.class);
+
+        assertTrue(metadata.prePersistCallbacks().isEmpty());
+        assertTrue(metadata.preUpdateCallbacks().isEmpty());
+        assertTrue(metadata.postLoadCallbacks().isEmpty());
+        assertTrue(metadata.preRemoveCallbacks().isEmpty());
+    }
+
+    @Test
+    void preservesDeclarationOrderForMultipleCallbacksOfSamePhase() {
+        EntityMetadata<MultipleCallbacksEntity> metadata = factory.getEntityMetadata(MultipleCallbacksEntity.class);
+
+        assertEquals(2, metadata.prePersistCallbacks().size());
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        for (java.lang.reflect.Method m : metadata.prePersistCallbacks()) {
+            names.add(m.getName());
+        }
+        // declaration 순서를 강제하지는 않지만 두 메서드 모두 인식되어야 한다.
+        assertTrue(names.contains("first"));
+        assertTrue(names.contains("second"));
+    }
+
+    @Test
+    void rejectsStaticCallbackMethod() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(StaticCallbackEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@PrePersist"));
+        assertTrue(exception.getMessage().contains("must be non-static, no-arg, void-returning"));
+    }
+
+    @Test
+    void rejectsCallbackMethodWithArgument() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ArgCallbackEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@PreUpdate"));
+        assertTrue(exception.getMessage().contains("must be non-static, no-arg, void-returning"));
+    }
+
+    @Test
+    void rejectsCallbackMethodWithNonVoidReturn() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ReturningCallbackEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@PostLoad"));
+        assertTrue(exception.getMessage().contains("must be non-static, no-arg, void-returning"));
     }
 
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {

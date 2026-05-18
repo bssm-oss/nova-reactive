@@ -6,6 +6,10 @@ import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
+import io.nova.annotation.PostLoad;
+import io.nova.annotation.PrePersist;
+import io.nova.annotation.PreRemove;
+import io.nova.annotation.PreUpdate;
 import io.nova.annotation.SoftDelete;
 import io.nova.annotation.Table;
 import io.nova.annotation.UpdatedAt;
@@ -789,6 +793,158 @@ public final class FixtureEntities {
         private Long id;
 
         public LeadingDigitSequenceGeneratorEntity() {
+        }
+    }
+
+    /**
+     * lifecycle callback fixture: 각 phase의 호출 횟수를 static counter로 증가시키고,
+     * @PrePersist/@PreUpdate에서는 email 필드를 mutate해 binding에 반영되는지 검증할 수 있게 한다.
+     * 카운터/이벤트는 정적 상태이므로 테스트는 {@link #reset()}로 초기화한 뒤 사용한다.
+     */
+    @Entity
+    @Table("callback_entities")
+    public static class EntityWithCallbacks {
+        public static final java.util.concurrent.atomic.AtomicInteger prePersistCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        public static final java.util.concurrent.atomic.AtomicInteger preUpdateCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        public static final java.util.concurrent.atomic.AtomicInteger postLoadCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        public static final java.util.concurrent.atomic.AtomicInteger preRemoveCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        public static void reset() {
+            prePersistCount.set(0);
+            preUpdateCount.set(0);
+            postLoadCount.set(0);
+            preRemoveCount.set(0);
+        }
+
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        public EntityWithCallbacks() {
+        }
+
+        public EntityWithCallbacks(Long id, String email) {
+            this.id = id;
+            this.email = email;
+        }
+
+        @PrePersist
+        void onPrePersist() {
+            prePersistCount.incrementAndGet();
+            if (email != null) {
+                email = email.trim();
+            }
+        }
+
+        @PreUpdate
+        void onPreUpdate() {
+            preUpdateCount.incrementAndGet();
+            if (email != null) {
+                email = email.toLowerCase();
+            }
+        }
+
+        @PostLoad
+        void onPostLoad() {
+            postLoadCount.incrementAndGet();
+        }
+
+        @PreRemove
+        void onPreRemove() {
+            preRemoveCount.incrementAndGet();
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+    }
+
+    /**
+     * declaration 순서 보존 검증용. 두 개의 @PrePersist 메서드가 순서대로 호출되어야 한다.
+     * 호출 이벤트는 정적 리스트에 누적되며 테스트는 {@link #reset()}으로 비운다.
+     */
+    @Entity
+    public static class MultipleCallbacksEntity {
+        public static final java.util.List<String> events = new java.util.ArrayList<>();
+
+        public static void reset() {
+            events.clear();
+        }
+
+        @Id
+        private Long id;
+
+        public MultipleCallbacksEntity() {
+        }
+
+        @PrePersist
+        void first() {
+            events.add("first");
+        }
+
+        @PrePersist
+        void second() {
+            events.add("second");
+        }
+    }
+
+    @Entity
+    public static class CallbackThrowingEntity {
+        @Id
+        private Long id;
+
+        public CallbackThrowingEntity() {
+        }
+
+        public CallbackThrowingEntity(Long id) {
+            this.id = id;
+        }
+
+        @PrePersist
+        void boom() {
+            throw new IllegalArgumentException("callback boom");
+        }
+    }
+
+    @Entity
+    public static class StaticCallbackEntity {
+        @Id
+        private Long id;
+
+        @PrePersist
+        static void illegalStatic() {
+        }
+    }
+
+    @Entity
+    public static class ArgCallbackEntity {
+        @Id
+        private Long id;
+
+        @PreUpdate
+        void illegalArg(String value) {
+        }
+    }
+
+    @Entity
+    public static class ReturningCallbackEntity {
+        @Id
+        private Long id;
+
+        @PostLoad
+        String illegalReturn() {
+            return "no";
         }
     }
 }
