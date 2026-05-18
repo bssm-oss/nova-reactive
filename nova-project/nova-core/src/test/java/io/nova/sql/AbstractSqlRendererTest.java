@@ -23,6 +23,7 @@ import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AbstractSqlRendererTest {
     private final EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
@@ -1178,6 +1179,38 @@ class AbstractSqlRendererTest {
                 statement.sql()
         );
         assertEquals(java.util.List.of(4L, 15), statement.bindings());
+    }
+
+    @Test
+    void cursorPreservesExistingPageableLimitWhenLimitOmitted() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .orderBy(Sort.by(Sort.Order.asc("id")))
+                        .page(Pageable.of(7, 250))
+                        .cursor(Cursor.of(CursorField.asc("id", 11L)))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where ((id > ?)) order by id asc limit ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(11L, 7), statement.bindings(),
+                "cursor(Cursor) overload는 기존 pageable의 limit을 보존해야 한다");
+    }
+
+    @Test
+    void cursorWithoutLimitRejectsMissingPageable() {
+        QuerySpec spec = QuerySpec.empty()
+                .orderBy(Sort.by(Sort.Order.asc("id")));
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> spec.cursor(Cursor.of(CursorField.asc("id", 1L)))
+        );
+
+        assertTrue(exception.getMessage().contains("requires an existing pageable"),
+                "메시지: " + exception.getMessage());
     }
 
     @Test
