@@ -210,6 +210,61 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersDeleteByQueryWithCompoundPredicate() {
+        SqlStatement statement = dialect.sqlRenderer().deleteByQuery(
+                metadata,
+                QuerySpec.empty().where(Criteria.and(
+                        Criteria.eq("active", false),
+                        Criteria.isNull("email")
+                ))
+        );
+
+        assertEquals(
+                "delete from accounts where (active = ?) and (email_address is null)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(false), statement.bindings());
+    }
+
+    @Test
+    void deleteByQueryRejectsNullPredicate() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().deleteByQuery(metadata, QuerySpec.empty())
+        );
+
+        assertEquals("deleteByQuery requires a non-null predicate", exception.getMessage());
+    }
+
+    @Test
+    void deleteByQueryRejectsSort() {
+        QuerySpec spec = QuerySpec.empty()
+                .where(Criteria.eq("active", false))
+                .orderBy(Sort.by(Sort.Order.asc("id")));
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().deleteByQuery(metadata, spec)
+        );
+
+        assertEquals("deleteByQuery does not support sort", exception.getMessage());
+    }
+
+    @Test
+    void deleteByQueryRejectsPageable() {
+        QuerySpec spec = QuerySpec.empty()
+                .where(Criteria.eq("active", false))
+                .page(Pageable.of(10, 0));
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().deleteByQuery(metadata, spec)
+        );
+
+        assertEquals("deleteByQuery does not support pageable", exception.getMessage());
+    }
+
+    @Test
     void rejectsUnknownPropertiesInPredicates() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,

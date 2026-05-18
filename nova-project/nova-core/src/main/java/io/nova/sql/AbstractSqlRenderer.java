@@ -92,6 +92,23 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement deleteByQuery(EntityMetadata<?> metadata, QuerySpec querySpec) {
+        if (querySpec.predicate() == null) {
+            throw new IllegalArgumentException("deleteByQuery requires a non-null predicate");
+        }
+        if (querySpec.sort() != null && !querySpec.sort().orders().isEmpty()) {
+            throw new IllegalArgumentException("deleteByQuery does not support sort");
+        }
+        if (querySpec.pageable() != null) {
+            throw new IllegalArgumentException("deleteByQuery does not support pageable");
+        }
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("delete from ").append(table(metadata));
+        appendWhereClause(sql, context, metadata, querySpec.predicate());
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
     public SqlStatement selectById(EntityMetadata<?> metadata, Object id) {
         return new SqlStatement(
                 "select " + selectList(metadata) + " from " + table(metadata) + " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(1),

@@ -32,4 +32,15 @@ public interface SqlRenderer {
         throw new UnsupportedOperationException(
                 "SqlRenderer.deleteByIds must be overridden by the implementation");
     }
+
+    /**
+     * predicate에 일치하는 행을 한 번에 삭제하는 SQL을 렌더한다. {@code querySpec.predicate()}는
+     * 반드시 non-null이어야 하며, DELETE 표준에 sort/limit 절이 없으므로 sort/pageable이 함께
+     * 들어오면 거부한다. 기본 구현은 외부 SqlRenderer를 직접 구현한 사용자가 자동으로 깨지지
+     * 않도록 명시적 예외를 던지며, {@link AbstractSqlRenderer}는 이 메서드를 override한다.
+     */
+    default SqlStatement deleteByQuery(EntityMetadata<?> metadata, QuerySpec querySpec) {
+        throw new UnsupportedOperationException(
+                "SqlRenderer.deleteByQuery must be overridden by the implementation");
+    }
 }
