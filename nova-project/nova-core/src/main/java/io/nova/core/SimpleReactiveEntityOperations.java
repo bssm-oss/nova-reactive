@@ -6,6 +6,7 @@ import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.Criteria;
+import io.nova.query.NativeQuery;
 import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
@@ -363,6 +364,26 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         QuerySpec querySpec = QuerySpec.empty().where(updater.where());
         return Mono.fromCallable(() -> dialect.sqlRenderer().updateByQuery(metadata, fieldValues, querySpec))
                 .flatMap(sqlExecutor::execute);
+    }
+
+    @Override
+    public Mono<Long> executeNative(NativeQuery query) {
+        Objects.requireNonNull(query, "query must not be null");
+        return sqlExecutor.execute(new SqlStatement(query.sql(), query.bindings()));
+    }
+
+    @Override
+    public <T> Flux<T> queryNative(NativeQuery query, Function<RowAccessor, T> mapper) {
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(mapper, "mapper must not be null");
+        return sqlExecutor.queryMany(new SqlStatement(query.sql(), query.bindings()), mapper);
+    }
+
+    @Override
+    public <T> Mono<T> queryNativeOne(NativeQuery query, Function<RowAccessor, T> mapper) {
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(mapper, "mapper must not be null");
+        return sqlExecutor.queryOne(new SqlStatement(query.sql(), query.bindings()), mapper);
     }
 
     @Override

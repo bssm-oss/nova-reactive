@@ -3,6 +3,7 @@ package io.nova.core;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Criteria;
+import io.nova.query.NativeQuery;
 import io.nova.query.Pageable;
 import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
@@ -1588,6 +1589,95 @@ class SimpleReactiveEntityOperationsTest {
                             "오류 메시지가 'must declare exactly one constructor'을 포함해야 한다: " + error.getMessage());
                 })
                 .verify();
+    }
+
+    @Test
+    void executeNativeForwardsSqlAndBindingsToExecutor() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(7L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        NativeQuery query = NativeQuery.of(
+                "update accounts set active = ? where email_address like ?",
+                List.of(true, "%@nova.io"));
+
+        StepVerifier.create(operations.executeNative(query))
+                .expectNext(7L)
+                .verifyComplete();
+
+        assertEquals("update accounts set active = ? where email_address like ?", executor.lastStatement.sql());
+        assertEquals(List.of(true, "%@nova.io"), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void executeNativeRejectsNullQuery() {
+        SimpleReactiveEntityOperations operations =
+                newOperations(new CapturingExecutor(), new RecordingTransactions());
+
+        assertThrows(NullPointerException.class, () -> operations.executeNative(null));
+    }
+
+    @Test
+    void queryNativeStreamsMappedRows() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("email", "a@nova.io")),
+                new MapRowAccessor(Map.of("email", "b@nova.io"))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        NativeQuery query = NativeQuery.of("select email from accounts where active = ?", List.of(true));
+
+        StepVerifier.create(operations.queryNative(query, row -> row.get("email", String.class)))
+                .expectNext("a@nova.io")
+                .expectNext("b@nova.io")
+                .verifyComplete();
+
+        assertEquals("select email from accounts where active = ?", executor.lastStatement.sql());
+        assertEquals(List.of(true), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void queryNativeRejectsNullArguments() {
+        SimpleReactiveEntityOperations operations =
+                newOperations(new CapturingExecutor(), new RecordingTransactions());
+        NativeQuery query = NativeQuery.of("select 1");
+
+        assertThrows(NullPointerException.class, () -> operations.queryNative(null, row -> row));
+        assertThrows(NullPointerException.class, () -> operations.queryNative(query, null));
+    }
+
+    @Test
+    void queryNativeOneReturnsSingleMappedRow() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("c", 42L)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        NativeQuery query = NativeQuery.of("select count(*) as c from accounts where active = ?", List.of(true));
+
+        StepVerifier.create(operations.queryNativeOne(query, row -> row.get("c", Long.class)))
+                .expectNext(42L)
+                .verifyComplete();
+
+        assertEquals("select count(*) as c from accounts where active = ?", executor.lastStatement.sql());
+        assertEquals(List.of(true), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void queryNativeOneIsEmptyWhenExecutorIsEmpty() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.emptyQueryOne = true;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.queryNativeOne(NativeQuery.of("select 1"), row -> row.get("c", Long.class)))
+                .verifyComplete();
+    }
+
+    @Test
+    void queryNativeOneRejectsNullArguments() {
+        SimpleReactiveEntityOperations operations =
+                newOperations(new CapturingExecutor(), new RecordingTransactions());
+        NativeQuery query = NativeQuery.of("select 1");
+
+        assertThrows(NullPointerException.class, () -> operations.queryNativeOne(null, row -> row));
+        assertThrows(NullPointerException.class, () -> operations.queryNativeOne(query, null));
     }
 
     record AccountEmail(Long id, String email) {

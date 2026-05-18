@@ -1,5 +1,6 @@
 package io.nova.core;
 
+import io.nova.query.NativeQuery;
 import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
@@ -151,5 +152,41 @@ public interface ReactiveEntityOperations {
     default <T> Mono<Long> update(Class<T> entityType, Updater<T> updater) {
         return Mono.error(new UnsupportedOperationException(
                 "ReactiveEntityOperations.update(Class, Updater) must be overridden by the implementation"));
+    }
+
+    /**
+     * {@link NativeQuery}로 표현된 raw SQL 한 건을 INSERT/UPDATE/DELETE 또는 DDL로 실행한다.
+     * 반환값은 영향 받은 행 수이며, 드라이버가 행 수를 보고하지 않는 경우 0일 수 있다.
+     * <p>
+     * 기본 구현은 외부 {@link ReactiveEntityOperations} 직접 구현자가 자동으로 깨지지 않도록 명시적
+     * 예외를 던지며, {@link SimpleReactiveEntityOperations}는 {@code SqlExecutor.execute}로 위임한다.
+     */
+    default Mono<Long> executeNative(NativeQuery query) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.executeNative must be overridden"));
+    }
+
+    /**
+     * {@link NativeQuery}로 표현된 raw SELECT를 실행하고 {@code mapper}로 각 행을 변환해 발행한다.
+     * SQL/binding은 호출자가 dialect 컨벤션에 맞춰 직접 작성한다.
+     * <p>
+     * 기본 구현은 외부 {@link ReactiveEntityOperations} 직접 구현자가 자동으로 깨지지 않도록 명시적
+     * 예외를 던지며, {@link SimpleReactiveEntityOperations}는 {@code SqlExecutor.queryMany}로 위임한다.
+     */
+    default <T> Flux<T> queryNative(NativeQuery query, Function<RowAccessor, T> mapper) {
+        return Flux.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.queryNative must be overridden"));
+    }
+
+    /**
+     * {@link NativeQuery}로 표현된 raw SELECT를 실행하고 첫 행만 변환해 발행한다. 행이 없으면
+     * 빈 {@link Mono}를 발행한다.
+     * <p>
+     * 기본 구현은 외부 {@link ReactiveEntityOperations} 직접 구현자가 자동으로 깨지지 않도록 명시적
+     * 예외를 던지며, {@link SimpleReactiveEntityOperations}는 {@code SqlExecutor.queryOne}으로 위임한다.
+     */
+    default <T> Mono<T> queryNativeOne(NativeQuery query, Function<RowAccessor, T> mapper) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.queryNativeOne must be overridden"));
     }
 }
