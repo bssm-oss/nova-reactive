@@ -1,6 +1,7 @@
 package io.nova.query;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -28,7 +29,9 @@ public record NativeQuery(String sql, List<Object> bindings) {
         if (sql.isBlank()) {
             throw new IllegalArgumentException("sql must not be blank");
         }
-        bindings = List.copyOf(bindings);
+        // List.copyOf rejects null elements; use unmodifiableList(new ArrayList<>(...)) so
+        // individual null bindings (which map to SQL NULL) remain permitted per the Javadoc.
+        bindings = Collections.unmodifiableList(new ArrayList<>(bindings));
     }
 
     /**
