@@ -387,6 +387,39 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void deleteAllByQueryRunsSingleDeleteWithPredicate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(7L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.deleteAll(
+                        SampleAccount.class,
+                        QuerySpec.empty().where(Criteria.eq("active", false))))
+                .expectNext(7L)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals("delete from accounts where active = ?", statement.sql());
+        assertEquals(List.of(false), statement.bindings());
+        assertTrue(executor.batchCalls.isEmpty());
+    }
+
+    @Test
+    void deleteAllByQueryPropagatesRendererRejectionForNullPredicate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> operations.deleteAll(SampleAccount.class, QuerySpec.empty())
+        );
+
+        assertEquals("deleteByQuery requires a non-null predicate", exception.getMessage());
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
     void deleteAllByIdOnEmptyInputShortCircuits() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());

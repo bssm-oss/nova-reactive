@@ -168,6 +168,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     @Override
+    public <T> Mono<Long> deleteAll(Class<T> entityType, QuerySpec querySpec) {
+        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(metadata, querySpec));
+    }
+
+    @Override
     public <T, ID> Mono<Long> deleteAllById(Class<T> entityType, Iterable<ID> ids) {
         List<ID> materialized = toList(ids);
         if (materialized.isEmpty()) {

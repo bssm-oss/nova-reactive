@@ -95,4 +95,17 @@ public interface ReactiveEntityOperations {
     default <T, ID> Mono<Long> deleteAllById(Class<T> entityType, Iterable<ID> ids) {
         return Flux.fromIterable(ids).concatMap(id -> deleteById(entityType, id)).reduce(0L, Long::sum);
     }
+
+    /**
+     * predicate에 일치하는 모든 행을 한 번의 {@code delete from t where ...} 쿼리로 삭제한다.
+     * {@code querySpec.predicate()}는 non-null이어야 하며, sort/pageable이 함께 들어오면 거부된다 —
+     * DELETE 표준에 sort/limit이 없어 dialect별 동작이 달라지기 때문이다. 반환값은 영향 받은 행 수다.
+     * <p>
+     * 기본 구현은 구현체가 이 메서드를 미구현 시 외부 호출자가 깨지지 않도록 명시적 예외를 던지며,
+     * {@link SimpleReactiveEntityOperations}는 {@code SqlRenderer.deleteByQuery}로 위임한다.
+     */
+    default <T> Mono<Long> deleteAll(Class<T> entityType, QuerySpec querySpec) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.deleteAll(Class, QuerySpec) must be overridden by the implementation"));
+    }
 }
