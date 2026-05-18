@@ -92,6 +92,66 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void updateRunsPartialUpdateForExistingEntity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "x@nova.io", true);
+
+        StepVerifier.create(operations.update(account, List.of("email")))
+                .expectNext(account)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals("update accounts set email_address = ? where id = ?", statement.sql());
+        assertEquals(List.of("x@nova.io", 7L), statement.bindings());
+        assertEquals(0, executor.generatedKeyCalls, "partial update는 generated key 경로를 거치지 않아야 한다");
+    }
+
+    @Test
+    void updateRejectsNullEntityId() {
+        SimpleReactiveEntityOperations operations = newOperations(new CapturingExecutor(), new RecordingTransactions());
+
+        StepVerifier.create(operations.update(new SampleAccount(null, "x@nova.io", true), List.of("email")))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertEquals("Entity id must not be null for update", error.getMessage());
+                })
+                .verify();
+    }
+
+    @Test
+    void updatePropagatesRendererRejectionForEmptyFields() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "x@nova.io", true);
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> operations.update(account, List.of())
+        );
+
+        assertEquals("update requires at least one field", exception.getMessage());
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void updatePropagatesRendererRejectionForIdField() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "x@nova.io", true);
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> operations.update(account, List.of("id"))
+        );
+
+        assertEquals("Cannot update id property: id", exception.getMessage());
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
     void findByIdBuildsSelectAndMapsRows() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 7L, "email_address", "a@nova.io", "active", true)));

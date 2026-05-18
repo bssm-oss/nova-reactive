@@ -65,6 +65,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     @Override
+    public <T> Mono<T> update(T entity, Iterable<String> fields) {
+        Objects.requireNonNull(entity, "entity must not be null");
+        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
+        Object id = metadata.idProperty().read(entity);
+        if (id == null) {
+            return Mono.error(new IllegalArgumentException("Entity id must not be null for update"));
+        }
+        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
+        return sqlExecutor.execute(statement).thenReturn(entity);
+    }
+
+    @Override
     public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
         return sqlExecutor.queryOne(dialect.sqlRenderer().selectById(metadata, id), row -> mapRow(metadata, row));

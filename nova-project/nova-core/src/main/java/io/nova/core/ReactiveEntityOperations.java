@@ -17,6 +17,20 @@ public interface ReactiveEntityOperations {
     <T> Mono<T> save(T entity);
 
     /**
+     * 명시한 property 컬럼만 update한다. {@code save(T)}와 달리 SET 절에 빠진 컬럼은 건드리지 않으므로
+     * 다중 사용자가 같은 행의 서로 다른 컬럼을 수정하는 환경에서 lost update를 줄일 수 있다.
+     * <p>
+     * {@code fields}는 entity의 property name(Java 필드명)이며, 빈 컬렉션·미존재 field·id field는
+     * 모두 거부된다. entity의 id가 {@code null}이면 {@code Mono.error(IllegalArgumentException)}이
+     * 발행된다. 기본 구현은 외부 구현체가 미구현 시 호출자가 깨지지 않도록 명시적 예외를 던지며,
+     * {@link SimpleReactiveEntityOperations}는 {@code SqlRenderer.update(metadata, entity, fields)}로 위임한다.
+     */
+    default <T> Mono<T> update(T entity, Iterable<String> fields) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.update(entity, fields) must be overridden by the implementation"));
+    }
+
+    /**
      * 식별자로 단건 엔티티를 조회한다.
      */
     <T, ID> Mono<T> findById(Class<T> entityType, ID id);
