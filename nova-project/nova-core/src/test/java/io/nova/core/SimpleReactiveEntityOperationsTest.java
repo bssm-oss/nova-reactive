@@ -1397,6 +1397,59 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void saveAllFailsFastWhenBatchGeneratedKeysAreShorterThanEntities() {
+        CapturingExecutor executor = new CapturingExecutor();
+        // 3 entity 인데 executor가 2개만 반환 → IllegalStateException으로 즉시 실패.
+        executor.batchGeneratedKeys.addLast(List.of(101L, 102L));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<SampleAccount> accounts = List.of(
+                new SampleAccount(null, "a@nova.io", true),
+                new SampleAccount(null, "b@nova.io", false),
+                new SampleAccount(null, "c@nova.io", true)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalStateException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("Batch generated keys count 2"),
+                            "오류 메시지가 collected count를 포함해야 한다: " + error.getMessage());
+                    assertTrue(error.getMessage().contains("entities count 3"),
+                            "오류 메시지가 entity count를 포함해야 한다: " + error.getMessage());
+                    assertTrue(error.getMessage().contains("insert into accounts"),
+                            "오류 메시지가 SQL을 포함해야 한다: " + error.getMessage());
+                })
+                .verify();
+
+        // 부분 주입 금지: 한 건도 id가 set되어 있으면 안 된다.
+        for (SampleAccount account : accounts) {
+            org.junit.jupiter.api.Assertions.assertNull(account.getId(),
+                    "fail-fast 경로에서는 어떤 entity도 부분 id 주입 상태가 되면 안 된다");
+        }
+    }
+
+    @Test
+    void saveAllFailsFastWhenBatchGeneratedKeysExceedEntities() {
+        CapturingExecutor executor = new CapturingExecutor();
+        // 2 entity 인데 executor가 3개를 반환 → IllegalStateException으로 즉시 실패.
+        executor.batchGeneratedKeys.addLast(List.of(101L, 102L, 103L));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<SampleAccount> accounts = List.of(
+                new SampleAccount(null, "a@nova.io", true),
+                new SampleAccount(null, "b@nova.io", false)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalStateException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("Batch generated keys count 3"),
+                            "오류 메시지가 collected count를 포함해야 한다: " + error.getMessage());
+                    assertTrue(error.getMessage().contains("entities count 2"),
+                            "오류 메시지가 entity count를 포함해야 한다: " + error.getMessage());
+                })
+                .verify();
+    }
+
+    @Test
     void saveAllSkipsGeneratedKeyPathForAssignedIdEntities() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
@@ -1794,7 +1847,17 @@ class SimpleReactiveEntityOperationsTest {
             this.batchCalls.add(new BatchCall(sql, List.copyOf(bindingsList)));
             this.batchGeneratedIdColumns.add(idColumn);
             this.batchGeneratedIdTypes.add(idType);
-            List<Object> keys = batchGeneratedKeys.isEmpty() ? List.of() : batchGeneratedKeys.removeFirst();
+            List<Object> keys;
+            if (!batchGeneratedKeys.isEmpty()) {
+                keys = batchGeneratedKeys.removeFirst();
+            } else {
+                // 명시적 키가 없으면 entity 수만큼 sequential default key를 만든다.
+                // saveGroup의 fail-fast size check를 통과시키면서 기존 batch 테스트의 회귀를 막는다.
+                keys = new ArrayList<>(bindingsList.size());
+                for (int i = 0; i < bindingsList.size(); i++) {
+                    keys.add((long) (i + 1));
+                }
+            }
             return Flux.fromIterable(keys).map(value -> (T) value);
         }
     }

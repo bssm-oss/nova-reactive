@@ -452,22 +452,29 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         for (SqlStatement statement : statements) {
             bindingsList.add(statement.bindings());
         }
-        if (key.isNew() && metadata.idProperty().generated()) {
+        if (key.isNew() && EntityMetadata.isDatabaseGeneratedId(metadata.idProperty())) {
             // generated id 그룹은 batch 결과로 키를 회수해 각 entity에 순서대로 주입한다.
+            // emit된 key를 모두 모아 entity 개수와 비교하고, 한 건이라도 누락되면 fail-fast 한다.
+            // driver/dialect 차이로 키가 부족하거나 초과하면 null id leak이나 silent drop 대신
+            // IllegalStateException으로 즉시 노출해야 한다.
             PersistentProperty idProperty = metadata.idProperty();
             String finalSharedSql = sharedSql;
-            return Flux.defer(() -> {
-                int[] index = {0};
-                return sqlExecutor.executeBatchAndReturnGeneratedKeys(
-                                finalSharedSql, bindingsList, idProperty.columnName(), idProperty.javaType())
-                        .doOnNext(key0 -> {
-                            int i = index[0]++;
-                            if (i < entities.size()) {
-                                idProperty.write(entities.get(i), idProperty.toPropertyValue(key0));
-                            }
-                        })
-                        .thenMany(Flux.fromIterable(entities));
-            });
+            return Flux.defer(() -> sqlExecutor
+                    .executeBatchAndReturnGeneratedKeys(
+                            finalSharedSql, bindingsList, idProperty.columnName(), idProperty.javaType())
+                    .collectList()
+                    .flatMapMany(collectedKeys -> {
+                        if (collectedKeys.size() != entities.size()) {
+                            return Flux.error(new IllegalStateException(
+                                    "Batch generated keys count " + collectedKeys.size()
+                                            + " != entities count " + entities.size()
+                                            + " for " + finalSharedSql));
+                        }
+                        for (int i = 0; i < entities.size(); i++) {
+                            idProperty.write(entities.get(i), idProperty.toPropertyValue(collectedKeys.get(i)));
+                        }
+                        return Flux.fromIterable(entities);
+                    }));
         }
         return sqlExecutor.executeBatch(sharedSql, bindingsList)
                 .thenMany(Flux.fromIterable(entities));
