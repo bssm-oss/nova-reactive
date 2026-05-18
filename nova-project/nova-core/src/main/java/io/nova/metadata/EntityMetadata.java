@@ -30,31 +30,35 @@ public final class EntityMetadata<T> {
         this.tableName = tableName;
         this.properties = List.copyOf(properties);
         LinkedHashMap<String, PersistentProperty> index = new LinkedHashMap<>();
+        PersistentProperty createdAt = null;
+        PersistentProperty updatedAt = null;
+        PersistentProperty softDelete = null;
+        PersistentProperty version = null;
         for (PersistentProperty property : this.properties) {
             PersistentProperty previous = index.put(property.propertyName(), property);
             if (previous != null) {
                 throw new IllegalArgumentException(
                         entityType.getName() + " declares duplicate property name " + property.propertyName());
             }
+            if (createdAt == null && property.createdAt()) {
+                createdAt = property;
+            }
+            if (updatedAt == null && property.updatedAt()) {
+                updatedAt = property;
+            }
+            if (softDelete == null && property.softDelete()) {
+                softDelete = property;
+            }
+            if (version == null && property.version()) {
+                version = property;
+            }
         }
         this.propertiesByName = Collections.unmodifiableMap(index);
         this.idProperty = idProperty;
-        this.createdAtProperty = this.properties.stream()
-                .filter(PersistentProperty::createdAt)
-                .findFirst()
-                .orElse(null);
-        this.updatedAtProperty = this.properties.stream()
-                .filter(PersistentProperty::updatedAt)
-                .findFirst()
-                .orElse(null);
-        this.softDeleteProperty = this.properties.stream()
-                .filter(PersistentProperty::softDelete)
-                .findFirst()
-                .orElse(null);
-        this.versionProperty = this.properties.stream()
-                .filter(PersistentProperty::version)
-                .findFirst()
-                .orElse(null);
+        this.createdAtProperty = createdAt;
+        this.updatedAtProperty = updatedAt;
+        this.softDeleteProperty = softDelete;
+        this.versionProperty = version;
     }
 
     public Class<T> entityType() {
