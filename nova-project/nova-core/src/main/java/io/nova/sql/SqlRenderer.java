@@ -13,6 +13,17 @@ public interface SqlRenderer {
 
     SqlStatement update(EntityMetadata<?> metadata, Object entity);
 
+    /**
+     * 명시된 property 컬럼만 SET 절에 포함하는 partial UPDATE SQL을 렌더한다. fields는 entity의
+     * property name(Java 필드명)이며, id property는 포함될 수 없다. 빈 컬렉션·미존재 field·
+     * id field·중복 처리는 구현체의 책임이다. 기본 구현은 외부 SqlRenderer를 직접 구현한 사용자가
+     * 자동으로 깨지지 않도록 명시적 예외를 던지며, {@link AbstractSqlRenderer}는 이 메서드를 override한다.
+     */
+    default SqlStatement update(EntityMetadata<?> metadata, Object entity, Iterable<String> fields) {
+        throw new UnsupportedOperationException(
+                "SqlRenderer.update(metadata, entity, fields) must be overridden by the implementation");
+    }
+
     SqlStatement deleteById(EntityMetadata<?> metadata, Object id);
 
     SqlStatement selectById(EntityMetadata<?> metadata, Object id);

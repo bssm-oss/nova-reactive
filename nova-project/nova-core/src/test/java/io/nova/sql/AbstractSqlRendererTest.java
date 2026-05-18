@@ -35,6 +35,84 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersPartialUpdateWithSingleField() {
+        SqlStatement statement = dialect.sqlRenderer().update(
+                metadata,
+                new SampleAccount(5L, "x@nova.io", true),
+                java.util.List.of("email")
+        );
+
+        assertEquals("update accounts set email_address = ? where id = ?", statement.sql());
+        assertEquals(java.util.List.of("x@nova.io", 5L), statement.bindings());
+    }
+
+    @Test
+    void rendersPartialUpdateWithMultipleFieldsInDeclaredOrder() {
+        SqlStatement statement = dialect.sqlRenderer().update(
+                metadata,
+                new SampleAccount(5L, "x@nova.io", false),
+                java.util.List.of("active", "email")
+        );
+
+        assertEquals("update accounts set active = ?, email_address = ? where id = ?", statement.sql());
+        assertEquals(java.util.List.of(false, "x@nova.io", 5L), statement.bindings());
+    }
+
+    @Test
+    void partialUpdateDedupsRepeatedField() {
+        SqlStatement statement = dialect.sqlRenderer().update(
+                metadata,
+                new SampleAccount(5L, "x@nova.io", true),
+                java.util.List.of("email", "email", "active")
+        );
+
+        assertEquals("update accounts set email_address = ?, active = ? where id = ?", statement.sql());
+        assertEquals(java.util.List.of("x@nova.io", true, 5L), statement.bindings());
+    }
+
+    @Test
+    void partialUpdateRejectsEmptyFields() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().update(
+                        metadata,
+                        new SampleAccount(5L, "x@nova.io", true),
+                        java.util.List.of()
+                )
+        );
+
+        assertEquals("update requires at least one field", exception.getMessage());
+    }
+
+    @Test
+    void partialUpdateRejectsUnknownField() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().update(
+                        metadata,
+                        new SampleAccount(5L, "x@nova.io", true),
+                        java.util.List.of("notAField")
+                )
+        );
+
+        assertEquals("Unknown property notAField on " + SampleAccount.class.getName(), exception.getMessage());
+    }
+
+    @Test
+    void partialUpdateRejectsIdField() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().update(
+                        metadata,
+                        new SampleAccount(5L, "x@nova.io", true),
+                        java.util.List.of("id")
+                )
+        );
+
+        assertEquals("Cannot update id property: id", exception.getMessage());
+    }
+
+    @Test
     void rendersCompoundPredicatesAndPaging() {
         SqlStatement statement = dialect.sqlRenderer().select(
                 metadata,

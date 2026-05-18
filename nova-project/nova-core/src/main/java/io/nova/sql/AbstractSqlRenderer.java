@@ -12,7 +12,9 @@ import io.nova.query.Sort;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -56,6 +58,44 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         bindings.add(metadata.idProperty().read(entity));
         String sql = "update " + table(metadata) + " set " + String.join(", ", assignments) +
                 " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(index);
+        return new SqlStatement(sql, bindings);
+    }
+
+    @Override
+    public SqlStatement update(EntityMetadata<?> metadata, Object entity, Iterable<String> fields) {
+        Objects.requireNonNull(entity, "entity must not be null");
+        Objects.requireNonNull(fields, "fields must not be null");
+
+        LinkedHashSet<String> dedupedFields = new LinkedHashSet<>();
+        for (String field : fields) {
+            Objects.requireNonNull(field, "field name must not be null");
+            dedupedFields.add(field);
+        }
+        if (dedupedFields.isEmpty()) {
+            throw new IllegalArgumentException("update requires at least one field");
+        }
+
+        PersistentProperty idProperty = metadata.idProperty();
+        String idPropertyName = idProperty.propertyName();
+
+        List<PersistentProperty> properties = new ArrayList<>(dedupedFields.size());
+        for (String fieldName : dedupedFields) {
+            if (fieldName.equals(idPropertyName)) {
+                throw new IllegalArgumentException("Cannot update id property: " + fieldName);
+            }
+            properties.add(findProperty(metadata, fieldName));
+        }
+
+        List<String> assignments = new ArrayList<>(properties.size());
+        List<Object> bindings = new ArrayList<>(properties.size() + 1);
+        int index = 1;
+        for (PersistentProperty property : properties) {
+            assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index++));
+            bindings.add(property.toColumnValue(property.read(entity)));
+        }
+        bindings.add(idProperty.read(entity));
+        String sql = "update " + table(metadata) + " set " + String.join(", ", assignments) +
+                " where " + column(idProperty) + " = " + dialect.bindMarkers().marker(index);
         return new SqlStatement(sql, bindings);
     }
 
