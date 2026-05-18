@@ -27,6 +27,7 @@ import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
 import io.nova.support.fixtures.FixtureEntities.StringUuidAccount;
 import io.nova.support.fixtures.FixtureEntities.UuidAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
+import io.nova.support.fixtures.FixtureEntities.VersionedSoftDeletableAccount;
 import io.nova.tx.ReactiveTransactionOperations;
 import io.nova.tx.TransactionContext;
 import org.junit.jupiter.api.Test;
@@ -1233,6 +1234,77 @@ class SimpleReactiveEntityOperationsTest {
                 executor.lastStatement.sql()
         );
         assertEquals(List.of(9L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void deleteOnVersionedSoftDeletableEntityCombinesUpdateWithVersionCheck() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+        VersionedSoftDeletableAccount account = new VersionedSoftDeletableAccount(9L, "a@nova.io", 4L, null);
+
+        StepVerifier.create(operations.delete(account))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(
+                "update versioned_soft_deletable_accounts set deleted_at = ?, version = ? where id = ? and version = ? and deleted_at is null",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(now, 5L, 9L, 4L), executor.lastStatement.bindings());
+        assertEquals(now, account.getDeletedAt(), "성공 시 deletedAt이 entity에 기록되어야 한다");
+        assertEquals(Long.valueOf(5L), account.getVersion(), "성공 시 version이 증가해야 한다");
+    }
+
+    @Test
+    void deleteOnVersionedSoftDeletableEntityRaisesOptimisticLockingFailureOnZeroAffected() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(0L);
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+        VersionedSoftDeletableAccount account = new VersionedSoftDeletableAccount(9L, "a@nova.io", 4L, null);
+
+        StepVerifier.create(operations.delete(account))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(OptimisticLockingFailureException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("id=9"));
+                    assertTrue(error.getMessage().contains("version=4"));
+                })
+                .verify();
+
+        assertEquals(Long.valueOf(4L), account.getVersion(), "실패 시 version 필드는 그대로 보존되어야 한다");
+        assertEquals(null, account.getDeletedAt(), "실패 시 deletedAt도 기록되지 않아야 한다");
+    }
+
+    @Test
+    void deleteAllOnVersionedSoftDeletableEntitiesFallsBackToPerEntityDeletes() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        executor.executeResults.addLast(1L);
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+        VersionedSoftDeletableAccount first = new VersionedSoftDeletableAccount(1L, "a@nova.io", 2L, null);
+        VersionedSoftDeletableAccount second = new VersionedSoftDeletableAccount(2L, "b@nova.io", 7L, null);
+
+        StepVerifier.create(operations.deleteAll(List.of(first, second)))
+                .expectNext(2L)
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size(),
+                "@SoftDelete + @Version 그룹은 단건 fallback로 처리되어 entity 수만큼 UPDATE가 실행되어야 한다");
+        for (SqlStatement statement : executor.executedStatements) {
+            assertTrue(statement.sql().startsWith(
+                            "update versioned_soft_deletable_accounts set deleted_at = ?, version = ? where id = ? and version = ?"),
+                    "각 UPDATE는 version-check WHERE를 포함해야 한다: " + statement.sql());
+        }
+        assertEquals(Long.valueOf(3L), first.getVersion());
+        assertEquals(Long.valueOf(8L), second.getVersion());
+        assertEquals(now, first.getDeletedAt());
+        assertEquals(now, second.getDeletedAt());
     }
 
     @Test

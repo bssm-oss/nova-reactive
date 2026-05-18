@@ -250,14 +250,35 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
         }
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+        Optional<PersistentProperty> version = metadata.versionProperty();
+        if (softDelete.isPresent() && version.isPresent()) {
+            Object deletedAt = currentTimeFor(softDelete.get());
+            PersistentProperty versionProperty = version.get();
+            Object currentVersion = versionProperty.read(entity);
+            Object nextVersion = nextVersionValue(versionProperty, currentVersion);
+            SqlStatement statement = dialect.sqlRenderer().softDeleteByEntity(metadata, entity, deletedAt);
+            return sqlExecutor.execute(statement)
+                    .flatMap(affected -> {
+                        if (affected == 0L) {
+                            return Mono.error(new OptimisticLockingFailureException(
+                                    "Optimistic locking failure: row not found or version mismatch for "
+                                            + metadata.entityType().getName()
+                                            + " id=" + id
+                                            + " version=" + currentVersion));
+                        }
+                        softDelete.get().write(entity, deletedAt);
+                        versionProperty.write(entity, nextVersion);
+                        return Mono.just(affected);
+                    });
+        }
         if (softDelete.isPresent()) {
             Object deletedAt = currentTimeFor(softDelete.get());
             softDelete.get().write(entity, deletedAt);
             return sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
         }
-        if (metadata.versionProperty().isPresent()) {
-            PersistentProperty versionProperty = metadata.versionProperty().get();
-            Object version = versionProperty.read(entity);
+        if (version.isPresent()) {
+            PersistentProperty versionProperty = version.get();
+            Object currentVersion = versionProperty.read(entity);
             SqlStatement statement = dialect.sqlRenderer().deleteByEntity(metadata, entity);
             return sqlExecutor.execute(statement)
                     .flatMap(affected -> {
@@ -266,7 +287,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                     "Optimistic locking failure: row not found or version mismatch for "
                                             + metadata.entityType().getName()
                                             + " id=" + id
-                                            + " version=" + version));
+                                            + " version=" + currentVersion));
                         }
                         return Mono.just(affected);
                     });
@@ -346,6 +367,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 .concatMap(entry -> {
                     EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(entry.getKey());
                     Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+                    Optional<PersistentProperty> version = metadata.versionProperty();
+                    if (softDelete.isPresent() && version.isPresent()) {
+                        // @SoftDelete + @Version: 단일 IN-UPDATE로 묶으면 entity별 version 검증이 불가능하므로
+                        // 안전하게 단건 delete(entity) 경로로 폴백한다.
+                        return Flux.fromIterable(entitiesByType.get(entry.getKey()))
+                                .concatMap(this::delete)
+                                .reduce(0L, Long::sum);
+                    }
                     if (softDelete.isPresent()) {
                         Object deletedAt = currentTimeFor(softDelete.get());
                         for (T entity : entitiesByType.get(entry.getKey())) {

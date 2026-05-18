@@ -33,6 +33,7 @@ import io.nova.support.fixtures.FixtureEntities.UnsupportedAuditTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.UnsupportedSoftDeleteTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.UnsupportedVersionTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
+import io.nova.support.fixtures.FixtureEntities.VersionedSoftDeletableAccount;
 import org.junit.jupiter.api.Test;
 
 import io.nova.annotation.GenerationType;
@@ -246,6 +247,18 @@ class EntityMetadataFactoryTest {
         assertEquals(Integer.class, intMetadata.versionProperty().get().javaType());
         assertTrue(shortMetadata.versionProperty().isPresent());
         assertEquals(Short.class, shortMetadata.versionProperty().get().javaType());
+    }
+
+    @Test
+    void recognizesBothSoftDeleteAndVersionOnSameEntity() {
+        EntityMetadata<VersionedSoftDeletableAccount> metadata =
+                factory.getEntityMetadata(VersionedSoftDeletableAccount.class);
+
+        assertTrue(metadata.softDeleteProperty().isPresent());
+        assertEquals("deletedAt", metadata.softDeleteProperty().get().propertyName());
+        assertTrue(metadata.versionProperty().isPresent());
+        assertEquals("version", metadata.versionProperty().get().propertyName());
+        assertEquals(Long.class, metadata.versionProperty().get().javaType());
     }
 
     @Test

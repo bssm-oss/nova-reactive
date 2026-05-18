@@ -14,6 +14,7 @@ import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.ShortVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
+import io.nova.support.fixtures.FixtureEntities.VersionedSoftDeletableAccount;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -719,6 +720,60 @@ class AbstractSqlRendererTest {
                 statement.sql()
         );
         assertEquals(java.util.List.of(7L, 4L), statement.bindings());
+    }
+
+    @Test
+    void softDeleteByEntityCombinesSoftDeleteSetWithVersionIncrementAndCheck() {
+        EntityMetadata<VersionedSoftDeletableAccount> versionedSoft =
+                new EntityMetadataFactory(new DefaultNamingStrategy())
+                        .getEntityMetadata(VersionedSoftDeletableAccount.class);
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+
+        SqlStatement statement = dialect.sqlRenderer().softDeleteByEntity(
+                versionedSoft,
+                new VersionedSoftDeletableAccount(7L, "a@nova.io", 4L, null),
+                now
+        );
+
+        assertEquals(
+                "update versioned_soft_deletable_accounts set deleted_at = ?, version = ? where id = ? and version = ? and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(now, 5L, 7L, 4L), statement.bindings());
+    }
+
+    @Test
+    void softDeleteByEntityWithoutVersionFallsBackToSoftDeleteById() {
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+
+        SqlStatement statement = dialect.sqlRenderer().softDeleteByEntity(
+                softMetadata,
+                new SoftDeletableAccount(7L, "a@nova.io", null),
+                now
+        );
+
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where id = ? and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(now, 7L), statement.bindings());
+    }
+
+    @Test
+    void softDeleteByEntityRejectsMetadataWithoutSoftDelete() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().softDeleteByEntity(
+                        metadata,
+                        new SampleAccount(7L, "a@nova.io", true),
+                        Instant.EPOCH
+                )
+        );
+
+        assertEquals(
+                "softDeleteByEntity requires @SoftDelete on " + SampleAccount.class.getName(),
+                exception.getMessage()
+        );
     }
 
     @Test

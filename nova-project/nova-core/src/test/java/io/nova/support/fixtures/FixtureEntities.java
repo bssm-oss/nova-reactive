@@ -526,6 +526,49 @@ public final class FixtureEntities {
     }
 
     @Entity
+    @Table("versioned_soft_deletable_accounts")
+    public static class VersionedSoftDeletableAccount {
+        @Id
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        @Version
+        private Long version;
+
+        @SoftDelete
+        @Column("deleted_at")
+        private Instant deletedAt;
+
+        public VersionedSoftDeletableAccount() {
+        }
+
+        public VersionedSoftDeletableAccount(Long id, String email, Long version, Instant deletedAt) {
+            this.id = id;
+            this.email = email;
+            this.version = version;
+            this.deletedAt = deletedAt;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public Long getVersion() {
+            return version;
+        }
+
+        public Instant getDeletedAt() {
+            return deletedAt;
+        }
+    }
+
+    @Entity
     @Table("soft_deletable_offset")
     public static class SoftDeletableOffsetAccount {
         @Id

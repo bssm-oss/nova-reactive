@@ -127,4 +127,16 @@ public interface SqlRenderer {
     default SqlStatement deleteByEntity(EntityMetadata<?> metadata, Object entity) {
         return deleteById(metadata, metadata.idProperty().read(entity));
     }
+
+    /**
+     * {@code @SoftDelete}와 {@code @Version}이 동시에 선언된 엔티티에 대해 인스턴스 기반의 단건 논리
+     * 삭제 UPDATE를 렌더한다. SET 절에는 deleted_at 컬럼과 version 컬럼(다음 버전 값)을 함께 포함하고,
+     * WHERE 절에는 id 비교와 현재 버전 비교, 그리고 alive guard(deleted_at IS NULL)를 모두 포함시켜
+     * optimistic locking 검증을 수행해야 한다. 기본 구현은 외부 구현체가 자동으로 깨지지 않도록
+     * 명시적 예외를 던지고, {@link AbstractSqlRenderer}가 이 메서드를 override한다.
+     */
+    default SqlStatement softDeleteByEntity(EntityMetadata<?> metadata, Object entity, Object deletedAt) {
+        throw new UnsupportedOperationException(
+                "SqlRenderer.softDeleteByEntity must be overridden by the implementation");
+    }
 }

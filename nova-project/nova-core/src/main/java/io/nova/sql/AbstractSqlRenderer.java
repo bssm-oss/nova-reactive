@@ -260,6 +260,34 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement softDeleteByEntity(EntityMetadata<?> metadata, Object entity, Object deletedAt) {
+        PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteByEntity");
+        PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+        if (versionProperty == null) {
+            return softDeleteById(metadata, metadata.idProperty().read(entity), deletedAt);
+        }
+        PersistentProperty idProperty = metadata.idProperty();
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("update ").append(table(metadata))
+                .append(" set ").append(column(softDeleteProperty)).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(softDeleteProperty.toColumnValue(deletedAt));
+        Object currentVersion = versionProperty.read(entity);
+        Object nextVersionValue = nextVersion(versionProperty, currentVersion);
+        sql.append(", ").append(column(versionProperty)).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(versionProperty.toColumnValue(nextVersionValue));
+        sql.append(" where ").append(column(idProperty)).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(idProperty.toColumnValue(idProperty.read(entity)));
+        sql.append(" and ").append(column(versionProperty)).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(versionProperty.toColumnValue(currentVersion));
+        sql.append(" and ").append(column(softDeleteProperty)).append(" is null");
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
     public SqlStatement softDeleteById(EntityMetadata<?> metadata, Object id, Object deletedAt) {
         PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteById");
         PersistentProperty idProperty = metadata.idProperty();
