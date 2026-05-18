@@ -304,6 +304,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.error(new IllegalArgumentException("Updater requires a where(...) predicate"));
         }
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        auditApplier.applyOnUpdaterFields(fieldValues, metadata);
         QuerySpec querySpec = QuerySpec.empty().where(updater.where());
         return Mono.fromCallable(() -> dialect.sqlRenderer().updateByQuery(metadata, fieldValues, querySpec))
                 .flatMap(sqlExecutor::execute);

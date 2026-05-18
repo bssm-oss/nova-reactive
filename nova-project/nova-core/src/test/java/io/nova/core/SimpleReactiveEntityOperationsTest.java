@@ -503,6 +503,53 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void updateWithUpdaterAutoAddsUpdatedAtForAuditedEntity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, Clock.fixed(now, ZoneOffset.UTC));
+
+        StepVerifier.create(operations.update(
+                        AuditedAccount.class,
+                        Updater.of(AuditedAccount.class)
+                                .set("email", "x@nova.io")
+                                .where(Criteria.eq("id", 7L))
+                ))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(
+                "update audited_accounts set email_address = ?, updated_at = ? where id = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of("x@nova.io", now, 7L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void updateWithUpdaterPreservesUserSetUpdatedAt() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        Instant clockNow = Instant.parse("2026-05-18T10:00:00Z");
+        Instant userValue = Instant.parse("2020-01-01T00:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, Clock.fixed(clockNow, ZoneOffset.UTC));
+
+        StepVerifier.create(operations.update(
+                        AuditedAccount.class,
+                        Updater.of(AuditedAccount.class)
+                                .set("updatedAt", userValue)
+                                .set("email", "x@nova.io")
+                                .where(Criteria.eq("id", 7L))
+                ))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertTrue(executor.lastStatement.bindings().contains(userValue),
+                "user-set updatedAt 값이 보존되어야 한다");
+    }
+
+    @Test
     void createTableSqlDelegatesToDialectSchemaGenerator() {
         SimpleReactiveEntityOperations operations = newOperations(new CapturingExecutor(), new RecordingTransactions());
 
