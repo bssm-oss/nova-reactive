@@ -5,6 +5,8 @@ import io.nova.metadata.PersistentProperty;
 import io.nova.query.ComparisonOperator;
 import io.nova.query.CompoundPredicate;
 import io.nova.query.Condition;
+import io.nova.query.Cursor;
+import io.nova.query.CursorField;
 import io.nova.query.NegationPredicate;
 import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
@@ -192,6 +194,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         if (querySpec.sort() != null && !querySpec.sort().orders().isEmpty()) {
             throw new IllegalArgumentException("deleteByQuery does not support sort");
         }
+        if (querySpec.cursor() != null) {
+            throw new IllegalArgumentException("deleteByQuery does not support cursor");
+        }
         if (querySpec.pageable() != null) {
             throw new IllegalArgumentException("deleteByQuery does not support pageable");
         }
@@ -215,6 +220,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         if (querySpec.sort() != null && !querySpec.sort().orders().isEmpty()) {
             throw new IllegalArgumentException("updateByQuery does not support sort");
+        }
+        if (querySpec.cursor() != null) {
+            throw new IllegalArgumentException("updateByQuery does not support cursor");
         }
         if (querySpec.pageable() != null) {
             throw new IllegalArgumentException("updateByQuery does not support pageable");
@@ -300,7 +308,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 .append(selectList(metadata))
                 .append(" from ")
                 .append(table(metadata));
-        appendWhereClause(sql, context, metadata, querySpec.predicate());
+        appendWhereClause(sql, context, metadata, querySpec.predicate(), querySpec.cursor());
         appendOrderBy(sql, metadata, querySpec.sort());
         appendPage(sql, context, querySpec);
         return new SqlStatement(sql.toString(), context.bindings());
@@ -323,7 +331,13 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 .append(String.join(", ", projectionColumns))
                 .append(" from ")
                 .append(table(metadata));
-        appendWhereClause(sql, context, metadata, querySpec == null ? null : querySpec.predicate());
+        appendWhereClause(
+                sql,
+                context,
+                metadata,
+                querySpec == null ? null : querySpec.predicate(),
+                querySpec == null ? null : querySpec.cursor()
+        );
         if (querySpec != null) {
             appendOrderBy(sql, metadata, querySpec.sort());
             appendPage(sql, context, querySpec);
@@ -349,7 +363,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     /**
-     * pageable 명세가 있으면 limit/offset용 bind marker를 SQL 뒤에 추가한다.
+     * pageable 명세가 있으면 limit/offset용 bind marker를 SQL 뒤에 추가한다. cursor가 함께 설정돼
+     * 있으면 keyset pagination이 적용된 것이므로 OFFSET은 생략하고 LIMIT만 렌더한다 — cursor
+     * 자체가 "어디서부터" 정보를 담고 있어서 offset 누적이 불필요하다.
      */
     protected void appendPage(StringBuilder sql, RenderContext context, QuerySpec querySpec) {
         if (querySpec.pageable() == null) {
@@ -357,6 +373,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         sql.append(" limit ").append(dialect.bindMarkers().marker(context.nextIndex()));
         context.addBinding(querySpec.pageable().limit());
+        if (querySpec.cursor() != null) {
+            return;
+        }
         sql.append(" offset ").append(dialect.bindMarkers().marker(context.nextIndex()));
         context.addBinding(querySpec.pageable().offset());
     }
@@ -369,19 +388,74 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     private void appendWhereClause(StringBuilder sql, RenderContext context, EntityMetadata<?> metadata, Predicate predicate) {
+        appendWhereClause(sql, context, metadata, predicate, null);
+    }
+
+    /**
+     * predicate, cursor keyset 비교, soft-delete-alive 가드를 모두 {@code and}로 결합해 WHERE 절을 만든다.
+     * 모두 비어 있으면 WHERE 절 자체를 생략한다. 절들 사이의 순서는
+     * {@code predicate -> cursor -> soft delete}로 고정해 SQL 형태를 안정시킨다.
+     */
+    private void appendWhereClause(
+            StringBuilder sql,
+            RenderContext context,
+            EntityMetadata<?> metadata,
+            Predicate predicate,
+            Cursor cursor
+    ) {
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
-        if (predicate == null && softDelete.isEmpty()) {
+        if (predicate == null && cursor == null && softDelete.isEmpty()) {
             return;
         }
-        sql.append(" where ");
+        List<String> clauses = new ArrayList<>(3);
         if (predicate != null) {
-            sql.append(renderPredicate(context, metadata, predicate));
-            if (softDelete.isPresent()) {
-                sql.append(" and ").append(column(softDelete.get())).append(" is null");
-            }
-            return;
+            clauses.add(renderPredicate(context, metadata, predicate));
         }
-        sql.append(column(softDelete.get())).append(" is null");
+        if (cursor != null) {
+            clauses.add(renderCursorPredicate(context, metadata, cursor));
+        }
+        softDelete.ifPresent(property -> clauses.add(column(property) + " is null"));
+        sql.append(" where ").append(String.join(" and ", clauses));
+    }
+
+    /**
+     * keyset(cursor) pagination의 lexicographic 비교를 SQL로 펼친다. 정렬 키가 {@code (k1, k2, k3)}
+     * 이고 각 방향에 따른 부호가 {@code op_i}일 때:
+     * <pre>
+     * (k1 op1 v1)
+     *   OR (k1 = v1 AND k2 op2 v2)
+     *   OR (k1 = v1 AND k2 = v2 AND k3 op3 v3)
+     * </pre>
+     * ASC 키는 {@code >}, DESC 키는 {@code <}를 사용한다. 등호로만 동률이 깨지지 않는 마지막 항목까지
+     * 자연스럽게 다음 페이지로 진행한다.
+     */
+    private String renderCursorPredicate(RenderContext context, EntityMetadata<?> metadata, Cursor cursor) {
+        List<CursorField> fields = cursor.fields();
+        StringBuilder sql = new StringBuilder("(");
+        for (int i = 0; i < fields.size(); i++) {
+            if (i > 0) {
+                sql.append(" or ");
+            }
+            sql.append("(");
+            for (int j = 0; j <= i; j++) {
+                if (j > 0) {
+                    sql.append(" and ");
+                }
+                CursorField field = fields.get(j);
+                PersistentProperty property = findProperty(metadata, field.property());
+                String marker = dialect.bindMarkers().marker(context.nextIndex());
+                context.addBinding(property.toColumnValue(field.lastValue()));
+                String operator = j == i ? cursorOperator(field.direction()) : "=";
+                sql.append(column(property)).append(" ").append(operator).append(" ").append(marker);
+            }
+            sql.append(")");
+        }
+        sql.append(")");
+        return sql.toString();
+    }
+
+    private static String cursorOperator(Sort.Direction direction) {
+        return direction == Sort.Direction.ASC ? ">" : "<";
     }
 
     private void appendSoftDeleteAlive(StringBuilder sql, EntityMetadata<?> metadata, String prefix) {

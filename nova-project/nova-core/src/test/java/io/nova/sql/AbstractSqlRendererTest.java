@@ -4,6 +4,8 @@ import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Criteria;
+import io.nova.query.Cursor;
+import io.nova.query.CursorField;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
@@ -723,6 +725,183 @@ class AbstractSqlRendererTest {
         );
 
         assertEquals("Unknown property missing on " + SampleAccount.class.getName(), exception.getMessage());
+    }
+
+    @Test
+    void rendersSingleAscCursorAsGreaterThanWithLimitAndNoOffset() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .orderBy(Sort.by(Sort.Order.asc("id")))
+                        .cursor(Cursor.of(CursorField.asc("id", 42L)), 10)
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where ((id > ?)) order by id asc limit ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(42L, 10), statement.bindings());
+    }
+
+    @Test
+    void rendersSingleDescCursorAsLessThan() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .orderBy(Sort.by(Sort.Order.desc("id")))
+                        .cursor(Cursor.of(CursorField.desc("id", 100L)), 5)
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where ((id < ?)) order by id desc limit ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(100L, 5), statement.bindings());
+    }
+
+    @Test
+    void rendersMultiFieldCursorAsLexicographicComparison() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .orderBy(Sort.by(Sort.Order.desc("email"), Sort.Order.asc("id")))
+                        .cursor(
+                                Cursor.of(
+                                        CursorField.desc("email", "m@nova.io"),
+                                        CursorField.asc("id", 50L)
+                                ),
+                                20
+                        )
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts" +
+                        " where ((email_address < ?) or (email_address = ? and id > ?))" +
+                        " order by email_address desc, id asc limit ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("m@nova.io", "m@nova.io", 50L, 20), statement.bindings());
+    }
+
+    @Test
+    void cursorPredicateCombinesWithUserPredicateViaAnd() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .where(Criteria.eq("active", true))
+                        .orderBy(Sort.by(Sort.Order.asc("id")))
+                        .cursor(Cursor.of(CursorField.asc("id", 7L)), 25)
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts" +
+                        " where active = ? and ((id > ?))" +
+                        " order by id asc limit ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(true, 7L, 25), statement.bindings());
+    }
+
+    @Test
+    void cursorPredicateAppendsBeforeSoftDeleteAliveGuard() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                softMetadata,
+                QuerySpec.empty()
+                        .orderBy(Sort.by(Sort.Order.asc("id")))
+                        .cursor(Cursor.of(CursorField.asc("id", 3L)), 5)
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, deleted_at as deleted_at" +
+                        " from soft_deletable_accounts where ((id > ?)) and deleted_at is null" +
+                        " order by id asc limit ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(3L, 5), statement.bindings());
+    }
+
+    @Test
+    void cursorSelectIgnoresOffsetEvenIfPageableCarriesOne() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .orderBy(Sort.by(Sort.Order.asc("id")))
+                        .page(Pageable.of(10, 100))
+                        .cursor(Cursor.of(CursorField.asc("id", 9L)), 10)
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where ((id > ?)) order by id asc limit ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(9L, 10), statement.bindings());
+    }
+
+    @Test
+    void cursorAppliesToProjectionSelect() {
+        SqlStatement statement = dialect.sqlRenderer().selectProjection(
+                metadata,
+                java.util.List.of("id", "email"),
+                QuerySpec.empty()
+                        .orderBy(Sort.by(Sort.Order.asc("id")))
+                        .cursor(Cursor.of(CursorField.asc("id", 4L)), 15)
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address from accounts where ((id > ?)) order by id asc limit ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(4L, 15), statement.bindings());
+    }
+
+    @Test
+    void cursorRejectsUnknownProperty() {
+        QuerySpec spec = QuerySpec.empty()
+                .orderBy(Sort.by(Sort.Order.asc("id")))
+                .cursor(Cursor.of(CursorField.asc("notAProperty", 1L)), 10);
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().select(metadata, spec)
+        );
+
+        assertEquals(
+                "Unknown property notAProperty on " + SampleAccount.class.getName(),
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void deleteByQueryRejectsCursor() {
+        QuerySpec spec = QuerySpec.empty()
+                .where(Criteria.eq("active", false))
+                .cursor(Cursor.of(CursorField.asc("id", 1L)), 10);
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().deleteByQuery(metadata, spec)
+        );
+
+        assertEquals("deleteByQuery does not support cursor", exception.getMessage());
+    }
+
+    @Test
+    void updateByQueryRejectsCursor() {
+        java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("email", "x@nova.io");
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().updateByQuery(
+                        metadata,
+                        fields,
+                        QuerySpec.empty()
+                                .where(Criteria.eq("id", 1L))
+                                .cursor(Cursor.of(CursorField.asc("id", 1L)), 10)
+                )
+        );
+
+        assertEquals("updateByQuery does not support cursor", exception.getMessage());
     }
 
     private static final class TestDialect implements Dialect {
