@@ -18,6 +18,7 @@ import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.NoDefaultConstructorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.SampleOrder;
+import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
 import io.nova.tx.ReactiveTransactionOperations;
 import io.nova.tx.TransactionContext;
 import org.junit.jupiter.api.Test;
@@ -831,6 +832,153 @@ class SimpleReactiveEntityOperationsTest {
         assertTrue(exception.getMessage().contains("must expose a no-args constructor"));
     }
 
+    @Test
+    void deleteOnSoftDeletableEntityIssuesUpdateAndSetsTimestamp() {
+        CapturingExecutor executor = new CapturingExecutor();
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+        SoftDeletableAccount account = new SoftDeletableAccount(7L, "a@nova.io", null);
+
+        StepVerifier.create(operations.delete(account))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where id = ? and deleted_at is null",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(now, 7L), executor.lastStatement.bindings());
+        assertEquals(now, account.getDeletedAt());
+    }
+
+    @Test
+    void deleteByIdOnSoftDeletableEntityIssuesUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+
+        StepVerifier.create(operations.deleteById(SoftDeletableAccount.class, 7L))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where id = ? and deleted_at is null",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(now, 7L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void deleteAllByIdOnSoftDeletableEntityIssuesSingleUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(3L);
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+
+        StepVerifier.create(operations.deleteAllById(SoftDeletableAccount.class, List.of(10L, 20L, 30L)))
+                .expectNext(3L)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where id in (?, ?, ?) and deleted_at is null",
+                executor.executedStatements.get(0).sql()
+        );
+        assertEquals(List.of(now, 10L, 20L, 30L), executor.executedStatements.get(0).bindings());
+    }
+
+    @Test
+    void deleteAllOnSoftDeletableEntitiesIssuesSingleUpdateAndStampsAll() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(2L);
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+        SoftDeletableAccount first = new SoftDeletableAccount(1L, "a@nova.io", null);
+        SoftDeletableAccount second = new SoftDeletableAccount(2L, "b@nova.io", null);
+
+        StepVerifier.create(operations.deleteAll(List.of(first, second)))
+                .expectNext(2L)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where id in (?, ?) and deleted_at is null",
+                executor.executedStatements.get(0).sql()
+        );
+        assertEquals(List.of(now, 1L, 2L), executor.executedStatements.get(0).bindings());
+        assertEquals(now, first.getDeletedAt());
+        assertEquals(now, second.getDeletedAt());
+    }
+
+    @Test
+    void findByIdOnSoftDeletableEntityAppendsAlivePredicate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 7L, "email_address", "a@nova.io")));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.findById(SoftDeletableAccount.class, 7L))
+                .expectNextMatches(account -> Objects.equals(account.getId(), 7L))
+                .verifyComplete();
+
+        assertEquals(
+                "select id as id, email_address as email_address, deleted_at as deleted_at from soft_deletable_accounts where id = ? and deleted_at is null",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(7L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void findAllOnSoftDeletableEntityAppendsAlivePredicate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of());
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.findAll(SoftDeletableAccount.class, QuerySpec.empty().where(Criteria.eq("email", "a@nova.io"))))
+                .verifyComplete();
+
+        assertEquals(
+                "select id as id, email_address as email_address, deleted_at as deleted_at from soft_deletable_accounts where email_address = ? and deleted_at is null",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of("a@nova.io"), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void countOnSoftDeletableEntityFiltersOutDeletedRows() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("count", 5L)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.count(SoftDeletableAccount.class, QuerySpec.empty()))
+                .expectNext(5L)
+                .verifyComplete();
+
+        assertEquals(
+                "select count(*) as count from soft_deletable_accounts where deleted_at is null",
+                executor.lastStatement.sql()
+        );
+    }
+
+    @Test
+    void existsOnSoftDeletableEntityFiltersOutDeletedRows() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of()));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.exists(SoftDeletableAccount.class, QuerySpec.empty().where(Criteria.eq("email", "a@nova.io"))))
+                .expectNext(true)
+                .verifyComplete();
+
+        assertEquals(
+                "select 1 from soft_deletable_accounts where email_address = ? and deleted_at is null limit 1",
+                executor.lastStatement.sql()
+        );
+    }
+
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {
         return new SimpleReactiveEntityOperations(
                 new EntityMetadataFactory(new DefaultNamingStrategy()),
@@ -848,6 +996,18 @@ class SimpleReactiveEntityOperationsTest {
                 executor,
                 new EntityStateDetector(),
                 new RecordingTransactions(),
+                clock
+        );
+    }
+
+    private SimpleReactiveEntityOperations newOperationsWithClock(
+            CapturingExecutor executor, RecordingTransactions transactions, Clock clock) {
+        return new SimpleReactiveEntityOperations(
+                new EntityMetadataFactory(new DefaultNamingStrategy()),
+                new RecordingDialect(),
+                executor,
+                new EntityStateDetector(),
+                transactions,
                 clock
         );
     }

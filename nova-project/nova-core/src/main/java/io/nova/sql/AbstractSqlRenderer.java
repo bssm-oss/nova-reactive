@@ -17,6 +17,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
@@ -187,11 +188,59 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement softDeleteById(EntityMetadata<?> metadata, Object id, Object deletedAt) {
+        PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteById");
+        PersistentProperty idProperty = metadata.idProperty();
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("update ").append(table(metadata))
+                .append(" set ").append(column(softDeleteProperty)).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(softDeleteProperty.toColumnValue(deletedAt));
+        sql.append(" where ").append(column(idProperty)).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(idProperty.toColumnValue(id));
+        sql.append(" and ").append(column(softDeleteProperty)).append(" is null");
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
+    public SqlStatement softDeleteByIds(EntityMetadata<?> metadata, List<Object> ids, Object deletedAt) {
+        if (ids.isEmpty()) {
+            throw new IllegalArgumentException("softDeleteByIds requires at least one id");
+        }
+        PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteByIds");
+        PersistentProperty idProperty = metadata.idProperty();
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("update ").append(table(metadata))
+                .append(" set ").append(column(softDeleteProperty)).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(softDeleteProperty.toColumnValue(deletedAt));
+        sql.append(" where ").append(column(idProperty)).append(" in (");
+        for (int i = 0; i < ids.size(); i++) {
+            Object id = ids.get(i);
+            if (id == null) {
+                throw new IllegalArgumentException("softDeleteByIds id at index " + i + " is null");
+            }
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(idProperty.toColumnValue(id));
+        }
+        sql.append(") and ").append(column(softDeleteProperty)).append(" is null");
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
     public SqlStatement selectById(EntityMetadata<?> metadata, Object id) {
-        return new SqlStatement(
-                "select " + selectList(metadata) + " from " + table(metadata) + " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(1),
-                List.of(id)
-        );
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("select ").append(selectList(metadata))
+                .append(" from ").append(table(metadata))
+                .append(" where ").append(column(metadata.idProperty())).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(id);
+        appendSoftDeleteAlive(sql, metadata, " and ");
+        return new SqlStatement(sql.toString(), context.bindings());
     }
 
     @Override
@@ -245,10 +294,33 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     private void appendWhereClause(StringBuilder sql, RenderContext context, EntityMetadata<?> metadata, Predicate predicate) {
-        if (predicate == null) {
+        Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+        if (predicate == null && softDelete.isEmpty()) {
             return;
         }
-        sql.append(" where ").append(renderPredicate(context, metadata, predicate));
+        sql.append(" where ");
+        if (predicate != null) {
+            sql.append(renderPredicate(context, metadata, predicate));
+            if (softDelete.isPresent()) {
+                sql.append(" and ").append(column(softDelete.get())).append(" is null");
+            }
+            return;
+        }
+        sql.append(column(softDelete.get())).append(" is null");
+    }
+
+    private void appendSoftDeleteAlive(StringBuilder sql, EntityMetadata<?> metadata, String prefix) {
+        Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+        if (softDelete.isEmpty()) {
+            return;
+        }
+        sql.append(prefix).append(column(softDelete.get())).append(" is null");
+    }
+
+    private PersistentProperty requireSoftDeleteProperty(EntityMetadata<?> metadata, String operation) {
+        return metadata.softDeleteProperty()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        operation + " requires @SoftDelete on " + metadata.entityType().getName()));
     }
 
     private String renderPredicate(RenderContext context, EntityMetadata<?> metadata, Predicate predicate) {

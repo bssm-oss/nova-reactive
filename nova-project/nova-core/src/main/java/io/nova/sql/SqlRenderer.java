@@ -72,4 +72,24 @@ public interface SqlRenderer {
         throw new UnsupportedOperationException(
                 "SqlRenderer.updateByQuery must be overridden by the implementation");
     }
+
+    /**
+     * {@code @SoftDelete} 컬럼을 가진 엔티티의 단건 논리 삭제 UPDATE 문을 렌더한다.
+     * 기본 구현은 외부 구현체가 자동으로 깨지지 않도록 명시적 예외를 던지고,
+     * {@link AbstractSqlRenderer}가 이 메서드를 override한다.
+     */
+    default SqlStatement softDeleteById(EntityMetadata<?> metadata, Object id, Object deletedAt) {
+        throw new UnsupportedOperationException(
+                "SqlRenderer.softDeleteById must be overridden by the implementation");
+    }
+
+    /**
+     * {@code @SoftDelete} 컬럼을 가진 엔티티의 N건 일괄 논리 삭제 UPDATE 문을 렌더한다.
+     * 기본 구현은 외부 구현체가 자동으로 깨지지 않도록 명시적 예외를 던지고,
+     * {@link AbstractSqlRenderer}가 이 메서드를 override한다.
+     */
+    default SqlStatement softDeleteByIds(EntityMetadata<?> metadata, List<Object> ids, Object deletedAt) {
+        throw new UnsupportedOperationException(
+                "SqlRenderer.softDeleteByIds must be overridden by the implementation");
+    }
 }

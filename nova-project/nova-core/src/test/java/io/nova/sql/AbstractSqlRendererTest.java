@@ -8,14 +8,18 @@ import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
+import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
 import org.junit.jupiter.api.Test;
+
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class AbstractSqlRendererTest {
-    private final EntityMetadata<SampleAccount> metadata = new EntityMetadataFactory(new DefaultNamingStrategy())
-            .getEntityMetadata(SampleAccount.class);
+    private final EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+    private final EntityMetadata<SampleAccount> metadata = metadataFactory.getEntityMetadata(SampleAccount.class);
+    private final EntityMetadata<SoftDeletableAccount> softMetadata = metadataFactory.getEntityMetadata(SoftDeletableAccount.class);
     private final Dialect dialect = new TestDialect();
 
     @Test
@@ -448,6 +452,105 @@ class AbstractSqlRendererTest {
 
         assertEquals(
                 "Unknown property nope on " + SampleAccount.class.getName(),
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void selectAutoAddsSoftDeleteAliveWhenNoPredicate() {
+        SqlStatement statement = dialect.sqlRenderer().select(softMetadata, QuerySpec.empty());
+
+        assertEquals(
+                "select id as id, email_address as email_address, deleted_at as deleted_at from soft_deletable_accounts where deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void selectAppendsSoftDeleteAliveAfterUserPredicate() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                softMetadata,
+                QuerySpec.empty().where(Criteria.eq("email", "a@nova.io"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, deleted_at as deleted_at from soft_deletable_accounts where email_address = ? and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("a@nova.io"), statement.bindings());
+    }
+
+    @Test
+    void selectByIdAddsSoftDeleteAlive() {
+        SqlStatement statement = dialect.sqlRenderer().selectById(softMetadata, 7L);
+
+        assertEquals(
+                "select id as id, email_address as email_address, deleted_at as deleted_at from soft_deletable_accounts where id = ? and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(7L), statement.bindings());
+    }
+
+    @Test
+    void countAddsSoftDeleteAlive() {
+        SqlStatement statement = dialect.sqlRenderer().count(softMetadata, QuerySpec.empty());
+
+        assertEquals("select count(*) as count from soft_deletable_accounts where deleted_at is null", statement.sql());
+    }
+
+    @Test
+    void existsAddsSoftDeleteAlive() {
+        SqlStatement statement = dialect.sqlRenderer().exists(softMetadata, QuerySpec.empty());
+
+        assertEquals("select 1 from soft_deletable_accounts where deleted_at is null limit 1", statement.sql());
+    }
+
+    @Test
+    void softDeleteByIdRendersUpdateWithAliveGuard() {
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+
+        SqlStatement statement = dialect.sqlRenderer().softDeleteById(softMetadata, 7L, now);
+
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where id = ? and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(now, 7L), statement.bindings());
+    }
+
+    @Test
+    void softDeleteByIdsRendersUpdateWithInAndAliveGuard() {
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+
+        SqlStatement statement = dialect.sqlRenderer().softDeleteByIds(softMetadata, java.util.List.of(10L, 20L, 30L), now);
+
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where id in (?, ?, ?) and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(now, 10L, 20L, 30L), statement.bindings());
+    }
+
+    @Test
+    void softDeleteByIdsRejectsEmptyList() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().softDeleteByIds(softMetadata, java.util.List.of(), Instant.EPOCH)
+        );
+
+        assertEquals("softDeleteByIds requires at least one id", exception.getMessage());
+    }
+
+    @Test
+    void softDeleteByIdRejectsMetadataWithoutSoftDelete() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().softDeleteById(metadata, 1L, Instant.EPOCH)
+        );
+
+        assertEquals(
+                "softDeleteById requires @SoftDelete on " + SampleAccount.class.getName(),
                 exception.getMessage()
         );
     }

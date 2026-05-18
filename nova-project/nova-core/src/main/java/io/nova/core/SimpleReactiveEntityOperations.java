@@ -15,12 +15,17 @@ import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Constructor;
 import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Function;
 
 /**
@@ -32,6 +37,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final SqlExecutor sqlExecutor;
     private final EntityStateDetector entityStateDetector;
     private final ReactiveTransactionOperations transactionOperations;
+    private final Clock clock;
     private final AuditApplier auditApplier;
 
     public SimpleReactiveEntityOperations(
@@ -57,7 +63,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         this.sqlExecutor = sqlExecutor;
         this.entityStateDetector = entityStateDetector;
         this.transactionOperations = transactionOperations;
-        this.auditApplier = new AuditApplier(Objects.requireNonNull(clock, "clock must not be null"));
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.auditApplier = new AuditApplier(this.clock);
     }
 
     @Override
@@ -142,13 +149,24 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (id == null) {
             return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
         }
-        return deleteById(entityType(entity), id);
+        Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+        if (softDelete.isPresent()) {
+            Object deletedAt = currentTimeFor(softDelete.get());
+            softDelete.get().write(entity, deletedAt);
+            return sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
+        }
+        return sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id));
     }
 
     @Override
     public <T, ID> Mono<Long> deleteById(Class<T> entityType, ID id) {
         Objects.requireNonNull(id, "id must not be null");
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+        if (softDelete.isPresent()) {
+            Object deletedAt = currentTimeFor(softDelete.get());
+            return sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
+        }
         return sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id));
     }
 
@@ -194,6 +212,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.just(0L);
         }
         Map<Class<?>, List<Object>> idsByType = new LinkedHashMap<>();
+        Map<Class<?>, List<T>> entitiesByType = new LinkedHashMap<>();
         for (int i = 0; i < materialized.size(); i++) {
             T entity = materialized.get(i);
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
@@ -205,10 +224,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                 + " has null id; deleteAll requires non-null ids"));
             }
             idsByType.computeIfAbsent(entity.getClass(), ignored -> new ArrayList<>()).add(id);
+            entitiesByType.computeIfAbsent(entity.getClass(), ignored -> new ArrayList<>()).add(entity);
         }
         return Flux.fromIterable(idsByType.entrySet())
                 .concatMap(entry -> {
                     EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(entry.getKey());
+                    Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+                    if (softDelete.isPresent()) {
+                        Object deletedAt = currentTimeFor(softDelete.get());
+                        for (T entity : entitiesByType.get(entry.getKey())) {
+                            softDelete.get().write(entity, deletedAt);
+                        }
+                        return sqlExecutor.execute(
+                                dialect.sqlRenderer().softDeleteByIds(metadata, entry.getValue(), deletedAt));
+                    }
                     return sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, entry.getValue()));
                 })
                 .reduce(0L, Long::sum);
@@ -260,6 +289,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             idValues.add(id);
         }
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+        if (softDelete.isPresent()) {
+            Object deletedAt = currentTimeFor(softDelete.get());
+            return sqlExecutor.execute(dialect.sqlRenderer().softDeleteByIds(metadata, idValues, deletedAt));
+        }
         return sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, idValues));
     }
 
@@ -356,5 +390,25 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @SuppressWarnings("unchecked")
     private <T> Class<T> entityType(T entity) {
         return (Class<T>) entity.getClass();
+    }
+
+    /**
+     * {@code @SoftDelete} 컬럼 타입에 맞춰 현재 시각을 만든다. 지원 타입은
+     * {@link Instant}, {@link LocalDateTime}, {@link OffsetDateTime}이며,
+     * factory에서 이미 타입 검증을 했으므로 다른 타입이 도달하면 metadata 오류로 본다.
+     */
+    private Object currentTimeFor(PersistentProperty softDeleteProperty) {
+        Instant now = clock.instant();
+        Class<?> type = softDeleteProperty.javaType();
+        if (type == Instant.class) {
+            return now;
+        }
+        if (type == LocalDateTime.class) {
+            return LocalDateTime.ofInstant(now, clock.getZone());
+        }
+        if (type == OffsetDateTime.class) {
+            return OffsetDateTime.ofInstant(now, clock.getZone() == null ? ZoneOffset.UTC : clock.getZone());
+        }
+        throw new IllegalStateException("Unsupported @SoftDelete type " + type.getName());
     }
 }
