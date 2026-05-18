@@ -1,5 +1,6 @@
 package io.nova.dialect.postgresql;
 
+import io.nova.annotation.GenerationType;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
 import io.nova.sql.AbstractSchemaGenerator;
@@ -64,6 +65,11 @@ public final class PostgresqlDialect implements Dialect {
         protected String insertSuffix(EntityMetadata<?> metadata) {
             PersistentProperty idProperty = metadata.idProperty();
             if (idProperty == null || !idProperty.generated()) {
+                return "";
+            }
+            // SEQUENCE/UUID는 INSERT 직전에 애플리케이션이 id를 채워서 보내므로 returning 절이 필요 없다.
+            GenerationType strategy = idProperty.generationType();
+            if (strategy == GenerationType.SEQUENCE || strategy == GenerationType.UUID) {
                 return "";
             }
             return " returning " + column(idProperty);

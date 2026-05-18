@@ -21,7 +21,10 @@ import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.support.fixtures.FixtureEntities.GeneratedVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SampleOrder;
+import io.nova.support.fixtures.FixtureEntities.SequencedAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
+import io.nova.support.fixtures.FixtureEntities.StringUuidAccount;
+import io.nova.support.fixtures.FixtureEntities.UuidAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import io.nova.tx.ReactiveTransactionOperations;
 import io.nova.tx.TransactionContext;
@@ -1172,6 +1175,158 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void saveOnSequenceEntityFetchesNextValueThenIssuesInsert() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 99L)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SequencedAccount account = new SequencedAccount(null, "seq@nova.io");
+
+        StepVerifier.create(operations.save(account))
+                .expectNextMatches(saved -> saved == account && Objects.equals(saved.getId(), 99L))
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size(),
+                "execute는 INSERT 한 건만 호출되어야 한다 (sequence 조회는 queryOne 경로)");
+        SqlStatement insertStmt = executor.executedStatements.get(0);
+        assertEquals(
+                "insert into sequenced_accounts (id, email_address) values (?, ?)",
+                insertStmt.sql()
+        );
+        assertEquals(List.of(99L, "seq@nova.io"), insertStmt.bindings());
+        assertEquals(0, executor.generatedKeyCalls,
+                "SEQUENCE 경로는 executeAndReturnGeneratedKey를 사용하지 않아야 한다");
+    }
+
+    @Test
+    void saveOnSequenceEntityIssuesSequenceQueryBeforeInsert() {
+        OrderedCapturingExecutor executor = new OrderedCapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 17L)));
+        SimpleReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
+                new EntityMetadataFactory(new DefaultNamingStrategy()),
+                new RecordingDialect(),
+                executor,
+                new EntityStateDetector(),
+                new RecordingTransactions()
+        );
+
+        StepVerifier.create(operations.save(new SequencedAccount(null, "seq@nova.io")))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        assertEquals(List.of("queryOne", "execute"), executor.calls,
+                "SEQUENCE 조회가 INSERT 보다 먼저 발생해야 한다");
+        assertEquals(
+                "select nextval('sequenced_accounts_seq')",
+                executor.sequenceQuery.sql()
+        );
+    }
+
+    @Test
+    void saveOnUuidEntityAssignsRandomUuidAndIssuesInsert() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        UuidAccount account = new UuidAccount(null, "uuid@nova.io");
+
+        StepVerifier.create(operations.save(account))
+                .expectNextMatches(saved -> saved == account && saved.getId() != null)
+                .verifyComplete();
+
+        java.util.UUID assigned = account.getId();
+        SqlStatement statement = executor.lastStatement;
+        assertEquals(
+                "insert into uuid_accounts (id, email_address) values (?, ?)",
+                statement.sql()
+        );
+        assertEquals(List.of(assigned, "uuid@nova.io"), statement.bindings());
+        assertEquals(0, executor.generatedKeyCalls);
+    }
+
+    @Test
+    void saveOnStringUuidEntityAssignsUuidToString() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        StringUuidAccount account = new StringUuidAccount(null, "uuid@nova.io");
+
+        StepVerifier.create(operations.save(account))
+                .expectNextMatches(saved -> saved.getId() != null
+                        && java.util.UUID.fromString(saved.getId()) != null)
+                .verifyComplete();
+
+        SqlStatement statement = executor.lastStatement;
+        assertEquals(
+                "insert into string_uuid_accounts (id, email_address) values (?, ?)",
+                statement.sql()
+        );
+        assertEquals(2, statement.bindings().size());
+        assertTrue(statement.bindings().get(0) instanceof String);
+        assertEquals(account.getId(), statement.bindings().get(0));
+    }
+
+    @Test
+    void saveOnUuidEntityPreservesExplicitlySetId() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        java.util.UUID explicit = java.util.UUID.fromString("00000000-0000-0000-0000-000000000001");
+        UuidAccount account = new UuidAccount(explicit, "uuid@nova.io");
+
+        StepVerifier.create(operations.save(account))
+                .expectNextMatches(saved -> Objects.equals(saved.getId(), explicit))
+                .verifyComplete();
+    }
+
+    @Test
+    void saveAllOnUuidEntitiesStampsIdsAndBatchesIntoSingleCall() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<UuidAccount> accounts = List.of(
+                new UuidAccount(null, "a@nova.io"),
+                new UuidAccount(null, "b@nova.io")
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNextCount(2)
+                .verifyComplete();
+
+        for (UuidAccount account : accounts) {
+            org.junit.jupiter.api.Assertions.assertNotNull(account.getId(), "UUID id가 채워져야 한다");
+        }
+        assertEquals(1, executor.batchCalls.size());
+        BatchCall call = executor.batchCalls.get(0);
+        assertEquals("insert into uuid_accounts (id, email_address) values (?, ?)", call.sql());
+        assertEquals(2, call.bindingsList().size());
+        assertEquals(accounts.get(0).getId(), call.bindingsList().get(0).get(0));
+        assertEquals(accounts.get(1).getId(), call.bindingsList().get(1).get(0));
+    }
+
+    @Test
+    void saveAllOnSequenceEntitiesFallsBackToSingleSaves() {
+        OrderedCapturingExecutor executor = new OrderedCapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 10L)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 11L)));
+        SimpleReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
+                new EntityMetadataFactory(new DefaultNamingStrategy()),
+                new RecordingDialect(),
+                executor,
+                new EntityStateDetector(),
+                new RecordingTransactions()
+        );
+        List<SequencedAccount> accounts = List.of(
+                new SequencedAccount(null, "a@nova.io"),
+                new SequencedAccount(null, "b@nova.io")
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNextCount(2)
+                .verifyComplete();
+
+        assertTrue(executor.batchCalls.isEmpty(),
+                "SEQUENCE 그룹은 batch 경로 대신 단건 save로 폴백되어야 한다");
+        assertEquals(Long.valueOf(10L), accounts.get(0).getId());
+        assertEquals(Long.valueOf(11L), accounts.get(1).getId());
+        assertEquals(List.of("queryOne", "execute", "queryOne", "execute"), executor.calls);
+    }
+
+    @Test
     void saveAllInitializesVersionOnNewVersionedEntitiesInBatch() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
@@ -1420,6 +1575,11 @@ class SimpleReactiveEntityOperationsTest {
         public SchemaGenerator schemaGenerator() {
             return schemaGenerator;
         }
+
+        @Override
+        public String sequenceNextValueSql(String sequenceName) {
+            return "select nextval('" + sequenceName + "')";
+        }
     }
 
     /**
@@ -1560,6 +1720,45 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     private record BatchCall(String sql, List<List<Object>> bindingsList) {
+    }
+
+    /**
+     * 호출 순서(queryOne vs execute)를 기록해 SEQUENCE 조회와 INSERT의 순서를 검증할 수 있게 한다.
+     */
+    private static final class OrderedCapturingExecutor implements SqlExecutor {
+        private final Deque<RowAccessor> queryOneResults = new ArrayDeque<>();
+        private final Deque<Long> executeResults = new ArrayDeque<>();
+        private final List<BatchCall> batchCalls = new ArrayList<>();
+        private final List<String> calls = new ArrayList<>();
+        private SqlStatement sequenceQuery;
+
+        @Override
+        public Mono<Long> execute(SqlStatement statement) {
+            calls.add("execute");
+            long result = executeResults.isEmpty() ? 1L : executeResults.removeFirst();
+            return Mono.just(result);
+        }
+
+        @Override
+        public <T> Mono<T> queryOne(SqlStatement statement, Function<RowAccessor, T> mapper) {
+            calls.add("queryOne");
+            if (sequenceQuery == null) {
+                sequenceQuery = statement;
+            }
+            return Mono.fromSupplier(() -> mapper.apply(queryOneResults.removeFirst()));
+        }
+
+        @Override
+        public <T> Flux<T> queryMany(SqlStatement statement, Function<RowAccessor, T> mapper) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Mono<Long> executeBatch(String sql, List<List<Object>> bindingsList) {
+            calls.add("executeBatch");
+            batchCalls.add(new BatchCall(sql, List.copyOf(bindingsList)));
+            return Mono.just((long) bindingsList.size());
+        }
     }
 
     private record MapRowAccessor(Map<String, Object> values) implements RowAccessor {

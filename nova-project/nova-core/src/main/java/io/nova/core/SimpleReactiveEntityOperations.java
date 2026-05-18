@@ -1,5 +1,6 @@
 package io.nova.core;
 
+import io.nova.annotation.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.function.Function;
 
 /**
@@ -76,21 +78,64 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (isNew) {
             auditApplier.applyOnInsert(entity, metadata);
             initializeVersionIfAbsent(metadata, entity);
-            if (metadata.idProperty().generated()) {
-                SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
-                PersistentProperty idProperty = metadata.idProperty();
-                return sqlExecutor.executeAndReturnGeneratedKey(statement, idProperty.columnName(), idProperty.javaType())
-                        .map(key -> {
-                            idProperty.write(entity, idProperty.toPropertyValue(key));
-                            return entity;
-                        })
-                        .defaultIfEmpty(entity);
-            }
-            SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
-            return sqlExecutor.execute(statement).thenReturn(entity);
+            return insertNew(metadata, entity);
         }
         auditApplier.applyOnUpdate(entity, metadata);
         return updateExisting(metadata, entity);
+    }
+
+    private <T> Mono<T> insertNew(EntityMetadata<T> metadata, T entity) {
+        PersistentProperty idProperty = metadata.idProperty();
+        GenerationType strategy = idProperty.generationType();
+        if (strategy == GenerationType.SEQUENCE) {
+            return sqlExecutor.queryOne(
+                            new SqlStatement(dialect.sequenceNextValueSql(idProperty.generator()), List.of()),
+                            row -> row.get(SEQUENCE_VALUE_COLUMN, idProperty.javaType()))
+                    .flatMap(value -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(value));
+                        SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+                        return sqlExecutor.execute(statement).thenReturn(entity);
+                    });
+        }
+        if (strategy == GenerationType.UUID) {
+            assignUuidId(idProperty, entity);
+            SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+            return sqlExecutor.execute(statement).thenReturn(entity);
+        }
+        if (idProperty.generated()) {
+            SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+            return sqlExecutor.executeAndReturnGeneratedKey(statement, idProperty.columnName(), idProperty.javaType())
+                    .map(key -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(key));
+                        return entity;
+                    })
+                    .defaultIfEmpty(entity);
+        }
+        SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+        return sqlExecutor.execute(statement).thenReturn(entity);
+    }
+
+    /**
+     * Sequence executor가 nextval 결과를 단일 컬럼으로 회수할 때 사용하는 RowAccessor 컬럼명이다.
+     * R2DBC 어댑터는 index 기반 컬럼 접근을 지원하지 않는 RowAccessor 구현일 수 있으므로
+     * 컬럼명 기준 fallback도 제공해야 한다. 기본 R2DBC 어댑터는 단일 컬럼 결과를 컬럼 이름 또는
+     * 위치 어느 쪽으로 요청하든 동일한 값을 돌려준다.
+     */
+    private static final String SEQUENCE_VALUE_COLUMN = "nextval";
+
+    private static void assignUuidId(PersistentProperty idProperty, Object entity) {
+        if (idProperty.read(entity) != null) {
+            return;
+        }
+        UUID generated = UUID.randomUUID();
+        Class<?> type = idProperty.javaType();
+        if (type == UUID.class) {
+            idProperty.write(entity, generated);
+        } else if (type == String.class) {
+            idProperty.write(entity, generated.toString());
+        } else {
+            throw new IllegalStateException("Unsupported UUID id type " + type.getName());
+        }
     }
 
     private <T> Mono<T> updateExisting(EntityMetadata<T> metadata, T entity) {
@@ -366,6 +411,17 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (!key.isNew() && metadata.versionProperty().isPresent()) {
             // optimistic locking은 entity별 affected rows 검증이 필요해 batch 경로로 묶을 수 없다.
             return Flux.fromIterable(entities).concatMap(this::save);
+        }
+        if (key.isNew() && metadata.idProperty().generationType() == GenerationType.SEQUENCE) {
+            // SEQUENCE는 엔티티별 nextval 조회가 필요해 batch로 묶을 수 없다.
+            return Flux.fromIterable(entities).concatMap(this::save);
+        }
+        if (key.isNew() && metadata.idProperty().generationType() == GenerationType.UUID) {
+            // UUID는 batch 이전에 모든 엔티티에 식별자를 찍어두면 동일 SQL 셰이프로 batch가 가능하다.
+            PersistentProperty idProperty = metadata.idProperty();
+            for (T entity : entities) {
+                assignUuidId(idProperty, entity);
+            }
         }
         if (key.isNew() && metadata.versionProperty().isPresent()) {
             // insert 전에 각 엔티티의 version을 0으로 초기화한다. 배치 SQL과 일관되게 binding하기 위해.

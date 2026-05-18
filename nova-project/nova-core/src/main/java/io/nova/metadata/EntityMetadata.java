@@ -74,8 +74,22 @@ public final class EntityMetadata<T> {
 
     public List<PersistentProperty> insertableProperties() {
         return properties.stream()
-                .filter(property -> !property.id() || !property.generated())
+                .filter(property -> !property.id() || !isDatabaseGeneratedId(property))
                 .toList();
+    }
+
+    /**
+     * INSERT 절에서 id 컬럼을 제외해야 하는지(=DB가 직접 채워주는 전략인지) 판단한다.
+     * SEQUENCE와 UUID는 애플리케이션 측이 INSERT 직전에 id를 미리 할당하므로 INSERT에 포함된다.
+     */
+    private static boolean isDatabaseGeneratedId(PersistentProperty property) {
+        if (!property.generated()) {
+            return false;
+        }
+        return switch (property.generationType()) {
+            case IDENTITY, AUTO -> true;
+            case SEQUENCE, UUID, NONE -> false;
+        };
     }
 
     public List<PersistentProperty> updatableProperties() {
