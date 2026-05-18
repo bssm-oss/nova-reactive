@@ -2,6 +2,9 @@ package io.nova.core;
 
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.query.AggregateFunction;
+import io.nova.query.AggregateSpec;
+import io.nova.query.Aggregation;
 import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
 import io.nova.query.Pageable;
@@ -41,6 +44,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -1873,6 +1877,57 @@ class SimpleReactiveEntityOperationsTest {
         MultipleConstructorProjection(Long id) {
             this(id, null);
         }
+    }
+
+    @Test
+    void aggregateRendersSqlAndMapsAliasColumns() {
+        CapturingExecutor executor = new CapturingExecutor();
+        LinkedHashMap<String, Object> rowValues = new LinkedHashMap<>();
+        rowValues.put("active", true);
+        rowValues.put("c", 7L);
+        executor.queryManyResults.addLast(List.of(new MapRowAccessor(rowValues)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        AggregateSpec spec = AggregateSpec.of(Aggregation.count("id").as("c"))
+                .groupBy("active");
+
+        StepVerifier.create(operations.aggregate(SampleAccount.class, spec))
+                .expectNextMatches(row -> Objects.equals(row.get("active", Boolean.class), true)
+                        && Objects.equals(row.get("c", Long.class), 7L))
+                .verifyComplete();
+
+        assertEquals(
+                "select active as active, count(id) as c from accounts group by active",
+                executor.lastStatement.sql()
+        );
+    }
+
+    @Test
+    void aggregateAppliesSoftDeleteAliveGuard() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of());
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        AggregateSpec spec = AggregateSpec.of(Aggregation.count("id").as("c"));
+
+        StepVerifier.create(operations.aggregate(SoftDeletableAccount.class, spec))
+                .verifyComplete();
+
+        assertEquals(
+                "select count(id) as c from soft_deletable_accounts where deleted_at is null",
+                executor.lastStatement.sql()
+        );
+    }
+
+    @Test
+    void aggregateRejectsNullArguments() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        assertThrows(NullPointerException.class,
+                () -> operations.aggregate(null, AggregateSpec.of(Aggregation.count("id"))));
+        assertThrows(NullPointerException.class,
+                () -> operations.aggregate(SampleAccount.class, (AggregateSpec) null));
     }
 
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {

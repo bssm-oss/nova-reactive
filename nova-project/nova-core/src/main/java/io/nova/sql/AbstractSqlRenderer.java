@@ -2,6 +2,9 @@ package io.nova.sql;
 
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
+import io.nova.query.AggregateFunction;
+import io.nova.query.AggregateSpec;
+import io.nova.query.Aggregation;
 import io.nova.query.ComparisonOperator;
 import io.nova.query.CompoundPredicate;
 import io.nova.query.Condition;
@@ -426,6 +429,60 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         return new SqlStatement(sql.toString(), context.bindings());
     }
 
+    @Override
+    public SqlStatement aggregate(EntityMetadata<?> metadata, AggregateSpec spec) {
+        Objects.requireNonNull(spec, "spec must not be null");
+        if (spec.aggregations().isEmpty()) {
+            throw new IllegalArgumentException("aggregate requires at least one Aggregation");
+        }
+        RenderContext context = new RenderContext();
+        List<String> selectItems = new ArrayList<>(spec.aggregations().size() + spec.groupBy().size());
+        for (String groupProperty : spec.groupBy()) {
+            PersistentProperty property = findProperty(metadata, groupProperty);
+            selectItems.add(column(property) + " as " + dialect.quote(property.columnName()));
+        }
+        for (Aggregation aggregation : spec.aggregations()) {
+            PersistentProperty property = findProperty(metadata, aggregation.property());
+            selectItems.add(renderAggregate(aggregation, property) + " as " + dialect.quote(aggregation.resolvedAlias()));
+        }
+        StringBuilder sql = new StringBuilder("select ")
+                .append(String.join(", ", selectItems))
+                .append(" from ")
+                .append(table(metadata));
+        appendWhereClause(sql, context, metadata, spec.where());
+        if (!spec.groupBy().isEmpty()) {
+            List<String> groupColumns = new ArrayList<>(spec.groupBy().size());
+            for (String groupProperty : spec.groupBy()) {
+                PersistentProperty property = findProperty(metadata, groupProperty);
+                groupColumns.add(column(property));
+            }
+            sql.append(" group by ").append(String.join(", ", groupColumns));
+        }
+        if (spec.having() != null) {
+            sql.append(" having ").append(renderHaving(context, metadata, spec));
+        }
+        appendOrderBy(sql, metadata, spec.sort(), spec);
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    private String renderAggregate(Aggregation aggregation, PersistentProperty property) {
+        AggregateFunction function = aggregation.function();
+        String columnExpression = column(property);
+        return switch (function) {
+            case COUNT -> "count(" + columnExpression + ")";
+            case COUNT_DISTINCT -> "count(distinct " + columnExpression + ")";
+            case SUM -> "sum(" + columnExpression + ")";
+            case AVG -> "avg(" + columnExpression + ")";
+            case MIN -> "min(" + columnExpression + ")";
+            case MAX -> "max(" + columnExpression + ")";
+        };
+    }
+
+    private String renderHaving(RenderContext context, EntityMetadata<?> metadata, AggregateSpec spec) {
+        AggregatePredicateLookup lookup = new AggregatePredicateLookup(spec);
+        return renderPredicateWithLookup(context, metadata, spec.having(), lookup);
+    }
+
     /**
      * pageable 명세가 있으면 limit/offset용 bind marker를 SQL 뒤에 추가한다. cursor가 함께 설정돼
      * 있으면 keyset pagination이 적용된 것이므로 OFFSET은 생략하고 LIMIT만 렌더한다 — cursor
@@ -537,109 +594,172 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     private String renderPredicate(RenderContext context, EntityMetadata<?> metadata, Predicate predicate) {
+        return renderPredicateWithLookup(context, metadata, predicate, null);
+    }
+
+    /**
+     * predicate를 SQL 절로 렌더한다. {@code aliasLookup}이 주어지면 condition의 property 이름이
+     * 엔티티 property 대신 집계 alias로 먼저 해석된다 — HAVING 절이 집계 결과를 alias로 참조할 때 사용된다.
+     */
+    private String renderPredicateWithLookup(
+            RenderContext context,
+            EntityMetadata<?> metadata,
+            Predicate predicate,
+            AggregatePredicateLookup aliasLookup
+    ) {
         if (predicate instanceof Condition condition) {
-            PersistentProperty property = findProperty(metadata, condition.property());
+            ResolvedExpression expression = resolveExpression(metadata, condition.property(), aliasLookup);
             ComparisonOperator operator = condition.operator();
             if (operator == ComparisonOperator.IS_NULL || operator == ComparisonOperator.IS_NOT_NULL) {
-                return column(property) + " " + operator.sql();
+                return expression.sqlExpression() + " " + operator.sql();
             }
             if (operator == ComparisonOperator.IN) {
-                return renderInPredicate(context, property, condition.value());
+                return renderInExpression(context, expression, condition.value());
             }
             if (operator == ComparisonOperator.NOT_IN) {
-                return renderNotInPredicate(context, property, condition.value());
+                return renderNotInExpression(context, expression, condition.value());
             }
             if (operator == ComparisonOperator.BETWEEN) {
-                return renderBetweenPredicate(context, property, condition.value());
+                return renderBetweenExpression(context, expression, condition.value());
             }
             String marker = dialect.bindMarkers().marker(context.nextIndex());
-            context.addBinding(property.toColumnValue(condition.value()));
-            return column(property) + " " + operator.sql() + " " + marker;
+            context.addBinding(expression.toColumnValue(condition.value()));
+            return expression.sqlExpression() + " " + operator.sql() + " " + marker;
         }
         if (predicate instanceof NegationPredicate negation) {
-            return "not (" + renderPredicate(context, metadata, negation.inner()) + ")";
+            return "not (" + renderPredicateWithLookup(context, metadata, negation.inner(), aliasLookup) + ")";
         }
         CompoundPredicate compound = (CompoundPredicate) predicate;
         return compound.predicates().stream()
-                .map(child -> "(" + renderPredicate(context, metadata, child) + ")")
+                .map(child -> "(" + renderPredicateWithLookup(context, metadata, child, aliasLookup) + ")")
                 .collect(Collectors.joining(" " + compound.operator().name().toLowerCase() + " "));
     }
 
     /**
-     * IN 조건을 col in (?, ?, ?) 로 펼친다. 빈 컬렉션은 Hibernate 6.3+/jOOQ와 동일하게
-     * {@code 1 = 0}(항상 거짓)으로 치환해 0행 매칭을 보장한다.
+     * predicate condition의 property 이름을 SQL 표현으로 변환한다. {@code aliasLookup}이 있으면
+     * 동일 이름의 집계 alias가 먼저 매칭되며, 그 경우 결과 SQL 표현은 {@code count(distinct x)} 같은
+     * 집계 함수 호출이고 binding-time converter는 적용하지 않는다.
      */
-    private String renderInPredicate(RenderContext context, PersistentProperty property, Object value) {
+    private ResolvedExpression resolveExpression(
+            EntityMetadata<?> metadata,
+            String name,
+            AggregatePredicateLookup aliasLookup
+    ) {
+        if (aliasLookup != null) {
+            Aggregation aggregation = aliasLookup.findAggregationByAlias(name);
+            if (aggregation != null) {
+                PersistentProperty property = findProperty(metadata, aggregation.property());
+                return new ResolvedExpression(renderAggregate(aggregation, property), null);
+            }
+        }
+        PersistentProperty property = findProperty(metadata, name);
+        return new ResolvedExpression(column(property), property);
+    }
+
+    private String renderInExpression(RenderContext context, ResolvedExpression expression, Object value) {
         if (!(value instanceof Collection<?> collection)) {
             throw new IllegalArgumentException(
-                    "IN operator requires a Collection value for property " + property.propertyName());
+                    "IN operator requires a Collection value for " + expression.sqlExpression());
         }
         if (collection.isEmpty()) {
             return "1 = 0";
         }
-        StringBuilder builder = new StringBuilder(column(property)).append(" in (");
+        StringBuilder builder = new StringBuilder(expression.sqlExpression()).append(" in (");
         int index = 0;
         for (Object element : collection) {
             if (index > 0) {
                 builder.append(", ");
             }
             builder.append(dialect.bindMarkers().marker(context.nextIndex()));
-            context.addBinding(property.toColumnValue(element));
+            context.addBinding(expression.toColumnValue(element));
             index++;
         }
         builder.append(")");
         return builder.toString();
     }
 
-    /**
-     * NOT IN 조건을 col not in (?, ?, ?) 로 펼친다. 빈 컬렉션은 Hibernate 6.3+/jOOQ와 동일하게
-     * {@code 1 = 1}(항상 참)로 치환한다 — "0개 ID 중 어느 것과도 다른 행"은 모든 행에 해당.
-     */
-    private String renderNotInPredicate(RenderContext context, PersistentProperty property, Object value) {
+    private String renderNotInExpression(RenderContext context, ResolvedExpression expression, Object value) {
         if (!(value instanceof Collection<?> collection)) {
             throw new IllegalArgumentException(
-                    "NOT IN operator requires a Collection value for property " + property.propertyName());
+                    "NOT IN operator requires a Collection value for " + expression.sqlExpression());
         }
         if (collection.isEmpty()) {
             return "1 = 1";
         }
-        StringBuilder builder = new StringBuilder(column(property)).append(" not in (");
+        StringBuilder builder = new StringBuilder(expression.sqlExpression()).append(" not in (");
         int index = 0;
         for (Object element : collection) {
             if (index > 0) {
                 builder.append(", ");
             }
             builder.append(dialect.bindMarkers().marker(context.nextIndex()));
-            context.addBinding(property.toColumnValue(element));
+            context.addBinding(expression.toColumnValue(element));
             index++;
         }
         builder.append(")");
         return builder.toString();
     }
 
-    /**
-     * BETWEEN 조건을 col between ? and ? 로 펼친다. 양 끝 값 inclusive (SQL 표준).
-     */
-    private String renderBetweenPredicate(RenderContext context, PersistentProperty property, Object value) {
+    private String renderBetweenExpression(RenderContext context, ResolvedExpression expression, Object value) {
         if (!(value instanceof List<?> list) || list.size() != 2) {
             throw new IllegalArgumentException(
-                    "BETWEEN operator requires a List of exactly two values for property " + property.propertyName());
+                    "BETWEEN operator requires a List of exactly two values for " + expression.sqlExpression());
         }
         String lowMarker = dialect.bindMarkers().marker(context.nextIndex());
-        context.addBinding(property.toColumnValue(list.get(0)));
+        context.addBinding(expression.toColumnValue(list.get(0)));
         String highMarker = dialect.bindMarkers().marker(context.nextIndex());
-        context.addBinding(property.toColumnValue(list.get(1)));
-        return column(property) + " between " + lowMarker + " and " + highMarker;
+        context.addBinding(expression.toColumnValue(list.get(1)));
+        return expression.sqlExpression() + " between " + lowMarker + " and " + highMarker;
+    }
+
+    /**
+     * resolveExpression의 결과를 SQL 표현과 (있다면) binding converter로 묶은 wrapper다.
+     * 집계 표현(예: {@code count(distinct id)})은 binding 측 converter가 없는 raw 값을 그대로 사용한다.
+     */
+    private record ResolvedExpression(String sqlExpression, PersistentProperty property) {
+        Object toColumnValue(Object value) {
+            if (property == null) {
+                return value;
+            }
+            return property.toColumnValue(value);
+        }
+    }
+
+    private static final class AggregatePredicateLookup {
+        private final AggregateSpec spec;
+
+        AggregatePredicateLookup(AggregateSpec spec) {
+            this.spec = spec;
+        }
+
+        Aggregation findAggregationByAlias(String alias) {
+            for (Aggregation aggregation : spec.aggregations()) {
+                if (aggregation.resolvedAlias().equals(alias)) {
+                    return aggregation;
+                }
+            }
+            return null;
+        }
     }
 
     private void appendOrderBy(StringBuilder sql, EntityMetadata<?> metadata, Sort sort) {
+        appendOrderBy(sql, metadata, sort, null);
+    }
+
+    /**
+     * order by 절을 sql 뒤에 추가한다. {@code spec}이 주어지면 order property가 우선 집계 alias로
+     * 해석되어 {@code count(distinct x)} 같은 집계 표현 자체로 정렬한다 — 일치하는 alias가 없으면
+     * 일반 property 해석으로 폴백한다. {@code spec}이 null이면 일반 property만 허용한다.
+     */
+    private void appendOrderBy(StringBuilder sql, EntityMetadata<?> metadata, Sort sort, AggregateSpec spec) {
         if (sort == null || sort.orders().isEmpty()) {
             return;
         }
+        AggregatePredicateLookup lookup = spec == null ? null : new AggregatePredicateLookup(spec);
         String orderBy = sort.orders().stream()
                 .map(order -> {
-                    PersistentProperty property = findProperty(metadata, order.property());
-                    return column(property) + " " + order.direction().name().toLowerCase();
+                    ResolvedExpression expression = resolveExpression(metadata, order.property(), lookup);
+                    return expression.sqlExpression() + " " + order.direction().name().toLowerCase();
                 })
                 .collect(Collectors.joining(", "));
         sql.append(" order by ").append(orderBy);

@@ -5,6 +5,9 @@ import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
+import io.nova.query.AggregateRow;
+import io.nova.query.AggregateSpec;
+import io.nova.query.Aggregation;
 import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
 import io.nova.query.Projection;
@@ -323,6 +326,50 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
         return transactionOperations.inTransaction(ignored -> callback.apply(this));
+    }
+
+    @Override
+    public <T> Flux<AggregateRow> aggregate(Class<T> entityType, AggregateSpec spec) {
+        Objects.requireNonNull(entityType, "entityType must not be null");
+        Objects.requireNonNull(spec, "spec must not be null");
+        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        SqlStatement statement = dialect.sqlRenderer().aggregate(metadata, spec);
+        List<String> columnOrder = aggregateColumnOrder(metadata, spec);
+        return sqlExecutor.queryMany(statement, row -> mapAggregateRow(row, columnOrder));
+    }
+
+    /**
+     * 집계 결과 row에서 읽을 컬럼 이름 순서를 만든다. group property는 SELECT 절에서 entity의
+     * column name으로 alias되어 있으므로 column name 기준으로 lookup하고, 집계 컬럼은 alias로 lookup한다.
+     */
+    private List<String> aggregateColumnOrder(EntityMetadata<?> metadata, AggregateSpec spec) {
+        List<String> order = new ArrayList<>(spec.groupBy().size() + spec.aggregations().size());
+        for (String groupProperty : spec.groupBy()) {
+            PersistentProperty property = findProperty(metadata, groupProperty);
+            order.add(property.columnName());
+        }
+        for (Aggregation aggregation : spec.aggregations()) {
+            order.add(aggregation.resolvedAlias());
+        }
+        return order;
+    }
+
+    private PersistentProperty findProperty(EntityMetadata<?> metadata, String propertyName) {
+        for (PersistentProperty property : metadata.properties()) {
+            if (property.propertyName().equals(propertyName)) {
+                return property;
+            }
+        }
+        throw new IllegalArgumentException(
+                "Unknown property " + propertyName + " on " + metadata.entityType().getName());
+    }
+
+    private AggregateRow mapAggregateRow(RowAccessor row, List<String> columnOrder) {
+        LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+        for (String column : columnOrder) {
+            values.put(column, row.get(column, Object.class));
+        }
+        return new AggregateRow(values);
     }
 
     @Override

@@ -3,6 +3,8 @@ package io.nova.sql;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.query.AggregateSpec;
+import io.nova.query.Aggregation;
 import io.nova.query.Criteria;
 import io.nova.query.Cursor;
 import io.nova.query.CursorField;
@@ -785,6 +787,167 @@ class AbstractSqlRendererTest {
 
         assertEquals("delete from accounts where id = ?", statement.sql());
         assertEquals(java.util.List.of(7L), statement.bindings());
+    }
+
+    @Test
+    void aggregateRendersSingleCountWithDefaultAlias() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(Aggregation.count("id"))
+        );
+
+        assertEquals("select count(id) as count from accounts", statement.sql());
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void aggregateRendersMultipleFunctionsWithExplicitAliases() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(
+                        Aggregation.countDistinct("email").as("unique_emails"),
+                        Aggregation.sum("active").as("active_sum")
+                )
+        );
+
+        assertEquals(
+                "select count(distinct email_address) as unique_emails, sum(active) as active_sum from accounts",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void aggregateRendersGroupByAndPlacesGroupColumnsInSelect() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(Aggregation.count("id").as("c")).groupBy("active")
+        );
+
+        assertEquals(
+                "select active as active, count(id) as c from accounts group by active",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void aggregateRendersWhereAndGroupByInExpectedOrder() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(Aggregation.count("id").as("c"))
+                        .where(Criteria.eq("active", true))
+                        .groupBy("email")
+        );
+
+        assertEquals(
+                "select email_address as email_address, count(id) as c from accounts where active = ? group by email_address",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(true), statement.bindings());
+    }
+
+    @Test
+    void aggregateRendersHavingOnAggregateAlias() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(Aggregation.count("id").as("c"))
+                        .groupBy("active")
+                        .having(Criteria.gt("c", 5L))
+        );
+
+        assertEquals(
+                "select active as active, count(id) as c from accounts group by active having count(id) > ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(5L), statement.bindings());
+    }
+
+    @Test
+    void aggregateHavingFallsBackToEntityPropertyWhenAliasNotMatched() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(Aggregation.count("id").as("c"))
+                        .groupBy("active")
+                        .having(Criteria.eq("email", "x@nova.io"))
+        );
+
+        assertEquals(
+                "select active as active, count(id) as c from accounts group by active having email_address = ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("x@nova.io"), statement.bindings());
+    }
+
+    @Test
+    void aggregateRendersOrderByAggregateAliasAndGroupProperty() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(Aggregation.count("id").as("c"))
+                        .groupBy("active")
+                        .orderBy(Sort.by(Sort.Order.desc("c"), Sort.Order.asc("active")))
+        );
+
+        assertEquals(
+                "select active as active, count(id) as c from accounts group by active order by count(id) desc, active asc",
+                statement.sql()
+        );
+    }
+
+    @Test
+    void aggregateAppendsSoftDeleteAliveGuardInWhere() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                softMetadata,
+                AggregateSpec.of(Aggregation.count("id"))
+        );
+
+        assertEquals(
+                "select count(id) as count from soft_deletable_accounts where deleted_at is null",
+                statement.sql()
+        );
+    }
+
+    @Test
+    void aggregateRendersAllSixFunctionFormsCorrectly() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(
+                        Aggregation.count("id"),
+                        Aggregation.countDistinct("email").as("c2"),
+                        Aggregation.sum("id").as("s"),
+                        Aggregation.avg("id").as("a"),
+                        Aggregation.min("id").as("mn"),
+                        Aggregation.max("id").as("mx")
+                )
+        );
+
+        assertEquals(
+                "select count(id) as count, count(distinct email_address) as c2, sum(id) as s, avg(id) as a, min(id) as mn, max(id) as mx from accounts",
+                statement.sql()
+        );
+    }
+
+    @Test
+    void aggregateRejectsUnknownPropertyInAggregation() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().aggregate(metadata, AggregateSpec.of(Aggregation.sum("missing")))
+        );
+
+        assertEquals("Unknown property missing on " + SampleAccount.class.getName(), exception.getMessage());
+    }
+
+    @Test
+    void aggregateRejectsUnknownPropertyInGroupBy() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().aggregate(
+                        metadata,
+                        AggregateSpec.of(Aggregation.count("id")).groupBy("missing")
+                )
+        );
+
+        assertEquals("Unknown property missing on " + SampleAccount.class.getName(), exception.getMessage());
     }
 
     @Test
