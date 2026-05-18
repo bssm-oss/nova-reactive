@@ -478,6 +478,18 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         };
     }
 
+    /**
+     * HAVING 절을 렌더한다. predicate가 SELECT 절 집계의 alias를 참조하면 alias 자체가 아니라
+     * underlying aggregate expression(예: {@code count(distinct id)})을 다시 출력한다 —
+     * ANSI SQL은 HAVING에서 SELECT alias 참조를 의무화하지 않기 때문에, 모든 dialect에서
+     * portable한 형태를 만들기 위해 표현 재계산 정책을 채택한다.
+     * <p>
+     * MySQL과 PostgreSQL은 HAVING에서 SELECT alias 직접 참조를 허용하지만, alias 재참조와
+     * 표현 재계산의 의미가 항상 같다는 보장은 dialect/플래너 별로 달라질 수 있고, alias가 동일
+     * 이름 컬럼과 충돌할 가능성도 있다. underlying aggregate를 그대로 다시 출력하면 같은 행을
+     * 가리키는 동등한 SQL이 만들어지고, optimizer는 두 표현을 같은 집계 결과로 dedup해 비용
+     * 차이를 만들지 않는다.
+     */
     private String renderHaving(RenderContext context, EntityMetadata<?> metadata, AggregateSpec spec) {
         AggregatePredicateLookup lookup = new AggregatePredicateLookup(spec);
         return renderPredicateWithLookup(context, metadata, spec.having(), lookup);

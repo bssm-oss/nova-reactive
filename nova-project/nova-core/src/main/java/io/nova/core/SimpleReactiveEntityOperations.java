@@ -328,6 +328,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return transactionOperations.inTransaction(ignored -> callback.apply(this));
     }
 
+    /**
+     * {@link AggregateSpec}을 dialect의 {@link io.nova.sql.SqlRenderer#aggregate}로 SQL로 변환해
+     * 실행하고, 결과 row마다 {@link AggregateRow}를 발행한다.
+     * <p>
+     * <b>raw 타입 노출</b>: 반환된 {@link AggregateRow}의 값은 R2DBC driver가 돌려준 raw 객체를 그대로
+     * 보존한다 — entity-level converter나 cast는 적용되지 않는다. 같은 집계 함수라도 dialect/컬럼 타입에
+     * 따라 driver가 매핑하는 Java 타입이 다를 수 있다(예: {@code sum(integer)}이 PostgreSQL은 {@code Long},
+     * MySQL은 {@code BigDecimal}). 자세한 정책은 {@link AggregateRow}의 클래스 Javadoc 참고.
+     */
     @Override
     public <T> Flux<AggregateRow> aggregate(Class<T> entityType, AggregateSpec spec) {
         Objects.requireNonNull(entityType, "entityType must not be null");

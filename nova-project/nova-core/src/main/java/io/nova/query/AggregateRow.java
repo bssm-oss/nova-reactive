@@ -9,6 +9,13 @@ import java.util.Objects;
  * 보존하며, 그룹 컬럼과 집계 alias가 모두 포함된다.
  * <p>
  * column name lookup은 대소문자에 민감하다 (드라이버가 반환하는 이름을 그대로 사용한다).
+ * <p>
+ * <b>raw 타입 노출 정책</b>: 값은 R2DBC driver가 반환한 타입을 어떤 변환도 거치지 않고 그대로
+ * 보존한다 — {@code @Column}/{@code AttributeConverter} 같은 entity-level converter는 적용되지 않는다.
+ * 같은 집계라도 dialect에 따라 driver가 매핑하는 raw Java 타입이 달라질 수 있다. 예를 들어
+ * {@code sum(integer column)}은 PostgreSQL에서 {@code Long}, MySQL에서 {@code BigDecimal}로 들어올 수
+ * 있고, {@code avg(...)}는 일반적으로 {@code BigDecimal}이며 dialect/컬럼 타입에 따라 달라진다.
+ * 따라서 호출자는 사용 중인 dialect의 매핑 규칙을 알고 적절한 타입으로 변환해야 한다.
  */
 public final class AggregateRow {
     private final LinkedHashMap<String, Object> values;
