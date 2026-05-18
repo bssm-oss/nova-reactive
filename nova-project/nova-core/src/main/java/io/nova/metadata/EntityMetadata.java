@@ -12,6 +12,7 @@ public final class EntityMetadata<T> {
     private final PersistentProperty createdAtProperty;
     private final PersistentProperty updatedAtProperty;
     private final PersistentProperty softDeleteProperty;
+    private final PersistentProperty versionProperty;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -35,6 +36,10 @@ public final class EntityMetadata<T> {
                 .orElse(null);
         this.softDeleteProperty = this.properties.stream()
                 .filter(PersistentProperty::softDelete)
+                .findFirst()
+                .orElse(null);
+        this.versionProperty = this.properties.stream()
+                .filter(PersistentProperty::version)
                 .findFirst()
                 .orElse(null);
     }
@@ -61,6 +66,10 @@ public final class EntityMetadata<T> {
 
     public Optional<PersistentProperty> softDeleteProperty() {
         return Optional.ofNullable(softDeleteProperty);
+    }
+
+    public Optional<PersistentProperty> versionProperty() {
+        return Optional.ofNullable(versionProperty);
     }
 
     public List<PersistentProperty> insertableProperties() {

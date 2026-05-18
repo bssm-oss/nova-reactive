@@ -12,6 +12,7 @@ public final class PersistentProperty {
     private final String columnName;
     private final Class<?> javaType;
     private final boolean id;
+    private final boolean version;
     private final boolean nullable;
     private final GenerationType generationType;
     private final AttributeConverter<Object, Object> converter;
@@ -26,6 +27,7 @@ public final class PersistentProperty {
             String columnName,
             Class<?> javaType,
             boolean id,
+            boolean version,
             boolean nullable,
             GenerationType generationType,
             AttributeConverter<?, ?> converter,
@@ -39,6 +41,7 @@ public final class PersistentProperty {
         this.columnName = columnName;
         this.javaType = javaType;
         this.id = id;
+        this.version = version;
         this.nullable = nullable;
         this.generationType = generationType;
         this.converter = (AttributeConverter<Object, Object>) converter;
@@ -65,6 +68,10 @@ public final class PersistentProperty {
 
     public boolean id() {
         return id;
+    }
+
+    public boolean version() {
+        return version;
     }
 
     public boolean nullable() {

@@ -9,6 +9,7 @@ import io.nova.annotation.Id;
 import io.nova.annotation.SoftDelete;
 import io.nova.annotation.Table;
 import io.nova.annotation.UpdatedAt;
+import io.nova.annotation.Version;
 import io.nova.convert.AttributeConverter;
 
 import java.lang.reflect.Field;
@@ -31,6 +32,9 @@ public final class EntityMetadataFactory {
 
     private static final Set<Class<?>> SUPPORTED_SOFT_DELETE_TYPES =
             Set.of(Instant.class, LocalDateTime.class, OffsetDateTime.class);
+
+    private static final Set<Class<?>> SUPPORTED_VERSION_TYPES =
+            Set.of(Long.class, Integer.class, Short.class);
 
     private final NamingStrategy namingStrategy;
     private final Map<Class<?>, EntityMetadata<?>> cache = new ConcurrentHashMap<>();
@@ -76,6 +80,7 @@ public final class EntityMetadataFactory {
         PersistentProperty createdAtProperty = null;
         PersistentProperty updatedAtProperty = null;
         PersistentProperty softDeleteProperty = null;
+        PersistentProperty versionProperty = null;
         for (Field field : entityType.getDeclaredFields()) {
             if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
                 continue;
@@ -126,6 +131,12 @@ public final class EntityMetadataFactory {
                 }
                 softDeleteProperty = property;
             }
+            if (property.version()) {
+                if (versionProperty != null) {
+                    throw new IllegalArgumentException(entityType.getName() + " declares multiple @Version properties");
+                }
+                versionProperty = property;
+            }
         }
 
         if (idProperty == null) {
@@ -153,6 +164,19 @@ public final class EntityMetadataFactory {
                                 + "; supported types are java.time.Instant, java.time.LocalDateTime, java.time.OffsetDateTime");
             }
         }
+        boolean isVersion = field.isAnnotationPresent(Version.class);
+        if (isVersion) {
+            if (isId) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + field.getName() + " cannot be both @Id and @Version");
+            }
+            if (!SUPPORTED_VERSION_TYPES.contains(field.getType())) {
+                throw new IllegalArgumentException(
+                        "Unsupported version type " + field.getType().getName() + " on "
+                                + entityType.getName() + "." + field.getName()
+                                + "; supported types are Long, Integer, Short");
+            }
+        }
         String columnName = column != null && !column.value().isBlank()
                 ? column.value()
                 : namingStrategy.columnName(field.getName());
@@ -163,6 +187,7 @@ public final class EntityMetadataFactory {
                 columnName,
                 field.getType(),
                 isId,
+                isVersion,
                 column == null || column.nullable(),
                 generatedValue == null ? GenerationType.NONE : generatedValue.strategy(),
                 converters.get(field.getType()),

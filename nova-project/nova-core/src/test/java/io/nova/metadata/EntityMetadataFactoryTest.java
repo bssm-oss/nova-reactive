@@ -6,9 +6,13 @@ import io.nova.support.fixtures.FixtureEntities.DefaultNamedEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateCreatedAtEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateIdEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateSoftDeleteEntity;
+import io.nova.support.fixtures.FixtureEntities.DuplicateVersionEntity;
+import io.nova.support.fixtures.FixtureEntities.IdVersionConflictEntity;
+import io.nova.support.fixtures.FixtureEntities.IntegerVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.MissingEntityAnnotation;
 import io.nova.support.fixtures.FixtureEntities.MissingIdEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
+import io.nova.support.fixtures.FixtureEntities.ShortVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableLocalAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableOffsetAccount;
@@ -17,6 +21,8 @@ import io.nova.support.fixtures.FixtureEntities.StaticFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.Status;
 import io.nova.support.fixtures.FixtureEntities.UnsupportedAuditTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.UnsupportedSoftDeleteTypeEntity;
+import io.nova.support.fixtures.FixtureEntities.UnsupportedVersionTypeEntity;
+import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -204,6 +210,68 @@ class EntityMetadataFactoryTest {
         );
 
         assertTrue(exception.getMessage().contains("cannot be annotated with both @Id and @SoftDelete"));
+    }
+
+    @Test
+    void recognizesLongVersionProperty() {
+        EntityMetadata<VersionedAccount> metadata = factory.getEntityMetadata(VersionedAccount.class);
+
+        assertTrue(metadata.versionProperty().isPresent());
+        assertEquals("version", metadata.versionProperty().get().propertyName());
+        assertEquals(Long.class, metadata.versionProperty().get().javaType());
+        assertTrue(metadata.versionProperty().get().version());
+        assertFalse(metadata.versionProperty().get().id());
+    }
+
+    @Test
+    void recognizesIntegerAndShortVersionProperties() {
+        EntityMetadata<IntegerVersionedAccount> intMetadata =
+                factory.getEntityMetadata(IntegerVersionedAccount.class);
+        EntityMetadata<ShortVersionedAccount> shortMetadata =
+                factory.getEntityMetadata(ShortVersionedAccount.class);
+
+        assertTrue(intMetadata.versionProperty().isPresent());
+        assertEquals(Integer.class, intMetadata.versionProperty().get().javaType());
+        assertTrue(shortMetadata.versionProperty().isPresent());
+        assertEquals(Short.class, shortMetadata.versionProperty().get().javaType());
+    }
+
+    @Test
+    void absentVersionPropertyForEntitiesWithoutAnnotation() {
+        EntityMetadata<SampleAccount> metadata = factory.getEntityMetadata(SampleAccount.class);
+
+        assertFalse(metadata.versionProperty().isPresent());
+    }
+
+    @Test
+    void rejectsEntitiesWithDuplicateVersionProperties() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DuplicateVersionEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("declares multiple @Version properties"));
+    }
+
+    @Test
+    void rejectsUnsupportedVersionType() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(UnsupportedVersionTypeEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("Unsupported version type"));
+        assertTrue(exception.getMessage().contains("java.lang.String"));
+    }
+
+    @Test
+    void rejectsFieldsAnnotatedWithBothIdAndVersion() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(IdVersionConflictEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("cannot be both @Id and @Version"));
     }
 
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {

@@ -9,10 +9,7 @@ import io.nova.annotation.Id;
 import io.nova.annotation.SoftDelete;
 import io.nova.annotation.Table;
 import io.nova.annotation.UpdatedAt;
-
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
+import io.nova.annotation.Version;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -206,6 +203,145 @@ public final class FixtureEntities {
         private String displayName;
 
         public StaticFieldEntity() {
+        }
+    }
+
+    @Entity
+    @Table("versioned_accounts")
+    public static class VersionedAccount {
+        @Id
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        @Version
+        private Long version;
+
+        public VersionedAccount() {
+        }
+
+        public VersionedAccount(Long id, String email, Long version) {
+            this.id = id;
+            this.email = email;
+            this.version = version;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public Long getVersion() {
+            return version;
+        }
+    }
+
+    @Entity
+    @Table("int_versioned_accounts")
+    public static class IntegerVersionedAccount {
+        @Id
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        @Version
+        private Integer version;
+
+        public IntegerVersionedAccount() {
+        }
+
+        public IntegerVersionedAccount(Long id, String email, Integer version) {
+            this.id = id;
+            this.email = email;
+            this.version = version;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public Integer getVersion() {
+            return version;
+        }
+    }
+
+    @Entity
+    @Table("short_versioned_accounts")
+    public static class ShortVersionedAccount {
+        @Id
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        @Version
+        private Short version;
+
+        public ShortVersionedAccount() {
+        }
+
+        public ShortVersionedAccount(Long id, String email, Short version) {
+            this.id = id;
+            this.email = email;
+            this.version = version;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public Short getVersion() {
+            return version;
+        }
+    }
+
+    @Entity
+    public static class DuplicateVersionEntity {
+        @Id
+        private Long id;
+
+        @Version
+        private Long version;
+
+        @Version
+        private Long otherVersion;
+
+        public DuplicateVersionEntity() {
+        }
+    }
+
+    @Entity
+    public static class UnsupportedVersionTypeEntity {
+        @Id
+        private Long id;
+
+        @Version
+        private String version;
+
+        public UnsupportedVersionTypeEntity() {
+        }
+    }
+
+    @Entity
+    public static class IdVersionConflictEntity {
+        @Id
+        @Version
+        private Long id;
+
+        public IdVersionConflictEntity() {
         }
     }
 
