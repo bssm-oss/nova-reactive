@@ -13,6 +13,7 @@ import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
 import io.nova.support.fixtures.FixtureEntities.AssignedIdAccount;
+import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.NoDefaultConstructorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.SampleOrder;
@@ -23,6 +24,9 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -89,6 +93,102 @@ class SimpleReactiveEntityOperationsTest {
                 executor.lastStatement.sql()
         );
         assertEquals(List.of("updated@nova.io", false, 7L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void saveAppliesAuditTimestampsForNewAuditedEntity() {
+        Instant fixed = Instant.parse("2026-05-18T09:30:00Z");
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 42L;
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, Clock.fixed(fixed, ZoneOffset.UTC));
+        AuditedAccount account = new AuditedAccount(null, "x@nova.io");
+
+        StepVerifier.create(operations.save(account))
+                .expectNextMatches(saved -> saved == account
+                        && Objects.equals(saved.getId(), 42L)
+                        && fixed.equals(saved.getCreatedAt())
+                        && fixed.equals(saved.getUpdatedAt()))
+                .verifyComplete();
+
+        SqlStatement statement = executor.lastStatement;
+        assertEquals(
+                "insert into audited_accounts (email_address, created_at, updated_at) values (?, ?, ?)",
+                statement.sql()
+        );
+        assertEquals(List.of("x@nova.io", fixed, fixed), statement.bindings());
+    }
+
+    @Test
+    void saveAppliesOnlyUpdatedAtForExistingAuditedEntity() {
+        Instant fixed = Instant.parse("2026-05-18T09:30:00Z");
+        Instant original = Instant.parse("2020-01-01T00:00:00Z");
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, Clock.fixed(fixed, ZoneOffset.UTC));
+        AuditedAccount account = new AuditedAccount(7L, "x@nova.io", original, original);
+
+        StepVerifier.create(operations.save(account))
+                .expectNext(account)
+                .verifyComplete();
+
+        assertEquals(original, account.getCreatedAt(), "createdAt 보존");
+        assertEquals(fixed, account.getUpdatedAt(), "updatedAt 갱신");
+        SqlStatement statement = executor.lastStatement;
+        assertEquals(
+                "update audited_accounts set email_address = ?, created_at = ?, updated_at = ? where id = ?",
+                statement.sql()
+        );
+        assertEquals(List.of("x@nova.io", original, fixed, 7L), statement.bindings());
+    }
+
+    @Test
+    void updateAddsUpdatedAtToPartialUpdateFields() {
+        Instant fixed = Instant.parse("2026-05-18T09:30:00Z");
+        Instant original = Instant.parse("2020-01-01T00:00:00Z");
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, Clock.fixed(fixed, ZoneOffset.UTC));
+        AuditedAccount account = new AuditedAccount(7L, "new@nova.io", original, null);
+
+        StepVerifier.create(operations.update(account, List.of("email")))
+                .expectNext(account)
+                .verifyComplete();
+
+        assertEquals(fixed, account.getUpdatedAt());
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals("update audited_accounts set email_address = ?, updated_at = ? where id = ?", statement.sql());
+        assertEquals(List.of("new@nova.io", fixed, 7L), statement.bindings());
+    }
+
+    @Test
+    void saveAllAppliesAuditTimestampsAcrossBatch() {
+        Instant fixed = Instant.parse("2026-05-18T09:30:00Z");
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, Clock.fixed(fixed, ZoneOffset.UTC));
+        List<AuditedAccount> accounts = List.of(
+                new AuditedAccount(null, "a@nova.io"),
+                new AuditedAccount(null, "b@nova.io")
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNextCount(2)
+                .verifyComplete();
+
+        for (AuditedAccount account : accounts) {
+            assertEquals(fixed, account.getCreatedAt());
+            assertEquals(fixed, account.getUpdatedAt());
+        }
+        assertEquals(1, executor.batchCalls.size());
+        BatchCall call = executor.batchCalls.get(0);
+        assertEquals(
+                "insert into audited_accounts (email_address, created_at, updated_at) values (?, ?, ?)",
+                call.sql()
+        );
+        assertEquals(List.of("a@nova.io", fixed, fixed), call.bindingsList().get(0));
+        assertEquals(List.of("b@nova.io", fixed, fixed), call.bindingsList().get(1));
     }
 
     @Test
@@ -636,6 +736,17 @@ class SimpleReactiveEntityOperationsTest {
                 executor,
                 new EntityStateDetector(),
                 transactions
+        );
+    }
+
+    private SimpleReactiveEntityOperations newOperationsWithClock(CapturingExecutor executor, Clock clock) {
+        return new SimpleReactiveEntityOperations(
+                new EntityMetadataFactory(new DefaultNamingStrategy()),
+                new RecordingDialect(),
+                executor,
+                new EntityStateDetector(),
+                new RecordingTransactions(),
+                clock
         );
     }
 

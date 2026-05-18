@@ -13,8 +13,10 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Constructor;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -29,6 +31,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final SqlExecutor sqlExecutor;
     private final EntityStateDetector entityStateDetector;
     private final ReactiveTransactionOperations transactionOperations;
+    private final AuditApplier auditApplier;
 
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
@@ -37,17 +40,34 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             EntityStateDetector entityStateDetector,
             ReactiveTransactionOperations transactionOperations
     ) {
+        this(metadataFactory, dialect, sqlExecutor, entityStateDetector, transactionOperations, Clock.systemUTC());
+    }
+
+    public SimpleReactiveEntityOperations(
+            EntityMetadataFactory metadataFactory,
+            Dialect dialect,
+            SqlExecutor sqlExecutor,
+            EntityStateDetector entityStateDetector,
+            ReactiveTransactionOperations transactionOperations,
+            Clock clock
+    ) {
         this.metadataFactory = metadataFactory;
         this.dialect = dialect;
         this.sqlExecutor = sqlExecutor;
         this.entityStateDetector = entityStateDetector;
         this.transactionOperations = transactionOperations;
+        this.auditApplier = new AuditApplier(Objects.requireNonNull(clock, "clock must not be null"));
     }
 
     @Override
     public <T> Mono<T> save(T entity) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
         boolean isNew = entityStateDetector.isNew(entity, metadata);
+        if (isNew) {
+            auditApplier.applyOnInsert(entity, metadata);
+        } else {
+            auditApplier.applyOnUpdate(entity, metadata);
+        }
         if (isNew && metadata.idProperty().generated()) {
             SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
             PersistentProperty idProperty = metadata.idProperty();
@@ -67,13 +87,27 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <T> Mono<T> update(T entity, Iterable<String> fields) {
         Objects.requireNonNull(entity, "entity must not be null");
+        Objects.requireNonNull(fields, "fields must not be null");
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
         Object id = metadata.idProperty().read(entity);
         if (id == null) {
             return Mono.error(new IllegalArgumentException("Entity id must not be null for update"));
         }
-        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
+        auditApplier.applyOnUpdate(entity, metadata);
+        Iterable<String> effectiveFields = auditApplier.updatedAtPropertyName(metadata)
+                .map(name -> augmentWithAuditField(fields, name))
+                .orElse(fields);
+        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
         return sqlExecutor.execute(statement).thenReturn(entity);
+    }
+
+    private static Iterable<String> augmentWithAuditField(Iterable<String> fields, String auditField) {
+        LinkedHashSet<String> merged = new LinkedHashSet<>();
+        for (String field : fields) {
+            merged.add(field);
+        }
+        merged.add(auditField);
+        return merged;
     }
 
     @Override
@@ -219,6 +253,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         int sharedBindingsSize = -1;
         boolean uniformShape = true;
         for (T entity : entities) {
+            if (key.isNew()) {
+                auditApplier.applyOnInsert(entity, metadata);
+            } else {
+                auditApplier.applyOnUpdate(entity, metadata);
+            }
             SqlStatement statement = key.isNew()
                     ? dialect.sqlRenderer().insert(metadata, entity)
                     : dialect.sqlRenderer().update(metadata, entity);
