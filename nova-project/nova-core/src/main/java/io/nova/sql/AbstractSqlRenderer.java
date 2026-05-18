@@ -262,6 +262,28 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement softDeleteByQuery(EntityMetadata<?> metadata, QuerySpec querySpec, Object deletedAt) {
+        if (querySpec == null || querySpec.predicate() == null) {
+            throw new IllegalArgumentException("softDeleteByQuery requires a non-null predicate");
+        }
+        if (querySpec.sort() != null && !querySpec.sort().orders().isEmpty()) {
+            throw new IllegalArgumentException("softDeleteByQuery does not support sort");
+        }
+        if (querySpec.pageable() != null) {
+            throw new IllegalArgumentException("softDeleteByQuery does not support pageable");
+        }
+        PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteByQuery");
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("update ").append(table(metadata))
+                .append(" set ").append(column(softDeleteProperty)).append(" = ")
+                .append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(softDeleteProperty.toColumnValue(deletedAt));
+        sql.append(" where ").append(renderPredicate(context, metadata, querySpec.predicate()));
+        sql.append(" and ").append(column(softDeleteProperty)).append(" is null");
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
     public SqlStatement softDeleteByIds(EntityMetadata<?> metadata, List<Object> ids, Object deletedAt) {
         if (ids.isEmpty()) {
             throw new IllegalArgumentException("softDeleteByIds requires at least one id");

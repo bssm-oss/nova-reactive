@@ -340,6 +340,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <T> Mono<Long> deleteAll(Class<T> entityType, QuerySpec querySpec) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+        if (softDelete.isPresent()) {
+            Object deletedAt = currentTimeFor(softDelete.get());
+            return sqlExecutor.execute(dialect.sqlRenderer().softDeleteByQuery(metadata, querySpec, deletedAt));
+        }
         return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(metadata, querySpec));
     }
 

@@ -548,6 +548,78 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void softDeleteByQueryRendersUpdateWithPredicateAndAliveGuard() {
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+
+        SqlStatement statement = dialect.sqlRenderer().softDeleteByQuery(
+                softMetadata,
+                QuerySpec.empty().where(Criteria.eq("email", "a@nova.io")),
+                now
+        );
+
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where email_address = ? and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(now, "a@nova.io"), statement.bindings());
+    }
+
+    @Test
+    void softDeleteByQueryRejectsNullPredicate() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().softDeleteByQuery(softMetadata, QuerySpec.empty(), Instant.EPOCH)
+        );
+
+        assertEquals("softDeleteByQuery requires a non-null predicate", exception.getMessage());
+    }
+
+    @Test
+    void softDeleteByQueryRejectsSort() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().softDeleteByQuery(
+                        softMetadata,
+                        QuerySpec.empty().where(Criteria.eq("email", "a")).orderBy(Sort.by(Sort.Order.asc("id"))),
+                        Instant.EPOCH
+                )
+        );
+
+        assertEquals("softDeleteByQuery does not support sort", exception.getMessage());
+    }
+
+    @Test
+    void softDeleteByQueryRejectsPageable() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().softDeleteByQuery(
+                        softMetadata,
+                        QuerySpec.empty().where(Criteria.eq("email", "a")).page(Pageable.of(10, 0)),
+                        Instant.EPOCH
+                )
+        );
+
+        assertEquals("softDeleteByQuery does not support pageable", exception.getMessage());
+    }
+
+    @Test
+    void softDeleteByQueryRejectsMetadataWithoutSoftDelete() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().softDeleteByQuery(
+                        metadata,
+                        QuerySpec.empty().where(Criteria.eq("email", "a")),
+                        Instant.EPOCH
+                )
+        );
+
+        assertEquals(
+                "softDeleteByQuery requires @SoftDelete on " + SampleAccount.class.getName(),
+                exception.getMessage()
+        );
+    }
+
+    @Test
     void softDeleteByIdRejectsMetadataWithoutSoftDelete() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,

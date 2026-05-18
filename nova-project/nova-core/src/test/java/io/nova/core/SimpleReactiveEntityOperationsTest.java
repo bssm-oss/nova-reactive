@@ -1019,6 +1019,30 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void deleteAllByQueryOnSoftDeletableEntityIssuesSoftDeleteUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(4L);
+        Instant now = Instant.parse("2026-05-18T10:00:00Z");
+        SimpleReactiveEntityOperations operations = newOperationsWithClock(
+                executor, new RecordingTransactions(), Clock.fixed(now, ZoneOffset.UTC));
+
+        StepVerifier.create(operations.deleteAll(
+                        SoftDeletableAccount.class,
+                        QuerySpec.empty().where(Criteria.eq("email", "a@nova.io"))))
+                .expectNext(4L)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals(
+                "update soft_deletable_accounts set deleted_at = ? where email_address = ? and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(List.of(now, "a@nova.io"), statement.bindings());
+        assertTrue(executor.batchCalls.isEmpty());
+    }
+
+    @Test
     void existsOnSoftDeletableEntityFiltersOutDeletedRows() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of()));

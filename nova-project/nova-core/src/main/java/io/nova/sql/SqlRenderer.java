@@ -109,6 +109,18 @@ public interface SqlRenderer {
     }
 
     /**
+     * {@code @SoftDelete} 컬럼을 가진 엔티티에 대해 predicate에 일치하는 행을 한 번에 논리 삭제하는
+     * UPDATE 문을 렌더한다. {@code querySpec.predicate()}는 반드시 non-null이어야 하며, sort/pageable이
+     * 함께 들어오면 거부한다. 이미 soft delete된 행(deletedAt is not null)은 대상에서 자동 제외해야 한다.
+     * 기본 구현은 외부 구현체가 자동으로 깨지지 않도록 명시적 예외를 던지고,
+     * {@link AbstractSqlRenderer}가 이 메서드를 override한다.
+     */
+    default SqlStatement softDeleteByQuery(EntityMetadata<?> metadata, QuerySpec querySpec, Object deletedAt) {
+        throw new UnsupportedOperationException(
+                "SqlRenderer.softDeleteByQuery must be overridden by the implementation");
+    }
+
+    /**
      * 엔티티 인스턴스 기반 delete를 렌더한다. {@code @Version}이 선언된 경우 WHERE 절에 현재 버전 비교를
      * 함께 포함시켜 optimistic locking 검증을 수행해야 한다. 기본 구현은 id-only delete로 폴백한다.
      */
