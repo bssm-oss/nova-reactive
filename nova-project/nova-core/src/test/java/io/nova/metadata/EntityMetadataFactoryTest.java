@@ -12,7 +12,12 @@ import io.nova.support.fixtures.FixtureEntities.IntegerVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.InvalidUuidTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.MissingEntityAnnotation;
 import io.nova.support.fixtures.FixtureEntities.MissingIdEntity;
+import io.nova.support.fixtures.FixtureEntities.HyphenSequenceGeneratorEntity;
+import io.nova.support.fixtures.FixtureEntities.InjectingSequenceGeneratorEntity;
+import io.nova.support.fixtures.FixtureEntities.LeadingDigitSequenceGeneratorEntity;
 import io.nova.support.fixtures.FixtureEntities.MissingSequenceGeneratorEntity;
+import io.nova.support.fixtures.FixtureEntities.SemicolonSequenceGeneratorEntity;
+import io.nova.support.fixtures.FixtureEntities.WhitespaceSequenceGeneratorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.SequencedAccount;
 import io.nova.support.fixtures.FixtureEntities.StringUuidAccount;
@@ -327,6 +332,56 @@ class EntityMetadataFactoryTest {
 
         assertTrue(exception.getMessage().contains("@GeneratedValue(SEQUENCE)"));
         assertTrue(exception.getMessage().contains("generator"));
+    }
+
+    @Test
+    void rejectsSequenceGeneratorNameWithQuoteAndSemicolonInjection() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(InjectingSequenceGeneratorEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("Invalid sequence generator name"));
+    }
+
+    @Test
+    void rejectsSequenceGeneratorNameWithSemicolon() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(SemicolonSequenceGeneratorEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("Invalid sequence generator name"));
+    }
+
+    @Test
+    void rejectsSequenceGeneratorNameWithWhitespace() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(WhitespaceSequenceGeneratorEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("Invalid sequence generator name"));
+    }
+
+    @Test
+    void rejectsSequenceGeneratorNameWithHyphen() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(HyphenSequenceGeneratorEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("Invalid sequence generator name"));
+    }
+
+    @Test
+    void rejectsSequenceGeneratorNameWithLeadingDigit() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(LeadingDigitSequenceGeneratorEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("Invalid sequence generator name"));
     }
 
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {

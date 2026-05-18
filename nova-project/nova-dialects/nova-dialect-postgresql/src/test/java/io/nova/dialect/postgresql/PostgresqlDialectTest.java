@@ -79,9 +79,9 @@ class PostgresqlDialectTest {
     }
 
     @Test
-    void rendersSequenceNextValueSql() {
+    void rendersSequenceNextValueSqlWithStableAlias() {
         assertEquals(
-                "select nextval('account_id_seq')",
+                "select nextval('account_id_seq') as " + io.nova.sql.Dialect.SEQUENCE_VALUE_COLUMN,
                 dialect.sequenceNextValueSql("account_id_seq")
         );
     }

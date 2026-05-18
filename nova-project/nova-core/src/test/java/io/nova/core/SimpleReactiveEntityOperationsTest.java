@@ -1177,7 +1177,7 @@ class SimpleReactiveEntityOperationsTest {
     @Test
     void saveOnSequenceEntityFetchesNextValueThenIssuesInsert() {
         CapturingExecutor executor = new CapturingExecutor();
-        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 99L)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(Dialect.SEQUENCE_VALUE_COLUMN, 99L)));
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         SequencedAccount account = new SequencedAccount(null, "seq@nova.io");
 
@@ -1200,7 +1200,7 @@ class SimpleReactiveEntityOperationsTest {
     @Test
     void saveOnSequenceEntityIssuesSequenceQueryBeforeInsert() {
         OrderedCapturingExecutor executor = new OrderedCapturingExecutor();
-        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 17L)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(Dialect.SEQUENCE_VALUE_COLUMN, 17L)));
         SimpleReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
                 new EntityMetadataFactory(new DefaultNamingStrategy()),
                 new RecordingDialect(),
@@ -1216,9 +1216,28 @@ class SimpleReactiveEntityOperationsTest {
         assertEquals(List.of("queryOne", "execute"), executor.calls,
                 "SEQUENCE 조회가 INSERT 보다 먼저 발생해야 한다");
         assertEquals(
-                "select nextval('sequenced_accounts_seq')",
+                "select nextval('sequenced_accounts_seq') as " + Dialect.SEQUENCE_VALUE_COLUMN,
                 executor.sequenceQuery.sql()
         );
+    }
+
+    @Test
+    void saveOnSequenceEntityReadsValueByDialectAliasNotDriverColumnLabel() {
+        // RowAccessor read는 Dialect.SEQUENCE_VALUE_COLUMN alias만 사용해야 한다.
+        // 가짜 driver가 옛 'nextval' 라벨만 채우면 alias 조회는 null을 받고,
+        // 그 결과 INSERT는 발행되지 않고 save()는 빈 결과로 완료된다 (id 추측 금지).
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 99L)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SequencedAccount account = new SequencedAccount(null, "seq@nova.io");
+
+        StepVerifier.create(operations.save(account))
+                .verifyComplete();
+
+        assertTrue(executor.executedStatements.isEmpty(),
+                "alias 조회가 null을 반환하면 INSERT는 발행되지 않아야 한다 (id 추측 금지)");
+        org.junit.jupiter.api.Assertions.assertNull(account.getId(),
+                "id 채움은 alias가 반환한 값을 통해서만 일어나야 한다");
     }
 
     @Test
@@ -1301,8 +1320,8 @@ class SimpleReactiveEntityOperationsTest {
     @Test
     void saveAllOnSequenceEntitiesFallsBackToSingleSaves() {
         OrderedCapturingExecutor executor = new OrderedCapturingExecutor();
-        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 10L)));
-        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("nextval", 11L)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(Dialect.SEQUENCE_VALUE_COLUMN, 10L)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(Dialect.SEQUENCE_VALUE_COLUMN, 11L)));
         SimpleReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
                 new EntityMetadataFactory(new DefaultNamingStrategy()),
                 new RecordingDialect(),
@@ -1625,7 +1644,7 @@ class SimpleReactiveEntityOperationsTest {
 
         @Override
         public String sequenceNextValueSql(String sequenceName) {
-            return "select nextval('" + sequenceName + "')";
+            return "select nextval('" + sequenceName + "') as " + Dialect.SEQUENCE_VALUE_COLUMN;
         }
     }
 

@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * Nova 매핑 어노테이션이 선언된 엔티티 클래스의 리플렉션 메타데이터를 생성하고 캐시한다.
@@ -39,6 +40,14 @@ public final class EntityMetadataFactory {
 
     private static final Set<Class<?>> SUPPORTED_UUID_ID_TYPES =
             Set.of(UUID.class, String.class);
+
+    /**
+     * SEQUENCE generator 이름이 SQL 식별자 형태를 따르도록 강제하는 정규식이다.
+     * dialect가 {@code "'" + name + "'"} 같이 직접 concat할 가능성을 차단하기 위해
+     * 따옴표, 세미콜론, 공백 등 식별자 외 문자는 모두 거부한다.
+     */
+    private static final Pattern SEQUENCE_GENERATOR_NAME_PATTERN =
+            Pattern.compile("^[A-Za-z_][A-Za-z0-9_$.]*$");
 
     private final NamingStrategy namingStrategy;
     private final Map<Class<?>, EntityMetadata<?>> cache = new ConcurrentHashMap<>();
@@ -194,6 +203,13 @@ public final class EntityMetadataFactory {
                     throw new IllegalArgumentException(
                             entityType.getName() + "." + field.getName()
                                     + " uses @GeneratedValue(SEQUENCE) but does not specify generator (sequence name)");
+                }
+                if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(generator).matches()) {
+                    throw new IllegalArgumentException(
+                            "Invalid sequence generator name: '" + generator + "' on "
+                                    + entityType.getName() + "." + field.getName()
+                                    + " — must match identifier pattern "
+                                    + SEQUENCE_GENERATOR_NAME_PATTERN.pattern());
                 }
             }
             if (generationType == GenerationType.UUID) {

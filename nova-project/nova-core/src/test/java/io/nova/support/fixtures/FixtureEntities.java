@@ -698,4 +698,54 @@ public final class FixtureEntities {
         public MissingSequenceGeneratorEntity() {
         }
     }
+
+    @Entity
+    public static class InjectingSequenceGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "seq'); drop table accounts; --")
+        private Long id;
+
+        public InjectingSequenceGeneratorEntity() {
+        }
+    }
+
+    @Entity
+    public static class SemicolonSequenceGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "seq; --")
+        private Long id;
+
+        public SemicolonSequenceGeneratorEntity() {
+        }
+    }
+
+    @Entity
+    public static class WhitespaceSequenceGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "two words")
+        private Long id;
+
+        public WhitespaceSequenceGeneratorEntity() {
+        }
+    }
+
+    @Entity
+    public static class HyphenSequenceGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "seq-name")
+        private Long id;
+
+        public HyphenSequenceGeneratorEntity() {
+        }
+    }
+
+    @Entity
+    public static class LeadingDigitSequenceGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "1seq")
+        private Long id;
+
+        public LeadingDigitSequenceGeneratorEntity() {
+        }
+    }
 }

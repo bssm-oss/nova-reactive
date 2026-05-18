@@ -53,7 +53,10 @@ public final class PostgresqlDialect implements Dialect {
         if (sequenceName == null || sequenceName.isBlank()) {
             throw new IllegalArgumentException("sequenceName must not be blank");
         }
-        return "select nextval('" + sequenceName + "')";
+        // SQL identifier 외 문자는 EntityMetadataFactory에서 거부하지만 dialect도 자체 방어한다.
+        // 단일 행/단일 컬럼 결과의 컬럼 라벨이 driver별로 "nextval", "NEXTVAL", "nextval(...)" 등
+        // 다양하게 나오므로 명시적 alias로 고정해 RowAccessor의 컬럼명 기반 조회가 깨지지 않게 한다.
+        return "select nextval('" + sequenceName + "') as " + Dialect.SEQUENCE_VALUE_COLUMN;
     }
 
     private static final class PostgresqlSqlRenderer extends AbstractSqlRenderer {

@@ -90,7 +90,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (strategy == GenerationType.SEQUENCE) {
             return sqlExecutor.queryOne(
                             new SqlStatement(dialect.sequenceNextValueSql(idProperty.generator()), List.of()),
-                            row -> row.get(SEQUENCE_VALUE_COLUMN, idProperty.javaType()))
+                            row -> row.get(Dialect.SEQUENCE_VALUE_COLUMN, idProperty.javaType()))
                     .flatMap(value -> {
                         idProperty.write(entity, idProperty.toPropertyValue(value));
                         SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
@@ -114,14 +114,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
         return sqlExecutor.execute(statement).thenReturn(entity);
     }
-
-    /**
-     * Sequence executor가 nextval 결과를 단일 컬럼으로 회수할 때 사용하는 RowAccessor 컬럼명이다.
-     * R2DBC 어댑터는 index 기반 컬럼 접근을 지원하지 않는 RowAccessor 구현일 수 있으므로
-     * 컬럼명 기준 fallback도 제공해야 한다. 기본 R2DBC 어댑터는 단일 컬럼 결과를 컬럼 이름 또는
-     * 위치 어느 쪽으로 요청하든 동일한 값을 돌려준다.
-     */
-    private static final String SEQUENCE_VALUE_COLUMN = "nextval";
 
     private static void assignUuidId(PersistentProperty idProperty, Object entity) {
         if (idProperty.read(entity) != null) {
