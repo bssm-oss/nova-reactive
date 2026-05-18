@@ -1,5 +1,6 @@
 package io.nova.core;
 
+import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
 import reactor.core.publisher.Flux;
@@ -52,6 +53,23 @@ public interface ReactiveEntityOperations {
      * 주어진 쿼리 명세에 맞는 엔티티를 모두 조회한다.
      */
     <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec);
+
+    /**
+     * 지정된 entity property만 SELECT 절에 포함시켜 가져온 뒤 {@link Projection#projectionType()}으로
+     * 매핑한 결과를 발행한다. projection 타입은 record이거나 명시적인 단일 생성자를 가진 일반 class여야
+     * 하며, 생성자 파라미터 개수와 순서가 {@link Projection#fields()} 순서와 일치해야 한다.
+     * <p>
+     * entity property의 column converter는 적용된 뒤 projection 타입에 주입되며, {@code @SoftDelete}
+     * 메타데이터가 있는 entity는 SELECT에 자동으로 alive 조건이 덧붙는다. 검증 실패는 모두
+     * {@link IllegalArgumentException}으로 발행된다.
+     * <p>
+     * 기본 구현은 외부 {@link ReactiveEntityOperations} 직접 구현자가 자동으로 깨지지 않도록 명시적
+     * 예외를 던지며, {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
+     */
+    default <E, P> Flux<P> findAll(Projection<E, P> projection, QuerySpec querySpec) {
+        return Flux.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.findAll(Projection, QuerySpec) must be overridden by the implementation"));
+    }
 
     /**
      * 엔티티가 가진 식별자 값을 사용해 삭제한다.

@@ -31,6 +31,21 @@ public interface SqlRenderer {
 
     SqlStatement select(EntityMetadata<?> metadata, QuerySpec querySpec);
 
+    /**
+     * 지정한 entity property 이름 목록만 SELECT 절에 포함하는 projection 조회 SQL을 렌더한다.
+     * {@code fields}는 entity property name(Java 필드명)이며 입력 순서를 그대로 유지한다.
+     * 빈 컬렉션·미존재 field 처리는 구현체의 책임이다. FROM·WHERE·ORDER BY·페이지는 기존
+     * {@link #select(EntityMetadata, QuerySpec)}와 동일한 규칙을 따르며, {@code @SoftDelete}
+     * 메타데이터가 있으면 자동으로 alive 조건을 덧붙인다.
+     * <p>
+     * 기본 구현은 외부 SqlRenderer를 직접 구현한 사용자가 자동으로 깨지지 않도록 명시적 예외를
+     * 던지며, {@link AbstractSqlRenderer}는 이 메서드를 override한다.
+     */
+    default SqlStatement selectProjection(EntityMetadata<?> metadata, List<String> fields, QuerySpec querySpec) {
+        throw new UnsupportedOperationException(
+                "SqlRenderer.selectProjection must be overridden by the implementation");
+    }
+
     SqlStatement count(EntityMetadata<?> metadata, QuerySpec querySpec);
 
     SqlStatement exists(EntityMetadata<?> metadata, QuerySpec querySpec);

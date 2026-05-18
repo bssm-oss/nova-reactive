@@ -642,6 +642,89 @@ class AbstractSqlRendererTest {
         assertEquals("Unknown property missing on " + SampleAccount.class.getName(), exception.getMessage());
     }
 
+    @Test
+    void rendersProjectionSelectListWithGivenFields() {
+        SqlStatement statement = dialect.sqlRenderer().selectProjection(
+                metadata,
+                java.util.List.of("id", "email"),
+                QuerySpec.empty()
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address from accounts",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void projectionSelectPreservesFieldOrderAndAppliesWhereOrderByAndPaging() {
+        SqlStatement statement = dialect.sqlRenderer().selectProjection(
+                metadata,
+                java.util.List.of("email", "id"),
+                QuerySpec.empty()
+                        .where(Criteria.eq("active", true))
+                        .orderBy(Sort.by(Sort.Order.asc("id")))
+                        .page(Pageable.of(10, 20))
+        );
+
+        assertEquals(
+                "select email_address as email_address, id as id from accounts where active = ? order by id asc limit ? offset ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(true, 10, 20L), statement.bindings());
+    }
+
+    @Test
+    void projectionSelectAppendsSoftDeleteAliveWhenMetadataDeclaresIt() {
+        SqlStatement statement = dialect.sqlRenderer().selectProjection(
+                softMetadata,
+                java.util.List.of("id", "email"),
+                QuerySpec.empty().where(Criteria.eq("email", "a@nova.io"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address from soft_deletable_accounts where email_address = ? and deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("a@nova.io"), statement.bindings());
+    }
+
+    @Test
+    void projectionSelectAppendsSoftDeleteAliveAsSoleWhenNoPredicate() {
+        SqlStatement statement = dialect.sqlRenderer().selectProjection(
+                softMetadata,
+                java.util.List.of("id"),
+                QuerySpec.empty()
+        );
+
+        assertEquals(
+                "select id as id from soft_deletable_accounts where deleted_at is null",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void projectionSelectRejectsEmptyFields() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().selectProjection(metadata, java.util.List.of(), QuerySpec.empty())
+        );
+
+        assertEquals("selectProjection requires at least one field", exception.getMessage());
+    }
+
+    @Test
+    void projectionSelectRejectsUnknownField() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().selectProjection(metadata, java.util.List.of("missing"), QuerySpec.empty())
+        );
+
+        assertEquals("Unknown property missing on " + SampleAccount.class.getName(), exception.getMessage());
+    }
+
     private static final class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
         private final SqlRenderer renderer = new AbstractSqlRenderer(this) {

@@ -307,6 +307,31 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement selectProjection(EntityMetadata<?> metadata, List<String> fields, QuerySpec querySpec) {
+        Objects.requireNonNull(fields, "fields must not be null");
+        if (fields.isEmpty()) {
+            throw new IllegalArgumentException("selectProjection requires at least one field");
+        }
+        List<String> projectionColumns = new ArrayList<>(fields.size());
+        for (String fieldName : fields) {
+            Objects.requireNonNull(fieldName, "field name must not be null");
+            PersistentProperty property = findProperty(metadata, fieldName);
+            projectionColumns.add(column(property) + " as " + dialect.quote(property.columnName()));
+        }
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("select ")
+                .append(String.join(", ", projectionColumns))
+                .append(" from ")
+                .append(table(metadata));
+        appendWhereClause(sql, context, metadata, querySpec == null ? null : querySpec.predicate());
+        if (querySpec != null) {
+            appendOrderBy(sql, metadata, querySpec.sort());
+            appendPage(sql, context, querySpec);
+        }
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
     public SqlStatement count(EntityMetadata<?> metadata, QuerySpec querySpec) {
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("select count(*) as count from ").append(table(metadata));

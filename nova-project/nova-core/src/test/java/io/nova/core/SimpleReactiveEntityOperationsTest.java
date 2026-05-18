@@ -4,6 +4,7 @@ import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Criteria;
 import io.nova.query.Pageable;
+import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
 import io.nova.query.Updater;
@@ -1190,6 +1191,170 @@ class SimpleReactiveEntityOperationsTest {
         assertEquals(List.of("b@nova.io", 0L), call.bindingsList().get(1));
         assertEquals(Long.valueOf(0L), accounts.get(0).getVersion());
         assertEquals(Long.valueOf(0L), accounts.get(1).getVersion());
+    }
+
+    @Test
+    void findAllWithProjectionRecordMapsRowsViaCanonicalConstructor() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 7L, "email_address", "a@nova.io")),
+                new MapRowAccessor(Map.of("id", 8L, "email_address", "b@nova.io"))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Projection<SampleAccount, AccountEmail> projection = Projection.of(
+                SampleAccount.class, AccountEmail.class, List.of("id", "email"));
+
+        StepVerifier.create(operations.findAll(projection, QuerySpec.empty().where(Criteria.eq("active", true))))
+                .expectNext(new AccountEmail(7L, "a@nova.io"), new AccountEmail(8L, "b@nova.io"))
+                .verifyComplete();
+
+        assertEquals(
+                "select id as id, email_address as email_address from accounts where active = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(true), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void findAllWithProjectionHonorsFieldOrderInBothSqlAndConstructor() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 7L, "email_address", "a@nova.io"))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Projection<SampleAccount, EmailFirst> projection = Projection.of(
+                SampleAccount.class, EmailFirst.class, List.of("email", "id"));
+
+        StepVerifier.create(operations.findAll(projection, QuerySpec.empty()))
+                .expectNext(new EmailFirst("a@nova.io", 7L))
+                .verifyComplete();
+
+        assertEquals(
+                "select email_address as email_address, id as id from accounts",
+                executor.lastStatement.sql()
+        );
+    }
+
+    @Test
+    void findAllWithProjectionWorksForExplicitSingleConstructorClass() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 7L, "email_address", "a@nova.io"))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Projection<SampleAccount, AccountSummary> projection = Projection.of(
+                SampleAccount.class, AccountSummary.class, List.of("id", "email"));
+
+        StepVerifier.create(operations.findAll(projection, QuerySpec.empty()))
+                .expectNextMatches(summary -> Objects.equals(summary.id(), 7L)
+                        && Objects.equals(summary.email(), "a@nova.io"))
+                .verifyComplete();
+    }
+
+    @Test
+    void findAllWithProjectionAppendsSoftDeleteAlive() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of());
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Projection<SoftDeletableAccount, SoftAccountEmail> projection = Projection.of(
+                SoftDeletableAccount.class, SoftAccountEmail.class, List.of("id", "email"));
+
+        StepVerifier.create(operations.findAll(projection, QuerySpec.empty()))
+                .verifyComplete();
+
+        assertEquals(
+                "select id as id, email_address as email_address from soft_deletable_accounts where deleted_at is null",
+                executor.lastStatement.sql()
+        );
+    }
+
+    @Test
+    void findAllWithProjectionRejectsUnknownEntityProperty() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Projection<SampleAccount, AccountEmail> projection = Projection.of(
+                SampleAccount.class, AccountEmail.class, List.of("id", "nope"));
+
+        StepVerifier.create(operations.findAll(projection, QuerySpec.empty()))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("Unknown property nope"),
+                            "오류 메시지가 'Unknown property nope'을 포함해야 한다: " + error.getMessage());
+                })
+                .verify();
+    }
+
+    @Test
+    void findAllWithProjectionRejectsConstructorArityMismatch() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Projection<SampleAccount, AccountEmail> projection = Projection.of(
+                SampleAccount.class, AccountEmail.class, List.of("id"));
+
+        StepVerifier.create(operations.findAll(projection, QuerySpec.empty()))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("constructor expects"),
+                            "오류 메시지가 constructor expects를 포함해야 한다: " + error.getMessage());
+                })
+                .verify();
+    }
+
+    @Test
+    void findAllWithProjectionRejectsMultipleConstructorClass() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Projection<SampleAccount, MultipleConstructorProjection> projection = Projection.of(
+                SampleAccount.class, MultipleConstructorProjection.class, List.of("id", "email"));
+
+        StepVerifier.create(operations.findAll(projection, QuerySpec.empty()))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("must declare exactly one constructor"),
+                            "오류 메시지가 'must declare exactly one constructor'을 포함해야 한다: " + error.getMessage());
+                })
+                .verify();
+    }
+
+    record AccountEmail(Long id, String email) {
+    }
+
+    record EmailFirst(String email, Long id) {
+    }
+
+    record SoftAccountEmail(Long id, String email) {
+    }
+
+    static final class AccountSummary {
+        private final Long id;
+        private final String email;
+
+        AccountSummary(Long id, String email) {
+            this.id = id;
+            this.email = email;
+        }
+
+        Long id() {
+            return id;
+        }
+
+        String email() {
+            return email;
+        }
+    }
+
+    static final class MultipleConstructorProjection {
+        private final Long id;
+        private final String email;
+
+        MultipleConstructorProjection(Long id, String email) {
+            this.id = id;
+            this.email = email;
+        }
+
+        MultipleConstructorProjection(Long id) {
+            this(id, null);
+        }
     }
 
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {

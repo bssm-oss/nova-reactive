@@ -5,6 +5,7 @@ import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.Criteria;
+import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
 import io.nova.sql.Dialect;
@@ -150,6 +151,23 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
         return sqlExecutor.queryMany(dialect.sqlRenderer().select(metadata, normalize(querySpec)), row -> mapRow(metadata, row));
+    }
+
+    @Override
+    public <E, P> Flux<P> findAll(Projection<E, P> projection, QuerySpec querySpec) {
+        Objects.requireNonNull(projection, "projection must not be null");
+        EntityMetadata<E> metadata = metadataFactory.getEntityMetadata(projection.entityType());
+        List<String> fields = projection.fields();
+        List<PersistentProperty> resolved;
+        Constructor<P> constructor;
+        try {
+            resolved = resolveProjectionProperties(metadata, fields);
+            constructor = resolveProjectionConstructor(projection.projectionType(), fields.size());
+        } catch (RuntimeException exception) {
+            return Flux.error(exception);
+        }
+        SqlStatement statement = dialect.sqlRenderer().selectProjection(metadata, fields, normalize(querySpec));
+        return sqlExecutor.queryMany(statement, row -> mapProjectionRow(constructor, resolved, row));
     }
 
     @Override
@@ -425,6 +443,80 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             property.write(instance, property.toPropertyValue(value));
         }
         return instance;
+    }
+
+    /**
+     * projection이 요청한 entity property 이름들을 메타데이터에서 찾아 정렬된 리스트로 반환한다.
+     * 미존재 property는 {@link IllegalArgumentException}으로 거부된다.
+     */
+    private List<PersistentProperty> resolveProjectionProperties(EntityMetadata<?> metadata, List<String> fields) {
+        List<PersistentProperty> resolved = new ArrayList<>(fields.size());
+        for (String fieldName : fields) {
+            PersistentProperty property = metadata.properties().stream()
+                    .filter(candidate -> candidate.propertyName().equals(fieldName))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Unknown property " + fieldName + " on " + metadata.entityType().getName()));
+            resolved.add(property);
+        }
+        return resolved;
+    }
+
+    /**
+     * projection 타입의 1-생성자를 찾는다. record는 canonical constructor를, 일반 class는 명시적
+     * public/declared 단일 생성자를 사용한다. 생성자 파라미터 개수가 필드 개수와 다르면 거부된다.
+     */
+    @SuppressWarnings("unchecked")
+    private <P> Constructor<P> resolveProjectionConstructor(Class<P> projectionType, int fieldCount) {
+        Constructor<?> selected;
+        if (projectionType.isRecord()) {
+            Class<?>[] componentTypes = new Class<?>[projectionType.getRecordComponents().length];
+            for (int i = 0; i < componentTypes.length; i++) {
+                componentTypes[i] = projectionType.getRecordComponents()[i].getType();
+            }
+            try {
+                selected = projectionType.getDeclaredConstructor(componentTypes);
+            } catch (NoSuchMethodException exception) {
+                throw new IllegalStateException(
+                        "Projection record " + projectionType.getName() + " does not expose its canonical constructor",
+                        exception);
+            }
+        } else {
+            Constructor<?>[] constructors = projectionType.getDeclaredConstructors();
+            if (constructors.length != 1) {
+                throw new IllegalArgumentException(
+                        "Projection type " + projectionType.getName()
+                                + " must declare exactly one constructor but found " + constructors.length);
+            }
+            selected = constructors[0];
+        }
+        if (selected.getParameterCount() != fieldCount) {
+            throw new IllegalArgumentException(
+                    "Projection type " + projectionType.getName()
+                            + " constructor expects " + selected.getParameterCount()
+                            + " parameters but " + fieldCount + " fields were requested");
+        }
+        selected.setAccessible(true);
+        return (Constructor<P>) selected;
+    }
+
+    private <P> P mapProjectionRow(
+            Constructor<P> constructor,
+            List<PersistentProperty> properties,
+            RowAccessor row
+    ) {
+        Object[] arguments = new Object[properties.size()];
+        for (int i = 0; i < properties.size(); i++) {
+            PersistentProperty property = properties.get(i);
+            Object raw = row.get(property.columnName(), property.javaType());
+            arguments[i] = property.toPropertyValue(raw);
+        }
+        try {
+            return constructor.newInstance(arguments);
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "Cannot instantiate projection " + constructor.getDeclaringClass().getName(), exception);
+        }
     }
 
     private <T> T instantiate(Class<T> entityType) {
