@@ -3,6 +3,7 @@ package io.nova.core;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
+import io.nova.query.Criteria;
 import io.nova.query.QuerySpec;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
@@ -73,6 +74,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
         return sqlExecutor.queryMany(dialect.sqlRenderer().select(metadata, normalize(querySpec)), row -> mapRow(metadata, row));
+    }
+
+    @Override
+    public <T, ID> Flux<T> findAllById(Class<T> entityType, Iterable<ID> ids) {
+        List<ID> materialized = toList(ids);
+        if (materialized.isEmpty()) {
+            return Flux.empty();
+        }
+        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        String idPropertyName = metadata.idProperty().propertyName();
+        QuerySpec spec = QuerySpec.empty().where(Criteria.in(idPropertyName, materialized));
+        return sqlExecutor.queryMany(dialect.sqlRenderer().select(metadata, spec), row -> mapRow(metadata, row));
     }
 
     @Override

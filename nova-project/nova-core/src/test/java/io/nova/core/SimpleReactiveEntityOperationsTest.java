@@ -135,6 +135,39 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void findAllByIdUsesSingleInSelect() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 10L, "email_address", "a@nova.io", "active", true)),
+                new MapRowAccessor(Map.of("id", 20L, "email_address", "b@nova.io", "active", false)),
+                new MapRowAccessor(Map.of("id", 30L, "email_address", "c@nova.io", "active", true))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.findAllById(SampleAccount.class, List.of(10L, 20L, 30L)))
+                .expectNextCount(3)
+                .verifyComplete();
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where id in (?, ?, ?)",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(10L, 20L, 30L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void findAllByIdOnEmptyInputShortCircuits() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.findAllById(SampleAccount.class, List.<Long>of()))
+                .verifyComplete();
+
+        assertTrue(executor.executedStatements.isEmpty());
+        assertEquals(null, executor.lastStatement, "queryMany는 호출되지 않아야 한다");
+    }
+
+    @Test
     void countReadsCountAlias() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of("count", 3L)));

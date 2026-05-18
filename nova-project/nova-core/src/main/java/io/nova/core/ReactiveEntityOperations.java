@@ -22,6 +22,18 @@ public interface ReactiveEntityOperations {
     <T, ID> Mono<T> findById(Class<T> entityType, ID id);
 
     /**
+     * 여러 식별자에 해당하는 엔티티를 한 번에 조회한다. 기본 구현은 단건 {@link #findById(Class, Object)}로
+     * 폴백하며, 구현체는 {@code IN} 절을 사용한 단일 쿼리로 최적화할 수 있다.
+     * <p>
+     * 결과 순서는 데이터베이스가 반환하는 순서를 따르므로 {@code ids} 입력 순서와 일치하지 않을 수 있다.
+     * 입력 순서가 필요하면 호출자가 결과를 식별자 기준으로 정렬해야 한다. 존재하지 않는 식별자는
+     * 결과에 포함되지 않는다.
+     */
+    default <T, ID> Flux<T> findAllById(Class<T> entityType, Iterable<ID> ids) {
+        return Flux.fromIterable(ids).concatMap(id -> findById(entityType, id));
+    }
+
+    /**
      * 주어진 쿼리 명세에 맞는 엔티티를 모두 조회한다.
      */
     <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec);
