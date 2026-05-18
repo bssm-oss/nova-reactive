@@ -147,7 +147,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             idsByType.computeIfAbsent(entity.getClass(), ignored -> new ArrayList<>()).add(id);
         }
         return Flux.fromIterable(idsByType.entrySet())
-                .concatMap(entry -> deleteGroup(entry.getKey(), entry.getValue()))
+                .concatMap(entry -> {
+                    EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(entry.getKey());
+                    return sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, entry.getValue()));
+                })
                 .reduce(0L, Long::sum);
     }
 
@@ -157,15 +160,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (materialized.isEmpty()) {
             return Mono.just(0L);
         }
+        List<Object> idValues = new ArrayList<>(materialized.size());
         for (int i = 0; i < materialized.size(); i++) {
-            if (materialized.get(i) == null) {
+            ID id = materialized.get(i);
+            if (id == null) {
                 int index = i;
                 return Mono.error(new IllegalArgumentException(
                         "Id at index " + index + " for type " + entityType.getName()
                                 + " is null; deleteAllById requires non-null ids"));
             }
+            idValues.add(id);
         }
-        return deleteGroup(entityType, new ArrayList<>(materialized));
+        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        return sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, idValues));
     }
 
     /**
@@ -204,39 +211,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         return sqlExecutor.executeBatch(sharedSql, bindingsList)
                 .thenMany(Flux.fromIterable(entities));
-    }
-
-    /**
-     * 같은 entityType 그룹에서 SqlRenderer가 만드는 deleteById SQL이 동일하면 binding의
-     * size·타입 순서도 동일하다는 EntityMetadata contract에 의존한다. 동일성 위반은 fallback로
-     * 단건 처리한다.
-     */
-    private <T> Mono<Long> deleteGroup(Class<T> entityType, List<Object> ids) {
-        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
-        List<SqlStatement> statements = new ArrayList<>(ids.size());
-        String sharedSql = null;
-        int sharedBindingsSize = -1;
-        boolean uniformShape = true;
-        for (Object id : ids) {
-            SqlStatement statement = dialect.sqlRenderer().deleteById(metadata, id);
-            statements.add(statement);
-            if (sharedSql == null) {
-                sharedSql = statement.sql();
-                sharedBindingsSize = statement.bindings().size();
-            } else if (!sharedSql.equals(statement.sql()) || sharedBindingsSize != statement.bindings().size()) {
-                uniformShape = false;
-            }
-        }
-        if (!uniformShape) {
-            return Flux.fromIterable(statements)
-                    .concatMap(sqlExecutor::execute)
-                    .reduce(0L, Long::sum);
-        }
-        List<List<Object>> bindingsList = new ArrayList<>(statements.size());
-        for (SqlStatement statement : statements) {
-            bindingsList.add(statement.bindings());
-        }
-        return sqlExecutor.executeBatch(sharedSql, bindingsList);
     }
 
     private static <T> List<T> toList(Iterable<T> iterable) {

@@ -302,8 +302,9 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
-    void deleteAllBatchesDeletesIntoSingleExecuteBatchCall() {
+    void deleteAllUsesSingleInDelete() {
         CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(3L);
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         List<SampleAccount> accounts = List.of(
                 new SampleAccount(1L, "a@nova.io", true),
@@ -315,13 +316,11 @@ class SimpleReactiveEntityOperationsTest {
                 .expectNext(3L)
                 .verifyComplete();
 
-        assertEquals(1, executor.batchCalls.size());
-        BatchCall call = executor.batchCalls.get(0);
-        assertEquals("delete from accounts where id = ?", call.sql());
-        assertEquals(3, call.bindingsList().size());
-        assertEquals(List.of(1L), call.bindingsList().get(0));
-        assertEquals(List.of(2L), call.bindingsList().get(1));
-        assertEquals(List.of(3L), call.bindingsList().get(2));
+        assertTrue(executor.batchCalls.isEmpty(), "deleteAll은 IN 한 방 쿼리 — executeBatch를 쓰면 안 된다");
+        assertEquals(1, executor.executedStatements.size());
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals("delete from accounts where id in (?, ?, ?)", statement.sql());
+        assertEquals(List.of(1L, 2L, 3L), statement.bindings());
     }
 
     @Test
@@ -334,21 +333,24 @@ class SimpleReactiveEntityOperationsTest {
                 .verifyComplete();
 
         assertTrue(executor.batchCalls.isEmpty());
+        assertTrue(executor.executedStatements.isEmpty());
     }
 
     @Test
-    void deleteAllByIdBatchesIdsIntoSingleExecuteBatchCall() {
+    void deleteAllByIdUsesSingleInDelete() {
         CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(3L);
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
 
         StepVerifier.create(operations.deleteAllById(SampleAccount.class, List.of(10L, 20L, 30L)))
                 .expectNext(3L)
                 .verifyComplete();
 
-        assertEquals(1, executor.batchCalls.size());
-        BatchCall call = executor.batchCalls.get(0);
-        assertEquals("delete from accounts where id = ?", call.sql());
-        assertEquals(List.of(List.of(10L), List.of(20L), List.of(30L)), call.bindingsList());
+        assertTrue(executor.batchCalls.isEmpty(), "deleteAllById는 IN 한 방 쿼리 — executeBatch를 쓰면 안 된다");
+        assertEquals(1, executor.executedStatements.size());
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals("delete from accounts where id in (?, ?, ?)", statement.sql());
+        assertEquals(List.of(10L, 20L, 30L), statement.bindings());
     }
 
     @Test
@@ -361,6 +363,7 @@ class SimpleReactiveEntityOperationsTest {
                 .verifyComplete();
 
         assertTrue(executor.batchCalls.isEmpty());
+        assertTrue(executor.executedStatements.isEmpty());
     }
 
     @Test
@@ -389,8 +392,10 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
-    void deleteAllSplitsBatchesAcrossDifferentEntityTypes() {
+    void deleteAllSplitsInDeletesAcrossDifferentEntityTypes() {
         CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(2L);
+        executor.executeResults.addLast(1L);
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         List<Object> mixed = List.of(
                 new SampleAccount(1L, "a@nova.io", true),
@@ -404,11 +409,12 @@ class SimpleReactiveEntityOperationsTest {
                 .expectNext(3L)
                 .verifyComplete();
 
-        assertEquals(2, executor.batchCalls.size(), "다른 entity 타입은 각자 별도 배치로 분리되어야 한다");
-        assertEquals("delete from accounts where id = ?", executor.batchCalls.get(0).sql());
-        assertEquals(List.of(List.of(1L), List.of(2L)), executor.batchCalls.get(0).bindingsList());
-        assertEquals("delete from orders where id = ?", executor.batchCalls.get(1).sql());
-        assertEquals(List.of(List.of(101L)), executor.batchCalls.get(1).bindingsList());
+        assertTrue(executor.batchCalls.isEmpty());
+        assertEquals(2, executor.executedStatements.size(), "다른 entity 타입은 각자 별도 IN 쿼리로 분리되어야 한다");
+        assertEquals("delete from accounts where id in (?, ?)", executor.executedStatements.get(0).sql());
+        assertEquals(List.of(1L, 2L), executor.executedStatements.get(0).bindings());
+        assertEquals("delete from orders where id in (?)", executor.executedStatements.get(1).sql());
+        assertEquals(List.of(101L), executor.executedStatements.get(1).bindings());
     }
 
     @Test
@@ -622,6 +628,7 @@ class SimpleReactiveEntityOperationsTest {
     private static final class CapturingExecutor implements SqlExecutor {
         private final Deque<RowAccessor> queryOneResults = new ArrayDeque<>();
         private final Deque<List<RowAccessor>> queryManyResults = new ArrayDeque<>();
+        private final Deque<Long> executeResults = new ArrayDeque<>();
         private final List<BatchCall> batchCalls = new ArrayList<>();
         private final List<SqlStatement> executedStatements = new ArrayList<>();
         private boolean emptyQueryOne;
@@ -635,7 +642,8 @@ class SimpleReactiveEntityOperationsTest {
         public Mono<Long> execute(SqlStatement statement) {
             this.lastStatement = statement;
             this.executedStatements.add(statement);
-            return Mono.just(1L);
+            long result = executeResults.isEmpty() ? 1L : executeResults.removeFirst();
+            return Mono.just(result);
         }
 
         @Override
