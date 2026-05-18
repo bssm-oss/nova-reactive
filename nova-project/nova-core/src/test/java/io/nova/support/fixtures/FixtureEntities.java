@@ -241,6 +241,41 @@ public final class FixtureEntities {
     }
 
     @Entity
+    @Table("generated_versioned_accounts")
+    public static class GeneratedVersionedAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        @Version
+        private Long version;
+
+        public GeneratedVersionedAccount() {
+        }
+
+        public GeneratedVersionedAccount(Long id, String email, Long version) {
+            this.id = id;
+            this.email = email;
+            this.version = version;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public Long getVersion() {
+            return version;
+        }
+    }
+
+    @Entity
     @Table("int_versioned_accounts")
     public static class IntegerVersionedAccount {
         @Id

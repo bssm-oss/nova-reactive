@@ -17,8 +17,11 @@ import io.nova.support.fixtures.FixtureEntities.AssignedIdAccount;
 import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.NoDefaultConstructorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
+import io.nova.exception.OptimisticLockingFailureException;
+import io.nova.support.fixtures.FixtureEntities.GeneratedVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SampleOrder;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
+import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import io.nova.tx.ReactiveTransactionOperations;
 import io.nova.tx.TransactionContext;
 import org.junit.jupiter.api.Test;
@@ -977,6 +980,169 @@ class SimpleReactiveEntityOperationsTest {
                 "select 1 from soft_deletable_accounts where email_address = ? and deleted_at is null limit 1",
                 executor.lastStatement.sql()
         );
+    }
+
+    @Test
+    void saveInitializesNullVersionToZeroOnInsert() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 42L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        GeneratedVersionedAccount account = new GeneratedVersionedAccount(null, "new@nova.io", null);
+
+        StepVerifier.create(operations.save(account))
+                .expectNextMatches(saved -> saved == account
+                        && Objects.equals(saved.getId(), 42L)
+                        && Objects.equals(saved.getVersion(), 0L))
+                .verifyComplete();
+
+        assertEquals(
+                "insert into generated_versioned_accounts (email_address, version) values (?, ?)",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of("new@nova.io", 0L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void savePreservesExplicitVersionOnInsert() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 42L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        GeneratedVersionedAccount account = new GeneratedVersionedAccount(null, "new@nova.io", 5L);
+
+        StepVerifier.create(operations.save(account))
+                .expectNextMatches(saved -> Objects.equals(saved.getVersion(), 5L))
+                .verifyComplete();
+
+        assertEquals(List.of("new@nova.io", 5L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void saveIncrementsVersionOnUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedAccount account = new VersionedAccount(7L, "updated@nova.io", 3L);
+
+        StepVerifier.create(operations.save(account))
+                .expectNextMatches(saved -> saved == account && Objects.equals(saved.getVersion(), 4L))
+                .verifyComplete();
+
+        assertEquals(
+                "update versioned_accounts set email_address = ?, version = ? where id = ? and version = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of("updated@nova.io", 4L, 7L, 3L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void saveRaisesOptimisticLockingFailureWhenUpdateAffectsZeroRows() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(0L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedAccount account = new VersionedAccount(7L, "stale@nova.io", 3L);
+
+        StepVerifier.create(operations.save(account))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(OptimisticLockingFailureException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("id=7"));
+                    assertTrue(error.getMessage().contains("version=3"));
+                })
+                .verify();
+
+        assertEquals(Long.valueOf(3L), account.getVersion());
+    }
+
+    @Test
+    void deleteSendsVersionAwareWhereForVersionedEntity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.delete(new VersionedAccount(9L, "a@nova.io", 4L)))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(
+                "delete from versioned_accounts where id = ? and version = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(9L, 4L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void deleteRaisesOptimisticLockingFailureWhenDeleteAffectsZeroRows() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(0L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.delete(new VersionedAccount(9L, "a@nova.io", 4L)))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(OptimisticLockingFailureException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("id=9"));
+                    assertTrue(error.getMessage().contains("version=4"));
+                })
+                .verify();
+    }
+
+    @Test
+    void deleteByIdSkipsVersionValidationForVersionedEntity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(0L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.deleteById(VersionedAccount.class, 9L))
+                .expectNext(0L)
+                .verifyComplete();
+
+        assertEquals(
+                "delete from versioned_accounts where id = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(9L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void saveAllRoutesVersionedUpdatesThroughSingleExecuteFallback() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<VersionedAccount> accounts = List.of(
+                new VersionedAccount(1L, "a@nova.io", 2L),
+                new VersionedAccount(2L, "b@nova.io", 7L)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNext(accounts.get(0), accounts.get(1))
+                .verifyComplete();
+
+        assertTrue(executor.batchCalls.isEmpty(),
+                "@Version 있는 update 그룹은 batch 경로 대신 단건 fallback로 처리되어야 한다");
+        assertEquals(2, executor.executedStatements.size());
+        assertEquals(Long.valueOf(3L), accounts.get(0).getVersion());
+        assertEquals(Long.valueOf(8L), accounts.get(1).getVersion());
+    }
+
+    @Test
+    void saveAllInitializesVersionOnNewVersionedEntitiesInBatch() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        List<GeneratedVersionedAccount> accounts = List.of(
+                new GeneratedVersionedAccount(null, "a@nova.io", null),
+                new GeneratedVersionedAccount(null, "b@nova.io", null)
+        );
+
+        StepVerifier.create(operations.saveAll(accounts))
+                .expectNext(accounts.get(0), accounts.get(1))
+                .verifyComplete();
+
+        assertEquals(1, executor.batchCalls.size());
+        BatchCall call = executor.batchCalls.get(0);
+        assertEquals("insert into generated_versioned_accounts (email_address, version) values (?, ?)", call.sql());
+        assertEquals(List.of("a@nova.io", 0L), call.bindingsList().get(0));
+        assertEquals(List.of("b@nova.io", 0L), call.bindingsList().get(1));
+        assertEquals(Long.valueOf(0L), accounts.get(0).getVersion());
+        assertEquals(Long.valueOf(0L), accounts.get(1).getVersion());
     }
 
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {

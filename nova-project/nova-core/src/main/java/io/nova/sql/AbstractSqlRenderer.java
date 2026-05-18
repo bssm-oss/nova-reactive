@@ -51,17 +51,31 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     @Override
     public SqlStatement update(EntityMetadata<?> metadata, Object entity) {
         List<PersistentProperty> properties = metadata.updatableProperties();
+        PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
         List<String> assignments = new ArrayList<>();
         List<Object> bindings = new ArrayList<>();
         int index = 1;
         for (PersistentProperty property : properties) {
             assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index++));
-            bindings.add(property.toColumnValue(property.read(entity)));
+            if (versionProperty != null && property.equals(versionProperty)) {
+                Object current = property.read(entity);
+                Object next = nextVersion(property, current);
+                bindings.add(property.toColumnValue(next));
+            } else {
+                bindings.add(property.toColumnValue(property.read(entity)));
+            }
         }
         bindings.add(metadata.idProperty().read(entity));
-        String sql = "update " + table(metadata) + " set " + String.join(", ", assignments) +
-                " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(index);
-        return new SqlStatement(sql, bindings);
+        StringBuilder sql = new StringBuilder("update ").append(table(metadata))
+                .append(" set ").append(String.join(", ", assignments))
+                .append(" where ").append(column(metadata.idProperty()))
+                .append(" = ").append(dialect.bindMarkers().marker(index++));
+        if (versionProperty != null) {
+            sql.append(" and ").append(column(versionProperty))
+                    .append(" = ").append(dialect.bindMarkers().marker(index));
+            bindings.add(versionProperty.toColumnValue(versionProperty.read(entity)));
+        }
+        return new SqlStatement(sql.toString(), bindings);
     }
 
     @Override
@@ -108,6 +122,42 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 "delete from " + table(metadata) + " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(1),
                 List.of(id)
         );
+    }
+
+    @Override
+    public SqlStatement deleteByEntity(EntityMetadata<?> metadata, Object entity) {
+        PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+        if (versionProperty == null) {
+            return deleteById(metadata, metadata.idProperty().read(entity));
+        }
+        List<Object> bindings = new ArrayList<>(2);
+        bindings.add(metadata.idProperty().read(entity));
+        bindings.add(versionProperty.toColumnValue(versionProperty.read(entity)));
+        String sql = "delete from " + table(metadata)
+                + " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(1)
+                + " and " + column(versionProperty) + " = " + dialect.bindMarkers().marker(2);
+        return new SqlStatement(sql, bindings);
+    }
+
+    /**
+     * 현재 버전 값에 1을 더한 다음 값을 계산한다. {@code Long}, {@code Integer}, {@code Short}만
+     * 지원하며 {@code null}은 0으로 간주해 1을 반환한다.
+     */
+    protected Object nextVersion(PersistentProperty versionProperty, Object current) {
+        Class<?> type = versionProperty.javaType();
+        if (type == Long.class) {
+            long value = current == null ? 0L : ((Number) current).longValue();
+            return value + 1L;
+        }
+        if (type == Integer.class) {
+            int value = current == null ? 0 : ((Number) current).intValue();
+            return value + 1;
+        }
+        if (type == Short.class) {
+            short value = current == null ? (short) 0 : ((Number) current).shortValue();
+            return (short) (value + 1);
+        }
+        throw new IllegalStateException("Unsupported version type " + type.getName());
     }
 
     @Override

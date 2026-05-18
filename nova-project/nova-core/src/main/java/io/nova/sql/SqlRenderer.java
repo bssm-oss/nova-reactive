@@ -92,4 +92,12 @@ public interface SqlRenderer {
         throw new UnsupportedOperationException(
                 "SqlRenderer.softDeleteByIds must be overridden by the implementation");
     }
+
+    /**
+     * 엔티티 인스턴스 기반 delete를 렌더한다. {@code @Version}이 선언된 경우 WHERE 절에 현재 버전 비교를
+     * 함께 포함시켜 optimistic locking 검증을 수행해야 한다. 기본 구현은 id-only delete로 폴백한다.
+     */
+    default SqlStatement deleteByEntity(EntityMetadata<?> metadata, Object entity) {
+        return deleteById(metadata, metadata.idProperty().read(entity));
+    }
 }

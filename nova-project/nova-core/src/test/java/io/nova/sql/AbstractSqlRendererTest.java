@@ -7,8 +7,11 @@ import io.nova.query.Criteria;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
+import io.nova.support.fixtures.FixtureEntities.IntegerVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
+import io.nova.support.fixtures.FixtureEntities.ShortVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
+import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -553,6 +556,70 @@ class AbstractSqlRendererTest {
                 "softDeleteById requires @SoftDelete on " + SampleAccount.class.getName(),
                 exception.getMessage()
         );
+    }
+
+    @Test
+    void rendersUpdateWithVersionIncrementAndWhereCheck() {
+        EntityMetadata<VersionedAccount> versionedMetadata = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(VersionedAccount.class);
+
+        SqlStatement statement = dialect.sqlRenderer().update(
+                versionedMetadata,
+                new VersionedAccount(7L, "a@nova.io", 4L)
+        );
+
+        assertEquals(
+                "update versioned_accounts set email_address = ?, version = ? where id = ? and version = ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("a@nova.io", 5L, 7L, 4L), statement.bindings());
+    }
+
+    @Test
+    void incrementsIntegerAndShortVersionInUpdate() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        EntityMetadata<IntegerVersionedAccount> intMetadata = factory.getEntityMetadata(IntegerVersionedAccount.class);
+        EntityMetadata<ShortVersionedAccount> shortMetadata = factory.getEntityMetadata(ShortVersionedAccount.class);
+
+        SqlStatement intStatement = dialect.sqlRenderer().update(
+                intMetadata,
+                new IntegerVersionedAccount(1L, "a@nova.io", 2)
+        );
+        SqlStatement shortStatement = dialect.sqlRenderer().update(
+                shortMetadata,
+                new ShortVersionedAccount(1L, "a@nova.io", (short) 9)
+        );
+
+        assertEquals(java.util.List.of("a@nova.io", 3, 1L, 2), intStatement.bindings());
+        assertEquals(java.util.List.of("a@nova.io", (short) 10, 1L, (short) 9), shortStatement.bindings());
+    }
+
+    @Test
+    void rendersDeleteByEntityWithVersionCheck() {
+        EntityMetadata<VersionedAccount> versionedMetadata = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(VersionedAccount.class);
+
+        SqlStatement statement = dialect.sqlRenderer().deleteByEntity(
+                versionedMetadata,
+                new VersionedAccount(7L, "a@nova.io", 4L)
+        );
+
+        assertEquals(
+                "delete from versioned_accounts where id = ? and version = ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(7L, 4L), statement.bindings());
+    }
+
+    @Test
+    void deleteByEntityWithoutVersionFallsBackToIdOnly() {
+        SqlStatement statement = dialect.sqlRenderer().deleteByEntity(
+                metadata,
+                new SampleAccount(7L, "a@nova.io", true)
+        );
+
+        assertEquals("delete from accounts where id = ?", statement.sql());
+        assertEquals(java.util.List.of(7L), statement.bindings());
     }
 
     @Test

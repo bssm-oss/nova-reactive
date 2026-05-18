@@ -1,5 +1,6 @@
 package io.nova.core;
 
+import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
@@ -73,23 +74,44 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         boolean isNew = entityStateDetector.isNew(entity, metadata);
         if (isNew) {
             auditApplier.applyOnInsert(entity, metadata);
-        } else {
-            auditApplier.applyOnUpdate(entity, metadata);
-        }
-        if (isNew && metadata.idProperty().generated()) {
+            initializeVersionIfAbsent(metadata, entity);
+            if (metadata.idProperty().generated()) {
+                SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+                PersistentProperty idProperty = metadata.idProperty();
+                return sqlExecutor.executeAndReturnGeneratedKey(statement, idProperty.columnName(), idProperty.javaType())
+                        .map(key -> {
+                            idProperty.write(entity, idProperty.toPropertyValue(key));
+                            return entity;
+                        })
+                        .defaultIfEmpty(entity);
+            }
             SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
-            PersistentProperty idProperty = metadata.idProperty();
-            return sqlExecutor.executeAndReturnGeneratedKey(statement, idProperty.columnName(), idProperty.javaType())
-                    .map(key -> {
-                        idProperty.write(entity, idProperty.toPropertyValue(key));
-                        return entity;
-                    })
-                    .defaultIfEmpty(entity);
+            return sqlExecutor.execute(statement).thenReturn(entity);
         }
-        SqlStatement statement = isNew
-                ? dialect.sqlRenderer().insert(metadata, entity)
-                : dialect.sqlRenderer().update(metadata, entity);
-        return sqlExecutor.execute(statement).thenReturn(entity);
+        auditApplier.applyOnUpdate(entity, metadata);
+        return updateExisting(metadata, entity);
+    }
+
+    private <T> Mono<T> updateExisting(EntityMetadata<T> metadata, T entity) {
+        PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity);
+        if (versionProperty == null) {
+            return sqlExecutor.execute(statement).thenReturn(entity);
+        }
+        Object current = versionProperty.read(entity);
+        Object next = nextVersionValue(versionProperty, current);
+        return sqlExecutor.execute(statement)
+                .flatMap(affected -> {
+                    if (affected == 0L) {
+                        return Mono.error(new OptimisticLockingFailureException(
+                                "Optimistic locking failure: row not found or version mismatch for "
+                                        + metadata.entityType().getName()
+                                        + " id=" + metadata.idProperty().read(entity)
+                                        + " version=" + current));
+                    }
+                    versionProperty.write(entity, next);
+                    return Mono.just(entity);
+                });
     }
 
     @Override
@@ -154,6 +176,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object deletedAt = currentTimeFor(softDelete.get());
             softDelete.get().write(entity, deletedAt);
             return sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
+        }
+        if (metadata.versionProperty().isPresent()) {
+            PersistentProperty versionProperty = metadata.versionProperty().get();
+            Object version = versionProperty.read(entity);
+            SqlStatement statement = dialect.sqlRenderer().deleteByEntity(metadata, entity);
+            return sqlExecutor.execute(statement)
+                    .flatMap(affected -> {
+                        if (affected == 0L) {
+                            return Mono.error(new OptimisticLockingFailureException(
+                                    "Optimistic locking failure: row not found or version mismatch for "
+                                            + metadata.entityType().getName()
+                                            + " id=" + id
+                                            + " version=" + version));
+                        }
+                        return Mono.just(affected);
+                    });
         }
         return sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id));
     }
@@ -300,11 +338,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     /**
      * 같은 (entityType, isNew) 그룹에서 SqlRenderer가 만드는 SQL이 동일하면 binding의
      * size·타입 순서도 동일하다는 EntityMetadata contract에 의존한다. 동일성 위반은 fallback로
-     * 단건 처리한다.
+     * 단건 처리한다. {@code @Version}이 선언된 엔티티의 update 그룹은 affected-rows 단건 검증이
+     * 필요하므로 batch 경로를 우회해 {@link #save(Object)}로 폴백한다.
      */
     private <T> Flux<T> saveGroup(GroupKey key, List<T> entities) {
         @SuppressWarnings("unchecked")
         EntityMetadata<T> metadata = (EntityMetadata<T>) metadataFactory.getEntityMetadata(key.entityClass());
+        if (!key.isNew() && metadata.versionProperty().isPresent()) {
+            // optimistic locking은 entity별 affected rows 검증이 필요해 batch 경로로 묶을 수 없다.
+            return Flux.fromIterable(entities).concatMap(this::save);
+        }
+        if (key.isNew() && metadata.versionProperty().isPresent()) {
+            // insert 전에 각 엔티티의 version을 0으로 초기화한다. 배치 SQL과 일관되게 binding하기 위해.
+            for (T entity : entities) {
+                initializeVersionIfAbsent(metadata, entity);
+            }
+        }
         List<SqlStatement> statements = new ArrayList<>(entities.size());
         String sharedSql = null;
         int sharedBindingsSize = -1;
@@ -407,8 +456,51 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return LocalDateTime.ofInstant(now, clock.getZone());
         }
         if (type == OffsetDateTime.class) {
-            return OffsetDateTime.ofInstant(now, clock.getZone() == null ? ZoneOffset.UTC : clock.getZone());
+            return OffsetDateTime.ofInstant(now, clock.getZone());
         }
         throw new IllegalStateException("Unsupported @SoftDelete type " + type.getName());
+    }
+
+    /**
+     * insert 시점에 {@code @Version} 필드가 비어 있으면 0으로 초기화한다. 이미 값이 있다면 호출자가
+     * 명시적으로 지정한 것으로 보고 보존한다.
+     */
+    private void initializeVersionIfAbsent(EntityMetadata<?> metadata, Object entity) {
+        metadata.versionProperty().ifPresent(versionProperty -> {
+            if (versionProperty.read(entity) == null) {
+                versionProperty.write(entity, zeroVersionValue(versionProperty));
+            }
+        });
+    }
+
+    private Object zeroVersionValue(PersistentProperty versionProperty) {
+        Class<?> type = versionProperty.javaType();
+        if (type == Long.class) {
+            return 0L;
+        }
+        if (type == Integer.class) {
+            return 0;
+        }
+        if (type == Short.class) {
+            return (short) 0;
+        }
+        throw new IllegalStateException("Unsupported version type " + type.getName());
+    }
+
+    private Object nextVersionValue(PersistentProperty versionProperty, Object current) {
+        Class<?> type = versionProperty.javaType();
+        if (type == Long.class) {
+            long value = current == null ? 0L : ((Number) current).longValue();
+            return value + 1L;
+        }
+        if (type == Integer.class) {
+            int value = current == null ? 0 : ((Number) current).intValue();
+            return value + 1;
+        }
+        if (type == Short.class) {
+            short value = current == null ? (short) 0 : ((Number) current).shortValue();
+            return (short) (value + 1);
+        }
+        throw new IllegalStateException("Unsupported version type " + type.getName());
     }
 }
