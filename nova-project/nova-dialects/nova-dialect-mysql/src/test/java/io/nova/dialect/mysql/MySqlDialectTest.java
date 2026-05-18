@@ -52,6 +52,16 @@ class MySqlDialectTest {
     }
 
     @Test
+    void sequenceNextValueSqlIsUnsupported() {
+        UnsupportedOperationException exception = org.junit.jupiter.api.Assertions.assertThrows(
+                UnsupportedOperationException.class,
+                () -> dialect.sequenceNextValueSql("seq")
+        );
+
+        org.junit.jupiter.api.Assertions.assertTrue(exception.getMessage().contains("mysql"));
+    }
+
+    @Test
     void insertOmitsReturningClauseAndDialectReportsNoReturningKeySupport() {
         SqlStatement statement = dialect.sqlRenderer().insert(
                 metadata,

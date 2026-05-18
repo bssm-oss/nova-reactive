@@ -77,4 +77,20 @@ class PostgresqlDialectTest {
     void reportsUseOfReturningClauseForGeneratedKeys() {
         org.junit.jupiter.api.Assertions.assertTrue(dialect.usesReturningForGeneratedKeys());
     }
+
+    @Test
+    void rendersSequenceNextValueSql() {
+        assertEquals(
+                "select nextval('account_id_seq')",
+                dialect.sequenceNextValueSql("account_id_seq")
+        );
+    }
+
+    @Test
+    void sequenceNextValueSqlRejectsBlankName() {
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sequenceNextValueSql(" ")
+        );
+    }
 }

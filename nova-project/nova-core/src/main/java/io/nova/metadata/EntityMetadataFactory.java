@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -35,6 +36,9 @@ public final class EntityMetadataFactory {
 
     private static final Set<Class<?>> SUPPORTED_VERSION_TYPES =
             Set.of(Long.class, Integer.class, Short.class);
+
+    private static final Set<Class<?>> SUPPORTED_UUID_ID_TYPES =
+            Set.of(UUID.class, String.class);
 
     private final NamingStrategy namingStrategy;
     private final Map<Class<?>, EntityMetadata<?>> cache = new ConcurrentHashMap<>();
@@ -177,6 +181,35 @@ public final class EntityMetadataFactory {
                                 + "; supported types are Long, Integer, Short");
             }
         }
+        GenerationType generationType = generatedValue == null ? GenerationType.NONE : generatedValue.strategy();
+        String generator = generatedValue == null ? "" : generatedValue.generator();
+        if (generatedValue != null) {
+            if (generationType == GenerationType.SEQUENCE) {
+                if (!isId) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + "." + field.getName()
+                                    + " uses @GeneratedValue(SEQUENCE) but is not annotated with @Id");
+                }
+                if (generator == null || generator.isBlank()) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + "." + field.getName()
+                                    + " uses @GeneratedValue(SEQUENCE) but does not specify generator (sequence name)");
+                }
+            }
+            if (generationType == GenerationType.UUID) {
+                if (!isId) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + "." + field.getName()
+                                    + " uses @GeneratedValue(UUID) but is not annotated with @Id");
+                }
+                if (!SUPPORTED_UUID_ID_TYPES.contains(field.getType())) {
+                    throw new IllegalArgumentException(
+                            "Unsupported UUID id type " + field.getType().getName() + " on "
+                                    + entityType.getName() + "." + field.getName()
+                                    + "; supported types are java.util.UUID, java.lang.String");
+                }
+            }
+        }
         String columnName = column != null && !column.value().isBlank()
                 ? column.value()
                 : namingStrategy.columnName(field.getName());
@@ -189,7 +222,8 @@ public final class EntityMetadataFactory {
                 isId,
                 isVersion,
                 column == null || column.nullable(),
-                generatedValue == null ? GenerationType.NONE : generatedValue.strategy(),
+                generationType,
+                generator,
                 converters.get(field.getType()),
                 field.isAnnotationPresent(CreatedAt.class),
                 field.isAnnotationPresent(UpdatedAt.class),

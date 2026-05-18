@@ -14,6 +14,7 @@ import io.nova.annotation.Version;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.util.UUID;
 
 public final class FixtureEntities {
     private FixtureEntities() {
@@ -595,5 +596,106 @@ public final class FixtureEntities {
         @Id
         @SoftDelete
         private Instant id;
+    }
+
+    @Entity
+    @Table("sequenced_accounts")
+    public static class SequencedAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "sequenced_accounts_seq")
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        public SequencedAccount() {
+        }
+
+        public SequencedAccount(Long id, String email) {
+            this.id = id;
+            this.email = email;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+    }
+
+    @Entity
+    @Table("uuid_accounts")
+    public static class UuidAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private UUID id;
+
+        @Column("email_address")
+        private String email;
+
+        public UuidAccount() {
+        }
+
+        public UuidAccount(UUID id, String email) {
+            this.id = id;
+            this.email = email;
+        }
+
+        public UUID getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+    }
+
+    @Entity
+    @Table("string_uuid_accounts")
+    public static class StringUuidAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private String id;
+
+        @Column("email_address")
+        private String email;
+
+        public StringUuidAccount() {
+        }
+
+        public StringUuidAccount(String id, String email) {
+            this.id = id;
+            this.email = email;
+        }
+
+        public String getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+    }
+
+    @Entity
+    public static class InvalidUuidTypeEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private Long id;
+
+        public InvalidUuidTypeEntity() {
+        }
+    }
+
+    @Entity
+    public static class MissingSequenceGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE)
+        private Long id;
+
+        public MissingSequenceGeneratorEntity() {
+        }
     }
 }

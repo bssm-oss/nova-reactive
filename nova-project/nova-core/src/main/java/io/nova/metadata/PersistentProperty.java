@@ -15,6 +15,7 @@ public final class PersistentProperty {
     private final boolean version;
     private final boolean nullable;
     private final GenerationType generationType;
+    private final String generator;
     private final AttributeConverter<Object, Object> converter;
     private final boolean createdAt;
     private final boolean updatedAt;
@@ -30,6 +31,7 @@ public final class PersistentProperty {
             boolean version,
             boolean nullable,
             GenerationType generationType,
+            String generator,
             AttributeConverter<?, ?> converter,
             boolean createdAt,
             boolean updatedAt,
@@ -44,6 +46,7 @@ public final class PersistentProperty {
         this.version = version;
         this.nullable = nullable;
         this.generationType = generationType;
+        this.generator = generator == null ? "" : generator;
         this.converter = (AttributeConverter<Object, Object>) converter;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
@@ -80,6 +83,10 @@ public final class PersistentProperty {
 
     public GenerationType generationType() {
         return generationType;
+    }
+
+    public String generator() {
+        return generator;
     }
 
     public boolean generated() {

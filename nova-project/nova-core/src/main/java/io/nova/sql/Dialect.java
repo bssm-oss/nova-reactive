@@ -21,4 +21,12 @@ public interface Dialect {
     default boolean usesReturningForGeneratedKeys() {
         return false;
     }
+
+    /**
+     * 주어진 시퀀스에서 다음 값을 가져오는 SELECT 구문을 반환한다. 시퀀스를 지원하지 않는 dialect는
+     * 기본 구현이 {@link UnsupportedOperationException}을 던진다.
+     */
+    default String sequenceNextValueSql(String sequenceName) {
+        throw new UnsupportedOperationException(name() + " dialect does not support sequences");
+    }
 }

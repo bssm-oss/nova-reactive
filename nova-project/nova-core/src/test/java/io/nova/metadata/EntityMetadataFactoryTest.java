@@ -9,9 +9,14 @@ import io.nova.support.fixtures.FixtureEntities.DuplicateSoftDeleteEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateVersionEntity;
 import io.nova.support.fixtures.FixtureEntities.IdVersionConflictEntity;
 import io.nova.support.fixtures.FixtureEntities.IntegerVersionedAccount;
+import io.nova.support.fixtures.FixtureEntities.InvalidUuidTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.MissingEntityAnnotation;
 import io.nova.support.fixtures.FixtureEntities.MissingIdEntity;
+import io.nova.support.fixtures.FixtureEntities.MissingSequenceGeneratorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
+import io.nova.support.fixtures.FixtureEntities.SequencedAccount;
+import io.nova.support.fixtures.FixtureEntities.StringUuidAccount;
+import io.nova.support.fixtures.FixtureEntities.UuidAccount;
 import io.nova.support.fixtures.FixtureEntities.ShortVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableLocalAccount;
@@ -24,6 +29,8 @@ import io.nova.support.fixtures.FixtureEntities.UnsupportedSoftDeleteTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.UnsupportedVersionTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import org.junit.jupiter.api.Test;
+
+import io.nova.annotation.GenerationType;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -272,6 +279,54 @@ class EntityMetadataFactoryTest {
         );
 
         assertTrue(exception.getMessage().contains("cannot be both @Id and @Version"));
+    }
+
+    @Test
+    void recognizesSequenceGenerationStrategyAndGeneratorName() {
+        EntityMetadata<SequencedAccount> metadata = factory.getEntityMetadata(SequencedAccount.class);
+
+        assertEquals(GenerationType.SEQUENCE, metadata.idProperty().generationType());
+        assertEquals("sequenced_accounts_seq", metadata.idProperty().generator());
+        assertTrue(metadata.idProperty().generated());
+    }
+
+    @Test
+    void recognizesUuidGenerationStrategyWithUuidIdType() {
+        EntityMetadata<UuidAccount> metadata = factory.getEntityMetadata(UuidAccount.class);
+
+        assertEquals(GenerationType.UUID, metadata.idProperty().generationType());
+        assertEquals(java.util.UUID.class, metadata.idProperty().javaType());
+        assertTrue(metadata.idProperty().generated());
+    }
+
+    @Test
+    void recognizesUuidGenerationStrategyWithStringIdType() {
+        EntityMetadata<StringUuidAccount> metadata = factory.getEntityMetadata(StringUuidAccount.class);
+
+        assertEquals(GenerationType.UUID, metadata.idProperty().generationType());
+        assertEquals(String.class, metadata.idProperty().javaType());
+    }
+
+    @Test
+    void rejectsUuidStrategyOnUnsupportedIdType() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(InvalidUuidTypeEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("Unsupported UUID id type"));
+        assertTrue(exception.getMessage().contains("java.lang.Long"));
+    }
+
+    @Test
+    void rejectsSequenceStrategyWithoutGeneratorName() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(MissingSequenceGeneratorEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@GeneratedValue(SEQUENCE)"));
+        assertTrue(exception.getMessage().contains("generator"));
     }
 
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {

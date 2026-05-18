@@ -47,6 +47,14 @@ public final class PostgresqlDialect implements Dialect {
         return true;
     }
 
+    @Override
+    public String sequenceNextValueSql(String sequenceName) {
+        if (sequenceName == null || sequenceName.isBlank()) {
+            throw new IllegalArgumentException("sequenceName must not be blank");
+        }
+        return "select nextval('" + sequenceName + "')";
+    }
+
     private static final class PostgresqlSqlRenderer extends AbstractSqlRenderer {
         private PostgresqlSqlRenderer(Dialect dialect) {
             super(dialect);
