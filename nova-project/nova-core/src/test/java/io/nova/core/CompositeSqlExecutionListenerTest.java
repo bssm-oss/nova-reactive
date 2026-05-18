@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -186,6 +187,113 @@ class CompositeSqlExecutionListenerTest {
         composite.onBeforeExecution(STATEMENT);
         composite.onAfterExecution(STATEMENT, Duration.ZERO, 0L);
         composite.onError(STATEMENT, Duration.ZERO, new RuntimeException("x"));
+    }
+
+    @Test
+    void ofWithZeroListenersReturnsNoOp() {
+        SqlExecutionListener listener = CompositeSqlExecutionListener.of();
+
+        assertSame(SqlExecutionListener.NO_OP, listener,
+                "0개 listener는 NO_OP을 반환해야 한다");
+    }
+
+    @Test
+    void ofWithSingleListenerReturnsItDirectly() {
+        SqlExecutionListener only = new RecordingListener("only", new ArrayList<>());
+
+        SqlExecutionListener listener = CompositeSqlExecutionListener.of(only);
+
+        assertSame(only, listener,
+                "1개 listener는 그대로 반환하여 불필요한 wrapping을 피해야 한다");
+    }
+
+    @Test
+    void ofWithMultipleListenersReturnsComposite() {
+        List<String> order = new ArrayList<>();
+        SqlExecutionListener first = new RecordingListener("first", order);
+        SqlExecutionListener second = new RecordingListener("second", order);
+
+        SqlExecutionListener listener = CompositeSqlExecutionListener.of(first, second);
+
+        assertTrue(listener instanceof CompositeSqlExecutionListener,
+                "2개 이상은 Composite로 wrapping되어야 한다: " + listener.getClass());
+        listener.onBeforeExecution(STATEMENT);
+        assertEquals(List.of("first:before", "second:before"), order);
+    }
+
+    @Test
+    void ofRejectsNullArray() {
+        assertThrows(NullPointerException.class,
+                () -> CompositeSqlExecutionListener.of((SqlExecutionListener[]) null));
+    }
+
+    @Test
+    void ofRejectsNullElement() {
+        assertThrows(NullPointerException.class,
+                () -> CompositeSqlExecutionListener.of(SqlExecutionListener.NO_OP, null));
+    }
+
+    @Test
+    void ofRejectsSingleNullElement() {
+        assertThrows(NullPointerException.class,
+                () -> CompositeSqlExecutionListener.of((SqlExecutionListener) null));
+    }
+
+    @Test
+    void addReturnsNewCompositeAndDoesNotMutateOriginal() {
+        List<String> order = new ArrayList<>();
+        SqlExecutionListener first = new RecordingListener("first", order);
+        SqlExecutionListener second = new RecordingListener("second", order);
+
+        CompositeSqlExecutionListener original = new CompositeSqlExecutionListener(List.of(first));
+        CompositeSqlExecutionListener extended = original.add(second);
+
+        assertNotSame(original, extended, "add는 새 Composite를 반환해야 한다");
+        assertEquals(1, original.delegates().size(),
+                "원본 Composite의 delegate 목록은 변하면 안 된다");
+        assertSame(first, original.delegates().get(0));
+        assertEquals(2, extended.delegates().size());
+        assertSame(first, extended.delegates().get(0));
+        assertSame(second, extended.delegates().get(1));
+
+        extended.onBeforeExecution(STATEMENT);
+        assertEquals(List.of("first:before", "second:before"), order);
+    }
+
+    @Test
+    void addRejectsNull() {
+        CompositeSqlExecutionListener composite =
+                new CompositeSqlExecutionListener(List.of(SqlExecutionListener.NO_OP));
+
+        assertThrows(NullPointerException.class, () -> composite.add(null));
+    }
+
+    @Test
+    void withoutNoOpStripsNoOpDelegates() {
+        List<String> order = new ArrayList<>();
+        SqlExecutionListener real = new RecordingListener("real", order);
+
+        CompositeSqlExecutionListener composite = new CompositeSqlExecutionListener(
+                List.of(SqlExecutionListener.NO_OP, real, SqlExecutionListener.NO_OP));
+
+        CompositeSqlExecutionListener stripped = composite.withoutNoOp();
+
+        assertNotSame(composite, stripped);
+        assertEquals(List.of(real), stripped.delegates());
+        assertEquals(3, composite.delegates().size(),
+                "원본은 변하지 않아야 한다");
+    }
+
+    @Test
+    void withoutNoOpReturnsSameInstanceWhenNothingToStrip() {
+        SqlExecutionListener real = new RecordingListener("real", new ArrayList<>());
+        CompositeSqlExecutionListener composite =
+                new CompositeSqlExecutionListener(List.of(real));
+
+        CompositeSqlExecutionListener result = composite.withoutNoOp();
+
+        assertSame(composite, result,
+                "제거 대상이 없으면 동일 instance를 그대로 반환해야 한다");
     }
 
     private record RecordingListener(String name, List<String> order) implements SqlExecutionListener {
