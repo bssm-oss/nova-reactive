@@ -5,6 +5,7 @@ import io.nova.metadata.PersistentProperty;
 import io.nova.query.ComparisonOperator;
 import io.nova.query.CompoundPredicate;
 import io.nova.query.Condition;
+import io.nova.query.NegationPredicate;
 import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
@@ -174,6 +175,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             String marker = dialect.bindMarkers().marker(context.nextIndex());
             context.addBinding(property.toColumnValue(condition.value()));
             return column(property) + " " + operator.sql() + " " + marker;
+        }
+        if (predicate instanceof NegationPredicate negation) {
+            return "not (" + renderPredicate(context, metadata, negation.inner()) + ")";
         }
         CompoundPredicate compound = (CompoundPredicate) predicate;
         return compound.predicates().stream()

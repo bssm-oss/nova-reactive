@@ -106,4 +106,11 @@ public final class Criteria {
     public static CompoundPredicate or(Predicate... predicates) {
         return new CompoundPredicate(LogicalOperator.OR, List.of(predicates));
     }
+
+    /**
+     * 주어진 predicate를 부정한다. SQL상 {@code not (...)}으로 렌더된다.
+     */
+    public static NegationPredicate not(Predicate inner) {
+        return new NegationPredicate(inner);
+    }
 }

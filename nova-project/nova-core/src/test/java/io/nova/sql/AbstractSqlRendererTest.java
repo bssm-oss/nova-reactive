@@ -170,6 +170,28 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersNegationOfCompoundPredicate() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.not(Criteria.and(
+                        Criteria.eq("email", "a@nova.io"),
+                        Criteria.eq("active", true)
+                )))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where not ((email_address = ?) and (active = ?))",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("a@nova.io", true), statement.bindings());
+    }
+
+    @Test
+    void rejectsNullInnerForNot() {
+        assertThrows(NullPointerException.class, () -> Criteria.not(null));
+    }
+
+    @Test
     void rendersDeleteByIdsAsSingleInDelete() {
         SqlStatement statement = dialect.sqlRenderer().deleteByIds(metadata, java.util.List.of(10L, 20L, 30L));
 
