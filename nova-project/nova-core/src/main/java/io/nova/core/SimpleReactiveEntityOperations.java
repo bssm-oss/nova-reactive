@@ -13,6 +13,7 @@ import io.nova.query.NativeQuery;
 import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
+import io.nova.sql.CompiledQuery;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlStatement;
@@ -506,6 +507,34 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         QuerySpec querySpec = QuerySpec.empty().where(updater.where());
         return Mono.fromCallable(() -> dialect.sqlRenderer().updateByQuery(metadata, fieldValues, querySpec))
                 .flatMap(sqlExecutor::execute);
+    }
+
+    @Override
+    public <T> Flux<T> findAll(Class<T> entityType, CompiledQuery query, Object... bindings) {
+        Objects.requireNonNull(entityType, "entityType must not be null");
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(bindings, "bindings must not be null");
+        SqlStatement statement;
+        try {
+            statement = query.bind(bindings);
+        } catch (RuntimeException exception) {
+            return Flux.error(exception);
+        }
+        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        return sqlExecutor.queryMany(statement, row -> mapRow(metadata, row));
+    }
+
+    @Override
+    public Mono<Long> execute(CompiledQuery query, Object... bindings) {
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(bindings, "bindings must not be null");
+        SqlStatement statement;
+        try {
+            statement = query.bind(bindings);
+        } catch (RuntimeException exception) {
+            return Mono.error(exception);
+        }
+        return sqlExecutor.execute(statement);
     }
 
     @Override

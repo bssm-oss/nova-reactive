@@ -6,6 +6,7 @@ import io.nova.query.NativeQuery;
 import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
+import io.nova.sql.CompiledQuery;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -214,5 +215,21 @@ public interface ReactiveEntityOperations {
         public <T> T get(String columnName, Class<T> type) {
             return row.get(columnName, type);
         }
+    }
+
+    /**
+     * 미리 컴파일된 SELECT {@link CompiledQuery}를 주어진 binding으로 실행하고 결과 행을 엔티티로 매핑한다.
+     */
+    default <T> Flux<T> findAll(Class<T> entityType, CompiledQuery query, Object... bindings) {
+        return Flux.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.findAll(Class, CompiledQuery, Object...) must be overridden by the implementation"));
+    }
+
+    /**
+     * 미리 컴파일된 INSERT/UPDATE/DELETE {@link CompiledQuery}를 주어진 binding으로 실행한다.
+     */
+    default Mono<Long> execute(CompiledQuery query, Object... bindings) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.execute(CompiledQuery, Object...) must be overridden by the implementation"));
     }
 }

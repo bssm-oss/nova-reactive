@@ -145,4 +145,33 @@ public interface SqlRenderer {
         throw new UnsupportedOperationException(
                 "SqlRenderer.aggregate must be overridden by the implementation");
     }
+
+    /**
+     * 주어진 metadata와 query 명세로 SELECT SQL을 한 번 렌더해 {@link CompiledQuery}로 반환한다.
+     * 동일 SQL을 다른 binding으로 반복 실행할 때 renderer 호출 비용을 절감한다.
+     */
+    default CompiledQuery compileSelect(EntityMetadata<?> metadata, QuerySpec querySpec) {
+        SqlStatement statement = select(metadata, querySpec);
+        return new SimpleCompiledQuery(statement.sql(), statement.bindings().size());
+    }
+
+    /**
+     * 주어진 metadata와 query 명세로 DELETE SQL을 한 번 렌더해 {@link CompiledQuery}로 반환한다.
+     */
+    default CompiledQuery compileDelete(EntityMetadata<?> metadata, QuerySpec querySpec) {
+        SqlStatement statement = deleteByQuery(metadata, querySpec);
+        return new SimpleCompiledQuery(statement.sql(), statement.bindings().size());
+    }
+
+    /**
+     * 주어진 metadata와 field-value 쌍, query 명세로 UPDATE SQL을 한 번 렌더해 {@link CompiledQuery}로 반환한다.
+     */
+    default CompiledQuery compileUpdate(
+            EntityMetadata<?> metadata,
+            LinkedHashMap<String, Object> fieldValues,
+            QuerySpec querySpec
+    ) {
+        SqlStatement statement = updateByQuery(metadata, fieldValues, querySpec);
+        return new SimpleCompiledQuery(statement.sql(), statement.bindings().size());
+    }
 }
