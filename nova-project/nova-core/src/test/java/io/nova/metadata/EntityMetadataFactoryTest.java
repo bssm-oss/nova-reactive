@@ -5,12 +5,18 @@ import io.nova.support.fixtures.FixtureEntities.ConvertibleEntity;
 import io.nova.support.fixtures.FixtureEntities.DefaultNamedEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateCreatedAtEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateIdEntity;
+import io.nova.support.fixtures.FixtureEntities.DuplicateSoftDeleteEntity;
 import io.nova.support.fixtures.FixtureEntities.MissingEntityAnnotation;
 import io.nova.support.fixtures.FixtureEntities.MissingIdEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
+import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
+import io.nova.support.fixtures.FixtureEntities.SoftDeletableLocalAccount;
+import io.nova.support.fixtures.FixtureEntities.SoftDeletableOffsetAccount;
+import io.nova.support.fixtures.FixtureEntities.SoftDeleteOnIdEntity;
 import io.nova.support.fixtures.FixtureEntities.StaticFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.Status;
 import io.nova.support.fixtures.FixtureEntities.UnsupportedAuditTypeEntity;
+import io.nova.support.fixtures.FixtureEntities.UnsupportedSoftDeleteTypeEntity;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -135,6 +141,69 @@ class EntityMetadataFactoryTest {
         );
 
         assertTrue(exception.getMessage().contains("declares multiple @CreatedAt properties"));
+    }
+
+    @Test
+    void recognizesSoftDeleteProperty() {
+        EntityMetadata<SoftDeletableAccount> metadata = factory.getEntityMetadata(SoftDeletableAccount.class);
+
+        assertTrue(metadata.softDeleteProperty().isPresent());
+        assertEquals("deletedAt", metadata.softDeleteProperty().get().propertyName());
+        assertEquals("deleted_at", metadata.softDeleteProperty().get().columnName());
+        assertTrue(metadata.softDeleteProperty().get().softDelete());
+    }
+
+    @Test
+    void absentSoftDeletePropertyWhenNotAnnotated() {
+        EntityMetadata<SampleAccount> metadata = factory.getEntityMetadata(SampleAccount.class);
+
+        assertFalse(metadata.softDeleteProperty().isPresent());
+    }
+
+    @Test
+    void recognizesSoftDeleteOnLocalDateTime() {
+        EntityMetadata<SoftDeletableLocalAccount> metadata = factory.getEntityMetadata(SoftDeletableLocalAccount.class);
+
+        assertTrue(metadata.softDeleteProperty().isPresent());
+        assertEquals(java.time.LocalDateTime.class, metadata.softDeleteProperty().get().javaType());
+    }
+
+    @Test
+    void recognizesSoftDeleteOnOffsetDateTime() {
+        EntityMetadata<SoftDeletableOffsetAccount> metadata = factory.getEntityMetadata(SoftDeletableOffsetAccount.class);
+
+        assertTrue(metadata.softDeleteProperty().isPresent());
+        assertEquals(java.time.OffsetDateTime.class, metadata.softDeleteProperty().get().javaType());
+    }
+
+    @Test
+    void rejectsEntitiesWithDuplicateSoftDelete() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DuplicateSoftDeleteEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("declares multiple @SoftDelete properties"));
+    }
+
+    @Test
+    void rejectsUnsupportedSoftDeleteType() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(UnsupportedSoftDeleteTypeEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("unsupported @SoftDelete type"));
+    }
+
+    @Test
+    void rejectsSoftDeleteOnIdField() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(SoftDeleteOnIdEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("cannot be annotated with both @Id and @SoftDelete"));
     }
 
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {

@@ -6,8 +6,13 @@ import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
+import io.nova.annotation.SoftDelete;
 import io.nova.annotation.Table;
 import io.nova.annotation.UpdatedAt;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -260,6 +265,41 @@ public final class FixtureEntities {
     }
 
     @Entity
+    @Table("soft_deletable_accounts")
+    public static class SoftDeletableAccount {
+        @Id
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        @SoftDelete
+        @Column("deleted_at")
+        private Instant deletedAt;
+
+        public SoftDeletableAccount() {
+        }
+
+        public SoftDeletableAccount(Long id, String email, Instant deletedAt) {
+            this.id = id;
+            this.email = email;
+            this.deletedAt = deletedAt;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public Instant getDeletedAt() {
+            return deletedAt;
+        }
+    }
+
+    @Entity
     @Table("local_audited_accounts")
     public static class LocalDateTimeAuditedAccount {
         @Id
@@ -278,6 +318,24 @@ public final class FixtureEntities {
     }
 
     @Entity
+    @Table("soft_deletable_local")
+    public static class SoftDeletableLocalAccount {
+        @Id
+        private Long id;
+
+        @SoftDelete
+        @Column("deleted_at")
+        private LocalDateTime deletedAt;
+
+        public SoftDeletableLocalAccount() {
+        }
+
+        public LocalDateTime getDeletedAt() {
+            return deletedAt;
+        }
+    }
+
+    @Entity
     @Table("offset_audited_accounts")
     public static class OffsetDateTimeAuditedAccount {
         @Id
@@ -292,6 +350,24 @@ public final class FixtureEntities {
 
         public OffsetDateTime getUpdatedAt() {
             return updatedAt;
+        }
+    }
+
+    @Entity
+    @Table("soft_deletable_offset")
+    public static class SoftDeletableOffsetAccount {
+        @Id
+        private Long id;
+
+        @SoftDelete
+        @Column("deleted_at")
+        private OffsetDateTime deletedAt;
+
+        public SoftDeletableOffsetAccount() {
+        }
+
+        public OffsetDateTime getDeletedAt() {
+            return deletedAt;
         }
     }
 
@@ -320,5 +396,33 @@ public final class FixtureEntities {
 
         public DuplicateCreatedAtEntity() {
         }
+    }
+
+    @Entity
+    public static class DuplicateSoftDeleteEntity {
+        @Id
+        private Long id;
+
+        @SoftDelete
+        private Instant deletedAt;
+
+        @SoftDelete
+        private Instant removedAt;
+    }
+
+    @Entity
+    public static class UnsupportedSoftDeleteTypeEntity {
+        @Id
+        private Long id;
+
+        @SoftDelete
+        private String deletedAt;
+    }
+
+    @Entity
+    public static class SoftDeleteOnIdEntity {
+        @Id
+        @SoftDelete
+        private Instant id;
     }
 }

@@ -17,6 +17,7 @@ public final class PersistentProperty {
     private final AttributeConverter<Object, Object> converter;
     private final boolean createdAt;
     private final boolean updatedAt;
+    private final boolean softDelete;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -29,7 +30,8 @@ public final class PersistentProperty {
             GenerationType generationType,
             AttributeConverter<?, ?> converter,
             boolean createdAt,
-            boolean updatedAt
+            boolean updatedAt,
+            boolean softDelete
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -42,6 +44,7 @@ public final class PersistentProperty {
         this.converter = (AttributeConverter<Object, Object>) converter;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
+        this.softDelete = softDelete;
     }
 
     public Field field() {
@@ -82,6 +85,10 @@ public final class PersistentProperty {
 
     public boolean updatedAt() {
         return updatedAt;
+    }
+
+    public boolean softDelete() {
+        return softDelete;
     }
 
     public Object read(Object instance) {

@@ -6,6 +6,7 @@ import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
+import io.nova.annotation.SoftDelete;
 import io.nova.annotation.Table;
 import io.nova.annotation.UpdatedAt;
 import io.nova.convert.AttributeConverter;
@@ -26,6 +27,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class EntityMetadataFactory {
     private static final Set<Class<?>> SUPPORTED_AUDIT_TYPES =
+            Set.of(Instant.class, LocalDateTime.class, OffsetDateTime.class);
+
+    private static final Set<Class<?>> SUPPORTED_SOFT_DELETE_TYPES =
             Set.of(Instant.class, LocalDateTime.class, OffsetDateTime.class);
 
     private final NamingStrategy namingStrategy;
@@ -71,11 +75,12 @@ public final class EntityMetadataFactory {
         PersistentProperty idProperty = null;
         PersistentProperty createdAtProperty = null;
         PersistentProperty updatedAtProperty = null;
+        PersistentProperty softDeleteProperty = null;
         for (Field field : entityType.getDeclaredFields()) {
             if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
                 continue;
             }
-            PersistentProperty property = createProperty(field);
+            PersistentProperty property = createProperty(entityType, field);
             properties.add(property);
             if (property.id()) {
                 if (idProperty != null) {
@@ -115,6 +120,12 @@ public final class EntityMetadataFactory {
                 }
                 updatedAtProperty = property;
             }
+            if (property.softDelete()) {
+                if (softDeleteProperty != null) {
+                    throw new IllegalArgumentException(entityType.getName() + " declares multiple @SoftDelete properties");
+                }
+                softDeleteProperty = property;
+            }
         }
 
         if (idProperty == null) {
@@ -124,9 +135,24 @@ public final class EntityMetadataFactory {
         return new EntityMetadata<>(entityType, entityName, tableName, properties, idProperty);
     }
 
-    private PersistentProperty createProperty(Field field) {
+    private PersistentProperty createProperty(Class<?> entityType, Field field) {
         Column column = field.getAnnotation(Column.class);
         GeneratedValue generatedValue = field.getAnnotation(GeneratedValue.class);
+        boolean isId = field.isAnnotationPresent(Id.class);
+        boolean isSoftDelete = field.isAnnotationPresent(SoftDelete.class);
+        if (isSoftDelete) {
+            if (isId) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " field " + field.getName()
+                                + " cannot be annotated with both @Id and @SoftDelete");
+            }
+            if (!SUPPORTED_SOFT_DELETE_TYPES.contains(field.getType())) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " field " + field.getName()
+                                + " has unsupported @SoftDelete type " + field.getType().getName()
+                                + "; supported types are java.time.Instant, java.time.LocalDateTime, java.time.OffsetDateTime");
+            }
+        }
         String columnName = column != null && !column.value().isBlank()
                 ? column.value()
                 : namingStrategy.columnName(field.getName());
@@ -136,12 +162,13 @@ public final class EntityMetadataFactory {
                 field.getName(),
                 columnName,
                 field.getType(),
-                field.isAnnotationPresent(Id.class),
+                isId,
                 column == null || column.nullable(),
                 generatedValue == null ? GenerationType.NONE : generatedValue.strategy(),
                 converters.get(field.getType()),
                 field.isAnnotationPresent(CreatedAt.class),
-                field.isAnnotationPresent(UpdatedAt.class)
+                field.isAnnotationPresent(UpdatedAt.class),
+                isSoftDelete
         );
     }
 }
