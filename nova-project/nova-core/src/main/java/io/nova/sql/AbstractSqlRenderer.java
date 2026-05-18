@@ -96,6 +96,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
         PersistentProperty idProperty = metadata.idProperty();
         String idPropertyName = idProperty.propertyName();
+        PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
 
         List<PersistentProperty> properties = new ArrayList<>(dedupedFields.size());
         for (String fieldName : dedupedFields) {
@@ -106,16 +107,29 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
 
         List<String> assignments = new ArrayList<>(properties.size());
-        List<Object> bindings = new ArrayList<>(properties.size() + 1);
+        List<Object> bindings = new ArrayList<>(properties.size() + 2);
         int index = 1;
         for (PersistentProperty property : properties) {
             assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index++));
-            bindings.add(property.toColumnValue(property.read(entity)));
+            if (versionProperty != null && property.equals(versionProperty)) {
+                Object current = property.read(entity);
+                Object next = nextVersion(property, current);
+                bindings.add(property.toColumnValue(next));
+            } else {
+                bindings.add(property.toColumnValue(property.read(entity)));
+            }
         }
         bindings.add(idProperty.read(entity));
-        String sql = "update " + table(metadata) + " set " + String.join(", ", assignments) +
-                " where " + column(idProperty) + " = " + dialect.bindMarkers().marker(index);
-        return new SqlStatement(sql, bindings);
+        StringBuilder sql = new StringBuilder("update ").append(table(metadata))
+                .append(" set ").append(String.join(", ", assignments))
+                .append(" where ").append(column(idProperty))
+                .append(" = ").append(dialect.bindMarkers().marker(index++));
+        if (versionProperty != null) {
+            sql.append(" and ").append(column(versionProperty))
+                    .append(" = ").append(dialect.bindMarkers().marker(index));
+            bindings.add(versionProperty.toColumnValue(versionProperty.read(entity)));
+        }
+        return new SqlStatement(sql.toString(), bindings);
     }
 
     @Override

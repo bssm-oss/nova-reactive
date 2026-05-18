@@ -202,6 +202,45 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void updatePartialIncludesVersionSetAndWhereForVersionedEntity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedAccount account = new VersionedAccount(7L, "x@nova.io", 3L);
+
+        StepVerifier.create(operations.update(account, List.of("email")))
+                .expectNext(account)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+        SqlStatement statement = executor.executedStatements.get(0);
+        assertEquals(
+                "update versioned_accounts set email_address = ?, version = ? where id = ? and version = ?",
+                statement.sql()
+        );
+        assertEquals(List.of("x@nova.io", 4L, 7L, 3L), statement.bindings());
+        assertEquals(Long.valueOf(4L), account.getVersion());
+    }
+
+    @Test
+    void updatePartialRaisesOptimisticLockingFailureWhenAffectedZeroForVersionedEntity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(0L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedAccount account = new VersionedAccount(7L, "x@nova.io", 3L);
+
+        StepVerifier.create(operations.update(account, List.of("email")))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(OptimisticLockingFailureException.class, error.getClass());
+                    assertTrue(error.getMessage().contains("id=7"));
+                    assertTrue(error.getMessage().contains("version=3"));
+                })
+                .verify();
+
+        assertEquals(Long.valueOf(3L), account.getVersion(), "실패 시 version 필드는 그대로 보존되어야 한다");
+    }
+
+    @Test
     void updateRunsPartialUpdateForExistingEntity() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.executeResults.addLast(1L);

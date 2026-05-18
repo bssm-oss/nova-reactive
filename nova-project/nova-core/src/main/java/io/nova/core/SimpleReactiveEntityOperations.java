@@ -163,19 +163,41 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.error(new IllegalArgumentException("Entity id must not be null for update"));
         }
         auditApplier.applyOnUpdate(entity, metadata);
-        Iterable<String> effectiveFields = auditApplier.updatedAtPropertyName(metadata)
-                .map(name -> augmentWithAuditField(fields, name))
-                .orElse(fields);
+        Iterable<String> effectiveFields = fields;
+        Optional<String> updatedAtName = auditApplier.updatedAtPropertyName(metadata);
+        if (updatedAtName.isPresent()) {
+            effectiveFields = augmentWithExtraField(effectiveFields, updatedAtName.get());
+        }
+        PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+        if (versionProperty != null) {
+            effectiveFields = augmentWithExtraField(effectiveFields, versionProperty.propertyName());
+        }
         SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
-        return sqlExecutor.execute(statement).thenReturn(entity);
+        if (versionProperty == null) {
+            return sqlExecutor.execute(statement).thenReturn(entity);
+        }
+        Object current = versionProperty.read(entity);
+        Object next = nextVersionValue(versionProperty, current);
+        return sqlExecutor.execute(statement)
+                .flatMap(affected -> {
+                    if (affected == 0L) {
+                        return Mono.error(new OptimisticLockingFailureException(
+                                "Optimistic locking failure: row not found or version mismatch for "
+                                        + metadata.entityType().getName()
+                                        + " id=" + id
+                                        + " version=" + current));
+                    }
+                    versionProperty.write(entity, next);
+                    return Mono.just(entity);
+                });
     }
 
-    private static Iterable<String> augmentWithAuditField(Iterable<String> fields, String auditField) {
+    private static Iterable<String> augmentWithExtraField(Iterable<String> fields, String extraField) {
         LinkedHashSet<String> merged = new LinkedHashSet<>();
         for (String field : fields) {
             merged.add(field);
         }
-        merged.add(auditField);
+        merged.add(extraField);
         return merged;
     }
 

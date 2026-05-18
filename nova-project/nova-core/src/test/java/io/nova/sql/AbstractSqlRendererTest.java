@@ -669,6 +669,42 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersPartialUpdateWithVersionIncrementAndWhereCheck() {
+        EntityMetadata<VersionedAccount> versionedMetadata = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(VersionedAccount.class);
+
+        SqlStatement statement = dialect.sqlRenderer().update(
+                versionedMetadata,
+                new VersionedAccount(7L, "a@nova.io", 4L),
+                java.util.List.of("email", "version")
+        );
+
+        assertEquals(
+                "update versioned_accounts set email_address = ?, version = ? where id = ? and version = ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("a@nova.io", 5L, 7L, 4L), statement.bindings());
+    }
+
+    @Test
+    void partialUpdateWithoutVersionFieldStillAddsVersionWhereCheckForVersionedEntity() {
+        EntityMetadata<VersionedAccount> versionedMetadata = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(VersionedAccount.class);
+
+        SqlStatement statement = dialect.sqlRenderer().update(
+                versionedMetadata,
+                new VersionedAccount(7L, "a@nova.io", 4L),
+                java.util.List.of("email")
+        );
+
+        assertEquals(
+                "update versioned_accounts set email_address = ? where id = ? and version = ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("a@nova.io", 7L, 4L), statement.bindings());
+    }
+
+    @Test
     void rendersDeleteByEntityWithVersionCheck() {
         EntityMetadata<VersionedAccount> versionedMetadata = new EntityMetadataFactory(new DefaultNamingStrategy())
                 .getEntityMetadata(VersionedAccount.class);
