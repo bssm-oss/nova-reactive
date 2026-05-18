@@ -1871,12 +1871,22 @@ class SimpleReactiveEntityOperationsTest {
         }
     }
 
+    /**
+     * 테스트 픽스처: {@link SqlExecutor} 호출을 캡처하고 미리 적재된 응답을 반환하는 in-memory double.
+     * 결과/배치 키는 FIFO {@code Deque}/{@code List}에 적재한 순서대로 소비되며, 호출된 statement와
+     * 메타데이터(id column/type, 호출 횟수 등)는 후속 단언을 위해 보존된다.
+     */
     private static final class CapturingExecutor implements SqlExecutor {
         private final Deque<RowAccessor> queryOneResults = new ArrayDeque<>();
         private final Deque<List<RowAccessor>> queryManyResults = new ArrayDeque<>();
         private final Deque<Long> executeResults = new ArrayDeque<>();
         private final List<BatchCall> batchCalls = new ArrayList<>();
         private final List<SqlStatement> executedStatements = new ArrayList<>();
+        /**
+         * 배치 INSERT에 대해 반환할 생성 키 묶음. 비어 있으면
+         * {@link #executeBatchAndReturnGeneratedKeys}가 entity 수만큼 {@code 1L, 2L, 3L, ...}의
+         * sequential default key를 합성해 emit한다 — 명시적 적재가 필요 없는 기존 배치 테스트의 회귀를 막기 위해서다.
+         */
         private final Deque<List<Object>> batchGeneratedKeys = new ArrayDeque<>();
         private final List<String> batchGeneratedIdColumns = new ArrayList<>();
         private final List<Class<?>> batchGeneratedIdTypes = new ArrayList<>();
@@ -1930,6 +1940,14 @@ class SimpleReactiveEntityOperationsTest {
             return Mono.just((long) bindingsList.size());
         }
 
+        /**
+         * 배치 INSERT를 캡처하고 생성 키를 emit한다.
+         * <p>
+         * {@link #batchGeneratedKeys}에 응답이 적재되어 있으면 적재 순서대로 꺼내 반환하고,
+         * 비어 있으면 {@code bindingsList.size()}만큼 {@code 1L, 2L, 3L, ...}의 default key를
+         * 합성해 반환한다 — {@code saveGroup}의 size-mismatch fail-fast를 통과시키면서 명시적
+         * 키 적재가 불필요한 기존 배치 테스트가 회귀하지 않게 하기 위한 fixture 편의 동작이다.
+         */
         @Override
         @SuppressWarnings("unchecked")
         public <T> Flux<T> executeBatchAndReturnGeneratedKeys(
@@ -1941,8 +1959,6 @@ class SimpleReactiveEntityOperationsTest {
             if (!batchGeneratedKeys.isEmpty()) {
                 keys = batchGeneratedKeys.removeFirst();
             } else {
-                // 명시적 키가 없으면 entity 수만큼 sequential default key를 만든다.
-                // saveGroup의 fail-fast size check를 통과시키면서 기존 batch 테스트의 회귀를 막는다.
                 keys = new ArrayList<>(bindingsList.size());
                 for (int i = 0; i < bindingsList.size(); i++) {
                     keys.add((long) (i + 1));
