@@ -188,7 +188,11 @@ public final class EntityMetadataFactory {
 
         Set<String> columnNames = new LinkedHashSet<>();
         for (PersistentProperty property : properties) {
-            columnNames.add(property.columnName());
+            if (!columnNames.add(property.columnName())) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " declares duplicate column '" + property.columnName()
+                                + "'; check @Column overrides and @Embedded host field names");
+            }
         }
         List<IndexDefinition> indexes = extractIndexes(entityType, tableName, columnNames);
         List<UniqueConstraintDefinition> uniqueConstraints =
