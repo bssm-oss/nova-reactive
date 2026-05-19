@@ -160,6 +160,18 @@ public class Account {
     private boolean active;
 
     public Account() {}
+
+    public Account(Long id, String email, boolean active) {
+        this.id = id;
+        this.email = email;
+        this.active = active;
+    }
+
+    public Long getId() { return id; }
+    public String getEmail() { return email; }
+    public void setEmail(String email) { this.email = email; }
+    public boolean isActive() { return active; }
+    public void setActive(boolean active) { this.active = active; }
 }
 ```
 
@@ -485,7 +497,7 @@ operations.inTransaction(tx ->
                 .forUpdate())                      // SELECT ... FOR UPDATE
       .next()
       .flatMap(account -> {
-          account.setBalance(account.getBalance() - 100);
+          account.setEmail("locked-" + account.getEmail());
           return tx.save(account);
       })
 ).subscribe();
@@ -520,7 +532,7 @@ retry.execute(
     operations.inTransaction(tx ->
         tx.findById(Account.class, 42L)
           .flatMap(account -> {
-              account.setBalance(account.getBalance() - 100);
+              account.setEmail("retried@nova.io");
               return tx.save(account);    // @Version 충돌 시 OptimisticLockingFailureException
           })
     )
@@ -535,8 +547,7 @@ ReactiveRetryTemplate custom = ReactiveRetryTemplate.builder()
         .initialBackoff(Duration.ofMillis(20))
         .backoffMultiplier(2.0)
         .maxBackoff(Duration.ofSeconds(1))
-        .retryable(t -> t instanceof OptimisticLockingFailureException
-                     || t instanceof TransientDataAccessException)
+        .retryable(OptimisticLockingFailureException.class::isInstance)
         .build();
 ```
 
@@ -648,7 +659,7 @@ public interface Dialect {
 
 ```java
 Dialect dialect = new MySqlDialect();
-EntityMetadata metadata = metadataFactory.metadataFor(Account.class);
+EntityMetadata<Account> metadata = metadataFactory.getEntityMetadata(Account.class);
 
 String ddl = dialect.schemaGenerator().createTable(metadata);
 // → CREATE TABLE `accounts` (`id` bigint primary key auto_increment, ...)
@@ -664,7 +675,7 @@ String ddl = dialect.schemaGenerator().createTable(metadata);
 
 ```java
 SchemaGenerator schema = dialect.schemaGenerator();
-EntityMetadata<Account> metadata = metadataFactory.metadataFor(Account.class);
+EntityMetadata<Account> metadata = metadataFactory.getEntityMetadata(Account.class);
 
 // 1) 테이블 + 모든 @Index / @UniqueConstraint를 한 번에 발행
 String createTable = schema.createTable(metadata);
@@ -673,7 +684,7 @@ List<String> indexDdls = schema.createIndexes(metadata);
 //               "create unique index \"uk_accounts_tenant_id_email\" on \"accounts\" (\"tenant_id\", \"email\")"]
 
 // 2) 컬럼 추가 — 기존 metadata의 nullable / identity / 기본 column type 규칙을 그대로 사용
-PersistentProperty newColumn = metadata.property("nickname");
+PersistentProperty newColumn = metadata.findProperty("nickname").orElseThrow();
 String addSql = schema.alterTableAddColumn(metadata, newColumn);
 // → alter table "accounts" add column "nickname" varchar(255)
 
