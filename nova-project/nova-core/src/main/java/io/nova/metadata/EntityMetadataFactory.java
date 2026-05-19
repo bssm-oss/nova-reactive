@@ -32,6 +32,7 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -302,8 +303,9 @@ public final class EntityMetadataFactory {
 
     /**
      * {@code {prefix}{table}_{col1}_{col2}_...} 패턴으로 index/unique constraint 이름을 만든다.
-     * 결과가 63자(PostgreSQL identifier 한도)를 초과하면 prefix+table+짧은 hex hash로 안정적인
-     * fallback 이름을 만들고, 그래도 한도를 넘으면 한도까지 truncate 한다.
+     * 결과가 63자(PostgreSQL identifier 한도)를 초과하면 {@code _<hex hash>} suffix가 항상
+     * 결과에 포함되도록 prefix 부분을 먼저 잘라서 hash 변별력을 보존한다 — 동일 table에서
+     * columns만 다른 두 index가 같은 prefix 63자를 공유할 때도 충돌하지 않는다.
      */
     private static String autoGenerateName(String prefix, String tableName, String[] columns) {
         StringBuilder builder = new StringBuilder(prefix).append(tableName);
@@ -314,12 +316,14 @@ public final class EntityMetadataFactory {
         if (full.length() <= MAX_AUTO_GENERATED_NAME_LENGTH) {
             return full;
         }
-        int hash = Arrays.hashCode(columns) * 31 + tableName.hashCode();
-        String fallback = prefix + tableName + "_" + Integer.toHexString(hash);
-        if (fallback.length() <= MAX_AUTO_GENERATED_NAME_LENGTH) {
-            return fallback;
+        int hash = Objects.hash(tableName, Arrays.hashCode(columns));
+        String suffix = "_" + Integer.toHexString(hash);
+        String prefixPart = prefix + tableName;
+        int budget = MAX_AUTO_GENERATED_NAME_LENGTH - suffix.length();
+        if (prefixPart.length() > budget) {
+            prefixPart = prefixPart.substring(0, budget);
         }
-        return fallback.substring(0, MAX_AUTO_GENERATED_NAME_LENGTH);
+        return prefixPart + suffix;
     }
 
     /**
