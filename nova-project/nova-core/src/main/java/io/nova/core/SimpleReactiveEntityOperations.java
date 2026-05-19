@@ -2,6 +2,7 @@ package io.nova.core;
 
 import io.nova.annotation.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
+import io.nova.fetch.FetchGroup;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
@@ -536,6 +537,109 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.error(exception);
         }
         return sqlExecutor.execute(statement);
+    }
+
+    @Override
+    public <P> Mono<P> findById(Class<P> entityType, Object id, FetchGroup<P> fetchGroup) {
+        Objects.requireNonNull(entityType, "entityType must not be null");
+        Objects.requireNonNull(id, "id must not be null");
+        Objects.requireNonNull(fetchGroup, "fetchGroup must not be null");
+        if (!entityType.equals(fetchGroup.parentType())) {
+            return Mono.error(new IllegalArgumentException(
+                    "FetchGroup parent type " + fetchGroup.parentType().getName()
+                            + " does not match call entityType " + entityType.getName()));
+        }
+        return findById(entityType, id)
+                .flatMap(parent -> hydrateChildren(List.of(parent), fetchGroup).thenReturn(parent));
+    }
+
+    @Override
+    public <P> Flux<P> findAll(Class<P> entityType, FetchGroup<P> fetchGroup) {
+        Objects.requireNonNull(entityType, "entityType must not be null");
+        Objects.requireNonNull(fetchGroup, "fetchGroup must not be null");
+        if (!entityType.equals(fetchGroup.parentType())) {
+            return Flux.error(new IllegalArgumentException(
+                    "FetchGroup parent type " + fetchGroup.parentType().getName()
+                            + " does not match call entityType " + entityType.getName()));
+        }
+        return findAll(entityType, QuerySpec.empty())
+                .collectList()
+                .flatMapMany(parents -> hydrateChildren(parents, fetchGroup).thenMany(Flux.fromIterable(parents)));
+    }
+
+    /**
+     * 주어진 parent 리스트에 대해 {@link FetchGroup}의 각 child spec을 IN-query로 한 번씩 실행하고
+     * parent id 기준으로 그룹화해 setter로 주입한다. parents가 비어 있으면 child query는 건너뛴다.
+     * <p>
+     * parent id가 {@code null}인 parent는 child key 비교에서 제외되며, 해당 parent에는 빈 child 리스트가
+     * 주입된다 — silent drop 대신 명시적으로 빈 결과로 setter를 호출해 호출자가 일관된 상태를 보게 한다.
+     */
+    private <P> Mono<Void> hydrateChildren(List<P> parents, FetchGroup<P> fetchGroup) {
+        if (parents.isEmpty() || fetchGroup.specs().isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(fetchGroup.specs())
+                .concatMap(spec -> hydrateChildSpec(parents, spec))
+                .then();
+    }
+
+    private <P, C> Mono<Void> hydrateChildSpec(List<P> parents, FetchGroup.FetchSpec<P, C> spec) {
+        LinkedHashSet<Object> parentIds = new LinkedHashSet<>();
+        for (P parent : parents) {
+            Object key = spec.parentIdExtractor().apply(parent);
+            if (key != null) {
+                parentIds.add(key);
+            }
+        }
+        if (parentIds.isEmpty()) {
+            // null id로만 이루어진 parents — child query를 건너뛰고 모든 parent에 빈 리스트를 주입한다.
+            for (P parent : parents) {
+                spec.setter().accept(parent, List.of());
+            }
+            return Mono.empty();
+        }
+        EntityMetadata<C> childMetadata = metadataFactory.getEntityMetadata(spec.childType());
+        PersistentProperty fkProperty = findPropertyByColumnName(childMetadata, spec.childForeignKeyColumn());
+        QuerySpec querySpec = QuerySpec.empty().where(Criteria.in(fkProperty.propertyName(), new ArrayList<>(parentIds)));
+        return findAll(spec.childType(), querySpec)
+                .collectList()
+                .doOnNext(children -> assignChildrenToParents(parents, children, spec, fkProperty))
+                .then();
+    }
+
+    /**
+     * child fetch 결과를 parent id 기준으로 그룹화해 setter로 주입한다. parent id가 {@code null}이거나
+     * 매칭되는 child가 없는 parent에는 빈 리스트가 주입된다.
+     */
+    private <P, C> void assignChildrenToParents(
+            List<P> parents,
+            List<C> children,
+            FetchGroup.FetchSpec<P, C> spec,
+            PersistentProperty fkProperty
+    ) {
+        LinkedHashMap<Object, List<C>> grouped = new LinkedHashMap<>();
+        for (C child : children) {
+            Object fk = fkProperty.read(child);
+            if (fk == null) {
+                continue;
+            }
+            grouped.computeIfAbsent(fk, ignored -> new ArrayList<>()).add(child);
+        }
+        for (P parent : parents) {
+            Object key = spec.parentIdExtractor().apply(parent);
+            List<C> bucket = key == null ? List.of() : grouped.getOrDefault(key, List.of());
+            spec.setter().accept(parent, bucket);
+        }
+    }
+
+    private PersistentProperty findPropertyByColumnName(EntityMetadata<?> metadata, String columnName) {
+        for (PersistentProperty property : metadata.properties()) {
+            if (property.columnName().equals(columnName)) {
+                return property;
+            }
+        }
+        throw new IllegalArgumentException(
+                "No property maps to column '" + columnName + "' on " + metadata.entityType().getName());
     }
 
     @Override

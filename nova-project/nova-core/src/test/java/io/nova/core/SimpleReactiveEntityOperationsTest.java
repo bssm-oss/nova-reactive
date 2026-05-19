@@ -1,5 +1,6 @@
 package io.nova.core;
 
+import io.nova.fetch.FetchGroup;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateFunction;
@@ -20,6 +21,8 @@ import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
 import io.nova.support.fixtures.FixtureEntities.Address;
 import io.nova.support.fixtures.FixtureEntities.AssignedIdAccount;
+import io.nova.support.fixtures.FixtureEntities.Author;
+import io.nova.support.fixtures.FixtureEntities.Book;
 import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.CallbackThrowingEntity;
 import io.nova.support.fixtures.FixtureEntities.Customer;
@@ -2233,6 +2236,217 @@ class SimpleReactiveEntityOperationsTest {
                                 && "Ada".equals(customer.getName())
                                 && customer.getShipping() == null)
                 .verifyComplete();
+    }
+
+    @Test
+    void findAllWithFetchGroupRunsOneParentSelectAndOneChildInQuery() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        // 1) parent select
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 1L, "name", "ada")),
+                new MapRowAccessor(Map.of("id", 2L, "name", "ben"))
+        ));
+        // 2) child IN select
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 10L, "title", "x", "author_id", 1L)),
+                new MapRowAccessor(Map.of("id", 11L, "title", "y", "author_id", 1L)),
+                new MapRowAccessor(Map.of("id", 20L, "title", "z", "author_id", 2L))
+        ));
+
+        FetchGroup<Author> group = FetchGroup.forParents(Author.class)
+                .with(Book.class, "author_id", Author::getId, Author::setBooks)
+                .build();
+
+        List<Author> result = new ArrayList<>();
+        StepVerifier.create(operations.findAll(Author.class, group))
+                .recordWith(() -> result)
+                .expectNextCount(2)
+                .verifyComplete();
+
+        assertEquals(2, result.size());
+        assertEquals(List.of(10L, 11L), result.get(0).getBooks().stream().map(Book::getId).toList());
+        assertEquals("ada", result.get(0).getName());
+        assertEquals(List.of(20L), result.get(1).getBooks().stream().map(Book::getId).toList());
+        // 마지막 statement는 child IN 쿼리. parent select 쿼리도 발화되어야 한다 (총 2개의 queryMany 호출).
+        assertEquals(
+                "select id as id, title as title, author_id as author_id from books where author_id in (?, ?)",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of(1L, 2L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void findAllWithFetchGroupSkipsChildQueryWhenParentsAreEmpty() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        executor.queryManyResults.addLast(List.of()); // parent select: 0 rows
+
+        FetchGroup<Author> group = FetchGroup.forParents(Author.class)
+                .with(Book.class, "author_id", Author::getId, Author::setBooks)
+                .build();
+
+        StepVerifier.create(operations.findAll(Author.class, group))
+                .verifyComplete();
+
+        assertTrue(executor.queryManyResults.isEmpty(), "child IN-query는 발화되지 않아야 한다");
+        // 마지막 statement는 parent select여야 한다
+        assertEquals(
+                "select id as id, name as name from authors",
+                executor.lastStatement.sql()
+        );
+    }
+
+    @Test
+    void findAllWithFetchGroupAssignsEmptyListWhenParentHasNoChildren() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 1L, "name", "ada")),
+                new MapRowAccessor(Map.of("id", 2L, "name", "ben"))
+        ));
+        // child IN query에서 author 2번만 매칭
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 20L, "title", "z", "author_id", 2L))
+        ));
+
+        FetchGroup<Author> group = FetchGroup.forParents(Author.class)
+                .with(Book.class, "author_id", Author::getId, Author::setBooks)
+                .build();
+
+        List<Author> result = new ArrayList<>();
+        StepVerifier.create(operations.findAll(Author.class, group))
+                .recordWith(() -> result)
+                .expectNextCount(2)
+                .verifyComplete();
+
+        // 매칭이 없는 parent에는 빈 리스트가 주입된다
+        assertTrue(result.get(0).getBooks() != null && result.get(0).getBooks().isEmpty());
+        assertEquals(1, result.get(1).getBooks().size());
+    }
+
+    @Test
+    void findAllWithFetchGroupHandlesNullParentIdGracefully() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        java.util.HashMap<String, Object> nullIdRow = new java.util.HashMap<>();
+        nullIdRow.put("id", null);
+        nullIdRow.put("name", "anon");
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(nullIdRow),
+                new MapRowAccessor(Map.of("id", 2L, "name", "ben"))
+        ));
+        // child IN query: id=2 only
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 20L, "title", "z", "author_id", 2L))
+        ));
+
+        FetchGroup<Author> group = FetchGroup.forParents(Author.class)
+                .with(Book.class, "author_id", Author::getId, Author::setBooks)
+                .build();
+
+        List<Author> result = new ArrayList<>();
+        StepVerifier.create(operations.findAll(Author.class, group))
+                .recordWith(() -> result)
+                .expectNextCount(2)
+                .verifyComplete();
+
+        // null id parent에는 빈 리스트 주입
+        assertTrue(result.get(0).getBooks() != null && result.get(0).getBooks().isEmpty());
+        assertEquals(List.of(20L), result.get(1).getBooks().stream().map(Book::getId).toList());
+        // child IN 쿼리 binding에는 null이 포함되지 않아야 한다 (2L만)
+        assertEquals(List.of(2L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void findAllWithFetchGroupSkipsChildQueryWhenAllParentIdsAreNull() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        java.util.HashMap<String, Object> nullIdRow = new java.util.HashMap<>();
+        nullIdRow.put("id", null);
+        nullIdRow.put("name", "anon");
+        executor.queryManyResults.addLast(List.of(new MapRowAccessor(nullIdRow)));
+
+        FetchGroup<Author> group = FetchGroup.forParents(Author.class)
+                .with(Book.class, "author_id", Author::getId, Author::setBooks)
+                .build();
+
+        List<Author> result = new ArrayList<>();
+        StepVerifier.create(operations.findAll(Author.class, group))
+                .recordWith(() -> result)
+                .expectNextCount(1)
+                .verifyComplete();
+
+        assertTrue(executor.queryManyResults.isEmpty(), "child IN-query는 발화되지 않아야 한다");
+        assertTrue(result.get(0).getBooks() != null && result.get(0).getBooks().isEmpty());
+    }
+
+    @Test
+    void findByIdWithFetchGroupRunsParentAndChildQueriesAndAssignsList() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "name", "ada")));
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 10L, "title", "x", "author_id", 1L)),
+                new MapRowAccessor(Map.of("id", 11L, "title", "y", "author_id", 1L))
+        ));
+
+        FetchGroup<Author> group = FetchGroup.forParents(Author.class)
+                .with(Book.class, "author_id", Author::getId, Author::setBooks)
+                .build();
+
+        StepVerifier.create(operations.findById(Author.class, 1L, group))
+                .expectNextMatches(parent -> Objects.equals(parent.getId(), 1L)
+                        && parent.getBooks() != null
+                        && parent.getBooks().size() == 2
+                        && Objects.equals(parent.getBooks().get(0).getId(), 10L))
+                .verifyComplete();
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void findAllWithFetchGroupRejectsMismatchedParentType() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        FetchGroup<Author> group = FetchGroup.forParents(Author.class).build();
+        // 의도적으로 raw로 cast해 parent type 불일치 검증을 트리거한다.
+        FetchGroup raw = group;
+
+        StepVerifier.create(operations.findAll(SampleAccount.class, raw))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+    }
+
+    @Test
+    void findAllWithFetchGroupRunsKChildQueriesForKSpecs() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        // parent
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 1L, "name", "ada")),
+                new MapRowAccessor(Map.of("id", 2L, "name", "ben"))
+        ));
+        // spec1 child
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 10L, "title", "x", "author_id", 1L))
+        ));
+        // spec2 child
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 11L, "title", "y", "author_id", 2L))
+        ));
+
+        FetchGroup<Author> group = FetchGroup.forParents(Author.class)
+                .with(Book.class, "author_id", Author::getId, Author::setBooks)
+                .with(Book.class, "author_id", Author::getId, Author::setBooks)
+                .build();
+
+        StepVerifier.create(operations.findAll(Author.class, group))
+                .expectNextCount(2)
+                .verifyComplete();
+
+        // 모든 queryMany 응답이 소비되어야 한다 (parent + 2개의 child IN-query)
+        assertTrue(executor.queryManyResults.isEmpty(), "K개의 child IN-query가 발화되어야 한다");
     }
 
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {

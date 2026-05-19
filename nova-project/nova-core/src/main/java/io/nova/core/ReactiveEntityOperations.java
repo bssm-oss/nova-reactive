@@ -1,5 +1,6 @@
 package io.nova.core;
 
+import io.nova.fetch.FetchGroup;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.NativeQuery;
@@ -231,5 +232,29 @@ public interface ReactiveEntityOperations {
     default Mono<Long> execute(CompiledQuery query, Object... bindings) {
         return Mono.error(new UnsupportedOperationException(
                 "ReactiveEntityOperations.execute(CompiledQuery, Object...) must be overridden by the implementation"));
+    }
+
+    /**
+     * 식별자로 단건 parent 엔티티를 조회한 뒤 {@link FetchGroup}으로 선언된 child들을 batch로 hydrate한다.
+     * 각 child spec은 한 번의 IN 절 쿼리로 묶이므로 spec이 K개면 child query는 K개로 N+1과 무관하다.
+     * <p>
+     * 기본 구현은 외부 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
+     * {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
+     */
+    default <P> Mono<P> findById(Class<P> entityType, Object id, FetchGroup<P> fetchGroup) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.findById(Class, Object, FetchGroup) must be overridden by the implementation"));
+    }
+
+    /**
+     * 주어진 parent 타입의 모든 엔티티를 조회한 뒤 {@link FetchGroup}으로 선언된 child들을 batch로 hydrate한다.
+     * 각 child spec은 한 번의 IN 절 쿼리로 묶이므로 spec이 K개면 child query는 K개로 parent 수와 무관하다.
+     * <p>
+     * 기본 구현은 외부 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
+     * {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
+     */
+    default <P> Flux<P> findAll(Class<P> entityType, FetchGroup<P> fetchGroup) {
+        return Flux.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.findAll(Class, FetchGroup) must be overridden by the implementation"));
     }
 }

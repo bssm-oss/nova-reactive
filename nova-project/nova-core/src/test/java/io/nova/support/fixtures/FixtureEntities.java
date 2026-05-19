@@ -1418,4 +1418,79 @@ public final class FixtureEntities {
         public CustomerWithNonEmbeddable() {
         }
     }
+
+    /**
+     * FetchGroup fixture: parent 측. {@code books}는 {@code transient}로 선언해 컬럼 매핑에서 제외되며,
+     * FetchGroup setter로만 채워진다.
+     */
+    @Entity
+    @Table("authors")
+    public static class Author {
+        @Id
+        private Long id;
+
+        private String name;
+
+        private transient java.util.List<Book> books;
+
+        public Author() {
+        }
+
+        public Author(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public java.util.List<Book> getBooks() {
+            return books;
+        }
+
+        public void setBooks(java.util.List<Book> books) {
+            this.books = books;
+        }
+    }
+
+    /**
+     * FetchGroup fixture: child 측. {@code authorId}가 parent {@link Author#id}에 대한 FK 컬럼이다.
+     */
+    @Entity
+    @Table("books")
+    public static class Book {
+        @Id
+        private Long id;
+
+        private String title;
+
+        @Column("author_id")
+        private Long authorId;
+
+        public Book() {
+        }
+
+        public Book(Long id, String title, Long authorId) {
+            this.id = id;
+            this.title = title;
+            this.authorId = authorId;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public Long getAuthorId() {
+            return authorId;
+        }
+    }
 }
