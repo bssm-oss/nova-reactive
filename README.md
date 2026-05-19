@@ -142,6 +142,18 @@ dependencies {
 }
 ```
 
+> **Note**: Nova는 아직 Maven Central에 GA로 배포되지 않았습니다 (1.0-SNAPSHOT). resolve가 실패한다면
+> 저장소에서 직접 체크아웃 후 `./gradlew publishToMavenLocal`을 실행하고 `repositories { mavenLocal() }`를
+> 추가하는 방식이 가장 확실합니다.
+
+```kotlin
+// build.gradle.kts
+repositories {
+    mavenLocal()       // ./gradlew publishToMavenLocal 로 설치한 SNAPSHOT 사용
+    mavenCentral()
+}
+```
+
 ### 2. 엔티티 정의
 
 ```java
@@ -645,7 +657,7 @@ public interface Dialect {
 |----------------------|-------------|-----------------------------------------------------------------|------------|--------------------------|--------------------------|
 | `PostgresqlDialect`  | `$1`, `$2`  | `bigserial` / `serial` primary key                              | `" "`      | `RETURNING` 절            | `nextval('seq')`         |
 | `MySqlDialect`       | `?`         | `bigint primary key auto_increment`                             | `` ` ` ``  | `Statement.returnGeneratedValues` | 미지원 (UOE)     |
-| `H2Dialect`          | `?`         | `bigint generated always as identity primary key`               | `" "`      | `RETURNING` 절            | 미지원 (UOE)             |
+| `H2Dialect`          | `?`         | `bigint generated always as identity primary key`               | `" "`      | `Statement.returnGeneratedValues` (driver-side) | 미지원 (UOE)             |
 
 `@GeneratedValue(strategy = SEQUENCE, generator = "account_seq")`이면 dialect의 `sequenceNextValueSql(generator)`로 `Dialect.SEQUENCE_VALUE_COLUMN` alias를 가진 SELECT을 발행해 id를 미리 받아옵니다. `UUID`는 `java.util.UUID` 또는 `String` field에 대해 ops가 INSERT 직전 `UUID.randomUUID()`를 stamp합니다.
 
