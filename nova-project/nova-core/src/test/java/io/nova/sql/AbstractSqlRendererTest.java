@@ -8,6 +8,7 @@ import io.nova.query.Aggregation;
 import io.nova.query.Criteria;
 import io.nova.query.Cursor;
 import io.nova.query.CursorField;
+import io.nova.query.LockMode;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
@@ -1305,6 +1306,95 @@ class AbstractSqlRendererTest {
                 statement.sql()
         );
         assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void selectAppendsForUpdateClauseWhenLockModeIsForUpdate() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().forUpdate()
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts for update",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void selectAppendsForShareClauseWhenLockModeIsForShare() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().forShare()
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts for share",
+                statement.sql()
+        );
+    }
+
+    @Test
+    void selectOmitsLockClauseForLockModeNone() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().lockMode(LockMode.NONE)
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts",
+                statement.sql()
+        );
+    }
+
+    @Test
+    void selectAppendsLockClauseAfterWhereOrderByAndPaging() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .where(Criteria.eq("email", "a@nova.io"))
+                        .orderBy(Sort.by(Sort.Order.asc("id")))
+                        .page(Pageable.of(10, 20))
+                        .forUpdate()
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts "
+                        + "where email_address = ? order by id asc limit ? offset ? for update",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("a@nova.io", 10, 20L), statement.bindings());
+    }
+
+    @Test
+    void countDoesNotAppendLockClauseEvenWhenLockModeRequested() {
+        SqlStatement statement = dialect.sqlRenderer().count(
+                metadata,
+                QuerySpec.empty().forUpdate()
+        );
+
+        assertEquals("select count(*) as count from accounts", statement.sql());
+    }
+
+    @Test
+    void existsDoesNotAppendLockClauseEvenWhenLockModeRequested() {
+        SqlStatement statement = dialect.sqlRenderer().exists(
+                metadata,
+                QuerySpec.empty().forUpdate()
+        );
+
+        assertEquals("select 1 from accounts limit 1", statement.sql());
+    }
+
+    @Test
+    void selectByIdDoesNotAppendLockClause() {
+        SqlStatement statement = dialect.sqlRenderer().selectById(metadata, 7L);
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where id = ?",
+                statement.sql()
+        );
     }
 
     private static final class TestDialect implements Dialect {

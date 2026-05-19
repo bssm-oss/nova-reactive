@@ -111,4 +111,22 @@ class H2SqlRendererTest {
 
         assertEquals("select 1 from \"accounts\" where \"email_address\" is not null limit 1", statement.sql());
     }
+
+    @Test
+    void rendersSelectWithForUpdateLockClauseAfterPaging() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .where(Criteria.eq("email", "a@nova.io"))
+                        .page(Pageable.of(5, 10))
+                        .forUpdate()
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" "
+                        + "from \"accounts\" where \"email_address\" = ? limit ? offset ? for update",
+                statement.sql()
+        );
+        assertEquals(List.of("a@nova.io", 5, 10L), statement.bindings());
+    }
 }

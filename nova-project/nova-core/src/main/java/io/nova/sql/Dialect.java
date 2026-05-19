@@ -1,5 +1,7 @@
 package io.nova.sql;
 
+import io.nova.query.LockMode;
+
 /**
  * 데이터베이스별 SQL 렌더링과 스키마 생성 규칙을 캡슐화한다.
  */
@@ -39,4 +41,20 @@ public interface Dialect {
      * 생성하는 SQL의 컬럼을 이 이름으로 노출해야 하고, core operations는 이 이름으로 값을 읽는다.
      */
     String SEQUENCE_VALUE_COLUMN = "nova_seq_value";
+
+    /**
+     * 주어진 {@link LockMode}에 해당하는 pessimistic lock 절을 반환한다. 절은 SELECT SQL의
+     * 맨 뒤에 그대로 이어 붙일 수 있도록 선행 공백을 포함한다. {@link LockMode#NONE}은 빈 문자열이다.
+     * <p>
+     * 기본 구현은 표준 SQL {@code FOR UPDATE}와 {@code FOR SHARE} 절을 사용하며,
+     * PostgreSQL, MySQL 8.0 이상, H2 모두 이 형태를 받아들인다. dialect 별 변형이 필요한 경우
+     * 이 메서드를 override 한다.
+     */
+    default String lockClause(LockMode mode) {
+        return switch (mode) {
+            case NONE -> "";
+            case FOR_UPDATE -> " for update";
+            case FOR_SHARE -> " for share";
+        };
+    }
 }

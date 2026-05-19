@@ -4,6 +4,7 @@ import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Criteria;
+import io.nova.query.LockMode;
 import io.nova.query.QuerySpec;
 import io.nova.sql.SqlStatement;
 import org.junit.jupiter.api.Test;
@@ -74,5 +75,34 @@ class MySqlDialectTest {
         );
         assertEquals(java.util.List.of("mysql@nova.io", true), statement.bindings());
         org.junit.jupiter.api.Assertions.assertFalse(dialect.usesReturningForGeneratedKeys());
+    }
+
+    @Test
+    void lockClauseReturnsEmptyForNone() {
+        assertEquals("", dialect.lockClause(LockMode.NONE));
+    }
+
+    @Test
+    void lockClauseReturnsForUpdate() {
+        assertEquals(" for update", dialect.lockClause(LockMode.FOR_UPDATE));
+    }
+
+    @Test
+    void lockClauseReturnsForShare() {
+        assertEquals(" for share", dialect.lockClause(LockMode.FOR_SHARE));
+    }
+
+    @Test
+    void selectAppendsForUpdateClauseForMysqlQuotedSelect() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.eq("email", "a@nova.io")).forUpdate()
+        );
+
+        assertEquals(
+                "select `id` as `id`, `email_address` as `email_address`, `active` as `active` "
+                        + "from `accounts` where `email_address` = ? for update",
+                statement.sql()
+        );
     }
 }

@@ -1,5 +1,6 @@
 package io.nova.dialect.h2;
 
+import io.nova.query.LockMode;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import org.junit.jupiter.api.Test;
@@ -53,5 +54,20 @@ class H2DialectTest {
                 () -> dialect.sequenceNextValueSql("seq")
         );
         assertTrue(exception.getMessage().contains("h2"));
+    }
+
+    @Test
+    void lockClauseReturnsEmptyForNone() {
+        assertEquals("", dialect.lockClause(LockMode.NONE));
+    }
+
+    @Test
+    void lockClauseReturnsForUpdate() {
+        assertEquals(" for update", dialect.lockClause(LockMode.FOR_UPDATE));
+    }
+
+    @Test
+    void lockClauseReturnsForShare() {
+        assertEquals(" for share", dialect.lockClause(LockMode.FOR_SHARE));
     }
 }

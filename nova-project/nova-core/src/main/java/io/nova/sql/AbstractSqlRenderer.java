@@ -10,6 +10,7 @@ import io.nova.query.CompoundPredicate;
 import io.nova.query.Condition;
 import io.nova.query.Cursor;
 import io.nova.query.CursorField;
+import io.nova.query.LockMode;
 import io.nova.query.NegationPredicate;
 import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
@@ -378,6 +379,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         appendWhereClause(sql, context, metadata, querySpec.predicate(), querySpec.cursor());
         appendOrderBy(sql, metadata, querySpec.sort());
         appendPage(sql, context, querySpec);
+        appendLockClause(sql, querySpec);
         return new SqlStatement(sql.toString(), context.bindings());
     }
 
@@ -493,6 +495,19 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     private String renderHaving(RenderContext context, EntityMetadata<?> metadata, AggregateSpec spec) {
         AggregatePredicateLookup lookup = new AggregatePredicateLookup(spec);
         return renderPredicateWithLookup(context, metadata, spec.having(), lookup);
+    }
+
+    /**
+     * {@code querySpec.lockMode()}가 {@link LockMode#NONE}이 아니면 dialect 별 pessimistic lock 절을
+     * SQL 끝에 덧붙인다. count/exists/findById 같이 행을 직접 fetch 하지 않는 SQL에는 lock 절을 적용하지
+     * 않는다 — 이 메서드는 행을 반환하는 SELECT 에만 호출된다.
+     */
+    protected void appendLockClause(StringBuilder sql, QuerySpec querySpec) {
+        LockMode mode = querySpec.lockMode();
+        if (mode == null || mode == LockMode.NONE) {
+            return;
+        }
+        sql.append(dialect.lockClause(mode));
     }
 
     /**

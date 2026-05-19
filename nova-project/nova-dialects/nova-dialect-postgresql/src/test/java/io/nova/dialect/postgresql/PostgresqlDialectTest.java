@@ -4,6 +4,7 @@ import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Criteria;
+import io.nova.query.LockMode;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
@@ -91,6 +92,38 @@ class PostgresqlDialectTest {
         org.junit.jupiter.api.Assertions.assertThrows(
                 IllegalArgumentException.class,
                 () -> dialect.sequenceNextValueSql(" ")
+        );
+    }
+
+    @Test
+    void lockClauseReturnsEmptyForNone() {
+        assertEquals("", dialect.lockClause(LockMode.NONE));
+    }
+
+    @Test
+    void lockClauseReturnsForUpdate() {
+        assertEquals(" for update", dialect.lockClause(LockMode.FOR_UPDATE));
+    }
+
+    @Test
+    void lockClauseReturnsForShare() {
+        assertEquals(" for share", dialect.lockClause(LockMode.FOR_SHARE));
+    }
+
+    @Test
+    void selectAppendsForUpdateClauseAfterPagingForPositionalDialect() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty()
+                        .where(Criteria.eq("email", "a@nova.io"))
+                        .page(Pageable.of(5, 10))
+                        .forUpdate()
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" "
+                        + "from \"accounts\" where \"email_address\" = $1 limit $2 offset $3 for update",
+                statement.sql()
         );
     }
 }

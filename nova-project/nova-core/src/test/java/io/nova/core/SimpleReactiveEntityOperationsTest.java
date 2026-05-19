@@ -354,6 +354,48 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void findAllAppendsForUpdateClauseWhenQuerySpecRequestsForUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 7L, "email_address", "a@nova.io", "active", true))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        QuerySpec spec = QuerySpec.empty()
+                .where(Criteria.eq("email", "a@nova.io"))
+                .forUpdate();
+
+        StepVerifier.create(operations.findAll(SampleAccount.class, spec))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts "
+                        + "where email_address = ? for update",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of("a@nova.io"), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void findAllAppendsForShareClauseWhenQuerySpecRequestsForShare() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 7L, "email_address", "a@nova.io", "active", true))
+        ));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.findAll(SampleAccount.class, QuerySpec.empty().forShare()))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts for share",
+                executor.lastStatement.sql()
+        );
+    }
+
+    @Test
     void findAllByIdUsesSingleInSelect() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryManyResults.addLast(List.of(
