@@ -6,12 +6,14 @@ import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
+import io.nova.annotation.Index;
 import io.nova.annotation.PostLoad;
 import io.nova.annotation.PrePersist;
 import io.nova.annotation.PreRemove;
 import io.nova.annotation.PreUpdate;
 import io.nova.annotation.SoftDelete;
 import io.nova.annotation.Table;
+import io.nova.annotation.UniqueConstraint;
 import io.nova.annotation.UpdatedAt;
 import io.nova.annotation.Version;
 import io.nova.convert.AttributeConverter;
@@ -24,6 +26,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -176,6 +179,14 @@ public final class EntityMetadataFactory {
             collectCallback(entityType, method, PreRemove.class, preRemoveCallbacks);
         }
 
+        Set<String> columnNames = new LinkedHashSet<>();
+        for (PersistentProperty property : properties) {
+            columnNames.add(property.columnName());
+        }
+        List<IndexDefinition> indexes = extractIndexes(entityType, tableName, columnNames);
+        List<UniqueConstraintDefinition> uniqueConstraints =
+                extractUniqueConstraints(entityType, tableName, columnNames);
+
         return new EntityMetadata<>(
                 entityType,
                 entityName,
@@ -185,8 +196,98 @@ public final class EntityMetadataFactory {
                 prePersistCallbacks,
                 preUpdateCallbacks,
                 postLoadCallbacks,
-                preRemoveCallbacks
+                preRemoveCallbacks,
+                indexes,
+                uniqueConstraints
         );
+    }
+
+    /**
+     * 타입에 선언된 {@link Index} 어노테이션(반복 포함)을 모아 검증 후 {@link IndexDefinition}으로 변환한다.
+     * 이름이 비어있으면 {@code ix_{table}_{col1}_{col2}_...} 패턴으로 자동 생성한다.
+     */
+    private static List<IndexDefinition> extractIndexes(
+            Class<?> entityType,
+            String tableName,
+            Set<String> columnNames
+    ) {
+        Index[] declarations = entityType.getAnnotationsByType(Index.class);
+        if (declarations.length == 0) {
+            return List.of();
+        }
+        List<IndexDefinition> result = new ArrayList<>(declarations.length);
+        for (Index declaration : declarations) {
+            String[] columns = declaration.columns();
+            if (columns == null || columns.length == 0) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @Index must declare at least one column");
+            }
+            validateColumnsExist(entityType, "@Index", columns, columnNames);
+            String name = declaration.name().isBlank()
+                    ? autoGenerateName("ix_", tableName, columns)
+                    : declaration.name();
+            result.add(new IndexDefinition(name, List.of(columns)));
+        }
+        return result;
+    }
+
+    /**
+     * 타입에 선언된 {@link UniqueConstraint} 어노테이션(반복 포함)을 모아 검증 후
+     * {@link UniqueConstraintDefinition}으로 변환한다. 이름이 비어있으면
+     * {@code uk_{table}_{col1}_{col2}_...} 패턴으로 자동 생성한다.
+     */
+    private static List<UniqueConstraintDefinition> extractUniqueConstraints(
+            Class<?> entityType,
+            String tableName,
+            Set<String> columnNames
+    ) {
+        UniqueConstraint[] declarations = entityType.getAnnotationsByType(UniqueConstraint.class);
+        if (declarations.length == 0) {
+            return List.of();
+        }
+        List<UniqueConstraintDefinition> result = new ArrayList<>(declarations.length);
+        for (UniqueConstraint declaration : declarations) {
+            String[] columns = declaration.columns();
+            if (columns == null || columns.length == 0) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @UniqueConstraint must declare at least one column");
+            }
+            validateColumnsExist(entityType, "@UniqueConstraint", columns, columnNames);
+            String name = declaration.name().isBlank()
+                    ? autoGenerateName("uk_", tableName, columns)
+                    : declaration.name();
+            result.add(new UniqueConstraintDefinition(name, List.of(columns)));
+        }
+        return result;
+    }
+
+    private static void validateColumnsExist(
+            Class<?> entityType,
+            String annotationLabel,
+            String[] columns,
+            Set<String> knownColumns
+    ) {
+        for (String column : columns) {
+            if (column == null || column.isBlank()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " " + annotationLabel
+                                + " contains a blank column name");
+            }
+            if (!knownColumns.contains(column)) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " " + annotationLabel
+                                + " references unknown column '" + column
+                                + "'; known columns: " + knownColumns);
+            }
+        }
+    }
+
+    private static String autoGenerateName(String prefix, String tableName, String[] columns) {
+        StringBuilder builder = new StringBuilder(prefix).append(tableName);
+        for (String column : columns) {
+            builder.append('_').append(column);
+        }
+        return builder.toString();
     }
 
     /**

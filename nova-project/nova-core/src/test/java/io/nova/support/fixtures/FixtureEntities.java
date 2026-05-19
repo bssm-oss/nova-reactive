@@ -6,12 +6,14 @@ import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
+import io.nova.annotation.Index;
 import io.nova.annotation.PostLoad;
 import io.nova.annotation.PrePersist;
 import io.nova.annotation.PreRemove;
 import io.nova.annotation.PreUpdate;
 import io.nova.annotation.SoftDelete;
 import io.nova.annotation.Table;
+import io.nova.annotation.UniqueConstraint;
 import io.nova.annotation.UpdatedAt;
 import io.nova.annotation.Version;
 
@@ -946,5 +948,124 @@ public final class FixtureEntities {
         String illegalReturn() {
             return "no";
         }
+    }
+
+    @Entity
+    @Table("indexed_accounts")
+    @Index(name = "ix_indexed_email", columns = {"email"})
+    public static class SingleIndexEntity {
+        @Id
+        private Long id;
+        @Column("email")
+        private String email;
+    }
+
+    @Entity
+    @Table("multi_indexed_accounts")
+    @Index(columns = {"first_name", "last_name"})
+    public static class AutoNamedIndexEntity {
+        @Id
+        private Long id;
+        @Column("first_name")
+        private String firstName;
+        @Column("last_name")
+        private String lastName;
+    }
+
+    @Entity
+    @Table("repeating_index_accounts")
+    @Index(columns = {"email"})
+    @Index(columns = {"first_name", "last_name"})
+    public static class RepeatedIndexEntity {
+        @Id
+        private Long id;
+        @Column("email")
+        private String email;
+        @Column("first_name")
+        private String firstName;
+        @Column("last_name")
+        private String lastName;
+    }
+
+    @Entity
+    @Table("unique_accounts")
+    @UniqueConstraint(name = "uk_email", columns = {"email"})
+    public static class SingleUniqueConstraintEntity {
+        @Id
+        private Long id;
+        @Column("email")
+        private String email;
+    }
+
+    @Entity
+    @Table("composite_unique_accounts")
+    @UniqueConstraint(columns = {"first_name", "last_name"})
+    public static class AutoNamedUniqueConstraintEntity {
+        @Id
+        private Long id;
+        @Column("first_name")
+        private String firstName;
+        @Column("last_name")
+        private String lastName;
+    }
+
+    @Entity
+    @Table("repeating_unique_accounts")
+    @UniqueConstraint(columns = {"email"})
+    @UniqueConstraint(columns = {"first_name", "last_name"})
+    public static class RepeatedUniqueConstraintEntity {
+        @Id
+        private Long id;
+        @Column("email")
+        private String email;
+        @Column("first_name")
+        private String firstName;
+        @Column("last_name")
+        private String lastName;
+    }
+
+    @Entity
+    @Table("missing_column_indexed")
+    @Index(columns = {"nonexistent"})
+    public static class IndexWithUnknownColumnEntity {
+        @Id
+        private Long id;
+        @Column("email")
+        private String email;
+    }
+
+    @Entity
+    @Table("missing_column_unique")
+    @UniqueConstraint(columns = {"nonexistent"})
+    public static class UniqueConstraintWithUnknownColumnEntity {
+        @Id
+        private Long id;
+        @Column("email")
+        private String email;
+    }
+
+    @Entity
+    @Table("empty_columns_indexed")
+    @Index(columns = {})
+    public static class EmptyIndexColumnsEntity {
+        @Id
+        private Long id;
+    }
+
+    @Entity
+    @Table("empty_columns_unique")
+    @UniqueConstraint(columns = {})
+    public static class EmptyUniqueConstraintColumnsEntity {
+        @Id
+        private Long id;
+    }
+
+    @Entity
+    @Table("alter_target")
+    public static class AlterTargetEntity {
+        @Id
+        private Long id;
+        @Column("email")
+        private String email;
     }
 }

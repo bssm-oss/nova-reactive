@@ -2,21 +2,31 @@ package io.nova.metadata;
 
 import io.nova.support.fixtures.FixtureEntities.ArgCallbackEntity;
 import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
+import io.nova.support.fixtures.FixtureEntities.AutoNamedIndexEntity;
+import io.nova.support.fixtures.FixtureEntities.AutoNamedUniqueConstraintEntity;
 import io.nova.support.fixtures.FixtureEntities.ConvertibleEntity;
 import io.nova.support.fixtures.FixtureEntities.DefaultNamedEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateCreatedAtEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateIdEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateSoftDeleteEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateVersionEntity;
+import io.nova.support.fixtures.FixtureEntities.EmptyIndexColumnsEntity;
+import io.nova.support.fixtures.FixtureEntities.EmptyUniqueConstraintColumnsEntity;
 import io.nova.support.fixtures.FixtureEntities.EntityWithCallbacks;
+import io.nova.support.fixtures.FixtureEntities.IndexWithUnknownColumnEntity;
 import io.nova.support.fixtures.FixtureEntities.MultipleCallbacksEntity;
+import io.nova.support.fixtures.FixtureEntities.RepeatedIndexEntity;
+import io.nova.support.fixtures.FixtureEntities.RepeatedUniqueConstraintEntity;
 import io.nova.support.fixtures.FixtureEntities.ReturningCallbackEntity;
+import io.nova.support.fixtures.FixtureEntities.SingleIndexEntity;
+import io.nova.support.fixtures.FixtureEntities.SingleUniqueConstraintEntity;
 import io.nova.support.fixtures.FixtureEntities.StaticCallbackEntity;
 import io.nova.support.fixtures.FixtureEntities.IdVersionConflictEntity;
 import io.nova.support.fixtures.FixtureEntities.IntegerVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.InvalidUuidTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.MissingEntityAnnotation;
 import io.nova.support.fixtures.FixtureEntities.MissingIdEntity;
+import io.nova.support.fixtures.FixtureEntities.UniqueConstraintWithUnknownColumnEntity;
 import io.nova.support.fixtures.FixtureEntities.HyphenSequenceGeneratorEntity;
 import io.nova.support.fixtures.FixtureEntities.InjectingSequenceGeneratorEntity;
 import io.nova.support.fixtures.FixtureEntities.LeadingDigitSequenceGeneratorEntity;
@@ -471,6 +481,112 @@ class EntityMetadataFactoryTest {
 
         assertTrue(exception.getMessage().contains("@PostLoad"));
         assertTrue(exception.getMessage().contains("must be non-static, no-arg, void-returning"));
+    }
+
+    @Test
+    void recognizesSingleIndexAnnotation() {
+        EntityMetadata<SingleIndexEntity> metadata = factory.getEntityMetadata(SingleIndexEntity.class);
+
+        assertEquals(1, metadata.indexes().size());
+        IndexDefinition index = metadata.indexes().get(0);
+        assertEquals("ix_indexed_email", index.name());
+        assertEquals(java.util.List.of("email"), index.columns());
+        assertTrue(metadata.uniqueConstraints().isEmpty());
+    }
+
+    @Test
+    void recognizesSingleUniqueConstraintAnnotation() {
+        EntityMetadata<SingleUniqueConstraintEntity> metadata =
+                factory.getEntityMetadata(SingleUniqueConstraintEntity.class);
+
+        assertEquals(1, metadata.uniqueConstraints().size());
+        UniqueConstraintDefinition constraint = metadata.uniqueConstraints().get(0);
+        assertEquals("uk_email", constraint.name());
+        assertEquals(java.util.List.of("email"), constraint.columns());
+        assertTrue(metadata.indexes().isEmpty());
+    }
+
+    @Test
+    void recognizesRepeatedIndexAnnotations() {
+        EntityMetadata<RepeatedIndexEntity> metadata = factory.getEntityMetadata(RepeatedIndexEntity.class);
+
+        assertEquals(2, metadata.indexes().size());
+        assertEquals(java.util.List.of("email"), metadata.indexes().get(0).columns());
+        assertEquals(java.util.List.of("first_name", "last_name"), metadata.indexes().get(1).columns());
+    }
+
+    @Test
+    void recognizesRepeatedUniqueConstraintAnnotations() {
+        EntityMetadata<RepeatedUniqueConstraintEntity> metadata =
+                factory.getEntityMetadata(RepeatedUniqueConstraintEntity.class);
+
+        assertEquals(2, metadata.uniqueConstraints().size());
+        assertEquals(java.util.List.of("email"), metadata.uniqueConstraints().get(0).columns());
+        assertEquals(java.util.List.of("first_name", "last_name"),
+                metadata.uniqueConstraints().get(1).columns());
+    }
+
+    @Test
+    void autoGeneratesIndexNameFromTableAndColumns() {
+        EntityMetadata<AutoNamedIndexEntity> metadata = factory.getEntityMetadata(AutoNamedIndexEntity.class);
+
+        assertEquals(1, metadata.indexes().size());
+        assertEquals("ix_multi_indexed_accounts_first_name_last_name",
+                metadata.indexes().get(0).name());
+    }
+
+    @Test
+    void autoGeneratesUniqueConstraintNameFromTableAndColumns() {
+        EntityMetadata<AutoNamedUniqueConstraintEntity> metadata =
+                factory.getEntityMetadata(AutoNamedUniqueConstraintEntity.class);
+
+        assertEquals(1, metadata.uniqueConstraints().size());
+        assertEquals("uk_composite_unique_accounts_first_name_last_name",
+                metadata.uniqueConstraints().get(0).name());
+    }
+
+    @Test
+    void rejectsIndexReferencingUnknownColumn() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(IndexWithUnknownColumnEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@Index"));
+        assertTrue(exception.getMessage().contains("nonexistent"));
+    }
+
+    @Test
+    void rejectsUniqueConstraintReferencingUnknownColumn() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(UniqueConstraintWithUnknownColumnEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@UniqueConstraint"));
+        assertTrue(exception.getMessage().contains("nonexistent"));
+    }
+
+    @Test
+    void rejectsIndexWithoutColumns() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(EmptyIndexColumnsEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@Index"));
+        assertTrue(exception.getMessage().contains("at least one column"));
+    }
+
+    @Test
+    void rejectsUniqueConstraintWithoutColumns() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(EmptyUniqueConstraintColumnsEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@UniqueConstraint"));
+        assertTrue(exception.getMessage().contains("at least one column"));
     }
 
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {

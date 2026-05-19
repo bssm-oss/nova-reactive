@@ -22,6 +22,8 @@ public final class EntityMetadata<T> {
     private final List<Method> preUpdateCallbacks;
     private final List<Method> postLoadCallbacks;
     private final List<Method> preRemoveCallbacks;
+    private final List<IndexDefinition> indexes;
+    private final List<UniqueConstraintDefinition> uniqueConstraints;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -44,6 +46,24 @@ public final class EntityMetadata<T> {
             List<Method> preUpdateCallbacks,
             List<Method> postLoadCallbacks,
             List<Method> preRemoveCallbacks
+    ) {
+        this(entityType, entityName, tableName, properties, idProperty,
+                prePersistCallbacks, preUpdateCallbacks, postLoadCallbacks, preRemoveCallbacks,
+                List.of(), List.of());
+    }
+
+    public EntityMetadata(
+            Class<T> entityType,
+            String entityName,
+            String tableName,
+            List<PersistentProperty> properties,
+            PersistentProperty idProperty,
+            List<Method> prePersistCallbacks,
+            List<Method> preUpdateCallbacks,
+            List<Method> postLoadCallbacks,
+            List<Method> preRemoveCallbacks,
+            List<IndexDefinition> indexes,
+            List<UniqueConstraintDefinition> uniqueConstraints
     ) {
         this.entityType = entityType;
         this.entityName = entityName;
@@ -83,6 +103,8 @@ public final class EntityMetadata<T> {
         this.preUpdateCallbacks = List.copyOf(preUpdateCallbacks);
         this.postLoadCallbacks = List.copyOf(postLoadCallbacks);
         this.preRemoveCallbacks = List.copyOf(preRemoveCallbacks);
+        this.indexes = List.copyOf(indexes);
+        this.uniqueConstraints = List.copyOf(uniqueConstraints);
     }
 
     public Class<T> entityType() {
@@ -180,5 +202,19 @@ public final class EntityMetadata<T> {
      */
     public List<Method> preRemoveCallbacks() {
         return preRemoveCallbacks;
+    }
+
+    /**
+     * 타입 레벨 {@code @Index}로 선언된 secondary index 정의 목록.
+     */
+    public List<IndexDefinition> indexes() {
+        return indexes;
+    }
+
+    /**
+     * 타입 레벨 {@code @UniqueConstraint}로 선언된 unique constraint 정의 목록.
+     */
+    public List<UniqueConstraintDefinition> uniqueConstraints() {
+        return uniqueConstraints;
     }
 }
