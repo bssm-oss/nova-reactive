@@ -11,7 +11,17 @@ public final class EntityMetadata<T> {
     private final Class<T> entityType;
     private final String entityName;
     private final String tableName;
+    /**
+     * 모든 property를 raw 순서대로 보관한다. {@link #properties()}는 컬럼이 없는 marker-only property
+     * (예: {@link io.nova.annotation.OneToMany} inverse side)를 자동으로 제외하므로, 관계 marker
+     * 자체를 봐야 하는 derived getter는 이 필드를 직접 사용한다.
+     */
     private final List<PersistentProperty> properties;
+    /**
+     * column이 매핑된 property만 추린 view. SQL 렌더링, row 디코딩, schema 생성 등 컬럼이 필요한 모든
+     * 경로에서 사용된다. 결과는 immutable이며 {@link #properties}와 declaration 순서를 공유한다.
+     */
+    private final List<PersistentProperty> columnMappedProperties;
     private final Map<String, PersistentProperty> propertiesByName;
     private final PersistentProperty idProperty;
     private final PersistentProperty createdAtProperty;
@@ -43,6 +53,7 @@ public final class EntityMetadata<T> {
         this.tableName = tableName;
         this.properties = List.copyOf(properties);
         LinkedHashMap<String, PersistentProperty> index = new LinkedHashMap<>();
+        java.util.ArrayList<PersistentProperty> columnMapped = new java.util.ArrayList<>(this.properties.size());
         PersistentProperty createdAt = null;
         PersistentProperty updatedAt = null;
         PersistentProperty softDelete = null;
@@ -52,6 +63,9 @@ public final class EntityMetadata<T> {
             if (previous != null) {
                 throw new IllegalArgumentException(
                         entityType.getName() + " declares duplicate property name " + property.propertyName());
+            }
+            if (!property.oneToMany()) {
+                columnMapped.add(property);
             }
             if (createdAt == null && property.createdAt()) {
                 createdAt = property;
@@ -66,6 +80,7 @@ public final class EntityMetadata<T> {
                 version = property;
             }
         }
+        this.columnMappedProperties = List.copyOf(columnMapped);
         this.propertiesByName = Collections.unmodifiableMap(index);
         this.idProperty = idProperty;
         this.createdAtProperty = createdAt;
@@ -92,8 +107,14 @@ public final class EntityMetadata<T> {
         return tableName;
     }
 
+    /**
+     * 컬럼이 매핑된 property만 반환한다 — SELECT/INSERT/UPDATE 렌더링, row 디코딩, schema 생성 등에서
+     * 사용한다. {@link io.nova.annotation.OneToMany}처럼 inverse side로만 정의되어 컬럼이 없는 marker는
+     * 결과에서 제외된다. 관계 marker 자체를 보고 싶다면 {@link #manyToOneProperties()},
+     * {@link #oneToManyProperties()}를 사용한다.
+     */
     public List<PersistentProperty> properties() {
-        return properties;
+        return columnMappedProperties;
     }
 
     /**
@@ -116,7 +137,7 @@ public final class EntityMetadata<T> {
     }
 
     public List<PersistentProperty> insertableProperties() {
-        return properties.stream()
+        return columnMappedProperties.stream()
                 .filter(property -> !property.id() || !isDatabaseGeneratedId(property))
                 .toList();
     }
@@ -136,7 +157,7 @@ public final class EntityMetadata<T> {
     }
 
     public List<PersistentProperty> updatableProperties() {
-        return properties.stream()
+        return columnMappedProperties.stream()
                 .filter(property -> !property.id())
                 .toList();
     }
@@ -189,5 +210,29 @@ public final class EntityMetadata<T> {
      */
     public List<UniqueConstraintDefinition> uniqueConstraints() {
         return uniqueConstraints;
+    }
+
+    /**
+     * {@code @ManyToOne} owning property들. 캐시하지 않고 매 호출마다 properties stream을 흘려 새 리스트를
+     * 만들어 새 marker가 추가될 때 derived getter가 자동으로 따라가게 한다.
+     */
+    public List<PersistentProperty> manyToOneProperties() {
+        return properties.stream().filter(PersistentProperty::manyToOne).toList();
+    }
+
+    /**
+     * {@code @OneToMany} inverse property들. 캐시하지 않는다(동일 사유).
+     */
+    public List<PersistentProperty> oneToManyProperties() {
+        return properties.stream().filter(PersistentProperty::oneToMany).toList();
+    }
+
+    /**
+     * {@code @ManyToOne} 또는 {@code @OneToMany} 중 하나라도 존재하면 {@code true}. annotation-driven 자동
+     * hydration의 진입 가드로 사용된다 — 관계가 없는 entity는 기존 zero-overhead findById/findAll 경로를
+     * 그대로 거친다.
+     */
+    public boolean hasRelationProperties() {
+        return !manyToOneProperties().isEmpty() || !oneToManyProperties().isEmpty();
     }
 }

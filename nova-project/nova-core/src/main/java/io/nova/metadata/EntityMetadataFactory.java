@@ -11,6 +11,9 @@ import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
 import io.nova.annotation.Index;
+import io.nova.annotation.JoinColumn;
+import io.nova.annotation.ManyToOne;
+import io.nova.annotation.OneToMany;
 import io.nova.annotation.PostLoad;
 import io.nova.annotation.PrePersist;
 import io.nova.annotation.PreRemove;
@@ -115,6 +118,16 @@ public final class EntityMetadataFactory {
             if (field.isSynthetic() || Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
                 continue;
             }
+            rejectIncompatibleRelationAnnotations(entityType, field);
+            if (field.isAnnotationPresent(OneToMany.class)) {
+                // OneToMany는 parent 테이블 컬럼이 없는 marker-only property — column uniqueness 검증에서 제외된다.
+                properties.add(createOneToManyProperty(entityType, field));
+                continue;
+            }
+            if (field.isAnnotationPresent(ManyToOne.class)) {
+                properties.add(createManyToOneProperty(entityType, field));
+                continue;
+            }
             if (field.isAnnotationPresent(Embedded.class)) {
                 List<PersistentProperty> expanded = createEmbeddedProperties(
                         entityType, field, List.of(), "", new LinkedHashSet<>());
@@ -195,6 +208,10 @@ public final class EntityMetadataFactory {
 
         Set<String> columnNames = new LinkedHashSet<>();
         for (PersistentProperty property : properties) {
+            if (property.oneToMany()) {
+                // @OneToMany는 parent 테이블 컬럼이 없는 marker-only property로, column uniqueness 검증 대상이 아니다.
+                continue;
+            }
             if (!columnNames.add(property.columnName())) {
                 throw new IllegalArgumentException(
                         entityType.getName() + " declares duplicate column '" + property.columnName()
@@ -613,7 +630,144 @@ public final class EntityMetadataFactory {
                 embedded,
                 embedded ? hostPath : List.of(),
                 isEnumerated,
-                enumType
+                enumType,
+                false,
+                null,
+                true,
+                false,
+                null,
+                ""
+        );
+    }
+
+    /**
+     * 같은 필드에 관계 어노테이션과 양립 불가능한 다른 어노테이션이 함께 선언된 경우를 거부한다.
+     * 검증은 {@link OneToMany}/{@link ManyToOne} 한쪽이라도 존재할 때만 수행한다.
+     */
+    private static void rejectIncompatibleRelationAnnotations(Class<?> entityType, Field field) {
+        boolean isManyToOne = field.isAnnotationPresent(ManyToOne.class);
+        boolean isOneToMany = field.isAnnotationPresent(OneToMany.class);
+        if (!isManyToOne && !isOneToMany) {
+            return;
+        }
+        if (isManyToOne && isOneToMany) {
+            throw new IllegalStateException(
+                    entityType.getName() + "." + field.getName()
+                            + " cannot declare both @ManyToOne and @OneToMany");
+        }
+        String location = entityType.getName() + "." + field.getName();
+        if (field.isAnnotationPresent(Embedded.class)) {
+            throw new IllegalStateException(location + " cannot declare @Embedded together with a relation annotation");
+        }
+        if (field.isAnnotationPresent(Id.class)) {
+            throw new IllegalStateException(location + " cannot declare @Id together with a relation annotation");
+        }
+        if (field.isAnnotationPresent(Version.class)) {
+            throw new IllegalStateException(location + " cannot declare @Version together with a relation annotation");
+        }
+        if (field.isAnnotationPresent(SoftDelete.class)) {
+            throw new IllegalStateException(location + " cannot declare @SoftDelete together with a relation annotation");
+        }
+        if (field.isAnnotationPresent(CreatedAt.class)) {
+            throw new IllegalStateException(location + " cannot declare @CreatedAt together with a relation annotation");
+        }
+        if (field.isAnnotationPresent(UpdatedAt.class)) {
+            throw new IllegalStateException(location + " cannot declare @UpdatedAt together with a relation annotation");
+        }
+        if (field.isAnnotationPresent(Enumerated.class)) {
+            throw new IllegalStateException(location + " cannot declare @Enumerated together with a relation annotation");
+        }
+    }
+
+    /**
+     * {@link OneToMany} marker-only property를 만든다. parent 테이블 컬럼이 없으므로 column-related
+     * 메타데이터는 비워두고, mappedBy와 target type만 보존한다.
+     */
+    private PersistentProperty createOneToManyProperty(Class<?> entityType, Field field) {
+        OneToMany annotation = field.getAnnotation(OneToMany.class);
+        String mappedBy = annotation.mappedBy();
+        if (mappedBy == null || mappedBy.isBlank()) {
+            throw new IllegalStateException(
+                    entityType.getName() + "." + field.getName()
+                            + " @OneToMany requires non-blank mappedBy");
+        }
+        Class<?> targetType = annotation.targetEntity();
+        if (targetType == void.class) {
+            // erasure로 컬렉션의 원소 타입을 직접 추론할 수 없으면 null로 두고 호출자가 명시할 수 있게 한다.
+            targetType = null;
+        }
+        return new PersistentProperty(
+                field,
+                field.getName(),
+                "", // no column for inverse side
+                field.getType(),
+                false,
+                false,
+                true,
+                GenerationType.NONE,
+                "",
+                null,
+                false,
+                false,
+                false,
+                false,
+                List.of(),
+                false,
+                null,
+                false,
+                null,
+                true,
+                true,
+                targetType,
+                mappedBy
+        );
+    }
+
+    /**
+     * {@link ManyToOne} owning property를 만든다. FK 컬럼 이름은 {@link JoinColumn#name()} 또는
+     * 기본 naming strategy로 {@code <propertyName>_id} 형태가 된다. javaType은 FK 컬럼이 보관하는
+     * 식별자 타입이지만 target entity 메타데이터에 의존하지 않기 위해 일단 {@link Long}으로 fallback한다 —
+     * mapRow는 이 property를 직접 read/write하지 않으므로(관계는 FetchGroup이 채워준다) javaType 정확도가
+     * row decoding에 영향을 주지 않는다.
+     */
+    private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {
+        ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
+        JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
+        Class<?> targetType = manyToOne.targetEntity();
+        if (targetType == void.class) {
+            targetType = field.getType();
+        }
+        String columnName;
+        if (joinColumn != null && !joinColumn.name().isBlank()) {
+            columnName = joinColumn.name();
+        } else {
+            columnName = namingStrategy.columnName(field.getName() + "_id");
+        }
+        boolean nullable = manyToOne.optional() && (joinColumn == null || joinColumn.nullable());
+        return new PersistentProperty(
+                field,
+                field.getName(),
+                columnName,
+                Long.class,
+                false,
+                false,
+                nullable,
+                GenerationType.NONE,
+                "",
+                null,
+                false,
+                false,
+                false,
+                false,
+                List.of(),
+                false,
+                null,
+                true,
+                targetType,
+                nullable,
+                false,
+                null,
+                ""
         );
     }
 

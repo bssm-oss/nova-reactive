@@ -31,6 +31,12 @@ public final class PersistentProperty {
     private final List<Field> embeddedHostPath;
     private final boolean enumerated;
     private final EnumType enumType;
+    private final boolean manyToOne;
+    private final Class<?> manyToOneTargetType;
+    private final boolean manyToOneNullable;
+    private final boolean oneToMany;
+    private final Class<?> oneToManyTargetType;
+    private final String oneToManyMappedBy;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -50,7 +56,13 @@ public final class PersistentProperty {
             boolean embedded,
             List<Field> embeddedHostPath,
             boolean enumerated,
-            EnumType enumType
+            EnumType enumType,
+            boolean manyToOne,
+            Class<?> manyToOneTargetType,
+            boolean manyToOneNullable,
+            boolean oneToMany,
+            Class<?> oneToManyTargetType,
+            String oneToManyMappedBy
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -73,6 +85,12 @@ public final class PersistentProperty {
         }
         this.enumerated = enumerated;
         this.enumType = enumType;
+        this.manyToOne = manyToOne;
+        this.manyToOneTargetType = manyToOneTargetType;
+        this.manyToOneNullable = manyToOneNullable;
+        this.oneToMany = oneToMany;
+        this.oneToManyTargetType = oneToManyTargetType;
+        this.oneToManyMappedBy = oneToManyMappedBy == null ? "" : oneToManyMappedBy;
     }
 
     public Field field() {
@@ -173,6 +191,54 @@ public final class PersistentProperty {
         return enumType;
     }
 
+    /**
+     * {@code true}이면 이 property는 {@link io.nova.annotation.ManyToOne}의 owning side이며,
+     * {@link #columnName()}은 FK 컬럼 이름, {@link #manyToOneTargetType()}는 참조 대상 entity 타입이다.
+     * column read/write 시에는 child entity의 id 값을 직접 다룬다 — 이 property에서 entity 인스턴스를
+     * 자동으로 다루지는 않는다.
+     */
+    public boolean manyToOne() {
+        return manyToOne;
+    }
+
+    public Class<?> manyToOneTargetType() {
+        return manyToOneTargetType;
+    }
+
+    /**
+     * {@link io.nova.annotation.ManyToOne#optional()}와 {@link io.nova.annotation.JoinColumn#nullable()}
+     * 중 더 strict한 값. {@code false}이면 FK 컬럼은 NOT NULL.
+     */
+    public boolean manyToOneNullable() {
+        return manyToOneNullable;
+    }
+
+    /**
+     * {@code true}이면 이 property는 {@link io.nova.annotation.OneToMany}의 inverse side로, 부모 테이블에
+     * 컬럼을 갖지 않는다. INSERT/UPDATE 바인딩에서도 제외된다.
+     */
+    public boolean oneToMany() {
+        return oneToMany;
+    }
+
+    public Class<?> oneToManyTargetType() {
+        return oneToManyTargetType;
+    }
+
+    /**
+     * {@link io.nova.annotation.OneToMany#mappedBy()}로 지정된, child entity 안의 owning property 이름.
+     */
+    public String oneToManyMappedBy() {
+        return oneToManyMappedBy;
+    }
+
+    /**
+     * {@link #manyToOne()} 또는 {@link #oneToMany()} 중 하나라도 {@code true}면 관계 property다.
+     */
+    public boolean isRelation() {
+        return manyToOne || oneToMany;
+    }
+
     public Object read(Object instance) {
         try {
             Object current = instance;
@@ -182,13 +248,56 @@ public final class PersistentProperty {
                     return null;
                 }
             }
-            return field.get(current);
+            Object value = field.get(current);
+            if (manyToOne && value != null) {
+                // @ManyToOne property는 entity reference를 보관하지만, FK column에 바인딩되는 값은
+                // 참조 대상의 @Id 값이다. binding 시점에 reflection으로 target의 @Id 필드를 찾아 그 값을 반환한다.
+                return extractReferencedId(value);
+            }
+            return value;
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot read field " + field.getName(), exception);
         }
     }
 
+    /**
+     * {@code @ManyToOne} 참조 대상 인스턴스에서 {@link io.nova.annotation.Id} 필드를 찾아 그 값을 꺼낸다.
+     * cycle-aware EntityMetadataFactory 없이도 동작하도록 직접 reflection으로 @Id를 탐색하며, target 클래스
+     * 계층에 @Id가 없으면 {@link IllegalStateException}으로 즉시 거부한다.
+     */
+    private static Object extractReferencedId(Object referenced) {
+        Class<?> type = referenced.getClass();
+        for (Field candidate : type.getDeclaredFields()) {
+            if (candidate.isAnnotationPresent(io.nova.annotation.Id.class)) {
+                candidate.setAccessible(true);
+                try {
+                    return candidate.get(referenced);
+                } catch (IllegalAccessException exception) {
+                    throw new IllegalStateException(
+                            "Cannot read @Id field on referenced entity " + type.getName(), exception);
+                }
+            }
+        }
+        throw new IllegalStateException(
+                "@ManyToOne referenced entity " + type.getName() + " has no @Id field");
+    }
+
     public void write(Object instance, Object value) {
+        if (oneToMany) {
+            // @OneToMany inverse side는 부모 테이블 컬럼이 없으므로 row 디코딩 단계에서 주입할 값도 없다.
+            // 실제 child 컬렉션은 FetchGroup hydration 단계에서 별도 setter로 주입된다.
+            return;
+        }
+        if (manyToOne) {
+            // @ManyToOne row 디코딩: FK column 값(=참조 entity의 @Id)이 들어온다. entity reference 필드는
+            // 사용자 entity 타입이므로 Long 등 식별자 값을 직접 set할 수 없다. 대신 target entity의 no-arg
+            // 생성자로 stub 인스턴스를 만들고 @Id 필드에 FK 값을 채워 reference 자리에 둔다. FetchGroup
+            // hydration이 활성화되어 있으면 이 stub은 곧 fully-loaded target으로 replace된다. hydration이
+            // 비활성화된 경로(예: 명시적 fetch group 없이 관계 entity를 단독 조회)에서도 호출자는 적어도
+            // id를 통해 reference identity를 식별할 수 있다.
+            writeManyToOneStub(instance, value);
+            return;
+        }
         try {
             Object current = instance;
             for (Field hostField : embeddedHostPath) {
@@ -203,6 +312,49 @@ public final class PersistentProperty {
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot write field " + field.getName(), exception);
         }
+    }
+
+    /**
+     * @ManyToOne row 디코딩용 stub: target entity의 no-arg 생성자로 빈 인스턴스를 만들고 @Id 필드에 FK
+     * 값을 채워 entity reference 필드에 set한다. FK 값이 null이면 reference도 null로 둔다.
+     */
+    private void writeManyToOneStub(Object instance, Object fkValue) {
+        try {
+            if (fkValue == null) {
+                field.set(instance, null);
+                return;
+            }
+            Class<?> target = manyToOneTargetType != null ? manyToOneTargetType : field.getType();
+            Object stub = instantiateTarget(target);
+            Field idField = findIdField(target);
+            idField.setAccessible(true);
+            idField.set(stub, fkValue);
+            field.set(instance, stub);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot write @ManyToOne reference field " + field.getName(), exception);
+        }
+    }
+
+    private static Object instantiateTarget(Class<?> targetType) {
+        try {
+            var constructor = targetType.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return constructor.newInstance();
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "@ManyToOne target type must expose a no-args constructor: " + targetType.getName(), exception);
+        }
+    }
+
+    private static Field findIdField(Class<?> targetType) {
+        for (Field candidate : targetType.getDeclaredFields()) {
+            if (candidate.isAnnotationPresent(io.nova.annotation.Id.class)) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException(
+                "@ManyToOne target type " + targetType.getName() + " has no @Id field");
     }
 
     private static Object instantiateEmbeddable(Class<?> embeddableType) {
