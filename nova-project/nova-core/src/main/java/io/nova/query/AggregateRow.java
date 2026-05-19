@@ -1,5 +1,6 @@
 package io.nova.query;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -57,7 +58,8 @@ public final class AggregateRow {
      * 모든 column 값을 입력 순서대로 immutable view로 반환한다.
      */
     public Map<String, Object> asMap() {
-        return Map.copyOf(values);
+        // Map.copyOf는 insertion order를 보장하지 않으므로 LinkedHashMap을 unmodifiableMap으로 감싼다.
+        return Collections.unmodifiableMap(new LinkedHashMap<>(values));
     }
 
     @Override
