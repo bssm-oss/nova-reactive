@@ -19,6 +19,14 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         this.dialect = dialect;
     }
 
+    /**
+     * 서브클래스가 identity 컬럼 등 dialect-specific DDL을 만들 때 식별자 quoting을 일관되게
+     * 적용할 수 있도록 dialect 인스턴스를 노출한다.
+     */
+    protected final Dialect dialect() {
+        return dialect;
+    }
+
     @Override
     public String createTable(EntityMetadata<?> metadata) {
         List<String> columns = new ArrayList<>();

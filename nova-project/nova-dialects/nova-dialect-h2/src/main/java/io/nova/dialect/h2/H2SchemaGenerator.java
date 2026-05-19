@@ -17,7 +17,7 @@ final class H2SchemaGenerator extends AbstractSchemaGenerator {
 
     @Override
     protected String identityColumn(PersistentProperty property) {
-        return "\"" + property.columnName() + "\" " + sqlType(property)
+        return dialect().quote(property.columnName()) + " " + sqlType(property)
                 + " generated always as identity primary key";
     }
 }
