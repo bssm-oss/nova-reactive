@@ -14,4 +14,5 @@ include(
     ":nova-project:nova-dialects:nova-dialect-postgresql",
     ":nova-project:nova-dialects:nova-dialect-mysql",
     ":nova-project:nova-dialects:nova-dialect-h2",
+    ":nova-project:nova-spring-boot-starter",
 )
