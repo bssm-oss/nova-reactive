@@ -1,20 +1,32 @@
 package io.nova.query;
 
-public record QuerySpec(Predicate predicate, Sort sort, Pageable pageable, Cursor cursor) {
+import java.util.Objects;
+
+public record QuerySpec(Predicate predicate, Sort sort, Pageable pageable, Cursor cursor, LockMode lockMode) {
+    public QuerySpec {
+        if (lockMode == null) {
+            lockMode = LockMode.NONE;
+        }
+    }
+
+    public QuerySpec(Predicate predicate, Sort sort, Pageable pageable, Cursor cursor) {
+        this(predicate, sort, pageable, cursor, LockMode.NONE);
+    }
+
     public static QuerySpec empty() {
-        return new QuerySpec(null, null, null, null);
+        return new QuerySpec(null, null, null, null, LockMode.NONE);
     }
 
     public QuerySpec where(Predicate next) {
-        return new QuerySpec(next, sort, pageable, cursor);
+        return new QuerySpec(next, sort, pageable, cursor, lockMode);
     }
 
     public QuerySpec orderBy(Sort next) {
-        return new QuerySpec(predicate, next, pageable, cursor);
+        return new QuerySpec(predicate, next, pageable, cursor, lockMode);
     }
 
     public QuerySpec page(Pageable next) {
-        return new QuerySpec(predicate, sort, next, cursor);
+        return new QuerySpec(predicate, sort, next, cursor, lockMode);
     }
 
     /**
@@ -27,7 +39,7 @@ public record QuerySpec(Predicate predicate, Sort sort, Pageable pageable, Curso
      * limit을 보존하면서 cursor만 추가하려면 {@link #cursor(Cursor)} overload를 사용하라.
      */
     public QuerySpec cursor(Cursor next, int limit) {
-        return new QuerySpec(predicate, sort, Pageable.of(limit, 0L), next);
+        return new QuerySpec(predicate, sort, Pageable.of(limit, 0L), next, lockMode);
     }
 
     /**
@@ -44,6 +56,29 @@ public record QuerySpec(Predicate predicate, Sort sort, Pageable pageable, Curso
                     "cursor(Cursor) requires an existing pageable to preserve its limit; "
                             + "call page(Pageable) first or use cursor(Cursor, int)");
         }
-        return new QuerySpec(predicate, sort, Pageable.of(pageable.limit(), 0L), next);
+        return new QuerySpec(predicate, sort, Pageable.of(pageable.limit(), 0L), next, lockMode);
+    }
+
+    /**
+     * SELECT 결과 행에 적용할 pessimistic lock 강도를 지정한다. {@link LockMode#NONE}이면 SQL에
+     * lock 절을 붙이지 않으며, count/exists/findById 같이 행을 직접 fetch 하지 않는 쿼리에는
+     * 적용되지 않는다.
+     */
+    public QuerySpec lockMode(LockMode next) {
+        return new QuerySpec(predicate, sort, pageable, cursor, Objects.requireNonNull(next, "lockMode must not be null"));
+    }
+
+    /**
+     * {@link LockMode#FOR_UPDATE}를 적용한 {@link QuerySpec}을 반환한다. 편의 메서드.
+     */
+    public QuerySpec forUpdate() {
+        return lockMode(LockMode.FOR_UPDATE);
+    }
+
+    /**
+     * {@link LockMode#FOR_SHARE}를 적용한 {@link QuerySpec}을 반환한다. 편의 메서드.
+     */
+    public QuerySpec forShare() {
+        return lockMode(LockMode.FOR_SHARE);
     }
 }
