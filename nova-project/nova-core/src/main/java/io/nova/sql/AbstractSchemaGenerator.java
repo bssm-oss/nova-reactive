@@ -54,6 +54,17 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String alterTableDropColumn(EntityMetadata<?> metadata, String columnName) {
+        boolean exists = metadata.properties().stream()
+                .anyMatch(property -> property.columnName().equals(columnName));
+        if (!exists) {
+            List<String> knownColumns = metadata.properties().stream()
+                    .map(PersistentProperty::columnName)
+                    .toList();
+            throw new IllegalArgumentException(
+                    "alterTableDropColumn refused: unknown column '" + columnName
+                            + "' on " + metadata.entityType().getName()
+                            + "; known columns: " + knownColumns);
+        }
         return "alter table " + dialect.quote(metadata.tableName())
                 + " drop column " + dialect.quote(columnName);
     }

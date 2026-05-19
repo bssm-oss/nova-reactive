@@ -114,9 +114,24 @@ class AbstractSchemaGeneratorTest {
     void alterTableDropColumnRendersDropColumnStatement() {
         EntityMetadata<AlterTargetEntity> metadata = factory.getEntityMetadata(AlterTargetEntity.class);
 
-        String statement = dialect.schemaGenerator().alterTableDropColumn(metadata, "legacy_column");
+        String statement = dialect.schemaGenerator().alterTableDropColumn(metadata, "email");
 
-        assertEquals("alter table alter_target drop column legacy_column", statement);
+        assertEquals("alter table alter_target drop column email", statement);
+    }
+
+    @Test
+    void alterTableDropColumnRejectsUnknownColumn() {
+        EntityMetadata<AlterTargetEntity> metadata = factory.getEntityMetadata(AlterTargetEntity.class);
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().alterTableDropColumn(metadata, "legacy_column")
+        );
+
+        assertTrue(exception.getMessage().contains("legacy_column"),
+                "exception should name the rejected column, got " + exception.getMessage());
+        assertTrue(exception.getMessage().contains("email"),
+                "exception should list known columns, got " + exception.getMessage());
     }
 
     private static final class TestDialect implements Dialect {
