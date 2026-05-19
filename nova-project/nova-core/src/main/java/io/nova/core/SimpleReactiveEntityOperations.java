@@ -2,6 +2,7 @@ package io.nova.core;
 
 import io.nova.annotation.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
+import io.nova.fetch.AnnotationFetchGroupBuilder;
 import io.nova.fetch.FetchGroup;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
@@ -39,6 +40,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 /**
@@ -53,6 +55,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final Clock clock;
     private final AuditApplier auditApplier;
     private final EntityListenerInvoker listenerInvoker;
+    private final AnnotationFetchGroupBuilder annotationFetchGroupBuilder;
 
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
@@ -80,6 +83,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.auditApplier = new AuditApplier(this.clock);
         this.listenerInvoker = new EntityListenerInvoker();
+        this.annotationFetchGroupBuilder = new AnnotationFetchGroupBuilder(metadataFactory);
     }
 
     @Override
@@ -233,13 +237,44 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
-        return sqlExecutor.queryOne(dialect.sqlRenderer().selectById(metadata, id), row -> mapRow(metadata, row));
+        Mono<T> base = findByIdInternal(metadata, id);
+        if (!metadata.hasRelationProperties()) {
+            // 관계 어노테이션이 없는 entity는 기존 zero-overhead 경로를 그대로 거친다.
+            return base;
+        }
+        FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
+        return base.flatMap(parent ->
+                hydrateChildren(List.of(parent), annotationGroup).thenReturn(parent));
     }
 
     @Override
     public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
-        return sqlExecutor.queryMany(dialect.sqlRenderer().select(metadata, normalize(querySpec)), row -> mapRow(metadata, row));
+        Flux<T> base = findAllInternal(metadata, querySpec);
+        if (!metadata.hasRelationProperties()) {
+            return base;
+        }
+        FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
+        return base.collectList()
+                .flatMapMany(parents ->
+                        hydrateChildren(parents, annotationGroup).thenMany(Flux.fromIterable(parents)));
+    }
+
+    /**
+     * annotation-driven 자동 hydration을 거치지 않고 단건 row만 발행하는 내부 경로.
+     * {@code findById(.., FetchGroup)}처럼 merge된 group을 따로 hydrate할 호출자가 사용한다.
+     */
+    private <T, ID> Mono<T> findByIdInternal(EntityMetadata<T> metadata, ID id) {
+        return sqlExecutor.queryOne(
+                dialect.sqlRenderer().selectById(metadata, id), row -> mapRow(metadata, row));
+    }
+
+    /**
+     * annotation-driven 자동 hydration을 거치지 않고 일반 SELECT만 발행하는 내부 경로.
+     */
+    private <T> Flux<T> findAllInternal(EntityMetadata<T> metadata, QuerySpec querySpec) {
+        return sqlExecutor.queryMany(
+                dialect.sqlRenderer().select(metadata, normalize(querySpec)), row -> mapRow(metadata, row));
     }
 
     @Override
@@ -588,8 +623,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     "FetchGroup parent type " + fetchGroup.parentType().getName()
                             + " does not match call entityType " + entityType.getName()));
         }
-        return findById(entityType, id)
-                .flatMap(parent -> hydrateChildren(List.of(parent), fetchGroup).thenReturn(parent));
+        EntityMetadata<P> metadata = metadataFactory.getEntityMetadata(entityType);
+        FetchGroup<P> merged = mergeWithAnnotationGroup(entityType, fetchGroup, metadata);
+        return findByIdInternal(metadata, id)
+                .flatMap(parent -> hydrateChildren(List.of(parent), merged).thenReturn(parent));
     }
 
     @Override
@@ -601,9 +638,77 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     "FetchGroup parent type " + fetchGroup.parentType().getName()
                             + " does not match call entityType " + entityType.getName()));
         }
-        return findAll(entityType, QuerySpec.empty())
+        EntityMetadata<P> metadata = metadataFactory.getEntityMetadata(entityType);
+        FetchGroup<P> merged = mergeWithAnnotationGroup(entityType, fetchGroup, metadata);
+        return findAllInternal(metadata, QuerySpec.empty())
                 .collectList()
-                .flatMapMany(parents -> hydrateChildren(parents, fetchGroup).thenMany(Flux.fromIterable(parents)));
+                .flatMapMany(parents -> hydrateChildren(parents, merged).thenMany(Flux.fromIterable(parents)));
+    }
+
+    /**
+     * 사용자가 명시한 {@link FetchGroup}과 entity의 {@code @ManyToOne}/{@code @OneToMany} 어노테이션에서
+     * 도출된 group을 merge한다. 같은 {@code (childType, childForeignKeyColumn)} 페어가 양쪽에 모두 있으면
+     * 사용자 spec이 우선한다 — 사용자가 명시적으로 정의한 setter/extractor가 annotation 기본 동작을 override할 수
+     * 있게 하기 위해서다. 관계 어노테이션이 없는 entity는 user group을 그대로 반환한다.
+     */
+    private <P> FetchGroup<P> mergeWithAnnotationGroup(
+            Class<P> entityType, FetchGroup<P> userGroup, EntityMetadata<P> metadata) {
+        if (!metadata.hasRelationProperties()) {
+            return userGroup;
+        }
+        FetchGroup<P> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
+        if (annotationGroup.specs().isEmpty()) {
+            return userGroup;
+        }
+        LinkedHashSet<String> userKeys = new LinkedHashSet<>();
+        for (FetchGroup.FetchSpec<P, ?> spec : userGroup.specs()) {
+            userKeys.add(specKey(spec));
+        }
+        FetchGroup.Builder<P> builder = FetchGroup.forParents(entityType);
+        for (FetchGroup.FetchSpec<P, ?> spec : userGroup.specs()) {
+            appendSpec(builder, spec);
+        }
+        for (FetchGroup.FetchSpec<P, ?> spec : annotationGroup.specs()) {
+            if (userKeys.contains(specKey(spec))) {
+                continue;
+            }
+            appendSpec(builder, spec);
+        }
+        return builder.build();
+    }
+
+    private static String specKey(FetchGroup.FetchSpec<?, ?> spec) {
+        return spec.childType().getName() + "::" + spec.childForeignKeyColumn();
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static <P, C> void appendSpec(FetchGroup.Builder<P> builder, FetchGroup.FetchSpec<P, C> spec) {
+        // builder는 single 플래그가 있는 spec을 직접 받는 공개 API가 없으므로, builder를 reflection 없이
+        // 우회 — single 여부에 따라 적절한 with/withReferencedParent를 호출한다. single인 경우는
+        // setter가 list → first-element wrapping을 이미 거친 BiConsumer이므로, 같은 list-setter를
+        // 그대로 호출하는 with(...)를 사용해도 동작 의미가 보존된다.
+        if (spec.single()) {
+            // single setter를 위한 builder 진입점은 withReferencedParent — 단, 그 메서드는 새 list→single
+            // adapter를 다시 씌우므로 여기서는 그대로 list-setter를 갖고 있는 spec을 보존하기 위해
+            // 동일 setter를 single 어댑터로 재구성한다. spec.setter()는 이미 list→single로 풀어주는 setter이므로,
+            // withReferencedParent가 새로 씌우는 list→single adapter를 통해 빈 리스트가 null로 변환되어
+            // 같은 동작이 보존된다.
+            BiConsumer<P, C> singleSetter = (parent, child) ->
+                    spec.setter().accept(parent, child == null ? List.of() : List.of(child));
+            builder.withReferencedParent(
+                    spec.childType(),
+                    spec.childForeignKeyColumn(),
+                    spec.parentIdExtractor(),
+                    singleSetter
+            );
+        } else {
+            builder.with(
+                    spec.childType(),
+                    spec.childForeignKeyColumn(),
+                    spec.parentIdExtractor(),
+                    spec.setter()
+            );
+        }
     }
 
     /**
@@ -640,7 +745,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         EntityMetadata<C> childMetadata = metadataFactory.getEntityMetadata(spec.childType());
         PersistentProperty fkProperty = findPropertyByColumnName(childMetadata, spec.childForeignKeyColumn());
         QuerySpec querySpec = QuerySpec.empty().where(Criteria.in(fkProperty.propertyName(), new ArrayList<>(parentIds)));
-        return findAll(spec.childType(), querySpec)
+        // child fetch는 내부 경로로만 수행해 cyclical 관계가 무한 재귀를 일으키지 않게 한다.
+        // 호출자가 child entity의 추가 관계까지 자동으로 hydrate되길 원하면 명시적 FetchGroup을 별도로 추가해야 한다.
+        return findAllInternal(childMetadata, querySpec)
                 .collectList()
                 .doOnNext(children -> assignChildrenToParents(parents, children, spec, fkProperty))
                 .then();

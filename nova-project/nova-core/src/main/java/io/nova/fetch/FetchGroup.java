@@ -84,7 +84,37 @@ public final class FetchGroup<P> {
             }
             Objects.requireNonNull(parentIdExtractor, "parentIdExtractor must not be null");
             Objects.requireNonNull(setter, "setter must not be null");
-            specs.add(new FetchSpec<>(childType, childForeignKeyColumn, parentIdExtractor, setter));
+            specs.add(new FetchSpec<>(childType, childForeignKeyColumn, parentIdExtractor, setter, false));
+            return this;
+        }
+
+        /**
+         * parent가 다른 entity를 단건 참조하는 경우(예: {@code @ManyToOne})의 fetch spec을 추가한다.
+         * 내부 실행은 list-기반 spec과 동일한 IN-query를 사용하며, 결과 child가 비어 있으면 parent에
+         * {@code null}을 주입하고, 매칭되는 child가 한 건이라도 있으면 첫 번째를 주입한다.
+         *
+         * @param childType                referenced child entity 타입 (target of the ManyToOne)
+         * @param childPrimaryKeyColumn    child의 PK 컬럼 이름 — parent 측 FK 값과 비교된다.
+         * @param parentForeignKeyExtractor parent 인스턴스에서 FK 값(=child id)을 꺼내는 함수.
+         * @param singleSetter             parent에 단건 child 인스턴스를 주입하는 함수.
+         */
+        public <C> Builder<P> withReferencedParent(
+                Class<C> childType,
+                String childPrimaryKeyColumn,
+                Function<P, Object> parentForeignKeyExtractor,
+                BiConsumer<P, C> singleSetter
+        ) {
+            Objects.requireNonNull(childType, "childType must not be null");
+            Objects.requireNonNull(childPrimaryKeyColumn, "childPrimaryKeyColumn must not be null");
+            if (childPrimaryKeyColumn.isBlank()) {
+                throw new IllegalArgumentException("childPrimaryKeyColumn must not be blank");
+            }
+            Objects.requireNonNull(parentForeignKeyExtractor, "parentForeignKeyExtractor must not be null");
+            Objects.requireNonNull(singleSetter, "singleSetter must not be null");
+            // singleSetter를 list 기반 BiConsumer로 adapt — 호출자가 boilerplate를 짜지 않게 한다.
+            BiConsumer<P, List<C>> listSetter = (parent, children) ->
+                    singleSetter.accept(parent, children == null || children.isEmpty() ? null : children.get(0));
+            specs.add(new FetchSpec<>(childType, childPrimaryKeyColumn, parentForeignKeyExtractor, listSetter, true));
             return this;
         }
 
@@ -96,12 +126,16 @@ public final class FetchGroup<P> {
     /**
      * 단일 child fetch 선언. immutable record로 builder가 누적해두며 실행 단계에서 spec 단위로
      * IN-query 한 번씩 발화된다.
+     * <p>
+     * {@code single}이 {@code true}이면 parent당 child 한 건이 주입된다 (e.g. {@link Builder#withReferencedParent}).
+     * {@code false}이면 parent당 child 리스트가 그대로 주입된다 (e.g. {@link Builder#with}).
      */
     public record FetchSpec<P, C>(
             Class<C> childType,
             String childForeignKeyColumn,
             Function<P, Object> parentIdExtractor,
-            BiConsumer<P, List<C>> setter
+            BiConsumer<P, List<C>> setter,
+            boolean single
     ) {
         public FetchSpec {
             Objects.requireNonNull(childType, "childType must not be null");
