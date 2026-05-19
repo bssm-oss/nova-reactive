@@ -11,6 +11,9 @@ import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
 import io.nova.annotation.Index;
+import io.nova.annotation.JoinColumn;
+import io.nova.annotation.ManyToOne;
+import io.nova.annotation.OneToMany;
 import io.nova.annotation.PostLoad;
 import io.nova.annotation.PrePersist;
 import io.nova.annotation.PreRemove;
@@ -1599,6 +1602,111 @@ public final class FixtureEntities {
         private CircularA outer;
 
         public EntityWithCircularEmbedded() {
+        }
+    }
+
+    /**
+     * 어노테이션 기반 관계 fixture: parent 측. {@link BookWithAuthorAnnotated} child가 owning side에 @ManyToOne을
+     * 선언하면 {@link AnnotationFetchGroupBuilderTest}/{@link io.nova.r2dbc.integration.AnnotationRelationIntegrationTest}
+     * 등에서 자동 hydration 경로가 books에 child를 주입한다. 컬렉션 필드는 OneToMany inverse side이므로 부모
+     * 테이블에 컬럼을 만들지 않는다.
+     */
+    @Entity
+    @Table("annotated_authors")
+    public static class AuthorWithBooksAnnotated {
+        @Id
+        private Long id;
+
+        private String name;
+
+        @OneToMany(targetEntity = BookWithAuthorAnnotated.class, mappedBy = "author")
+        private java.util.List<BookWithAuthorAnnotated> books;
+
+        public AuthorWithBooksAnnotated() {
+        }
+
+        public AuthorWithBooksAnnotated(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public java.util.List<BookWithAuthorAnnotated> getBooks() {
+            return books;
+        }
+
+        public void setBooks(java.util.List<BookWithAuthorAnnotated> books) {
+            this.books = books;
+        }
+    }
+
+    /**
+     * 어노테이션 기반 관계 fixture: child 측. @ManyToOne의 owning side로 author_id FK 컬럼을 통해 parent를 참조한다.
+     * @JoinColumn은 명시 — 기본 naming도 같은 값을 만들어내지만, 명시 케이스를 함께 검증한다.
+     */
+    @Entity
+    @Table("annotated_books")
+    public static class BookWithAuthorAnnotated {
+        @Id
+        private Long id;
+
+        private String title;
+
+        @ManyToOne(targetEntity = AuthorWithBooksAnnotated.class)
+        @JoinColumn(name = "author_id")
+        private AuthorWithBooksAnnotated author;
+
+        public BookWithAuthorAnnotated() {
+        }
+
+        public BookWithAuthorAnnotated(Long id, String title, AuthorWithBooksAnnotated author) {
+            this.id = id;
+            this.title = title;
+            this.author = author;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public AuthorWithBooksAnnotated getAuthor() {
+            return author;
+        }
+
+        public void setAuthor(AuthorWithBooksAnnotated author) {
+            this.author = author;
+        }
+    }
+
+    /**
+     * 어노테이션 기반 관계 fixture: @JoinColumn 이름이 일반 @Column 이름과 정면 충돌하는 entity. 같은 컬럼명을
+     * 두 번 declare하면 EntityMetadataFactory의 column uniqueness 검증이 거부해야 한다 (silent dedupe 방지).
+     */
+    @Entity
+    @Table("author_book_join_conflict")
+    public static class AuthorBookJoinColumnConflict {
+        @Id
+        private Long id;
+
+        @Column("author_id")
+        private Long authorId;
+
+        @ManyToOne(targetEntity = AuthorWithBooksAnnotated.class)
+        @JoinColumn(name = "author_id")
+        private AuthorWithBooksAnnotated author;
+
+        public AuthorBookJoinColumnConflict() {
         }
     }
 }
