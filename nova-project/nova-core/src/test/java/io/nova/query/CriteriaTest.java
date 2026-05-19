@@ -132,4 +132,19 @@ class CriteriaTest {
     void notIlikeRejectsNullValue() {
         assertThrows(NullPointerException.class, () -> Criteria.notIlike("email", null));
     }
+
+    @Test
+    void startsWithEmptyStringYieldsPercentOnly() {
+        assertEquals("%", Criteria.startsWith("email", "").value());
+    }
+
+    @Test
+    void endsWithEmptyStringYieldsPercentOnly() {
+        assertEquals("%", Criteria.endsWith("email", "").value());
+    }
+
+    @Test
+    void containsEmptyStringYieldsDoublePercent() {
+        assertEquals("%%", Criteria.contains("email", "").value());
+    }
 }
