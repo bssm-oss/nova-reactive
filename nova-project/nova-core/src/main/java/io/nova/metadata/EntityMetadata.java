@@ -30,33 +30,6 @@ public final class EntityMetadata<T> {
             String entityName,
             String tableName,
             List<PersistentProperty> properties,
-            PersistentProperty idProperty
-    ) {
-        this(entityType, entityName, tableName, properties, idProperty,
-                List.of(), List.of(), List.of(), List.of());
-    }
-
-    public EntityMetadata(
-            Class<T> entityType,
-            String entityName,
-            String tableName,
-            List<PersistentProperty> properties,
-            PersistentProperty idProperty,
-            List<Method> prePersistCallbacks,
-            List<Method> preUpdateCallbacks,
-            List<Method> postLoadCallbacks,
-            List<Method> preRemoveCallbacks
-    ) {
-        this(entityType, entityName, tableName, properties, idProperty,
-                prePersistCallbacks, preUpdateCallbacks, postLoadCallbacks, preRemoveCallbacks,
-                List.of(), List.of());
-    }
-
-    public EntityMetadata(
-            Class<T> entityType,
-            String entityName,
-            String tableName,
-            List<PersistentProperty> properties,
             PersistentProperty idProperty,
             List<Method> prePersistCallbacks,
             List<Method> preUpdateCallbacks,

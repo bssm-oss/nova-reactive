@@ -65,7 +65,13 @@ class EntityMetadataTest {
                         "SampleAccount",
                         "accounts",
                         duplicates,
-                        idProperty
+                        idProperty,
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of()
                 )
         );
         assertTrue(exception.getMessage().contains("duplicate property name"));
