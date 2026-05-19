@@ -5,6 +5,15 @@ import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.AutoNamedIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.AutoNamedUniqueConstraintEntity;
 import io.nova.support.fixtures.FixtureEntities.ConvertibleEntity;
+import io.nova.support.fixtures.FixtureEntities.Customer;
+import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddableIdEntity;
+import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedCreatedAtSubField;
+import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedIdSubField;
+import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedSoftDeleteSubField;
+import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedUpdatedAtSubField;
+import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedVersionSubField;
+import io.nova.support.fixtures.FixtureEntities.CustomerWithNestedEmbedded;
+import io.nova.support.fixtures.FixtureEntities.CustomerWithNonEmbeddable;
 import io.nova.support.fixtures.FixtureEntities.DefaultNamedEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateCreatedAtEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateIdEntity;
@@ -587,6 +596,108 @@ class EntityMetadataFactoryTest {
 
         assertTrue(exception.getMessage().contains("@UniqueConstraint"));
         assertTrue(exception.getMessage().contains("at least one column"));
+    }
+
+    @Test
+    void expandsEmbeddedFieldsIntoFlatColumns() {
+        EntityMetadata<Customer> metadata = factory.getEntityMetadata(Customer.class);
+
+        assertEquals("customer", metadata.tableName());
+        java.util.List<String> columns = new java.util.ArrayList<>();
+        for (PersistentProperty property : metadata.properties()) {
+            columns.add(property.columnName());
+        }
+        assertEquals(java.util.List.of("id", "name", "shipping_city", "shipping_street", "shipping_zip"), columns);
+
+        PersistentProperty city = metadata.findProperty("shipping.city").orElseThrow();
+        assertTrue(city.embedded());
+        assertEquals("shipping", city.embeddedHostField().getName());
+        assertEquals("shipping_city", city.columnName());
+
+        PersistentProperty id = metadata.idProperty();
+        assertFalse(id.embedded());
+    }
+
+    @Test
+    void rejectsEmbeddableTypeWithIdField() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CustomerWithEmbeddableIdEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@Embeddable"));
+        assertTrue(exception.getMessage().contains("@Id"));
+    }
+
+    @Test
+    void rejectsEmbeddedSubFieldWithId() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CustomerWithEmbeddedIdSubField.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@Id"));
+    }
+
+    @Test
+    void rejectsEmbeddedSubFieldWithVersion() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CustomerWithEmbeddedVersionSubField.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@Version"));
+    }
+
+    @Test
+    void rejectsEmbeddedSubFieldWithSoftDelete() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CustomerWithEmbeddedSoftDeleteSubField.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@SoftDelete"));
+    }
+
+    @Test
+    void rejectsEmbeddedSubFieldWithCreatedAt() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CustomerWithEmbeddedCreatedAtSubField.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@CreatedAt"));
+    }
+
+    @Test
+    void rejectsEmbeddedSubFieldWithUpdatedAt() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CustomerWithEmbeddedUpdatedAtSubField.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@UpdatedAt"));
+    }
+
+    @Test
+    void rejectsNestedEmbedded() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CustomerWithNestedEmbedded.class)
+        );
+
+        assertTrue(exception.getMessage().contains("nested @Embedded"));
+    }
+
+    @Test
+    void rejectsEmbeddedFieldTypeWithoutEmbeddableAnnotation() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CustomerWithNonEmbeddable.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@Embedded"));
+        assertTrue(exception.getMessage().contains("@Embeddable"));
     }
 
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {

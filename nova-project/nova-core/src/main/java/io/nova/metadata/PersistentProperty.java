@@ -20,8 +20,9 @@ public final class PersistentProperty {
     private final boolean createdAt;
     private final boolean updatedAt;
     private final boolean softDelete;
+    private final boolean embedded;
+    private final Field embeddedHostField;
 
-    @SuppressWarnings("unchecked")
     public PersistentProperty(
             Field field,
             String propertyName,
@@ -37,6 +38,29 @@ public final class PersistentProperty {
             boolean updatedAt,
             boolean softDelete
     ) {
+        this(field, propertyName, columnName, javaType, id, version, nullable,
+                generationType, generator, converter, createdAt, updatedAt, softDelete,
+                false, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    public PersistentProperty(
+            Field field,
+            String propertyName,
+            String columnName,
+            Class<?> javaType,
+            boolean id,
+            boolean version,
+            boolean nullable,
+            GenerationType generationType,
+            String generator,
+            AttributeConverter<?, ?> converter,
+            boolean createdAt,
+            boolean updatedAt,
+            boolean softDelete,
+            boolean embedded,
+            Field embeddedHostField
+    ) {
         this.field = field;
         this.field.setAccessible(true);
         this.propertyName = propertyName;
@@ -51,6 +75,11 @@ public final class PersistentProperty {
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
         this.softDelete = softDelete;
+        this.embedded = embedded;
+        this.embeddedHostField = embeddedHostField;
+        if (this.embeddedHostField != null) {
+            this.embeddedHostField.setAccessible(true);
+        }
     }
 
     public Field field() {
@@ -105,9 +134,32 @@ public final class PersistentProperty {
         return softDelete;
     }
 
+    /**
+     * {@code true}이면 이 property는 호스트 엔티티의 {@link io.nova.annotation.Embedded}
+     * 필드에 위치한 {@link io.nova.annotation.Embeddable} 타입에서 펼쳐져 나온 것이다.
+     */
+    public boolean embedded() {
+        return embedded;
+    }
+
+    /**
+     * 이 property의 값을 read/write할 때 먼저 거쳐야 하는 호스트 엔티티의
+     * {@link io.nova.annotation.Embedded} 필드. top-level property는 {@code null}.
+     */
+    public Field embeddedHostField() {
+        return embeddedHostField;
+    }
+
     public Object read(Object instance) {
         try {
-            return field.get(instance);
+            if (embeddedHostField == null) {
+                return field.get(instance);
+            }
+            Object host = embeddedHostField.get(instance);
+            if (host == null) {
+                return null;
+            }
+            return field.get(host);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot read field " + field.getName(), exception);
         }
@@ -115,9 +167,29 @@ public final class PersistentProperty {
 
     public void write(Object instance, Object value) {
         try {
-            field.set(instance, value);
+            if (embeddedHostField == null) {
+                field.set(instance, value);
+                return;
+            }
+            Object host = embeddedHostField.get(instance);
+            if (host == null) {
+                host = instantiateEmbeddable(embeddedHostField.getType());
+                embeddedHostField.set(instance, host);
+            }
+            field.set(host, value);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot write field " + field.getName(), exception);
+        }
+    }
+
+    private static Object instantiateEmbeddable(Class<?> embeddableType) {
+        try {
+            var constructor = embeddableType.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return constructor.newInstance();
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "Embeddable type must expose a no-args constructor: " + embeddableType.getName(), exception);
         }
     }
 
@@ -140,11 +212,12 @@ public final class PersistentProperty {
         if (!(other instanceof PersistentProperty property)) {
             return false;
         }
-        return Objects.equals(field, property.field);
+        return Objects.equals(field, property.field)
+                && Objects.equals(embeddedHostField, property.embeddedHostField);
     }
 
     @Override
     public int hashCode() {
-        return field.hashCode();
+        return Objects.hash(field, embeddedHostField);
     }
 }

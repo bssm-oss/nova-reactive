@@ -2,6 +2,8 @@ package io.nova.metadata;
 
 import io.nova.annotation.Column;
 import io.nova.annotation.CreatedAt;
+import io.nova.annotation.Embeddable;
+import io.nova.annotation.Embedded;
 import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
@@ -107,7 +109,12 @@ public final class EntityMetadataFactory {
             if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
                 continue;
             }
-            PersistentProperty property = createProperty(entityType, field);
+            if (field.isAnnotationPresent(Embedded.class)) {
+                List<PersistentProperty> expanded = createEmbeddedProperties(entityType, field);
+                properties.addAll(expanded);
+                continue;
+            }
+            PersistentProperty property = createProperty(entityType, field, null, "");
             properties.add(property);
             if (property.id()) {
                 if (idProperty != null) {
@@ -291,6 +298,78 @@ public final class EntityMetadataFactory {
     }
 
     /**
+     * {@code @Embedded} 필드를 호스트 엔티티 컬럼으로 펼친 {@link PersistentProperty} 목록을 만든다.
+     * 컬럼 이름은 {@code {hostField snake_case}_{sub-property columnName}} 패턴으로 합성되며
+     * sub-property는 {@code @Id}/{@code @Version}/{@code @SoftDelete}/{@code @CreatedAt}/
+     * {@code @UpdatedAt}을 가질 수 없고 nested {@code @Embedded}도 허용하지 않는다.
+     */
+    private List<PersistentProperty> createEmbeddedProperties(Class<?> entityType, Field hostField) {
+        Class<?> embeddableType = hostField.getType();
+        if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + hostField.getName()
+                            + " is annotated with @Embedded but its type " + embeddableType.getName()
+                            + " is not annotated with @Embeddable");
+        }
+        if (hasIdAnnotatedField(embeddableType)) {
+            throw new IllegalArgumentException(
+                    "@Embeddable type " + embeddableType.getName()
+                            + " must not declare @Id-annotated fields");
+        }
+        String columnPrefix = namingStrategy.columnName(hostField.getName()) + "_";
+        List<PersistentProperty> result = new ArrayList<>();
+        for (Field subField : embeddableType.getDeclaredFields()) {
+            if (subField.isSynthetic() || Modifier.isStatic(subField.getModifiers())) {
+                continue;
+            }
+            rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
+            PersistentProperty property = createProperty(embeddableType, subField, hostField, columnPrefix);
+            result.add(property);
+        }
+        return result;
+    }
+
+    private static boolean hasIdAnnotatedField(Class<?> embeddableType) {
+        for (Field field : embeddableType.getDeclaredFields()) {
+            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
+                continue;
+            }
+            if (field.isAnnotationPresent(Id.class)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void rejectIllegalSubFieldAnnotations(
+            Class<?> entityType,
+            Field hostField,
+            Class<?> embeddableType,
+            Field subField
+    ) {
+        String location = entityType.getName() + "." + hostField.getName()
+                + " (@Embedded " + embeddableType.getSimpleName() + "." + subField.getName() + ")";
+        if (subField.isAnnotationPresent(Id.class)) {
+            throw new IllegalArgumentException(location + " must not declare @Id");
+        }
+        if (subField.isAnnotationPresent(Version.class)) {
+            throw new IllegalArgumentException(location + " must not declare @Version");
+        }
+        if (subField.isAnnotationPresent(SoftDelete.class)) {
+            throw new IllegalArgumentException(location + " must not declare @SoftDelete");
+        }
+        if (subField.isAnnotationPresent(CreatedAt.class)) {
+            throw new IllegalArgumentException(location + " must not declare @CreatedAt");
+        }
+        if (subField.isAnnotationPresent(UpdatedAt.class)) {
+            throw new IllegalArgumentException(location + " must not declare @UpdatedAt");
+        }
+        if (subField.isAnnotationPresent(Embedded.class)) {
+            throw new IllegalArgumentException(location + " must not declare a nested @Embedded; only one level is supported");
+        }
+    }
+
+    /**
      * 콜백 어노테이션이 붙은 메서드의 시그니처를 검증한 뒤 컬렉터에 추가한다. 검증 실패 시
      * {@link IllegalArgumentException}을 던지며, 통과한 메서드는 {@code setAccessible(true)}로
      * 한 번만 열어 invoker가 매 호출마다 접근 검사를 반복하지 않게 한다.
@@ -324,7 +403,16 @@ public final class EntityMetadataFactory {
         target.add(method);
     }
 
-    private PersistentProperty createProperty(Class<?> entityType, Field field) {
+    /**
+     * 단일 field로부터 {@link PersistentProperty}를 만든다. {@code hostField}가 null이 아니면
+     * 이 property는 {@code @Embedded} 필드 안에 있는 sub-field이며 column 이름에 prefix가 붙는다.
+     */
+    private PersistentProperty createProperty(
+            Class<?> declaringType,
+            Field field,
+            Field hostField,
+            String columnPrefix
+    ) {
         Column column = field.getAnnotation(Column.class);
         GeneratedValue generatedValue = field.getAnnotation(GeneratedValue.class);
         boolean isId = field.isAnnotationPresent(Id.class);
@@ -332,12 +420,12 @@ public final class EntityMetadataFactory {
         if (isSoftDelete) {
             if (isId) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + " field " + field.getName()
+                        declaringType.getName() + " field " + field.getName()
                                 + " cannot be annotated with both @Id and @SoftDelete");
             }
             if (!SUPPORTED_SOFT_DELETE_TYPES.contains(field.getType())) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + " field " + field.getName()
+                        declaringType.getName() + " field " + field.getName()
                                 + " has unsupported @SoftDelete type " + field.getType().getName()
                                 + "; supported types are java.time.Instant, java.time.LocalDateTime, java.time.OffsetDateTime");
             }
@@ -346,12 +434,12 @@ public final class EntityMetadataFactory {
         if (isVersion) {
             if (isId) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName() + " cannot be both @Id and @Version");
+                        declaringType.getName() + "." + field.getName() + " cannot be both @Id and @Version");
             }
             if (!SUPPORTED_VERSION_TYPES.contains(field.getType())) {
                 throw new IllegalArgumentException(
                         "Unsupported version type " + field.getType().getName() + " on "
-                                + entityType.getName() + "." + field.getName()
+                                + declaringType.getName() + "." + field.getName()
                                 + "; supported types are Long, Integer, Short");
             }
         }
@@ -361,18 +449,18 @@ public final class EntityMetadataFactory {
             if (generationType == GenerationType.SEQUENCE) {
                 if (!isId) {
                     throw new IllegalArgumentException(
-                            entityType.getName() + "." + field.getName()
+                            declaringType.getName() + "." + field.getName()
                                     + " uses @GeneratedValue(SEQUENCE) but is not annotated with @Id");
                 }
                 if (generator == null || generator.isBlank()) {
                     throw new IllegalArgumentException(
-                            entityType.getName() + "." + field.getName()
+                            declaringType.getName() + "." + field.getName()
                                     + " uses @GeneratedValue(SEQUENCE) but does not specify generator (sequence name)");
                 }
                 if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(generator).matches()) {
                     throw new IllegalArgumentException(
                             "Invalid sequence generator name: '" + generator + "' on "
-                                    + entityType.getName() + "." + field.getName()
+                                    + declaringType.getName() + "." + field.getName()
                                     + " — must match identifier pattern "
                                     + SEQUENCE_GENERATOR_NAME_PATTERN.pattern());
                 }
@@ -380,24 +468,28 @@ public final class EntityMetadataFactory {
             if (generationType == GenerationType.UUID) {
                 if (!isId) {
                     throw new IllegalArgumentException(
-                            entityType.getName() + "." + field.getName()
+                            declaringType.getName() + "." + field.getName()
                                     + " uses @GeneratedValue(UUID) but is not annotated with @Id");
                 }
                 if (!SUPPORTED_UUID_ID_TYPES.contains(field.getType())) {
                     throw new IllegalArgumentException(
                             "Unsupported UUID id type " + field.getType().getName() + " on "
-                                    + entityType.getName() + "." + field.getName()
+                                    + declaringType.getName() + "." + field.getName()
                                     + "; supported types are java.util.UUID, java.lang.String");
                 }
             }
         }
-        String columnName = column != null && !column.value().isBlank()
+        String baseColumnName = column != null && !column.value().isBlank()
                 ? column.value()
                 : namingStrategy.columnName(field.getName());
+        String columnName = columnPrefix + baseColumnName;
+        String propertyName = hostField == null
+                ? field.getName()
+                : hostField.getName() + "." + field.getName();
 
         return new PersistentProperty(
                 field,
-                field.getName(),
+                propertyName,
                 columnName,
                 field.getType(),
                 isId,
@@ -408,7 +500,9 @@ public final class EntityMetadataFactory {
                 converters.get(field.getType()),
                 field.isAnnotationPresent(CreatedAt.class),
                 field.isAnnotationPresent(UpdatedAt.class),
-                isSoftDelete
+                isSoftDelete,
+                hostField != null,
+                hostField
         );
     }
 }

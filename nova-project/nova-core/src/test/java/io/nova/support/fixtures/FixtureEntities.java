@@ -2,6 +2,8 @@ package io.nova.support.fixtures;
 
 import io.nova.annotation.Column;
 import io.nova.annotation.CreatedAt;
+import io.nova.annotation.Embeddable;
+import io.nova.annotation.Embedded;
 import io.nova.annotation.Entity;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
@@ -1067,5 +1069,234 @@ public final class FixtureEntities {
         private Long id;
         @Column("email")
         private String email;
+    }
+
+    @Embeddable
+    public static class Address {
+        private String city;
+        private String street;
+        private String zip;
+
+        public Address() {
+        }
+
+        public Address(String city, String street, String zip) {
+            this.city = city;
+            this.street = street;
+            this.zip = zip;
+        }
+
+        public String getCity() {
+            return city;
+        }
+
+        public String getStreet() {
+            return street;
+        }
+
+        public String getZip() {
+            return zip;
+        }
+    }
+
+    @Entity
+    @Table("customer")
+    public static class Customer {
+        @Id
+        private Long id;
+
+        private String name;
+
+        @Embedded
+        private Address shipping;
+
+        public Customer() {
+        }
+
+        public Customer(Long id, String name, Address shipping) {
+            this.id = id;
+            this.name = name;
+            this.shipping = shipping;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public Address getShipping() {
+            return shipping;
+        }
+    }
+
+    @Embeddable
+    public static class AddressWithId {
+        @Id
+        private Long id;
+
+        private String city;
+
+        public AddressWithId() {
+        }
+    }
+
+    @Entity
+    public static class CustomerWithEmbeddableIdEntity {
+        @Id
+        private Long id;
+
+        @Embedded
+        private AddressWithId shipping;
+
+        public CustomerWithEmbeddableIdEntity() {
+        }
+    }
+
+    @Embeddable
+    public static class AddressWithIdSubField {
+        @Id
+        private String city;
+
+        public AddressWithIdSubField() {
+        }
+    }
+
+    @Embeddable
+    public static class AddressWithVersionSubField {
+        @Version
+        private Long version;
+
+        public AddressWithVersionSubField() {
+        }
+    }
+
+    @Embeddable
+    public static class AddressWithSoftDeleteSubField {
+        @SoftDelete
+        private Instant deletedAt;
+
+        public AddressWithSoftDeleteSubField() {
+        }
+    }
+
+    @Embeddable
+    public static class AddressWithCreatedAtSubField {
+        @CreatedAt
+        private Instant createdAt;
+
+        public AddressWithCreatedAtSubField() {
+        }
+    }
+
+    @Embeddable
+    public static class AddressWithUpdatedAtSubField {
+        @UpdatedAt
+        private Instant updatedAt;
+
+        public AddressWithUpdatedAtSubField() {
+        }
+    }
+
+    @Embeddable
+    public static class NestedEmbeddedAddress {
+        @Embedded
+        private Address inner;
+
+        public NestedEmbeddedAddress() {
+        }
+    }
+
+    public static class NotAnEmbeddable {
+        private String value;
+
+        public NotAnEmbeddable() {
+        }
+    }
+
+    @Entity
+    public static class CustomerWithEmbeddedVersionSubField {
+        @Id
+        private Long id;
+
+        @Embedded
+        private AddressWithVersionSubField shipping;
+
+        public CustomerWithEmbeddedVersionSubField() {
+        }
+    }
+
+    @Entity
+    public static class CustomerWithEmbeddedSoftDeleteSubField {
+        @Id
+        private Long id;
+
+        @Embedded
+        private AddressWithSoftDeleteSubField shipping;
+
+        public CustomerWithEmbeddedSoftDeleteSubField() {
+        }
+    }
+
+    @Entity
+    public static class CustomerWithEmbeddedCreatedAtSubField {
+        @Id
+        private Long id;
+
+        @Embedded
+        private AddressWithCreatedAtSubField shipping;
+
+        public CustomerWithEmbeddedCreatedAtSubField() {
+        }
+    }
+
+    @Entity
+    public static class CustomerWithEmbeddedUpdatedAtSubField {
+        @Id
+        private Long id;
+
+        @Embedded
+        private AddressWithUpdatedAtSubField shipping;
+
+        public CustomerWithEmbeddedUpdatedAtSubField() {
+        }
+    }
+
+    @Entity
+    public static class CustomerWithEmbeddedIdSubField {
+        @Id
+        private Long id;
+
+        @Embedded
+        private AddressWithIdSubField shipping;
+
+        public CustomerWithEmbeddedIdSubField() {
+        }
+    }
+
+    @Entity
+    public static class CustomerWithNestedEmbedded {
+        @Id
+        private Long id;
+
+        @Embedded
+        private NestedEmbeddedAddress shipping;
+
+        public CustomerWithNestedEmbedded() {
+        }
+    }
+
+    @Entity
+    public static class CustomerWithNonEmbeddable {
+        @Id
+        private Long id;
+
+        @Embedded
+        private NotAnEmbeddable shipping;
+
+        public CustomerWithNonEmbeddable() {
+        }
     }
 }
