@@ -19,6 +19,20 @@ import java.util.function.Predicate;
  *
  * <p>인스턴스는 immutable하며 {@link #builder()} 또는
  * {@link #optimisticLockRetry()} 같은 factory를 통해 생성한다.
+ *
+ * <p><b>Backoff jitter</b>: Reactor {@code Retry.backoff}는 기본 jitter ±50%를 적용한다.
+ * 즉 nominal interval이 {@code T}이면 실제 대기 시간은 {@code [T*0.5, T*1.5]} 범위에서
+ * 무작위 결정되므로, {@link Builder#maxBackoff(Duration)}로 설정한 상한을 실측 대기가
+ * 일시적으로 초과할 수 있다. SLA 또는 timeout 설계 시 이 jitter를 감안하라.
+ *
+ * <p><b>{@code maxAttempts == 1}</b>: retry 자체를 우회한다. 이 경우
+ * {@code initialBackoff}/{@code backoffMultiplier}/{@code maxBackoff} 설정은 모두 무시되며,
+ * 호출자는 wrapper를 거치지 않은 것과 동일한 의미를 얻는다.
+ *
+ * <p><b>{@link #execute(Flux)} 의미론</b>: Reactor의 {@code retryWhen}은 source를 처음부터
+ * 재구독한다. 따라서 Flux가 일부 값을 emit한 뒤 retryable 예외로 종료되면 retry 후
+ * downstream에 이미 발행된 값이 다시 발행되어 <b>중복 emit</b>가 발생한다. 멱등하지 않은
+ * downstream(예: 외부 시스템에 발송하는 sink)은 별도 dedup 또는 idempotency key가 필요하다.
  */
 public final class ReactiveRetryTemplate {
 
