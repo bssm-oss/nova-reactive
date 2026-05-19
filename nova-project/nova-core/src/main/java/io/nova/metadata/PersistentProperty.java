@@ -26,48 +26,6 @@ public final class PersistentProperty {
     private final boolean enumerated;
     private final EnumType enumType;
 
-    public PersistentProperty(
-            Field field,
-            String propertyName,
-            String columnName,
-            Class<?> javaType,
-            boolean id,
-            boolean version,
-            boolean nullable,
-            GenerationType generationType,
-            String generator,
-            AttributeConverter<?, ?> converter,
-            boolean createdAt,
-            boolean updatedAt,
-            boolean softDelete
-    ) {
-        this(field, propertyName, columnName, javaType, id, version, nullable,
-                generationType, generator, converter, createdAt, updatedAt, softDelete,
-                false, null, false, null);
-    }
-
-    public PersistentProperty(
-            Field field,
-            String propertyName,
-            String columnName,
-            Class<?> javaType,
-            boolean id,
-            boolean version,
-            boolean nullable,
-            GenerationType generationType,
-            String generator,
-            AttributeConverter<?, ?> converter,
-            boolean createdAt,
-            boolean updatedAt,
-            boolean softDelete,
-            boolean embedded,
-            Field embeddedHostField
-    ) {
-        this(field, propertyName, columnName, javaType, id, version, nullable,
-                generationType, generator, converter, createdAt, updatedAt, softDelete,
-                embedded, embeddedHostField, false, null);
-    }
-
     @SuppressWarnings("unchecked")
     public PersistentProperty(
             Field field,
