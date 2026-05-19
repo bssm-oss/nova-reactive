@@ -1,7 +1,6 @@
 package io.nova.spring.data;
 
 import io.nova.core.ReactiveEntityOperations;
-import io.nova.query.Criteria;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import reactor.core.publisher.Mono;
@@ -81,8 +80,7 @@ public final class SimpleReactiveRepository implements InvocationHandler {
             }
             case "existsById" -> {
                 if (argCount == 1) {
-                    return entityOperations.exists(entityType,
-                            QuerySpec.empty().where(Criteria.eq("id", args[0])));
+                    return entityOperations.existsById(entityType, args[0]);
                 }
             }
             case "findAll" -> {

@@ -46,6 +46,15 @@ public interface ReactiveEntityOperations {
     <T, ID> Mono<T> findById(Class<T> entityType, ID id);
 
     /**
+     * 식별자에 해당하는 엔티티가 존재하는지 반환한다. 기본 구현은 {@link #findById(Class, Object)}의 신호를
+     * {@code hasElement}로 변환하므로 entity의 실제 {@code @Id} property 이름과 무관하게 동작한다.
+     * 구현체는 {@code select 1 ... limit 1} 같은 형태로 최적화할 수 있다.
+     */
+    default <T, ID> Mono<Boolean> existsById(Class<T> entityType, ID id) {
+        return findById(entityType, id).hasElement();
+    }
+
+    /**
      * 여러 식별자에 해당하는 엔티티를 한 번에 조회한다. 기본 구현은 단건 {@link #findById(Class, Object)}로
      * 폴백하며, 구현체는 {@code IN} 절을 사용한 단일 쿼리로 최적화할 수 있다.
      * <p>

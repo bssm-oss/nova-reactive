@@ -109,9 +109,9 @@ class SimpleReactiveRepositoryTest {
     }
 
     @Test
-    void existsByIdDelegatesToExistsWithIdEquality() {
+    void existsByIdDelegatesToEntityOperationsExistsById() {
         RecordingEntityOperations operations = new RecordingEntityOperations();
-        operations.nextExists = Mono.just(Boolean.TRUE);
+        operations.nextExistsById = Mono.just(Boolean.TRUE);
 
         UserRepository repository = newProxy(operations);
 
@@ -120,10 +120,9 @@ class SimpleReactiveRepositoryTest {
                 .verifyComplete();
 
         Invocation last = operations.lastInvocation();
-        assertEquals("exists", last.name());
+        assertEquals("existsById", last.name());
         assertSame(User.class, last.args()[0]);
-        assertNotNull(last.args()[1], "QuerySpec with id criteria must be passed");
-        assertTrue(last.args()[1] instanceof QuerySpec, "second arg must be QuerySpec");
+        assertEquals(7L, last.args()[1]);
     }
 
     @Test
@@ -283,6 +282,7 @@ class SimpleReactiveRepositoryTest {
         Flux<?> nextSaveAll = Flux.empty();
         Mono<?> nextFindById;
         Mono<Boolean> nextExists = Mono.just(Boolean.FALSE);
+        Mono<Boolean> nextExistsById = Mono.just(Boolean.FALSE);
         Flux<?> nextFindAll = Flux.empty();
         Flux<?> nextFindAllById = Flux.empty();
         Mono<Long> nextCount = Mono.just(0L);
@@ -316,6 +316,12 @@ class SimpleReactiveRepositoryTest {
         public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
             invocations.add(new Invocation("findById", new Object[]{entityType, id}));
             return (Mono<T>) nextFindById;
+        }
+
+        @Override
+        public <T, ID> Mono<Boolean> existsById(Class<T> entityType, ID id) {
+            invocations.add(new Invocation("existsById", new Object[]{entityType, id}));
+            return nextExistsById;
         }
 
         @Override
