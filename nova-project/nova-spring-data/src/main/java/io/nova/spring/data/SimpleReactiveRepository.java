@@ -96,6 +96,12 @@ public final class SimpleReactiveRepository implements InvocationHandler {
                     return entityOperations.findAll((Class) entityType,
                             QuerySpec.empty().page((Pageable) args[0]));
                 }
+                if (argCount == 2
+                        && QuerySpec.class.isAssignableFrom(paramTypes[0])
+                        && Pageable.class.isAssignableFrom(paramTypes[1])) {
+                    return entityOperations.findAll((Class) entityType,
+                            (QuerySpec) args[0], (Pageable) args[1]);
+                }
             }
             case "findAllById" -> {
                 if (argCount == 1 && Iterable.class.isAssignableFrom(paramTypes[0])) {
