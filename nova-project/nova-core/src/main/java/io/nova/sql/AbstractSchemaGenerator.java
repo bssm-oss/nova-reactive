@@ -1,5 +1,6 @@
 package io.nova.sql;
 
+import io.nova.annotation.EnumType;
 import io.nova.annotation.GenerationType;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.IndexDefinition;
@@ -117,8 +118,13 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     /**
      * 매핑된 Java 프로퍼티 타입에 대응하는 SQL 컬럼 타입을 결정한다.
+     * {@code @Enumerated} 프로퍼티는 enum의 실제 타입과 무관하게 저장 전략에 따라
+     * {@code varchar(255)}(STRING) 또는 {@code integer}(ORDINAL)로 고정한다.
      */
     protected String sqlType(PersistentProperty property) {
+        if (property.enumerated()) {
+            return property.enumType() == EnumType.STRING ? "varchar(255)" : "integer";
+        }
         Class<?> type = property.javaType();
         if (type == String.class) {
             return "varchar(255)";

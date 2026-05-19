@@ -1,5 +1,6 @@
 package io.nova.metadata;
 
+import io.nova.annotation.EnumType;
 import io.nova.annotation.GenerationType;
 import io.nova.convert.AttributeConverter;
 
@@ -22,6 +23,8 @@ public final class PersistentProperty {
     private final boolean softDelete;
     private final boolean embedded;
     private final Field embeddedHostField;
+    private final boolean enumerated;
+    private final EnumType enumType;
 
     public PersistentProperty(
             Field field,
@@ -40,7 +43,29 @@ public final class PersistentProperty {
     ) {
         this(field, propertyName, columnName, javaType, id, version, nullable,
                 generationType, generator, converter, createdAt, updatedAt, softDelete,
-                false, null);
+                false, null, false, null);
+    }
+
+    public PersistentProperty(
+            Field field,
+            String propertyName,
+            String columnName,
+            Class<?> javaType,
+            boolean id,
+            boolean version,
+            boolean nullable,
+            GenerationType generationType,
+            String generator,
+            AttributeConverter<?, ?> converter,
+            boolean createdAt,
+            boolean updatedAt,
+            boolean softDelete,
+            boolean embedded,
+            Field embeddedHostField
+    ) {
+        this(field, propertyName, columnName, javaType, id, version, nullable,
+                generationType, generator, converter, createdAt, updatedAt, softDelete,
+                embedded, embeddedHostField, false, null);
     }
 
     @SuppressWarnings("unchecked")
@@ -59,7 +84,9 @@ public final class PersistentProperty {
             boolean updatedAt,
             boolean softDelete,
             boolean embedded,
-            Field embeddedHostField
+            Field embeddedHostField,
+            boolean enumerated,
+            EnumType enumType
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -80,6 +107,8 @@ public final class PersistentProperty {
         if (this.embeddedHostField != null) {
             this.embeddedHostField.setAccessible(true);
         }
+        this.enumerated = enumerated;
+        this.enumType = enumType;
     }
 
     public Field field() {
@@ -148,6 +177,22 @@ public final class PersistentProperty {
      */
     public Field embeddedHostField() {
         return embeddedHostField;
+    }
+
+    /**
+     * {@code true}이면 이 property는 {@link io.nova.annotation.Enumerated}로 마킹된 enum 필드이며
+     * {@link #enumType()}이 {@link io.nova.annotation.EnumType#STRING} 또는 {@code ORDINAL} 중 하나를
+     * 반환한다.
+     */
+    public boolean enumerated() {
+        return enumerated;
+    }
+
+    /**
+     * enumerated property의 저장 전략. enum이 아닌 property는 {@code null}이다.
+     */
+    public EnumType enumType() {
+        return enumType;
     }
 
     public Object read(Object instance) {

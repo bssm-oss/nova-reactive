@@ -6,6 +6,8 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
 import io.nova.support.fixtures.FixtureEntities.AlterTargetEntity;
 import io.nova.support.fixtures.FixtureEntities.AutoNamedIndexEntity;
+import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
+import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.RepeatedIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.SingleIndexEntity;
@@ -117,6 +119,30 @@ class AbstractSchemaGeneratorTest {
         String statement = dialect.schemaGenerator().alterTableDropColumn(metadata, "email");
 
         assertEquals("alter table alter_target drop column email", statement);
+    }
+
+    @Test
+    void rendersEnumeratedStringPropertyAsVarchar() {
+        String statement = dialect.schemaGenerator().createTable(
+                factory.getEntityMetadata(EnumStringAccount.class)
+        );
+
+        assertEquals(
+                "create table enum_string_accounts (id bigint primary key, status varchar(255))",
+                statement
+        );
+    }
+
+    @Test
+    void rendersEnumeratedOrdinalPropertyAsInteger() {
+        String statement = dialect.schemaGenerator().createTable(
+                factory.getEntityMetadata(EnumOrdinalAccount.class)
+        );
+
+        assertEquals(
+                "create table enum_ordinal_accounts (id bigint primary key, status integer)",
+                statement
+        );
     }
 
     @Test

@@ -5,6 +5,8 @@ import io.nova.annotation.CreatedAt;
 import io.nova.annotation.Embeddable;
 import io.nova.annotation.Embedded;
 import io.nova.annotation.Entity;
+import io.nova.annotation.EnumType;
+import io.nova.annotation.Enumerated;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
@@ -391,7 +393,97 @@ public final class FixtureEntities {
 
     public enum Status {
         ACTIVE,
-        INACTIVE
+        INACTIVE,
+        PENDING
+    }
+
+    @Entity
+    @Table("enum_string_accounts")
+    public static class EnumStringAccount {
+        @Id
+        private Long id;
+
+        @Enumerated(EnumType.STRING)
+        private Status status;
+
+        public EnumStringAccount() {
+        }
+
+        public EnumStringAccount(Long id, Status status) {
+            this.id = id;
+            this.status = status;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public Status getStatus() {
+            return status;
+        }
+    }
+
+    @Entity
+    @Table("enum_ordinal_accounts")
+    public static class EnumOrdinalAccount {
+        @Id
+        private Long id;
+
+        @Enumerated(EnumType.ORDINAL)
+        private Status status;
+
+        public EnumOrdinalAccount() {
+        }
+
+        public EnumOrdinalAccount(Long id, Status status) {
+            this.id = id;
+            this.status = status;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public Status getStatus() {
+            return status;
+        }
+    }
+
+    @Entity
+    @Table("enum_default_accounts")
+    public static class EnumDefaultAccount {
+        @Id
+        private Long id;
+
+        @Enumerated
+        private Status status;
+
+        public EnumDefaultAccount() {
+        }
+    }
+
+    @Entity
+    public static class EnumOnNonEnumFieldEntity {
+        @Id
+        private Long id;
+
+        @Enumerated(EnumType.STRING)
+        private String status;
+
+        public EnumOnNonEnumFieldEntity() {
+        }
+    }
+
+    @Entity
+    public static class EnumWithConverterEntity {
+        @Id
+        private Long id;
+
+        @Enumerated(EnumType.STRING)
+        private Status status;
+
+        public EnumWithConverterEntity() {
+        }
     }
 
     @Entity

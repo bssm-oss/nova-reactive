@@ -5,6 +5,8 @@ import io.nova.annotation.CreatedAt;
 import io.nova.annotation.Embeddable;
 import io.nova.annotation.Embedded;
 import io.nova.annotation.Entity;
+import io.nova.annotation.EnumType;
+import io.nova.annotation.Enumerated;
 import io.nova.annotation.GeneratedValue;
 import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
@@ -19,6 +21,8 @@ import io.nova.annotation.UniqueConstraint;
 import io.nova.annotation.UpdatedAt;
 import io.nova.annotation.Version;
 import io.nova.convert.AttributeConverter;
+import io.nova.convert.EnumOrdinalConverter;
+import io.nova.convert.EnumStringConverter;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
@@ -516,6 +520,29 @@ public final class EntityMetadataFactory {
                 ? field.getName()
                 : hostField.getName() + "." + field.getName();
 
+        Enumerated enumerated = field.getAnnotation(Enumerated.class);
+        AttributeConverter<?, ?> userConverter = converters.get(field.getType());
+        boolean isEnumerated = false;
+        EnumType enumType = null;
+        AttributeConverter<?, ?> converter = userConverter;
+        if (enumerated != null) {
+            if (!field.getType().isEnum()) {
+                throw new IllegalArgumentException(
+                        declaringType.getName() + "." + field.getName()
+                                + " is annotated with @Enumerated but its type "
+                                + field.getType().getName() + " is not an enum");
+            }
+            if (userConverter != null) {
+                throw new IllegalArgumentException(
+                        declaringType.getName() + "." + field.getName()
+                                + " cannot use both @Enumerated and a registered AttributeConverter for "
+                                + field.getType().getName());
+            }
+            isEnumerated = true;
+            enumType = enumerated.value();
+            converter = createEnumConverter(field.getType(), enumType);
+        }
+
         return new PersistentProperty(
                 field,
                 propertyName,
@@ -526,12 +553,23 @@ public final class EntityMetadataFactory {
                 column == null || column.nullable(),
                 generationType,
                 generator,
-                converters.get(field.getType()),
+                converter,
                 field.isAnnotationPresent(CreatedAt.class),
                 field.isAnnotationPresent(UpdatedAt.class),
                 isSoftDelete,
                 hostField != null,
-                hostField
+                hostField,
+                isEnumerated,
+                enumType
         );
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static AttributeConverter<?, ?> createEnumConverter(Class<?> enumClass, EnumType enumType) {
+        Class raw = enumClass;
+        return switch (enumType) {
+            case STRING -> new EnumStringConverter<>(raw);
+            case ORDINAL -> new EnumOrdinalConverter<>(raw);
+        };
     }
 }
