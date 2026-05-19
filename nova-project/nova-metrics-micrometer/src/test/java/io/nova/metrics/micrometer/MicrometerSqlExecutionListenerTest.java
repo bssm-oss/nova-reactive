@@ -55,10 +55,38 @@ class MicrometerSqlExecutionListenerTest {
         assertEquals(1L, errorTimer.count());
 
         Counter errorCounter = registry.find("nova.sql.errors")
+                .tag("outcome", "error")
                 .tag("exception", "IllegalStateException")
                 .counter();
-        assertNotNull(errorCounter, "expected error counter to be registered");
+        assertNotNull(errorCounter, "expected error counter to be registered with outcome tag");
         assertEquals(1.0, errorCounter.count(), 0.0001);
+    }
+
+    @Test
+    void rejectsNullErrorOnOnError() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        MicrometerSqlExecutionListener listener = new MicrometerSqlExecutionListener(registry);
+        assertThrows(
+                NullPointerException.class,
+                () -> listener.onError(STATEMENT, Duration.ofMillis(1), null)
+        );
+    }
+
+    @Test
+    void anonymousExceptionFallsBackToAnonymousTag() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        MicrometerSqlExecutionListener listener = new MicrometerSqlExecutionListener(registry);
+        Throwable anonymous = new RuntimeException("x") {};
+
+        listener.onError(STATEMENT, Duration.ofMillis(2), anonymous);
+
+        assertNotNull(
+                registry.find("nova.sql.errors")
+                        .tag("outcome", "error")
+                        .tag("exception", "Anonymous")
+                        .counter(),
+                "anonymous exception classes should emit Anonymous tag"
+        );
     }
 
     @Test

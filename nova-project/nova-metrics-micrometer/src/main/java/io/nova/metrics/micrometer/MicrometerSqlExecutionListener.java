@@ -54,8 +54,21 @@ public final class MicrometerSqlExecutionListener implements SqlExecutionListene
 
     @Override
     public void onError(SqlStatement statement, Duration elapsed, Throwable error) {
-        String exceptionTag = error == null ? "none" : error.getClass().getSimpleName();
+        Objects.requireNonNull(error, "error");
+        String exceptionTag = exceptionTag(error);
         registry.timer(timerName, "outcome", "error", "exception", exceptionTag).record(elapsed);
-        registry.counter(errorCounterName, "exception", exceptionTag).increment();
+        registry.counter(errorCounterName, "outcome", "error", "exception", exceptionTag).increment();
+    }
+
+    /**
+     * 익명/람다 예외의 {@code getSimpleName()}이 빈 문자열이 되어 tag 누락이 발생하는 케이스를
+     * {@code "Anonymous"} fallback으로 흡수한다. 호출자가 무한히 새 exception 타입을 만들 수
+     * 있는 시나리오에서는 (사용자 정의 예외 + driver-wrapped 예외 누적) Prometheus
+     * time-series cardinality가 폭주할 수 있으므로 운영 환경에서는 driver 예외만 노출되도록
+     * upstream에서 wrapping을 제한하는 정책 권장.
+     */
+    private static String exceptionTag(Throwable error) {
+        String name = error.getClass().getSimpleName();
+        return name.isEmpty() ? "Anonymous" : name;
     }
 }
