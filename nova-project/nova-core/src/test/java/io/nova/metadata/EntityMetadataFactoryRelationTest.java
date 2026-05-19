@@ -70,8 +70,10 @@ class EntityMetadataFactoryRelationTest {
         assertSame(BookWithAuthorAnnotated.class, books.oneToManyTargetType());
         assertTrue(books.oneToMany());
         assertFalse(books.manyToOne());
-        // properties()는 컬럼이 매핑된 property만 노출하므로 books는 그 결과에서 제외된다.
-        assertFalse(metadata.properties().stream().anyMatch(p -> p.propertyName().equals("books")));
+        // properties()는 raw list라 books도 포함되지만, columnMappedProperties()는 컬럼 없는
+        // marker를 제외하므로 books는 그 결과에서 제외된다.
+        assertTrue(metadata.properties().stream().anyMatch(p -> p.propertyName().equals("books")));
+        assertFalse(metadata.columnMappedProperties().stream().anyMatch(p -> p.propertyName().equals("books")));
     }
 
     @Test

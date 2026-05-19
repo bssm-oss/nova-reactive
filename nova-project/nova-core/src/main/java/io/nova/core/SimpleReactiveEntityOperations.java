@@ -779,7 +779,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private PersistentProperty findPropertyByColumnName(EntityMetadata<?> metadata, String columnName) {
-        for (PersistentProperty property : metadata.properties()) {
+        for (PersistentProperty property : metadata.columnMappedProperties()) {
             if (property.columnName().equals(columnName)) {
                 return property;
             }
@@ -959,7 +959,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // 호스트 path별로 all-null 여부를 판정한 뒤 entity에 반영한다. nested @Embedded에서도
         // outer host 전체가 all-null이면 outer까지 null로 설정해 빈 인스턴스가 남지 않도록 한다.
         List<EmbeddedValue> embeddedValues = new ArrayList<>();
-        for (PersistentProperty property : metadata.properties()) {
+        for (PersistentProperty property : metadata.columnMappedProperties()) {
             // primitive Java 타입을 그대로 row.get(..., type)에 넘기면 일부 R2DBC driver(예: r2dbc-h2)가
             // "Cannot decode value of type boolean/long/..."으로 거부하므로 boxed wrapper로 변환한다.
             // entity 필드 주입 시점에는 reflection이 boxed → primitive unboxing을 자동 처리한다.

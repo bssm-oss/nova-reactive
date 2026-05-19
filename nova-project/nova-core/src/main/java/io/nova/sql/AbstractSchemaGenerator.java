@@ -63,10 +63,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String alterTableDropColumn(EntityMetadata<?> metadata, String columnName) {
-        boolean exists = metadata.properties().stream()
+        boolean exists = metadata.columnMappedProperties().stream()
                 .anyMatch(property -> property.columnName().equals(columnName));
         if (!exists) {
-            List<String> knownColumns = metadata.properties().stream()
+            List<String> knownColumns = metadata.columnMappedProperties().stream()
                     .map(PersistentProperty::columnName)
                     .toList();
             throw new IllegalArgumentException(

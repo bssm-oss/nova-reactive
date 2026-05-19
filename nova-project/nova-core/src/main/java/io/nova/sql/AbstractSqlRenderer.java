@@ -817,7 +817,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     private String selectList(EntityMetadata<?> metadata) {
-        return metadata.properties().stream()
+        return metadata.columnMappedProperties().stream()
                 .map(property -> column(property) + " as " + dialect.quote(property.columnName()))
                 .collect(Collectors.joining(", "));
     }

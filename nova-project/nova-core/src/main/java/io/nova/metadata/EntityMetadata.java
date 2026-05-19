@@ -12,14 +12,14 @@ public final class EntityMetadata<T> {
     private final String entityName;
     private final String tableName;
     /**
-     * 모든 property를 raw 순서대로 보관한다. {@link #properties()}는 컬럼이 없는 marker-only property
-     * (예: {@link io.nova.annotation.OneToMany} inverse side)를 자동으로 제외하므로, 관계 marker
-     * 자체를 봐야 하는 derived getter는 이 필드를 직접 사용한다.
+     * 선언된 모든 property를 declaration 순서로 보관한다. {@code @OneToMany} 같이 컬럼이 없는 marker-only
+     * property도 포함된다. {@link #properties()}가 이 리스트를 그대로 반환한다.
      */
     private final List<PersistentProperty> properties;
     /**
-     * column이 매핑된 property만 추린 view. SQL 렌더링, row 디코딩, schema 생성 등 컬럼이 필요한 모든
-     * 경로에서 사용된다. 결과는 immutable이며 {@link #properties}와 declaration 순서를 공유한다.
+     * column이 매핑된 property만 추린 view. SELECT/INSERT/UPDATE 렌더링, row 디코딩, schema 생성 등 컬럼이
+     * 필요한 경로에서 명시적으로 {@link #columnMappedProperties()}로 가져와 쓴다. 결과는 immutable이며
+     * {@link #properties}와 declaration 순서를 공유한다.
      */
     private final List<PersistentProperty> columnMappedProperties;
     private final Map<String, PersistentProperty> propertiesByName;
@@ -108,12 +108,19 @@ public final class EntityMetadata<T> {
     }
 
     /**
-     * 컬럼이 매핑된 property만 반환한다 — SELECT/INSERT/UPDATE 렌더링, row 디코딩, schema 생성 등에서
-     * 사용한다. {@link io.nova.annotation.OneToMany}처럼 inverse side로만 정의되어 컬럼이 없는 marker는
-     * 결과에서 제외된다. 관계 marker 자체를 보고 싶다면 {@link #manyToOneProperties()},
-     * {@link #oneToManyProperties()}를 사용한다.
+     * 선언된 모든 property를 declaration 순서로 반환한다. {@code @OneToMany} 같이 컬럼이 없는 marker-only
+     * property도 포함된다. SQL 렌더링/row 디코딩/schema 생성 등 컬럼이 필요한 경로에서는
+     * {@link #columnMappedProperties()}를 명시적으로 호출하라.
      */
     public List<PersistentProperty> properties() {
+        return properties;
+    }
+
+    /**
+     * 컬럼이 매핑된 property만 반환한다 — SELECT/INSERT/UPDATE 렌더링, row 디코딩, schema 생성 등에서
+     * 사용한다. {@code @OneToMany}처럼 inverse side로만 정의되어 컬럼이 없는 marker는 결과에서 제외된다.
+     */
+    public List<PersistentProperty> columnMappedProperties() {
         return columnMappedProperties;
     }
 
