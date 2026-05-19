@@ -1071,6 +1071,33 @@ public final class FixtureEntities {
         private String email;
     }
 
+    /**
+     * 자동 생성된 이름이 63자 PostgreSQL identifier 한도를 초과해 hash fallback이 적용되는 경우.
+     * 결과 fallback 이름은 한도 안에 들어와야 한다.
+     */
+    @Entity
+    @Table("medium_long_table_name_for_index_truncation_tests")
+    @Index(columns = {"email_address"})
+    public static class LongAutoNamedIndexEntity {
+        @Id
+        private Long id;
+        @Column("email_address")
+        private String emailAddress;
+    }
+
+    /**
+     * 자동 생성된 이름이 한도를 넘고, hash fallback 또한 한도를 초과해 truncate가 적용되는 경우.
+     */
+    @Entity
+    @Table("extremely_long_table_name_for_testing_identifier_limit_guard")
+    @UniqueConstraint(columns = {"email_address"})
+    public static class VeryLongAutoNamedUniqueConstraintEntity {
+        @Id
+        private Long id;
+        @Column("email_address")
+        private String emailAddress;
+    }
+
     @Embeddable
     public static class Address {
         private String city;

@@ -28,6 +28,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -293,12 +294,32 @@ public final class EntityMetadataFactory {
         }
     }
 
+    /**
+     * 가장 좁은 PostgreSQL 식별자 한도(63자)에 맞춰, dialect별 별도 길이 분기 없이 단일 상한을
+     * 사용한다. MySQL 한도(64자)도 자동으로 충족된다.
+     */
+    private static final int MAX_AUTO_GENERATED_NAME_LENGTH = 63;
+
+    /**
+     * {@code {prefix}{table}_{col1}_{col2}_...} 패턴으로 index/unique constraint 이름을 만든다.
+     * 결과가 63자(PostgreSQL identifier 한도)를 초과하면 prefix+table+짧은 hex hash로 안정적인
+     * fallback 이름을 만들고, 그래도 한도를 넘으면 한도까지 truncate 한다.
+     */
     private static String autoGenerateName(String prefix, String tableName, String[] columns) {
         StringBuilder builder = new StringBuilder(prefix).append(tableName);
         for (String column : columns) {
             builder.append('_').append(column);
         }
-        return builder.toString();
+        String full = builder.toString();
+        if (full.length() <= MAX_AUTO_GENERATED_NAME_LENGTH) {
+            return full;
+        }
+        int hash = Arrays.hashCode(columns) * 31 + tableName.hashCode();
+        String fallback = prefix + tableName + "_" + Integer.toHexString(hash);
+        if (fallback.length() <= MAX_AUTO_GENERATED_NAME_LENGTH) {
+            return fallback;
+        }
+        return fallback.substring(0, MAX_AUTO_GENERATED_NAME_LENGTH);
     }
 
     /**
