@@ -18,9 +18,11 @@ import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
+import io.nova.support.fixtures.FixtureEntities.Address;
 import io.nova.support.fixtures.FixtureEntities.AssignedIdAccount;
 import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.CallbackThrowingEntity;
+import io.nova.support.fixtures.FixtureEntities.Customer;
 import io.nova.support.fixtures.FixtureEntities.EntityWithCallbacks;
 import io.nova.support.fixtures.FixtureEntities.NoDefaultConstructorEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
@@ -2112,6 +2114,83 @@ class SimpleReactiveEntityOperationsTest {
         for (EntityWithCallbacks entity : entities) {
             assertEquals(false, entity.getEmail().startsWith(" "));
         }
+    }
+
+    @Test
+    void saveBindsFlattenedColumnsForEmbeddedAddress() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Customer customer = new Customer(7L, "Ada", new Address("Seoul", "Gangnam-daero", "06000"));
+
+        StepVerifier.create(operations.save(customer))
+                .expectNext(customer)
+                .verifyComplete();
+
+        assertEquals(
+                "update customer set name = ?, shipping_city = ?, shipping_street = ?, shipping_zip = ? where id = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(List.of("Ada", "Seoul", "Gangnam-daero", "06000", 7L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void saveBindsNullColumnsWhenEmbeddedHostIsNull() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Customer customer = new Customer(7L, "Ada", null);
+
+        StepVerifier.create(operations.save(customer))
+                .expectNext(customer)
+                .verifyComplete();
+
+        assertEquals(
+                "update customer set name = ?, shipping_city = ?, shipping_street = ?, shipping_zip = ? where id = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(java.util.Arrays.asList("Ada", null, null, null, 7L), executor.lastStatement.bindings());
+    }
+
+    @Test
+    void findByIdHydratesEmbeddedAddress() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(
+                "id", 7L,
+                "name", "Ada",
+                "shipping_city", "Seoul",
+                "shipping_street", "Gangnam-daero",
+                "shipping_zip", "06000"
+        )));
+
+        StepVerifier.create(operations.findById(Customer.class, 7L))
+                .expectNextMatches(customer ->
+                        Objects.equals(customer.getId(), 7L)
+                                && "Ada".equals(customer.getName())
+                                && customer.getShipping() != null
+                                && "Seoul".equals(customer.getShipping().getCity())
+                                && "Gangnam-daero".equals(customer.getShipping().getStreet())
+                                && "06000".equals(customer.getShipping().getZip()))
+                .verifyComplete();
+    }
+
+    @Test
+    void findByIdLeavesEmbeddedAddressNullWhenAllSubColumnsAreNull() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        java.util.HashMap<String, Object> row = new java.util.HashMap<>();
+        row.put("id", 7L);
+        row.put("name", "Ada");
+        row.put("shipping_city", null);
+        row.put("shipping_street", null);
+        row.put("shipping_zip", null);
+        executor.queryOneResults.addLast(new MapRowAccessor(row));
+
+        StepVerifier.create(operations.findById(Customer.class, 7L))
+                .expectNextMatches(customer ->
+                        Objects.equals(customer.getId(), 7L)
+                                && "Ada".equals(customer.getName())
+                                && customer.getShipping() == null)
+                .verifyComplete();
     }
 
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {

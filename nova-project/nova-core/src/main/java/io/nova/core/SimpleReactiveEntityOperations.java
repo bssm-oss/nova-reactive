@@ -704,13 +704,51 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private <T> T mapRow(EntityMetadata<T> metadata, RowAccessor row) {
         T instance = instantiate(metadata.entityType());
+        // embedded(host field가 동일한) sub-property들을 한 번에 모아 hydration한다.
+        // 같은 host group에 속한 모든 sub-column이 NULL이면 host 필드 자체를 null로 둔다.
+        LinkedHashMap<java.lang.reflect.Field, List<EmbeddedValue>> embeddedBuckets = new LinkedHashMap<>();
         for (PersistentProperty property : metadata.properties()) {
-            Object value = row.get(property.columnName(), property.javaType());
-            property.write(instance, property.toPropertyValue(value));
+            Object raw = row.get(property.columnName(), property.javaType());
+            Object value = property.toPropertyValue(raw);
+            if (property.embedded()) {
+                embeddedBuckets
+                        .computeIfAbsent(property.embeddedHostField(), ignored -> new ArrayList<>())
+                        .add(new EmbeddedValue(property, value));
+                continue;
+            }
+            property.write(instance, value);
+        }
+        for (Map.Entry<java.lang.reflect.Field, List<EmbeddedValue>> entry : embeddedBuckets.entrySet()) {
+            List<EmbeddedValue> values = entry.getValue();
+            boolean allNull = true;
+            for (EmbeddedValue ev : values) {
+                if (ev.value() != null) {
+                    allNull = false;
+                    break;
+                }
+            }
+            if (allNull) {
+                // host field에 직접 null을 쓴다. 빈 embeddable 인스턴스가 남지 않도록.
+                try {
+                    java.lang.reflect.Field host = entry.getKey();
+                    host.setAccessible(true);
+                    host.set(instance, null);
+                } catch (IllegalAccessException exception) {
+                    throw new IllegalStateException(
+                            "Cannot null out embedded host field " + entry.getKey().getName(), exception);
+                }
+                continue;
+            }
+            for (EmbeddedValue ev : values) {
+                ev.property().write(instance, ev.value());
+            }
         }
         // hydration이 모두 끝난 다음 한 번만 @PostLoad를 발화해, 사용자 callback에서 다른 필드를 같이 읽을 수 있게 한다.
         listenerInvoker.invokePostLoad(instance, metadata);
         return instance;
+    }
+
+    private record EmbeddedValue(PersistentProperty property, Object value) {
     }
 
     /**

@@ -11,6 +11,8 @@ import io.nova.query.CursorField;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
+import io.nova.support.fixtures.FixtureEntities.Address;
+import io.nova.support.fixtures.FixtureEntities.Customer;
 import io.nova.support.fixtures.FixtureEntities.IntegerVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.ShortVersionedAccount;
@@ -1261,6 +1263,48 @@ class AbstractSqlRendererTest {
         );
 
         assertEquals("updateByQuery does not support cursor", exception.getMessage());
+    }
+
+    @Test
+    void rendersInsertForCustomerWithEmbeddedAddress() {
+        EntityMetadata<Customer> customerMetadata = metadataFactory.getEntityMetadata(Customer.class);
+        Customer customer = new Customer(7L, "Ada", new Address("Seoul", "Gangnam-daero", "06000"));
+
+        SqlStatement statement = dialect.sqlRenderer().insert(customerMetadata, customer);
+
+        assertEquals(
+                "insert into customer (id, name, shipping_city, shipping_street, shipping_zip) values (?, ?, ?, ?, ?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(7L, "Ada", "Seoul", "Gangnam-daero", "06000"), statement.bindings());
+    }
+
+    @Test
+    void rendersInsertForCustomerWithNullEmbeddedAddress() {
+        EntityMetadata<Customer> customerMetadata = metadataFactory.getEntityMetadata(Customer.class);
+        Customer customer = new Customer(7L, "Ada", null);
+
+        SqlStatement statement = dialect.sqlRenderer().insert(customerMetadata, customer);
+
+        assertEquals(
+                "insert into customer (id, name, shipping_city, shipping_street, shipping_zip) values (?, ?, ?, ?, ?)",
+                statement.sql()
+        );
+        assertEquals(java.util.Arrays.asList(7L, "Ada", null, null, null), statement.bindings());
+    }
+
+    @Test
+    void rendersSelectForCustomerWithEmbeddedAddressColumns() {
+        EntityMetadata<Customer> customerMetadata = metadataFactory.getEntityMetadata(Customer.class);
+
+        SqlStatement statement = dialect.sqlRenderer().select(customerMetadata, QuerySpec.empty());
+
+        assertEquals(
+                "select id as id, name as name, shipping_city as shipping_city, "
+                        + "shipping_street as shipping_street, shipping_zip as shipping_zip from customer",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
     }
 
     private static final class TestDialect implements Dialect {
