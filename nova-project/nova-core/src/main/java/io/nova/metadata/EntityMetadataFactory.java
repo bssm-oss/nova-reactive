@@ -112,7 +112,7 @@ public final class EntityMetadataFactory {
         PersistentProperty softDeleteProperty = null;
         PersistentProperty versionProperty = null;
         for (Field field : entityType.getDeclaredFields()) {
-            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
+            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
                 continue;
             }
             if (field.isAnnotationPresent(Embedded.class)) {
@@ -364,7 +364,7 @@ public final class EntityMetadataFactory {
 
     private static boolean hasIdAnnotatedField(Class<?> embeddableType) {
         for (Field field : embeddableType.getDeclaredFields()) {
-            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
+            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
                 continue;
             }
             if (field.isAnnotationPresent(Id.class)) {
