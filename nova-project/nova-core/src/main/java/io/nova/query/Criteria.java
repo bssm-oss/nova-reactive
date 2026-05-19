@@ -38,25 +38,33 @@ public final class Criteria {
 
     /**
      * 주어진 패턴과 일치하지 않는 행을 매칭하는 {@code NOT LIKE} 조건을 만든다.
-     * {@code %}와 {@code _} 와일드카드의 escape는 호출자의 책임이다.
+     * <p>주의: {@code value}의 {@code %}, {@code _}, {@code \\} (dialect별 LIKE escape char) 는
+     * 자동 escape되지 않는다 — 호출자가 직접 escape하거나 신뢰된 입력만 전달해야 한다.
+     * <p>{@code null} 비교 의도는 {@link #isNotNull(String)}을 사용해야 한다.
      */
     public static Condition notLike(String property, Object value) {
+        Objects.requireNonNull(value, "value");
         return new Condition(property, ComparisonOperator.NOT_LIKE, value);
     }
 
     /**
      * 대소문자를 무시하고 패턴과 일치하는 행을 매칭하는 {@code ILIKE} 조건을 만든다.
      * PostgreSQL은 native {@code ILIKE}로, 그 외 dialect는 {@code lower(col) like lower(?)} 형태로 렌더된다.
-     * {@code %}와 {@code _} 와일드카드의 escape는 호출자의 책임이다.
+     * <p>주의: {@code value}의 {@code %}, {@code _}, {@code \\} (dialect별 LIKE escape char) 는
+     * 자동 escape되지 않는다 — 호출자가 직접 escape하거나 신뢰된 입력만 전달해야 한다.
+     * <p>{@code null} 비교 의도는 {@link #isNull(String)}을 사용해야 한다.
      */
     public static Condition ilike(String property, Object value) {
+        Objects.requireNonNull(value, "value");
         return new Condition(property, ComparisonOperator.ILIKE, value);
     }
 
     /**
      * {@link #ilike(String, Object)}의 부정형이다.
+     * <p>{@code null} 비교 의도는 {@link #isNotNull(String)}을 사용해야 한다.
      */
     public static Condition notIlike(String property, Object value) {
+        Objects.requireNonNull(value, "value");
         return new Condition(property, ComparisonOperator.NOT_ILIKE, value);
     }
 

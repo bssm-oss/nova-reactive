@@ -117,4 +117,19 @@ class CriteriaTest {
     void containsIgnoreCaseRejectsNullSubstring() {
         assertThrows(NullPointerException.class, () -> Criteria.containsIgnoreCase("email", null));
     }
+
+    @Test
+    void notLikeRejectsNullValue() {
+        assertThrows(NullPointerException.class, () -> Criteria.notLike("email", null));
+    }
+
+    @Test
+    void ilikeRejectsNullValue() {
+        assertThrows(NullPointerException.class, () -> Criteria.ilike("email", null));
+    }
+
+    @Test
+    void notIlikeRejectsNullValue() {
+        assertThrows(NullPointerException.class, () -> Criteria.notIlike("email", null));
+    }
 }
