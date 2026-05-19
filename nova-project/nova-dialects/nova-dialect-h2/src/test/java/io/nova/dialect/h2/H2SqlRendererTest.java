@@ -113,6 +113,51 @@ class H2SqlRendererTest {
     }
 
     @Test
+    void rendersIlikeUsingLowerBasedFallback() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.ilike("email", "%NOVA%"))
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" "
+                        + "from \"accounts\" where lower(\"email_address\") like lower(?)",
+                statement.sql()
+        );
+        assertEquals(List.of("%NOVA%"), statement.bindings());
+    }
+
+    @Test
+    void rendersNotIlikeUsingLowerBasedFallback() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.notIlike("email", "noreply%"))
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" "
+                        + "from \"accounts\" where lower(\"email_address\") not like lower(?)",
+                statement.sql()
+        );
+        assertEquals(List.of("noreply%"), statement.bindings());
+    }
+
+    @Test
+    void rendersContainsAsLikeSurroundedByWildcards() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.contains("email", "nova"))
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" "
+                        + "from \"accounts\" where \"email_address\" like ?",
+                statement.sql()
+        );
+        assertEquals(List.of("%nova%"), statement.bindings());
+    }
+
+    @Test
     void rendersSelectWithForUpdateLockClauseAfterPaging() {
         SqlStatement statement = dialect.sqlRenderer().select(
                 metadata,

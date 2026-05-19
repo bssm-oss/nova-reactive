@@ -12,7 +12,10 @@ public enum ComparisonOperator {
     IS_NOT_NULL("is not null"),
     IN("in"),
     NOT_IN("not in"),
-    BETWEEN("between");
+    BETWEEN("between"),
+    NOT_LIKE("not like"),
+    ILIKE("ilike"),
+    NOT_ILIKE("not ilike");
 
     private final String sql;
 

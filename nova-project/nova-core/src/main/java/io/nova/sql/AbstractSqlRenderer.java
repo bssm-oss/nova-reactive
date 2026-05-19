@@ -655,6 +655,11 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             if (operator == ComparisonOperator.BETWEEN) {
                 return renderBetweenExpression(context, expression, condition.value());
             }
+            if (operator == ComparisonOperator.ILIKE || operator == ComparisonOperator.NOT_ILIKE) {
+                String marker = dialect.bindMarkers().marker(context.nextIndex());
+                context.addBinding(expression.toColumnValue(condition.value()));
+                return dialect.renderILike(expression.sqlExpression(), marker, operator == ComparisonOperator.NOT_ILIKE);
+            }
             String marker = dialect.bindMarkers().marker(context.nextIndex());
             context.addBinding(expression.toColumnValue(condition.value()));
             return expression.sqlExpression() + " " + operator.sql() + " " + marker;

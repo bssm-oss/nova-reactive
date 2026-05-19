@@ -93,6 +93,51 @@ class MySqlDialectTest {
     }
 
     @Test
+    void rendersIlikeUsingLowerBasedFallback() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.ilike("email", "%NOVA%"))
+        );
+
+        assertEquals(
+                "select `id` as `id`, `email_address` as `email_address`, `active` as `active` "
+                        + "from `accounts` where lower(`email_address`) like lower(?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%NOVA%"), statement.bindings());
+    }
+
+    @Test
+    void rendersNotIlikeUsingLowerBasedFallback() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.notIlike("email", "noreply%"))
+        );
+
+        assertEquals(
+                "select `id` as `id`, `email_address` as `email_address`, `active` as `active` "
+                        + "from `accounts` where lower(`email_address`) not like lower(?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("noreply%"), statement.bindings());
+    }
+
+    @Test
+    void rendersStartsWithIgnoreCaseUsingLowerBasedFallback() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.startsWithIgnoreCase("email", "Ada"))
+        );
+
+        assertEquals(
+                "select `id` as `id`, `email_address` as `email_address`, `active` as `active` "
+                        + "from `accounts` where lower(`email_address`) like lower(?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("Ada%"), statement.bindings());
+    }
+
+    @Test
     void selectAppendsForUpdateClauseForMysqlQuotedSelect() {
         SqlStatement statement = dialect.sqlRenderer().select(
                 metadata,

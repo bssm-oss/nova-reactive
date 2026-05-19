@@ -111,6 +111,62 @@ class PostgresqlDialectTest {
     }
 
     @Test
+    void rendersIlikeUsingNativePostgresOperator() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.ilike("email", "%NOVA%"))
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" from \"accounts\" where \"email_address\" ilike $1",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%NOVA%"), statement.bindings());
+    }
+
+    @Test
+    void rendersNotIlikeUsingNativePostgresOperator() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.notIlike("email", "noreply%"))
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" from \"accounts\" where \"email_address\" not ilike $1",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("noreply%"), statement.bindings());
+    }
+
+    @Test
+    void rendersContainsIgnoreCaseAsNativeIlike() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.containsIgnoreCase("email", "Nova"))
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" from \"accounts\" where \"email_address\" ilike $1",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%Nova%"), statement.bindings());
+    }
+
+    @Test
+    void rendersStartsWithUsingPlainLike() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.startsWith("email", "ada"))
+        );
+
+        assertEquals(
+                "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" from \"accounts\" where \"email_address\" like $1",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("ada%"), statement.bindings());
+    }
+
+    @Test
     void selectAppendsForUpdateClauseAfterPagingForPositionalDialect() {
         SqlStatement statement = dialect.sqlRenderer().select(
                 metadata,

@@ -244,6 +244,118 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void rendersLikeOperator() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.like("email", "%nova.io"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where email_address like ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%nova.io"), statement.bindings());
+    }
+
+    @Test
+    void rendersNotLikeOperator() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.notLike("email", "%nova.io"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where email_address not like ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%nova.io"), statement.bindings());
+    }
+
+    @Test
+    void rendersIlikeWithDefaultLowerBasedFallback() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.ilike("email", "%NOVA%"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where lower(email_address) like lower(?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%NOVA%"), statement.bindings());
+    }
+
+    @Test
+    void rendersNotIlikeWithDefaultLowerBasedFallback() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.notIlike("email", "noreply%"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where lower(email_address) not like lower(?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("noreply%"), statement.bindings());
+    }
+
+    @Test
+    void rendersStartsWithAsLikePrefixPattern() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.startsWith("email", "ada"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where email_address like ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("ada%"), statement.bindings());
+    }
+
+    @Test
+    void rendersEndsWithAsLikeSuffixPattern() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.endsWith("email", "@nova.io"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where email_address like ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%@nova.io"), statement.bindings());
+    }
+
+    @Test
+    void rendersContainsAsLikeSurroundedByWildcards() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.contains("email", "nova"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where email_address like ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%nova%"), statement.bindings());
+    }
+
+    @Test
+    void rendersContainsIgnoreCaseAsIlikeSurroundedByWildcards() {
+        SqlStatement statement = dialect.sqlRenderer().select(
+                metadata,
+                QuerySpec.empty().where(Criteria.containsIgnoreCase("email", "NoVa"))
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where lower(email_address) like lower(?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("%NoVa%"), statement.bindings());
+    }
+
+    @Test
     void rendersBetweenOperator() {
         SqlStatement statement = dialect.sqlRenderer().select(
                 metadata,

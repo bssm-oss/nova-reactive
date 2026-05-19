@@ -36,6 +36,80 @@ public final class Criteria {
         return new Condition(property, ComparisonOperator.LIKE, value);
     }
 
+    /**
+     * 주어진 패턴과 일치하지 않는 행을 매칭하는 {@code NOT LIKE} 조건을 만든다.
+     * {@code %}와 {@code _} 와일드카드의 escape는 호출자의 책임이다.
+     */
+    public static Condition notLike(String property, Object value) {
+        return new Condition(property, ComparisonOperator.NOT_LIKE, value);
+    }
+
+    /**
+     * 대소문자를 무시하고 패턴과 일치하는 행을 매칭하는 {@code ILIKE} 조건을 만든다.
+     * PostgreSQL은 native {@code ILIKE}로, 그 외 dialect는 {@code lower(col) like lower(?)} 형태로 렌더된다.
+     * {@code %}와 {@code _} 와일드카드의 escape는 호출자의 책임이다.
+     */
+    public static Condition ilike(String property, Object value) {
+        return new Condition(property, ComparisonOperator.ILIKE, value);
+    }
+
+    /**
+     * {@link #ilike(String, Object)}의 부정형이다.
+     */
+    public static Condition notIlike(String property, Object value) {
+        return new Condition(property, ComparisonOperator.NOT_ILIKE, value);
+    }
+
+    /**
+     * 주어진 prefix로 시작하는 행을 매칭하는 {@code LIKE 'prefix%'} 조건을 만든다.
+     * prefix 안의 {@code %}와 {@code _} 와일드카드는 escape 되지 않으므로, 리터럴 매칭이 필요한 호출자는
+     * 사전에 직접 escape 해야 한다.
+     */
+    public static Condition startsWith(String property, String prefix) {
+        Objects.requireNonNull(prefix, "prefix must not be null");
+        return new Condition(property, ComparisonOperator.LIKE, prefix + "%");
+    }
+
+    /**
+     * 주어진 suffix로 끝나는 행을 매칭하는 {@code LIKE '%suffix'} 조건을 만든다.
+     */
+    public static Condition endsWith(String property, String suffix) {
+        Objects.requireNonNull(suffix, "suffix must not be null");
+        return new Condition(property, ComparisonOperator.LIKE, "%" + suffix);
+    }
+
+    /**
+     * 주어진 substring을 포함하는 행을 매칭하는 {@code LIKE '%substring%'} 조건을 만든다.
+     */
+    public static Condition contains(String property, String substring) {
+        Objects.requireNonNull(substring, "substring must not be null");
+        return new Condition(property, ComparisonOperator.LIKE, "%" + substring + "%");
+    }
+
+    /**
+     * {@link #startsWith(String, String)}의 대소문자 무시 버전이다. ILIKE로 렌더된다.
+     */
+    public static Condition startsWithIgnoreCase(String property, String prefix) {
+        Objects.requireNonNull(prefix, "prefix must not be null");
+        return new Condition(property, ComparisonOperator.ILIKE, prefix + "%");
+    }
+
+    /**
+     * {@link #endsWith(String, String)}의 대소문자 무시 버전이다. ILIKE로 렌더된다.
+     */
+    public static Condition endsWithIgnoreCase(String property, String suffix) {
+        Objects.requireNonNull(suffix, "suffix must not be null");
+        return new Condition(property, ComparisonOperator.ILIKE, "%" + suffix);
+    }
+
+    /**
+     * {@link #contains(String, String)}의 대소문자 무시 버전이다. ILIKE로 렌더된다.
+     */
+    public static Condition containsIgnoreCase(String property, String substring) {
+        Objects.requireNonNull(substring, "substring must not be null");
+        return new Condition(property, ComparisonOperator.ILIKE, "%" + substring + "%");
+    }
+
     public static Condition isNull(String property) {
         return new Condition(property, ComparisonOperator.IS_NULL, null);
     }

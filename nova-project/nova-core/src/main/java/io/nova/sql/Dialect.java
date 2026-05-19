@@ -43,6 +43,22 @@ public interface Dialect {
     String SEQUENCE_VALUE_COLUMN = "nova_seq_value";
 
     /**
+     * 대소문자를 무시한 패턴 매칭(ILIKE) SQL 표현을 만든다. {@code negate}가 {@code true}면 부정형을 반환한다.
+     * <p>
+     * 기본 구현은 양 변을 {@code lower(...)}로 감싸 {@code lower(col) like lower(?)}를 생성한다 —
+     * MySQL/H2처럼 컬럼 collation에 따라 case-insensitive 동작이 달라지는 dialect에서도 결정적인
+     * case-insensitive 비교를 보장한다. PostgreSQL처럼 native {@code ILIKE}를 지원하는 dialect는
+     * 이 메서드를 override 해서 {@code col ilike ?} 형태로 더 간결하게 렌더할 수 있다.
+     * <p>
+     * 부정형은 {@code lower(...) not like lower(...)}로 한 표현 안에 부정자를 두어 NULL 처리와 SQL
+     * three-valued logic 동작이 표준 {@code NOT LIKE}와 정확히 일치하도록 만든다.
+     */
+    default String renderILike(String column, String marker, boolean negate) {
+        String operator = negate ? "not like" : "like";
+        return "lower(" + column + ") " + operator + " lower(" + marker + ")";
+    }
+
+    /**
      * 주어진 {@link LockMode}에 해당하는 pessimistic lock 절을 반환한다. 절은 SELECT SQL의
      * 맨 뒤에 그대로 이어 붙일 수 있도록 선행 공백을 포함한다. {@link LockMode#NONE}은 빈 문자열이다.
      * <p>
