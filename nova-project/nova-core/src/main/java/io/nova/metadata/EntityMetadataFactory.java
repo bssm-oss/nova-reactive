@@ -116,11 +116,12 @@ public final class EntityMetadataFactory {
                 continue;
             }
             if (field.isAnnotationPresent(Embedded.class)) {
-                List<PersistentProperty> expanded = createEmbeddedProperties(entityType, field);
+                List<PersistentProperty> expanded = createEmbeddedProperties(
+                        entityType, field, List.of(), "", new LinkedHashSet<>());
                 properties.addAll(expanded);
                 continue;
             }
-            PersistentProperty property = createProperty(entityType, field, null, "");
+            PersistentProperty property = createProperty(entityType, field, List.of(), "");
             properties.add(property);
             if (property.id()) {
                 if (idProperty != null) {
@@ -332,11 +333,25 @@ public final class EntityMetadataFactory {
 
     /**
      * {@code @Embedded} 필드를 호스트 엔티티 컬럼으로 펼친 {@link PersistentProperty} 목록을 만든다.
-     * 컬럼 이름은 {@code {hostField snake_case}_{sub-property columnName}} 패턴으로 합성되며
-     * sub-property는 {@code @Id}/{@code @Version}/{@code @SoftDelete}/{@code @CreatedAt}/
-     * {@code @UpdatedAt}을 가질 수 없고 nested {@code @Embedded}도 허용하지 않는다.
+     * sub-property가 다시 {@code @Embedded}이면 재귀적으로 펼치며, 컬럼 이름은
+     * {@code {outer host snake_case}_{inner host snake_case}_..._{leaf property columnName}}
+     * 패턴으로 합성된다. sub-property는 {@code @Id}/{@code @Version}/{@code @SoftDelete}/
+     * {@code @CreatedAt}/{@code @UpdatedAt}을 가질 수 없다.
+     * <p>
+     * cycle detection: outer @Embedded host type들의 stack({@code embeddableStack})에 현재 host 타입이
+     * 이미 존재하면 무한 재귀를 의미하므로 즉시 {@link IllegalArgumentException}으로 거부한다.
+     *
+     * @param parentHostPath outer → inner 순서로 누적된 @Embedded host field chain
+     * @param parentColumnPrefix 누적된 컬럼 prefix(끝에 {@code _} 포함)
+     * @param embeddableStack 현재 재귀 경로에 있는 @Embeddable 타입 집합 (cycle 검출용)
      */
-    private List<PersistentProperty> createEmbeddedProperties(Class<?> entityType, Field hostField) {
+    private List<PersistentProperty> createEmbeddedProperties(
+            Class<?> entityType,
+            Field hostField,
+            List<Field> parentHostPath,
+            String parentColumnPrefix,
+            LinkedHashSet<Class<?>> embeddableStack
+    ) {
         Class<?> embeddableType = hostField.getType();
         if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
             throw new IllegalArgumentException(
@@ -344,22 +359,53 @@ public final class EntityMetadataFactory {
                             + " is annotated with @Embedded but its type " + embeddableType.getName()
                             + " is not annotated with @Embeddable");
         }
+        if (embeddableStack.contains(embeddableType)) {
+            throw new IllegalArgumentException(
+                    "circular @Embedded detected on " + entityType.getName()
+                            + ": type " + embeddableType.getName()
+                            + " transitively embeds itself via " + describeEmbeddableStack(embeddableStack, embeddableType));
+        }
         if (hasIdAnnotatedField(embeddableType)) {
             throw new IllegalArgumentException(
                     "@Embeddable type " + embeddableType.getName()
                             + " must not declare @Id-annotated fields");
         }
-        String columnPrefix = namingStrategy.columnName(hostField.getName()) + "_";
+        String columnPrefix = parentColumnPrefix + namingStrategy.columnName(hostField.getName()) + "_";
+        List<Field> hostPath = new ArrayList<>(parentHostPath.size() + 1);
+        hostPath.addAll(parentHostPath);
+        hostPath.add(hostField);
+        List<Field> immutableHostPath = List.copyOf(hostPath);
         List<PersistentProperty> result = new ArrayList<>();
-        for (Field subField : embeddableType.getDeclaredFields()) {
-            if (subField.isSynthetic() || Modifier.isStatic(subField.getModifiers())) {
-                continue;
+        embeddableStack.add(embeddableType);
+        try {
+            for (Field subField : embeddableType.getDeclaredFields()) {
+                if (subField.isSynthetic() || Modifier.isStatic(subField.getModifiers())) {
+                    continue;
+                }
+                rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
+                if (subField.isAnnotationPresent(Embedded.class)) {
+                    // nested @Embedded는 재귀적으로 펼친다. host path와 column prefix는 이 단계에서 한 번 확장된 값을 넘긴다.
+                    List<PersistentProperty> nested = createEmbeddedProperties(
+                            entityType, subField, immutableHostPath, columnPrefix, embeddableStack);
+                    result.addAll(nested);
+                    continue;
+                }
+                PersistentProperty property = createProperty(embeddableType, subField, immutableHostPath, columnPrefix);
+                result.add(property);
             }
-            rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
-            PersistentProperty property = createProperty(embeddableType, subField, hostField, columnPrefix);
-            result.add(property);
+        } finally {
+            embeddableStack.remove(embeddableType);
         }
         return result;
+    }
+
+    private static String describeEmbeddableStack(LinkedHashSet<Class<?>> stack, Class<?> repeated) {
+        StringBuilder builder = new StringBuilder();
+        for (Class<?> type : stack) {
+            builder.append(type.getSimpleName()).append(" -> ");
+        }
+        builder.append(repeated.getSimpleName());
+        return builder.toString();
     }
 
     private static boolean hasIdAnnotatedField(Class<?> embeddableType) {
@@ -396,9 +442,6 @@ public final class EntityMetadataFactory {
         }
         if (subField.isAnnotationPresent(UpdatedAt.class)) {
             throw new IllegalArgumentException(location + " must not declare @UpdatedAt");
-        }
-        if (subField.isAnnotationPresent(Embedded.class)) {
-            throw new IllegalArgumentException(location + " must not declare a nested @Embedded; only one level is supported");
         }
     }
 
@@ -437,13 +480,14 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * 단일 field로부터 {@link PersistentProperty}를 만든다. {@code hostField}가 null이 아니면
-     * 이 property는 {@code @Embedded} 필드 안에 있는 sub-field이며 column 이름에 prefix가 붙는다.
+     * 단일 field로부터 {@link PersistentProperty}를 만든다. {@code hostPath}가 비어있지 않으면
+     * 이 property는 {@code @Embedded} 필드(들) 안에 있는 sub-field이며 column 이름에 prefix가 붙고
+     * property name은 호스트 필드 이름들을 dot으로 join한 prefix를 갖는다.
      */
     private PersistentProperty createProperty(
             Class<?> declaringType,
             Field field,
-            Field hostField,
+            List<Field> hostPath,
             String columnPrefix
     ) {
         Column column = field.getAnnotation(Column.class);
@@ -516,9 +560,17 @@ public final class EntityMetadataFactory {
                 ? column.value()
                 : namingStrategy.columnName(field.getName());
         String columnName = columnPrefix + baseColumnName;
-        String propertyName = hostField == null
-                ? field.getName()
-                : hostField.getName() + "." + field.getName();
+        String propertyName;
+        if (hostPath == null || hostPath.isEmpty()) {
+            propertyName = field.getName();
+        } else {
+            StringBuilder builder = new StringBuilder();
+            for (Field hostField : hostPath) {
+                builder.append(hostField.getName()).append('.');
+            }
+            builder.append(field.getName());
+            propertyName = builder.toString();
+        }
 
         Enumerated enumerated = field.getAnnotation(Enumerated.class);
         AttributeConverter<?, ?> userConverter = converters.get(field.getType());
@@ -543,6 +595,7 @@ public final class EntityMetadataFactory {
             converter = createEnumConverter(field.getType(), enumType);
         }
 
+        boolean embedded = hostPath != null && !hostPath.isEmpty();
         return new PersistentProperty(
                 field,
                 propertyName,
@@ -557,8 +610,8 @@ public final class EntityMetadataFactory {
                 field.isAnnotationPresent(CreatedAt.class),
                 field.isAnnotationPresent(UpdatedAt.class),
                 isSoftDelete,
-                hostField != null,
-                hostField,
+                embedded,
+                embedded ? hostPath : List.of(),
                 isEnumerated,
                 enumType
         );

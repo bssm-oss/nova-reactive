@@ -5,6 +5,7 @@ import io.nova.annotation.GenerationType;
 import io.nova.convert.AttributeConverter;
 
 import java.lang.reflect.Field;
+import java.util.List;
 import java.util.Objects;
 
 public final class PersistentProperty {
@@ -22,7 +23,12 @@ public final class PersistentProperty {
     private final boolean updatedAt;
     private final boolean softDelete;
     private final boolean embedded;
-    private final Field embeddedHostField;
+    /**
+     * 호스트 엔티티 인스턴스에서 이 property가 가리키는 leaf field까지 traverse해야 하는
+     * {@link io.nova.annotation.Embedded} 필드들의 outer → inner 순서 체인. top-level property는
+     * 비어있다. nested 1-level은 길이 1, 2-level은 길이 2.
+     */
+    private final List<Field> embeddedHostPath;
     private final boolean enumerated;
     private final EnumType enumType;
 
@@ -42,7 +48,7 @@ public final class PersistentProperty {
             boolean updatedAt,
             boolean softDelete,
             boolean embedded,
-            Field embeddedHostField,
+            List<Field> embeddedHostPath,
             boolean enumerated,
             EnumType enumType
     ) {
@@ -61,9 +67,9 @@ public final class PersistentProperty {
         this.updatedAt = updatedAt;
         this.softDelete = softDelete;
         this.embedded = embedded;
-        this.embeddedHostField = embeddedHostField;
-        if (this.embeddedHostField != null) {
-            this.embeddedHostField.setAccessible(true);
+        this.embeddedHostPath = embeddedHostPath == null ? List.of() : List.copyOf(embeddedHostPath);
+        for (Field hostField : this.embeddedHostPath) {
+            hostField.setAccessible(true);
         }
         this.enumerated = enumerated;
         this.enumType = enumType;
@@ -132,9 +138,23 @@ public final class PersistentProperty {
     /**
      * 이 property의 값을 read/write할 때 먼저 거쳐야 하는 호스트 엔티티의
      * {@link io.nova.annotation.Embedded} 필드. top-level property는 {@code null}.
+     * 다단계 nested embedded일 때는 가장 안쪽(leaf field를 직접 담는) 호스트 필드를 반환한다.
+     * 전체 chain은 {@link #embeddedHostPath()}를 사용한다.
      */
     public Field embeddedHostField() {
-        return embeddedHostField;
+        if (embeddedHostPath.isEmpty()) {
+            return null;
+        }
+        return embeddedHostPath.get(embeddedHostPath.size() - 1);
+    }
+
+    /**
+     * 호스트 엔티티 인스턴스에서 leaf field까지 도달하기 위해 outer → inner 순서로 거쳐야 하는
+     * {@link io.nova.annotation.Embedded} 호스트 필드 체인. top-level property는 빈 리스트를 반환한다.
+     * 1-level embedded는 길이 1, 2-level nested embedded는 길이 2.
+     */
+    public List<Field> embeddedHostPath() {
+        return embeddedHostPath;
     }
 
     /**
@@ -155,14 +175,14 @@ public final class PersistentProperty {
 
     public Object read(Object instance) {
         try {
-            if (embeddedHostField == null) {
-                return field.get(instance);
+            Object current = instance;
+            for (Field hostField : embeddedHostPath) {
+                current = hostField.get(current);
+                if (current == null) {
+                    return null;
+                }
             }
-            Object host = embeddedHostField.get(instance);
-            if (host == null) {
-                return null;
-            }
-            return field.get(host);
+            return field.get(current);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot read field " + field.getName(), exception);
         }
@@ -170,16 +190,16 @@ public final class PersistentProperty {
 
     public void write(Object instance, Object value) {
         try {
-            if (embeddedHostField == null) {
-                field.set(instance, value);
-                return;
+            Object current = instance;
+            for (Field hostField : embeddedHostPath) {
+                Object next = hostField.get(current);
+                if (next == null) {
+                    next = instantiateEmbeddable(hostField.getType());
+                    hostField.set(current, next);
+                }
+                current = next;
             }
-            Object host = embeddedHostField.get(instance);
-            if (host == null) {
-                host = instantiateEmbeddable(embeddedHostField.getType());
-                embeddedHostField.set(instance, host);
-            }
-            field.set(host, value);
+            field.set(current, value);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot write field " + field.getName(), exception);
         }
@@ -216,11 +236,11 @@ public final class PersistentProperty {
             return false;
         }
         return Objects.equals(field, property.field)
-                && Objects.equals(embeddedHostField, property.embeddedHostField);
+                && Objects.equals(embeddedHostPath, property.embeddedHostPath);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(field, embeddedHostField);
+        return Objects.hash(field, embeddedHostPath);
     }
 }

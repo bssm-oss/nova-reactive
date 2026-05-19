@@ -1319,15 +1319,6 @@ public final class FixtureEntities {
         }
     }
 
-    @Embeddable
-    public static class NestedEmbeddedAddress {
-        @Embedded
-        private Address inner;
-
-        public NestedEmbeddedAddress() {
-        }
-    }
-
     public static class NotAnEmbeddable {
         private String value;
 
@@ -1392,18 +1383,6 @@ public final class FixtureEntities {
         private AddressWithIdSubField shipping;
 
         public CustomerWithEmbeddedIdSubField() {
-        }
-    }
-
-    @Entity
-    public static class CustomerWithNestedEmbedded {
-        @Id
-        private Long id;
-
-        @Embedded
-        private NestedEmbeddedAddress shipping;
-
-        public CustomerWithNestedEmbedded() {
         }
     }
 
@@ -1491,6 +1470,135 @@ public final class FixtureEntities {
 
         public Long getAuthorId() {
             return authorId;
+        }
+    }
+
+    /**
+     * H4 fixture: 가장 안쪽 leaf-only embeddable. {@link NestedAddress}가 이를 다시 nested @Embedded로 포함한다.
+     */
+    @Embeddable
+    public static class Geo {
+        private String country;
+        private String city;
+
+        public Geo() {
+        }
+
+        public Geo(String country, String city) {
+            this.country = country;
+            this.city = city;
+        }
+
+        public String getCountry() {
+            return country;
+        }
+
+        public String getCity() {
+            return city;
+        }
+    }
+
+    /**
+     * H4 fixture: 자체 leaf field와 nested @Embedded {@link Geo}를 함께 갖는 중간 embeddable.
+     * {@link Office}가 이를 @Embedded로 갖는다.
+     */
+    @Embeddable
+    public static class NestedAddress {
+        private String street;
+        private String zip;
+
+        @Embedded
+        private Geo geo;
+
+        public NestedAddress() {
+        }
+
+        public NestedAddress(String street, String zip, Geo geo) {
+            this.street = street;
+            this.zip = zip;
+            this.geo = geo;
+        }
+
+        public String getStreet() {
+            return street;
+        }
+
+        public String getZip() {
+            return zip;
+        }
+
+        public Geo getGeo() {
+            return geo;
+        }
+    }
+
+    /**
+     * H4 fixture: 2-level nested @Embedded entity. 컬럼은 address_street/address_zip/address_geo_country/address_geo_city.
+     */
+    @Entity
+    @Table("office")
+    public static class Office {
+        @Id
+        private Long id;
+
+        private String name;
+
+        @Embedded
+        private NestedAddress address;
+
+        public Office() {
+        }
+
+        public Office(Long id, String name, NestedAddress address) {
+            this.id = id;
+            this.name = name;
+            this.address = address;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public NestedAddress getAddress() {
+            return address;
+        }
+    }
+
+    /**
+     * H4 fixture: 순환 @Embedded 검출용. {@link CircularA}가 {@link CircularB}를 @Embedded로 갖고,
+     * {@link CircularB}가 다시 {@link CircularA}를 @Embedded로 가져 무한 재귀가 발생한다.
+     */
+    @Embeddable
+    public static class CircularA {
+        @Embedded
+        private CircularB b;
+
+        public CircularA() {
+        }
+    }
+
+    @Embeddable
+    public static class CircularB {
+        @Embedded
+        private CircularA a;
+
+        public CircularB() {
+        }
+    }
+
+    @Entity
+    public static class EntityWithCircularEmbedded {
+        @Id
+        private Long id;
+
+        @Embedded
+        private CircularA outer;
+
+        public EntityWithCircularEmbedded() {
         }
     }
 }

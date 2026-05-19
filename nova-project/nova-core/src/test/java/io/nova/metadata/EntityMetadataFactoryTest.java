@@ -12,8 +12,9 @@ import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedIdSubField;
 import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedSoftDeleteSubField;
 import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedUpdatedAtSubField;
 import io.nova.support.fixtures.FixtureEntities.CustomerWithEmbeddedVersionSubField;
-import io.nova.support.fixtures.FixtureEntities.CustomerWithNestedEmbedded;
 import io.nova.support.fixtures.FixtureEntities.CustomerWithNonEmbeddable;
+import io.nova.support.fixtures.FixtureEntities.EntityWithCircularEmbedded;
+import io.nova.support.fixtures.FixtureEntities.Office;
 import io.nova.support.fixtures.FixtureEntities.DefaultNamedEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateCreatedAtEntity;
 import io.nova.support.fixtures.FixtureEntities.DuplicateIdEntity;
@@ -722,13 +723,42 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void rejectsNestedEmbedded() {
+    void expandsNestedEmbeddedIntoFlatColumnsWithComposedPrefix() {
+        EntityMetadata<Office> metadata = factory.getEntityMetadata(Office.class);
+
+        assertEquals("office", metadata.tableName());
+        java.util.List<String> columns = new java.util.ArrayList<>();
+        for (PersistentProperty property : metadata.properties()) {
+            columns.add(property.columnName());
+        }
+        assertEquals(
+                java.util.List.of("id", "name", "address_street", "address_zip", "address_geo_country", "address_geo_city"),
+                columns);
+
+        PersistentProperty street = metadata.findProperty("address.street").orElseThrow();
+        assertTrue(street.embedded());
+        assertEquals("address_street", street.columnName());
+        assertEquals(1, street.embeddedHostPath().size());
+        assertEquals("address", street.embeddedHostPath().get(0).getName());
+
+        PersistentProperty country = metadata.findProperty("address.geo.country").orElseThrow();
+        assertTrue(country.embedded());
+        assertEquals("address_geo_country", country.columnName());
+        assertEquals(2, country.embeddedHostPath().size());
+        assertEquals("address", country.embeddedHostPath().get(0).getName());
+        assertEquals("geo", country.embeddedHostPath().get(1).getName());
+        // 가장 안쪽 host는 path의 마지막 요소와 동일하다.
+        assertEquals("geo", country.embeddedHostField().getName());
+    }
+
+    @Test
+    void rejectsCircularEmbeddedChain() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(CustomerWithNestedEmbedded.class)
+                () -> factory.getEntityMetadata(EntityWithCircularEmbedded.class)
         );
 
-        assertTrue(exception.getMessage().contains("nested @Embedded"));
+        assertTrue(exception.getMessage().contains("circular @Embedded"));
     }
 
     @Test
