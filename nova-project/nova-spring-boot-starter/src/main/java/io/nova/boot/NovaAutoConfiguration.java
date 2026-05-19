@@ -10,6 +10,7 @@ import io.nova.core.SqlExecutor;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.NamingStrategy;
+import io.nova.r2dbc.PoolConfig;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
 import io.nova.sql.Dialect;
@@ -91,5 +92,23 @@ public class NovaAutoConfiguration {
     public SlowQueryLoggingListener novaSlowQueryLoggingListener(NovaProperties properties) {
         Long thresholdMs = properties.getSlowQuery().getThresholdMs();
         return new SlowQueryLoggingListener(Duration.ofMillis(thresholdMs));
+    }
+
+    /**
+     * {@link PoolConfig} bean을 항상 노출한다. {@code nova.pool.*}로 명시되지 않은 필드는
+     * {@link PoolConfig#defaults()} 값을 채택하므로, 사용자는 이 bean을 받아 자신의
+     * {@link ConnectionFactory} 빌더(예: {@code r2dbc-pool})에 전달할 수 있다. Nova는
+     * pool 구현체를 번들하지 않고 설정값만 노출한다.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public PoolConfig novaPoolConfig(NovaProperties properties) {
+        NovaProperties.Pool pool = properties.getPool();
+        PoolConfig defaults = PoolConfig.defaults();
+        return new PoolConfig(
+                pool.getInitialSize() != null ? pool.getInitialSize() : defaults.initialSize(),
+                pool.getMaxSize() != null ? pool.getMaxSize() : defaults.maxSize(),
+                pool.getMaxIdleTime() != null ? pool.getMaxIdleTime() : defaults.maxIdleTime(),
+                pool.getAcquireTimeout() != null ? pool.getAcquireTimeout() : defaults.acquireTimeout());
     }
 }

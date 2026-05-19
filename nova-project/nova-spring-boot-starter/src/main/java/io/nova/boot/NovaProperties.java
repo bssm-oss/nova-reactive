@@ -23,12 +23,23 @@ public class NovaProperties {
     }
 
     /**
-     * Connection pool 관련 속성. {@link io.nova.r2dbc.PoolConfig} 시그니처와 1:1로 매핑된다.
+     * Connection pool 관련 속성. {@link io.nova.r2dbc.PoolConfig} 필드와 1:1로 매핑된다 —
+     * 어느 하나라도 명시되면 {@code NovaAutoConfiguration}이 {@code PoolConfig} bean을
+     * 등록하며, 미명시 필드는 {@link io.nova.r2dbc.PoolConfig#defaults()}의 기본값을 채택한다.
      */
     public static class Pool {
+        private Integer initialSize;
         private Integer maxSize;
+        private Duration maxIdleTime;
         private Duration acquireTimeout;
-        private Duration idleTimeout;
+
+        public Integer getInitialSize() {
+            return initialSize;
+        }
+
+        public void setInitialSize(Integer initialSize) {
+            this.initialSize = initialSize;
+        }
 
         public Integer getMaxSize() {
             return maxSize;
@@ -36,6 +47,14 @@ public class NovaProperties {
 
         public void setMaxSize(Integer maxSize) {
             this.maxSize = maxSize;
+        }
+
+        public Duration getMaxIdleTime() {
+            return maxIdleTime;
+        }
+
+        public void setMaxIdleTime(Duration maxIdleTime) {
+            this.maxIdleTime = maxIdleTime;
         }
 
         public Duration getAcquireTimeout() {
@@ -46,12 +65,8 @@ public class NovaProperties {
             this.acquireTimeout = acquireTimeout;
         }
 
-        public Duration getIdleTimeout() {
-            return idleTimeout;
-        }
-
-        public void setIdleTimeout(Duration idleTimeout) {
-            this.idleTimeout = idleTimeout;
+        boolean hasAnyOverride() {
+            return initialSize != null || maxSize != null || maxIdleTime != null || acquireTimeout != null;
         }
     }
 

@@ -4,6 +4,7 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SlowQueryLoggingListener;
 import io.nova.core.SqlExecutor;
 import io.nova.dialect.postgresql.PostgresqlDialect;
+import io.nova.r2dbc.PoolConfig;
 import io.nova.sql.Dialect;
 import io.nova.tx.ReactiveTransactionManager;
 import io.r2dbc.spi.ConnectionFactories;
@@ -72,16 +73,46 @@ class NovaAutoConfigurationTest {
     @Test
     void propertiesBindFromConfigurationKeys() {
         runner.withPropertyValues(
+                "nova.pool.initial-size=4",
                 "nova.pool.max-size=42",
                 "nova.pool.acquire-timeout=PT15S",
-                "nova.pool.idle-timeout=PT20M",
+                "nova.pool.max-idle-time=PT20M",
                 "nova.slow-query.threshold-ms=750"
         ).run(context -> {
             NovaProperties properties = context.getBean(NovaProperties.class);
+            assertEquals(Integer.valueOf(4), properties.getPool().getInitialSize());
             assertEquals(Integer.valueOf(42), properties.getPool().getMaxSize());
             assertEquals(Duration.ofSeconds(15), properties.getPool().getAcquireTimeout());
-            assertEquals(Duration.ofMinutes(20), properties.getPool().getIdleTimeout());
+            assertEquals(Duration.ofMinutes(20), properties.getPool().getMaxIdleTime());
             assertEquals(Long.valueOf(750), properties.getSlowQuery().getThresholdMs());
+        });
+    }
+
+    @Test
+    void poolConfigBeanReflectsConfiguredProperties() {
+        runner.withPropertyValues(
+                "nova.pool.initial-size=2",
+                "nova.pool.max-size=20",
+                "nova.pool.acquire-timeout=PT10S",
+                "nova.pool.max-idle-time=PT5M"
+        ).run(context -> {
+            PoolConfig config = context.getBean(PoolConfig.class);
+            assertEquals(2, config.initialSize());
+            assertEquals(20, config.maxSize());
+            assertEquals(Duration.ofSeconds(10), config.acquireTimeout());
+            assertEquals(Duration.ofMinutes(5), config.maxIdleTime());
+        });
+    }
+
+    @Test
+    void poolConfigBeanFallsBackToDefaultsWhenPropertiesAbsent() {
+        runner.run(context -> {
+            PoolConfig config = context.getBean(PoolConfig.class);
+            PoolConfig defaults = PoolConfig.defaults();
+            assertEquals(defaults.initialSize(), config.initialSize());
+            assertEquals(defaults.maxSize(), config.maxSize());
+            assertEquals(defaults.acquireTimeout(), config.acquireTimeout());
+            assertEquals(defaults.maxIdleTime(), config.maxIdleTime());
         });
     }
 
