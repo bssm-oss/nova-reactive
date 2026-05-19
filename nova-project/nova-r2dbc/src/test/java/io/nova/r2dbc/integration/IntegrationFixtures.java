@@ -25,10 +25,10 @@ final class IntegrationFixtures {
      * IDENTITY id 라운드트립 검증용 entity. id는 H2 {@code generated always as identity}로 생성되며
      * R2DBC {@code Statement.returnGeneratedValues(...)} 경로로 회수된다.
      *
-     * <p>{@code active}는 boxed {@link Boolean}로 선언한다 — primitive {@code boolean.class}를
-     * {@code row.get(name, boolean.class)}로 그대로 전달하면 r2dbc-h2 driver가
-     * {@code Cannot decode value of type boolean}으로 거부한다. 이 호환성 격차는 별도 회귀
-     * 테스트가 보호한다 ({@link H2PrimitiveBooleanDecodingIntegrationTest} 참고).
+     * <p>{@code active}는 primitive {@code boolean}으로 선언해 core의 primitive → boxed
+     * wrapping 경로({@code SimpleReactiveEntityOperations.wrapPrimitive})가 실제 r2dbc-h2
+     * driver와 round-trip 되는지 함께 검증한다. {@link H2PrimitiveBooleanDecodingIntegrationTest}는
+     * 동일한 fix를 inversion으로 보호한다.
      */
     @Entity
     @Table("identity_accounts")
@@ -41,12 +41,12 @@ final class IntegrationFixtures {
         private String email;
 
         @Column(nullable = false)
-        private Boolean active;
+        private boolean active;
 
         IdentityAccount() {
         }
 
-        IdentityAccount(String email, Boolean active) {
+        IdentityAccount(String email, boolean active) {
             this.email = email;
             this.active = active;
         }
@@ -59,7 +59,7 @@ final class IntegrationFixtures {
             return email;
         }
 
-        Boolean isActive() {
+        boolean isActive() {
             return active;
         }
     }
@@ -105,10 +105,8 @@ final class IntegrationFixtures {
      * Pessimistic lock(FOR UPDATE) 검증용 entity. assigned id를 사용해 두 connection이 동일 row를
      * 지정해 락을 시도할 수 있다.
      *
-     * <p>{@code balanceCents}는 boxed {@link Long}으로 선언한다 — primitive {@code long.class}를
-     * {@code row.get(name, long.class)}로 그대로 전달하면 r2dbc-h2 driver가
-     * {@code Cannot decode value of type long}으로 거부한다. {@code H2PrimitiveBooleanDecodingIntegrationTest}
-     * 참고.
+     * <p>{@code balanceCents}는 primitive {@code long}으로 선언해 core의 primitive → boxed
+     * wrapping 경로가 실제 r2dbc-h2 driver와 round-trip 되는지 함께 검증한다.
      */
     @Entity
     @Table("locked_accounts")
@@ -120,12 +118,12 @@ final class IntegrationFixtures {
         private String email;
 
         @Column("balance_cents")
-        private Long balanceCents;
+        private long balanceCents;
 
         LockedAccount() {
         }
 
-        LockedAccount(Long id, String email, Long balanceCents) {
+        LockedAccount(Long id, String email, long balanceCents) {
             this.id = id;
             this.email = email;
             this.balanceCents = balanceCents;
@@ -139,7 +137,7 @@ final class IntegrationFixtures {
             return email;
         }
 
-        Long getBalanceCents() {
+        long getBalanceCents() {
             return balanceCents;
         }
     }

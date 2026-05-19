@@ -1,77 +1,66 @@
 package io.nova.r2dbc.integration;
 
-import io.nova.sql.BindMarkerStrategy;
-import io.nova.sql.Dialect;
-import io.nova.sql.SchemaGenerator;
-import io.nova.sql.SqlRenderer;
-import io.nova.sql.SqlStatement;
-import io.nova.r2dbc.R2dbcSqlExecutor;
-import io.r2dbc.spi.ConnectionFactories;
-import io.r2dbc.spi.ConnectionFactory;
+import io.nova.r2dbc.integration.IntegrationFixtures.IdentityAccount;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
-import java.util.List;
-import java.util.UUID;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Java primitive {@code boolean.class}를 {@code row.get(name, type)}으로 그대로 전달했을 때
- * r2dbc-h2 driver가 거부한다는 사실을 회귀 보호한다.
+ * core {@code SimpleReactiveEntityOperations.wrapPrimitive}가 primitive Java 필드 타입을
+ * row 디코딩 전에 boxed wrapper로 변환하는 동작을 회귀 보호한다.
  *
- * <p><b>발견된 production 부조화</b>: nova의 {@code SimpleReactiveEntityOperations.mapRow}는
- * {@code PersistentProperty.javaType()}을 그대로 {@code row.get(name, type)}에 넘긴다. entity가
- * primitive {@code boolean active} 필드를 선언하면 {@code javaType()}이 {@code boolean.class}이고,
- * r2dbc-h2 1.0.0은 이 primitive class를 디코딩하지 못해
- * {@code IllegalArgumentException: Cannot decode value of type boolean}을 던진다. 결과적으로
- * H2 driver와 함께 primitive boolean 컬럼이 있는 entity를 round-trip 하면 SELECT가 실패한다.
- *
- * <p>이 테스트는 production {@link R2dbcSqlExecutor}와 보일러 plate {@code row.get(.., boolean.class)}
- * 경로를 그대로 사용해 driver가 primitive 클래스를 거부하는 사실을 단언한다 — driver가 primitive를
- * 수용하도록 바뀌면 이 테스트가 깨지고, 그 시점에 entity 모델에서 boxed type 강제를 제거할 수 있다.
+ * <p>cycle 9 R1 이전에는 entity가 {@code primitive boolean active} 같은 필드를 선언하면
+ * {@code PersistentProperty.javaType()}이 {@code boolean.class}를 반환해서 r2dbc-h2 1.0.0이
+ * {@code IllegalArgumentException: Cannot decode value of type boolean}으로 거부했다.
+ * 현재는 core가 {@code row.get(name, Boolean.class)}로 boxed wrapper를 전달하므로
+ * primitive 필드를 가진 entity가 round-trip 된다. wrap helper가 제거되면 이 테스트가 깨진다.
  */
 class H2PrimitiveBooleanDecodingIntegrationTest {
+    private H2IntegrationTestSupport support;
+
+    @BeforeEach
+    void setUp() {
+        support = H2IntegrationTestSupport.create();
+        support.execute(support.operations().createTableSql(IdentityAccount.class));
+    }
+
     @Test
-    void primitiveBooleanClassDecodeIsRejectedByR2dbcH2Driver() {
-        String dbName = "novabool_" + UUID.randomUUID().toString().replace("-", "");
-        ConnectionFactory cf = ConnectionFactories.get(
-                "r2dbc:h2:mem:///" + dbName + "?DB_CLOSE_DELAY=-1");
-        Dialect noopDialect = new Dialect() {
-            @Override public String name() { return "noop"; }
-            @Override public String quote(String identifier) { return identifier; }
-            @Override public BindMarkerStrategy bindMarkers() { return index -> "?"; }
-            @Override public SqlRenderer sqlRenderer() { throw new UnsupportedOperationException(); }
-            @Override public SchemaGenerator schemaGenerator() { throw new UnsupportedOperationException(); }
-        };
-        R2dbcSqlExecutor executor = new R2dbcSqlExecutor(cf, noopDialect);
+    void primitiveBooleanFieldRoundTripsThroughR2dbcH2() {
+        // IdentityAccount.active는 primitive boolean이다 (cycle 9에서 boxed에서 되돌렸다).
+        // wrapPrimitive가 boolean.class를 Boolean.class로 변환해 row.get에 전달해야
+        // r2dbc-h2가 거부하지 않고 정상 디코딩한다.
+        IdentityAccount original = new IdentityAccount("prim@nova.io", true);
 
-        StepVerifier.create(executor.execute(new SqlStatement(
-                        "create table boolean_rows (id bigint primary key, active boolean not null)",
-                        List.of())))
-                .expectNextCount(1)
-                .verifyComplete();
-        StepVerifier.create(executor.execute(new SqlStatement(
-                        "insert into boolean_rows (id, active) values (?, ?)",
-                        List.of(1L, true))))
-                .expectNextCount(1)
-                .verifyComplete();
+        Mono<IdentityAccount> pipeline = support.operations().save(original)
+                .flatMap(saved -> support.operations().findById(IdentityAccount.class, saved.getId()));
 
-        // primitive class를 그대로 row.get에 넘기면 driver가 거부한다.
-        StepVerifier.create(executor.queryOne(
-                        new SqlStatement("select active from boolean_rows where id = ?", List.of(1L)),
-                        row -> row.get("active", boolean.class)))
-                .expectErrorMatches(error -> {
-                    String message = error.getMessage();
-                    return error instanceof IllegalArgumentException
-                            && message != null
-                            && message.toLowerCase().contains("cannot decode value of type boolean");
+        StepVerifier.create(pipeline)
+                .assertNext(loaded -> {
+                    assertNotNull(loaded.getId());
+                    assertEquals("prim@nova.io", loaded.getEmail());
+                    assertTrue(loaded.isActive(), "primitive boolean true 가 round-trip 되어야 한다");
                 })
-                .verify();
+                .verifyComplete();
+    }
 
-        // boxed Boolean.class는 정상 동작한다는 대조도 같이 검증한다.
-        StepVerifier.create(executor.queryOne(
-                        new SqlStatement("select active from boolean_rows where id = ?", List.of(1L)),
-                        row -> row.get("active", Boolean.class)))
-                .expectNext(Boolean.TRUE)
+    @Test
+    void primitiveBooleanFalseRoundTripsThroughR2dbcH2() {
+        IdentityAccount original = new IdentityAccount("falseflag@nova.io", false);
+
+        Mono<IdentityAccount> pipeline = support.operations().save(original)
+                .flatMap(saved -> support.operations().findById(IdentityAccount.class, saved.getId()));
+
+        StepVerifier.create(pipeline)
+                .assertNext(loaded -> {
+                    assertNotNull(loaded.getId());
+                    assertEquals("falseflag@nova.io", loaded.getEmail());
+                    assertEquals(false, loaded.isActive(), "primitive boolean false 가 round-trip 되어야 한다");
+                })
                 .verifyComplete();
     }
 }
