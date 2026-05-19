@@ -809,9 +809,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private <T> T mapRow(EntityMetadata<T> metadata, RowAccessor row) {
         T instance = instantiate(metadata.entityType());
-        // embedded(host field가 동일한) sub-property들을 한 번에 모아 hydration한다.
-        // 같은 host group에 속한 모든 sub-column이 NULL이면 host 필드 자체를 null로 둔다.
-        LinkedHashMap<java.lang.reflect.Field, List<EmbeddedValue>> embeddedBuckets = new LinkedHashMap<>();
+        // top-level(non-embedded) property는 즉시 entity에 주입한다. embedded property는 buffer에 모아
+        // 호스트 path별로 all-null 여부를 판정한 뒤 entity에 반영한다. nested @Embedded에서도
+        // outer host 전체가 all-null이면 outer까지 null로 설정해 빈 인스턴스가 남지 않도록 한다.
+        List<EmbeddedValue> embeddedValues = new ArrayList<>();
         for (PersistentProperty property : metadata.properties()) {
             // primitive Java 타입을 그대로 row.get(..., type)에 넘기면 일부 R2DBC driver(예: r2dbc-h2)가
             // "Cannot decode value of type boolean/long/..."으로 거부하므로 boxed wrapper로 변환한다.
@@ -819,41 +820,85 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object raw = row.get(property.columnName(), wrapPrimitive(property.javaType()));
             Object value = property.toPropertyValue(raw);
             if (property.embedded()) {
-                embeddedBuckets
-                        .computeIfAbsent(property.embeddedHostField(), ignored -> new ArrayList<>())
-                        .add(new EmbeddedValue(property, value));
+                embeddedValues.add(new EmbeddedValue(property, value));
                 continue;
             }
             property.write(instance, value);
         }
-        for (Map.Entry<java.lang.reflect.Field, List<EmbeddedValue>> entry : embeddedBuckets.entrySet()) {
-            List<EmbeddedValue> values = entry.getValue();
-            boolean allNull = true;
-            for (EmbeddedValue ev : values) {
-                if (ev.value() != null) {
-                    allNull = false;
-                    break;
-                }
-            }
-            if (allNull) {
-                // host field에 직접 null을 쓴다. 빈 embeddable 인스턴스가 남지 않도록.
-                try {
-                    java.lang.reflect.Field host = entry.getKey();
-                    host.setAccessible(true);
-                    host.set(instance, null);
-                } catch (IllegalAccessException exception) {
-                    throw new IllegalStateException(
-                            "Cannot null out embedded host field " + entry.getKey().getName(), exception);
-                }
-                continue;
-            }
-            for (EmbeddedValue ev : values) {
-                ev.property().write(instance, ev.value());
-            }
-        }
+        hydrateEmbeddedValues(instance, embeddedValues);
         // hydration이 모두 끝난 다음 한 번만 @PostLoad를 발화해, 사용자 callback에서 다른 필드를 같이 읽을 수 있게 한다.
         listenerInvoker.invokePostLoad(instance, metadata);
         return instance;
+    }
+
+    /**
+     * Embedded leaf 값들을 host path 기준으로 hydrate한다. 어떤 nesting 레벨이든 모든 하위 leaf 값이 null이면
+     * 그 레벨의 호스트를 null로 두고 더 깊은 레벨의 leaf는 무시한다. 그렇지 않은 path만 실제로 write가 일어나며,
+     * 중간 호스트 인스턴스는 {@link PersistentProperty#write} 내부에서 lazy하게 생성된다.
+     */
+    private void hydrateEmbeddedValues(Object instance, List<EmbeddedValue> values) {
+        if (values.isEmpty()) {
+            return;
+        }
+        // path-prefix별로 모든 직간접 leaf 값이 null인지 미리 계산해 둔다. 키는 host path 자체이며,
+        // 길이 0(empty)에 대한 항목은 만들지 않는다(top-level entity는 null로 둘 수 없으므로).
+        LinkedHashMap<List<java.lang.reflect.Field>, boolean[]> allNullByPrefix = new LinkedHashMap<>();
+        for (EmbeddedValue ev : values) {
+            List<java.lang.reflect.Field> path = ev.property().embeddedHostPath();
+            for (int depth = 1; depth <= path.size(); depth++) {
+                List<java.lang.reflect.Field> prefix = path.subList(0, depth);
+                boolean[] flag = allNullByPrefix.computeIfAbsent(prefix, ignored -> new boolean[]{true});
+                if (ev.value() != null) {
+                    flag[0] = false;
+                }
+            }
+        }
+        // 가장 짧은 prefix부터 검사해서 outer가 모두 null이면 그 레벨을 null로 두고 더 깊은 부분은 skip한다.
+        // 호스트 인스턴스는 PersistentProperty#write가 필요 시 새로 만들어 두므로, all-null이 아닌 leaf만
+        // write하면 된다. all-null인 outermost prefix를 만나면 그 prefix의 마지막 호스트 필드를 명시적으로
+        // null로 설정해 둔다 — 사용자가 entity 생성자에서 미리 채워둔 빈 embeddable 인스턴스가 남지 않도록.
+        for (EmbeddedValue ev : values) {
+            List<java.lang.reflect.Field> path = ev.property().embeddedHostPath();
+            // outer → inner 순으로 all-null prefix를 찾아 가장 외곽 레벨을 null로 만들고 leaf write는 skip.
+            int allNullDepth = -1;
+            for (int depth = 1; depth <= path.size(); depth++) {
+                boolean[] flag = allNullByPrefix.get(path.subList(0, depth));
+                if (flag != null && flag[0]) {
+                    allNullDepth = depth;
+                    break;
+                }
+            }
+            if (allNullDepth > 0) {
+                nullifyHostAtDepth(instance, path, allNullDepth);
+                continue;
+            }
+            ev.property().write(instance, ev.value());
+        }
+    }
+
+    /**
+     * {@code path}의 outer → inner 순서를 따라 {@code depth - 1}번째까지 진입한 뒤(중간 호스트가 null이면 그대로 둔다),
+     * 마지막 호스트 필드를 null로 만든다. 사용자가 명시적으로 생성자에서 빈 embeddable을 채워뒀더라도
+     * 해당 hierarchy의 모든 leaf가 NULL이면 null로 정리해 round-trip을 안전하게 만든다.
+     */
+    private void nullifyHostAtDepth(Object instance, List<java.lang.reflect.Field> path, int depth) {
+        try {
+            Object current = instance;
+            for (int i = 0; i < depth - 1; i++) {
+                java.lang.reflect.Field hostField = path.get(i);
+                hostField.setAccessible(true);
+                current = hostField.get(current);
+                if (current == null) {
+                    return;
+                }
+            }
+            java.lang.reflect.Field targetHost = path.get(depth - 1);
+            targetHost.setAccessible(true);
+            targetHost.set(current, null);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot null out embedded host field " + path.get(depth - 1).getName(), exception);
+        }
     }
 
     private record EmbeddedValue(PersistentProperty property, Object value) {

@@ -27,7 +27,10 @@ import io.nova.support.fixtures.FixtureEntities.AuditedAccount;
 import io.nova.support.fixtures.FixtureEntities.CallbackThrowingEntity;
 import io.nova.support.fixtures.FixtureEntities.Customer;
 import io.nova.support.fixtures.FixtureEntities.EntityWithCallbacks;
+import io.nova.support.fixtures.FixtureEntities.Geo;
+import io.nova.support.fixtures.FixtureEntities.NestedAddress;
 import io.nova.support.fixtures.FixtureEntities.NoDefaultConstructorEntity;
+import io.nova.support.fixtures.FixtureEntities.Office;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.support.fixtures.FixtureEntities.GeneratedVersionedAccount;
@@ -2298,6 +2301,28 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void saveBindsFlattenedColumnsForNestedEmbeddedOffice() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Office office = new Office(9L, "HQ",
+                new NestedAddress("Sejong-daero", "04524", new Geo("KR", "Seoul")));
+
+        StepVerifier.create(operations.save(office))
+                .expectNext(office)
+                .verifyComplete();
+
+        assertEquals(
+                "update office set name = ?, address_street = ?, address_zip = ?, "
+                        + "address_geo_country = ?, address_geo_city = ? where id = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(
+                List.of("HQ", "Sejong-daero", "04524", "KR", "Seoul", 9L),
+                executor.lastStatement.bindings()
+        );
+    }
+
+    @Test
     void findAllWithFetchGroupAssignsEmptyListWhenParentHasNoChildren() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
@@ -2404,6 +2429,54 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void saveBindsNullColumnsWhenNestedGeoHostIsNull() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        Office office = new Office(9L, "HQ",
+                new NestedAddress("Sejong-daero", "04524", null));
+
+        StepVerifier.create(operations.save(office))
+                .expectNext(office)
+                .verifyComplete();
+
+        assertEquals(
+                "update office set name = ?, address_street = ?, address_zip = ?, "
+                        + "address_geo_country = ?, address_geo_city = ? where id = ?",
+                executor.lastStatement.sql()
+        );
+        assertEquals(
+                java.util.Arrays.asList("HQ", "Sejong-daero", "04524", null, null, 9L),
+                executor.lastStatement.bindings()
+        );
+    }
+
+    @Test
+    void findByIdHydratesNestedEmbeddedGeo() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(
+                "id", 9L,
+                "name", "HQ",
+                "address_street", "Sejong-daero",
+                "address_zip", "04524",
+                "address_geo_country", "KR",
+                "address_geo_city", "Seoul"
+        )));
+
+        StepVerifier.create(operations.findById(Office.class, 9L))
+                .expectNextMatches(office ->
+                        Objects.equals(office.getId(), 9L)
+                                && "HQ".equals(office.getName())
+                                && office.getAddress() != null
+                                && "Sejong-daero".equals(office.getAddress().getStreet())
+                                && "04524".equals(office.getAddress().getZip())
+                                && office.getAddress().getGeo() != null
+                                && "KR".equals(office.getAddress().getGeo().getCountry())
+                                && "Seoul".equals(office.getAddress().getGeo().getCity()))
+                .verifyComplete();
+    }
+
+    @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
     void findAllWithFetchGroupRejectsMismatchedParentType() {
         CapturingExecutor executor = new CapturingExecutor();
@@ -2447,6 +2520,51 @@ class SimpleReactiveEntityOperationsTest {
 
         // 모든 queryMany 응답이 소비되어야 한다 (parent + 2개의 child IN-query)
         assertTrue(executor.queryManyResults.isEmpty(), "K개의 child IN-query가 발화되어야 한다");
+    }
+
+    @Test
+    void findByIdLeavesNestedGeoNullWhenGeoColumnsAllNull() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        java.util.HashMap<String, Object> row = new java.util.HashMap<>();
+        row.put("id", 9L);
+        row.put("name", "HQ");
+        row.put("address_street", "Sejong-daero");
+        row.put("address_zip", "04524");
+        row.put("address_geo_country", null);
+        row.put("address_geo_city", null);
+        executor.queryOneResults.addLast(new MapRowAccessor(row));
+
+        StepVerifier.create(operations.findById(Office.class, 9L))
+                .expectNextMatches(office ->
+                        Objects.equals(office.getId(), 9L)
+                                && "HQ".equals(office.getName())
+                                && office.getAddress() != null
+                                && "Sejong-daero".equals(office.getAddress().getStreet())
+                                && "04524".equals(office.getAddress().getZip())
+                                && office.getAddress().getGeo() == null)
+                .verifyComplete();
+    }
+
+    @Test
+    void findByIdLeavesNestedAddressNullWhenAllSubColumnsAreNull() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        java.util.HashMap<String, Object> row = new java.util.HashMap<>();
+        row.put("id", 9L);
+        row.put("name", "HQ");
+        row.put("address_street", null);
+        row.put("address_zip", null);
+        row.put("address_geo_country", null);
+        row.put("address_geo_city", null);
+        executor.queryOneResults.addLast(new MapRowAccessor(row));
+
+        StepVerifier.create(operations.findById(Office.class, 9L))
+                .expectNextMatches(office ->
+                        Objects.equals(office.getId(), 9L)
+                                && "HQ".equals(office.getName())
+                                && office.getAddress() == null)
+                .verifyComplete();
     }
 
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {

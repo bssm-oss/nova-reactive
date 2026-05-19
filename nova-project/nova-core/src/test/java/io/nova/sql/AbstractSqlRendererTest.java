@@ -14,7 +14,10 @@ import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
 import io.nova.support.fixtures.FixtureEntities.Address;
 import io.nova.support.fixtures.FixtureEntities.Customer;
+import io.nova.support.fixtures.FixtureEntities.Geo;
 import io.nova.support.fixtures.FixtureEntities.IntegerVersionedAccount;
+import io.nova.support.fixtures.FixtureEntities.NestedAddress;
+import io.nova.support.fixtures.FixtureEntities.Office;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.ShortVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
@@ -1415,6 +1418,53 @@ class AbstractSqlRendererTest {
         assertEquals(
                 "select id as id, name as name, shipping_city as shipping_city, "
                         + "shipping_street as shipping_street, shipping_zip as shipping_zip from customer",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void rendersInsertForOfficeWithNestedEmbeddedAddressAndGeo() {
+        EntityMetadata<Office> officeMetadata = metadataFactory.getEntityMetadata(Office.class);
+        Office office = new Office(9L, "HQ", new NestedAddress("Sejong-daero", "04524", new Geo("KR", "Seoul")));
+
+        SqlStatement statement = dialect.sqlRenderer().insert(officeMetadata, office);
+
+        assertEquals(
+                "insert into office (id, name, address_street, address_zip, address_geo_country, address_geo_city) "
+                        + "values (?, ?, ?, ?, ?, ?)",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of(9L, "HQ", "Sejong-daero", "04524", "KR", "Seoul"), statement.bindings());
+    }
+
+    @Test
+    void rendersInsertForOfficeWithNullGeoBindsNullForGeoColumns() {
+        EntityMetadata<Office> officeMetadata = metadataFactory.getEntityMetadata(Office.class);
+        Office office = new Office(9L, "HQ", new NestedAddress("Sejong-daero", "04524", null));
+
+        SqlStatement statement = dialect.sqlRenderer().insert(officeMetadata, office);
+
+        assertEquals(
+                "insert into office (id, name, address_street, address_zip, address_geo_country, address_geo_city) "
+                        + "values (?, ?, ?, ?, ?, ?)",
+                statement.sql()
+        );
+        assertEquals(
+                java.util.Arrays.asList(9L, "HQ", "Sejong-daero", "04524", null, null),
+                statement.bindings()
+        );
+    }
+
+    @Test
+    void rendersSelectForOfficeWithNestedEmbeddedColumns() {
+        EntityMetadata<Office> officeMetadata = metadataFactory.getEntityMetadata(Office.class);
+
+        SqlStatement statement = dialect.sqlRenderer().select(officeMetadata, QuerySpec.empty());
+
+        assertEquals(
+                "select id as id, name as name, address_street as address_street, address_zip as address_zip, "
+                        + "address_geo_country as address_geo_country, address_geo_city as address_geo_city from office",
                 statement.sql()
         );
         assertEquals(java.util.List.of(), statement.bindings());
