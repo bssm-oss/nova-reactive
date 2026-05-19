@@ -62,8 +62,8 @@ public final class Criteria {
 
     /**
      * 주어진 prefix로 시작하는 행을 매칭하는 {@code LIKE 'prefix%'} 조건을 만든다.
-     * prefix 안의 {@code %}와 {@code _} 와일드카드는 escape 되지 않으므로, 리터럴 매칭이 필요한 호출자는
-     * 사전에 직접 escape 해야 한다.
+     * <p>주의: {@code value}의 {@code %}, {@code _}, {@code \\} (dialect별 LIKE escape char) 는
+     * 자동 escape되지 않는다 — 호출자가 직접 escape하거나 신뢰된 입력만 전달해야 한다.
      */
     public static Condition startsWith(String property, String prefix) {
         Objects.requireNonNull(prefix, "prefix must not be null");
@@ -72,6 +72,8 @@ public final class Criteria {
 
     /**
      * 주어진 suffix로 끝나는 행을 매칭하는 {@code LIKE '%suffix'} 조건을 만든다.
+     * <p>주의: {@code value}의 {@code %}, {@code _}, {@code \\} (dialect별 LIKE escape char) 는
+     * 자동 escape되지 않는다 — 호출자가 직접 escape하거나 신뢰된 입력만 전달해야 한다.
      */
     public static Condition endsWith(String property, String suffix) {
         Objects.requireNonNull(suffix, "suffix must not be null");
@@ -80,6 +82,8 @@ public final class Criteria {
 
     /**
      * 주어진 substring을 포함하는 행을 매칭하는 {@code LIKE '%substring%'} 조건을 만든다.
+     * <p>주의: {@code value}의 {@code %}, {@code _}, {@code \\} (dialect별 LIKE escape char) 는
+     * 자동 escape되지 않는다 — 호출자가 직접 escape하거나 신뢰된 입력만 전달해야 한다.
      */
     public static Condition contains(String property, String substring) {
         Objects.requireNonNull(substring, "substring must not be null");
@@ -88,6 +92,8 @@ public final class Criteria {
 
     /**
      * {@link #startsWith(String, String)}의 대소문자 무시 버전이다. ILIKE로 렌더된다.
+     * <p>주의: {@code value}의 {@code %}, {@code _}, {@code \\} (dialect별 LIKE escape char) 는
+     * 자동 escape되지 않는다 — 호출자가 직접 escape하거나 신뢰된 입력만 전달해야 한다.
      */
     public static Condition startsWithIgnoreCase(String property, String prefix) {
         Objects.requireNonNull(prefix, "prefix must not be null");
@@ -96,6 +102,8 @@ public final class Criteria {
 
     /**
      * {@link #endsWith(String, String)}의 대소문자 무시 버전이다. ILIKE로 렌더된다.
+     * <p>주의: {@code value}의 {@code %}, {@code _}, {@code \\} (dialect별 LIKE escape char) 는
+     * 자동 escape되지 않는다 — 호출자가 직접 escape하거나 신뢰된 입력만 전달해야 한다.
      */
     public static Condition endsWithIgnoreCase(String property, String suffix) {
         Objects.requireNonNull(suffix, "suffix must not be null");
@@ -104,6 +112,8 @@ public final class Criteria {
 
     /**
      * {@link #contains(String, String)}의 대소문자 무시 버전이다. ILIKE로 렌더된다.
+     * <p>주의: {@code value}의 {@code %}, {@code _}, {@code \\} (dialect별 LIKE escape char) 는
+     * 자동 escape되지 않는다 — 호출자가 직접 escape하거나 신뢰된 입력만 전달해야 한다.
      */
     public static Condition containsIgnoreCase(String property, String substring) {
         Objects.requireNonNull(substring, "substring must not be null");
