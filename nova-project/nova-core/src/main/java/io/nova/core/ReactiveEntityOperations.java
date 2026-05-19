@@ -4,8 +4,11 @@ import io.nova.fetch.FetchGroup;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.NativeQuery;
+import io.nova.query.Page;
+import io.nova.query.Pageable;
 import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
+import io.nova.query.Slice;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
 import reactor.core.publisher.Flux;
@@ -95,6 +98,46 @@ public interface ReactiveEntityOperations {
      * 주어진 쿼리 명세에 맞는 행이 하나 이상 존재하는지 반환한다.
      */
     <T> Mono<Boolean> exists(Class<T> entityType, QuerySpec querySpec);
+
+    /**
+     * 주어진 쿼리 명세에 {@link Pageable}을 적용해 한 페이지의 entity와 총 행 수를 함께 조회한다.
+     * 결과는 {@link Page}로 묶여 발행되며, {@link Page#totalElements()}는 LIMIT/OFFSET을 제거한
+     * predicate 기준의 전체 행 수를 의미한다 — count 정확성을 위해 {@code SELECT}와 {@code COUNT(*)}는
+     * 두 번 발행된다(즉, 트랜잭션 경계 안에서 호출하지 않으면 두 쿼리 사이에 INSERT/DELETE가
+     * 끼어들어 미세한 race가 가능하다).
+     * <p>
+     * {@code pageable}이 {@code null}이면 {@link NullPointerException}이 발행된다. {@code querySpec}이
+     * {@code null}이면 {@link QuerySpec#empty()}로 normalize되며, 호출자가 {@code querySpec.page(...)}로
+     * 미리 설정한 pageable은 {@code pageable} 인자로 덮어쓰여진다.
+     * <p>
+     * 기본 구현은 외부 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
+     * {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
+     */
+    default <T> Mono<Page<T>> findAll(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.findAll(Class, QuerySpec, Pageable) must be overridden by the implementation"));
+    }
+
+    /**
+     * 주어진 쿼리 명세에 {@link Pageable}을 적용해 한 페이지의 entity와 다음 페이지 존재 여부를
+     * {@link Slice}로 발행한다. {@link #findAll(Class, QuerySpec, Pageable)}와 달리 별도의
+     * {@code COUNT(*)} 쿼리를 발행하지 않으므로 비용이 낮으며, 총 페이지 수가 필요 없는
+     * infinite scroll 같은 시나리오에 적합하다.
+     * <p>
+     * 구현체는 일반적으로 {@code limit + 1}만큼 행을 조회한 뒤 한 건 초과 여부로 {@code hasNext}를
+     * 결정하고, {@link Slice#content()}에는 정확히 {@code pageable.limit()}개를 노출한다.
+     * <p>
+     * {@code pageable}이 {@code null}이면 {@link NullPointerException}이 발행된다. {@code querySpec}이
+     * {@code null}이면 {@link QuerySpec#empty()}로 normalize되며, 호출자가 미리 설정한 pageable은
+     * 인자 값으로 덮어쓰여진다.
+     * <p>
+     * 기본 구현은 외부 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
+     * {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
+     */
+    default <T> Mono<Slice<T>> findSlice(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
+        return Mono.error(new UnsupportedOperationException(
+                "ReactiveEntityOperations.findSlice(Class, QuerySpec, Pageable) must be overridden by the implementation"));
+    }
 
     /**
      * 설정된 transaction operations를 사용해 콜백을 트랜잭션 경계 안에서 실행한다.

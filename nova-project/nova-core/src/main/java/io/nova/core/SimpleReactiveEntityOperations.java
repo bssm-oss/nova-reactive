@@ -11,8 +11,11 @@ import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
 import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
+import io.nova.query.Page;
+import io.nova.query.Pageable;
 import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
+import io.nova.query.Slice;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
 import io.nova.sql.Dialect;
@@ -350,6 +353,42 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
         return sqlExecutor.queryOne(dialect.sqlRenderer().exists(metadata, normalize(querySpec)), row -> Boolean.TRUE)
                 .defaultIfEmpty(Boolean.FALSE);
+    }
+
+    /**
+     * SELECT(LIMIT/OFFSET 적용) 한 번과 COUNT(*) 한 번을 병렬로 발행해 {@link Page}로 합친다.
+     * COUNT 경로에서는 호출자 또는 normalize가 부착했던 pageable을 제거해 predicate 전체에 대한
+     * 정확한 행 수를 계산한다 — 그렇지 않으면 LIMIT으로 잘린 행 수만 세어 totalElements가 잘못된다.
+     */
+    @Override
+    public <T> Mono<Page<T>> findAll(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
+        Objects.requireNonNull(entityType, "entityType must not be null");
+        Objects.requireNonNull(pageable, "pageable must not be null");
+        QuerySpec normalized = normalize(querySpec);
+        QuerySpec paged = normalized.page(pageable);
+        QuerySpec countSpec = normalized.page(null);
+        return Mono.zip(
+                findAll(entityType, paged).collectList(),
+                count(entityType, countSpec),
+                (content, total) -> new Page<>(content, total, pageable));
+    }
+
+    /**
+     * 한 페이지보다 1행 더 조회한 뒤 초과 행이 있으면 {@code hasNext=true}로 표시하고
+     * {@code content}는 정확히 {@code pageable.limit()}개로 잘라 {@link Slice}로 발행한다.
+     * 총 행 수 쿼리는 발행하지 않으므로 비용이 낮다.
+     */
+    @Override
+    public <T> Mono<Slice<T>> findSlice(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
+        Objects.requireNonNull(entityType, "entityType must not be null");
+        Objects.requireNonNull(pageable, "pageable must not be null");
+        Pageable probe = Pageable.of(pageable.limit() + 1, pageable.offset());
+        QuerySpec paged = normalize(querySpec).page(probe);
+        return findAll(entityType, paged).collectList().map(list -> {
+            boolean hasNext = list.size() > pageable.limit();
+            List<T> trimmed = hasNext ? List.copyOf(list.subList(0, pageable.limit())) : list;
+            return new Slice<>(trimmed, pageable, hasNext);
+        });
     }
 
     @Override
