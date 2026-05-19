@@ -564,12 +564,17 @@ public final class EntityMetadataFactory {
         );
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private static AttributeConverter<?, ?> createEnumConverter(Class<?> enumClass, EnumType enumType) {
-        Class raw = enumClass;
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        Class<? extends Enum> raw = (Class<? extends Enum>) enumClass;
+        return createEnumConverterTyped(raw, enumType);
+    }
+
+    private static <E extends Enum<E>> AttributeConverter<E, ?> createEnumConverterTyped(
+            Class<E> enumClass, EnumType enumType) {
         return switch (enumType) {
-            case STRING -> new EnumStringConverter<>(raw);
-            case ORDINAL -> new EnumOrdinalConverter<>(raw);
+            case STRING -> new EnumStringConverter<>(enumClass);
+            case ORDINAL -> new EnumOrdinalConverter<>(enumClass);
         };
     }
 }
