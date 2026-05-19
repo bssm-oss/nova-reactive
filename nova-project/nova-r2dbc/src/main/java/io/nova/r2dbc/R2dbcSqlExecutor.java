@@ -192,11 +192,14 @@ public final class R2dbcSqlExecutor implements SqlExecutor {
         });
     }
 
-    private static Statement bind(Statement statement, List<Object> bindings) {
+    private Statement bind(Statement statement, List<Object> bindings) {
+        Class<?> nullType = dialect.nullBindClass();
         for (int i = 0; i < bindings.size(); i++) {
             Object value = bindings.get(i);
             if (value == null) {
-                statement.bindNull(i, Object.class);
+                // driver별 null encoding 호환을 위해 dialect-provided fallback Class로 위임한다 —
+                // 일부 driver(r2dbc-h2)는 Object.class null binding을 거부한다.
+                statement.bindNull(i, nullType);
             } else {
                 statement.bind(i, value);
             }

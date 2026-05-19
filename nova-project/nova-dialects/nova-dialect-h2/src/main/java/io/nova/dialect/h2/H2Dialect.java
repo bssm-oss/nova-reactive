@@ -43,4 +43,13 @@ public final class H2Dialect implements Dialect {
     public SchemaGenerator schemaGenerator() {
         return schemaGenerator;
     }
+
+    @Override
+    public Class<?> nullBindClass() {
+        // r2dbc-h2 1.0.0은 Statement.bindNull(index, Object.class)를 거부하므로
+        // ("Cannot encode null parameter of type java.lang.Object") driver가 받아들이는
+        // String.class를 fallback로 사용한다. driver는 String null binding을 모든 컬럼 타입에
+        // 안전하게 디코딩할 수 있다.
+        return String.class;
+    }
 }

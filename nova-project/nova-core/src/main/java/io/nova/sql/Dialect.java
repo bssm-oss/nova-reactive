@@ -43,6 +43,19 @@ public interface Dialect {
     String SEQUENCE_VALUE_COLUMN = "nova_seq_value";
 
     /**
+     * 값이 {@code null}인 binding에 대해 R2DBC {@code Statement.bindNull(index, type)}으로 전달할
+     * Java 타입을 반환한다. 기본값은 {@link Object} 클래스다 — driver가 type-agnostic null encoding을
+     * 지원하면 이 기본값으로 충분하다.
+     * <p>
+     * 일부 driver(예: r2dbc-h2)는 {@code Object.class} null binding을 거부하므로 해당 dialect는
+     * driver가 받아들이는 fallback 타입(예: {@link String} 클래스)을 override 해서 반환해야 한다.
+     * binding 위치마다 expected 컬럼 타입을 전달할 수 없는 경우의 안전한 fallback로 쓰인다.
+     */
+    default Class<?> nullBindClass() {
+        return Object.class;
+    }
+
+    /**
      * 대소문자를 무시한 패턴 매칭(ILIKE) SQL 표현을 만든다. {@code negate}가 {@code true}면 부정형을 반환한다.
      * <p>
      * 기본 구현은 양 변을 {@code lower(...)}로 감싸 {@code lower(col) like lower(?)}를 생성한다 —
