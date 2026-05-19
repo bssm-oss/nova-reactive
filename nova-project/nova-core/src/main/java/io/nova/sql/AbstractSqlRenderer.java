@@ -218,6 +218,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         if (querySpec.pageable() != null) {
             throw new IllegalArgumentException("deleteByQuery does not support pageable");
         }
+        if (querySpec.lockMode() != LockMode.NONE) {
+            throw new IllegalArgumentException("deleteByQuery does not support lockMode");
+        }
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("delete from ").append(table(metadata));
         appendWhereClause(sql, context, metadata, querySpec.predicate());
@@ -244,6 +247,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         if (querySpec.pageable() != null) {
             throw new IllegalArgumentException("updateByQuery does not support pageable");
+        }
+        if (querySpec.lockMode() != LockMode.NONE) {
+            throw new IllegalArgumentException("updateByQuery does not support lockMode");
         }
         RenderContext context = new RenderContext();
         List<String> assignments = new ArrayList<>(fieldValues.size());
