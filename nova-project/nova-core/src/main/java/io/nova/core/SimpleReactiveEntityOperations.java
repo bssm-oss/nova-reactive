@@ -108,9 +108,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         PersistentProperty idProperty = metadata.idProperty();
         GenerationType strategy = idProperty.generationType();
         if (strategy == GenerationType.SEQUENCE) {
+            Class<?> idColumnType = wrapPrimitive(idProperty.javaType());
             return sqlExecutor.queryOne(
                             new SqlStatement(dialect.sequenceNextValueSql(idProperty.generator()), List.of()),
-                            row -> row.get(Dialect.SEQUENCE_VALUE_COLUMN, idProperty.javaType()))
+                            row -> row.get(Dialect.SEQUENCE_VALUE_COLUMN, idColumnType))
                     .flatMap(value -> {
                         idProperty.write(entity, idProperty.toPropertyValue(value));
                         SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
@@ -124,7 +125,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         if (idProperty.generated()) {
             SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
-            return sqlExecutor.executeAndReturnGeneratedKey(statement, idProperty.columnName(), idProperty.javaType())
+            return sqlExecutor.executeAndReturnGeneratedKey(statement, idProperty.columnName(), wrapPrimitive(idProperty.javaType()))
                     .map(key -> {
                         idProperty.write(entity, idProperty.toPropertyValue(key));
                         return entity;
@@ -655,7 +656,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             String finalSharedSql = sharedSql;
             return Flux.defer(() -> sqlExecutor
                     .executeBatchAndReturnGeneratedKeys(
-                            finalSharedSql, bindingsList, idProperty.columnName(), idProperty.javaType())
+                            finalSharedSql, bindingsList, idProperty.columnName(), wrapPrimitive(idProperty.javaType()))
                     .collectList()
                     .flatMapMany(collectedKeys -> {
                         if (collectedKeys.size() != entities.size()) {
@@ -708,7 +709,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // 같은 host group에 속한 모든 sub-column이 NULL이면 host 필드 자체를 null로 둔다.
         LinkedHashMap<java.lang.reflect.Field, List<EmbeddedValue>> embeddedBuckets = new LinkedHashMap<>();
         for (PersistentProperty property : metadata.properties()) {
-            Object raw = row.get(property.columnName(), property.javaType());
+            // primitive Java 타입을 그대로 row.get(..., type)에 넘기면 일부 R2DBC driver(예: r2dbc-h2)가
+            // "Cannot decode value of type boolean/long/..."으로 거부하므로 boxed wrapper로 변환한다.
+            // entity 필드 주입 시점에는 reflection이 boxed → primitive unboxing을 자동 처리한다.
+            Object raw = row.get(property.columnName(), wrapPrimitive(property.javaType()));
             Object value = property.toPropertyValue(raw);
             if (property.embedded()) {
                 embeddedBuckets
@@ -812,7 +816,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         Object[] arguments = new Object[properties.size()];
         for (int i = 0; i < properties.size(); i++) {
             PersistentProperty property = properties.get(i);
-            Object raw = row.get(property.columnName(), property.javaType());
+            // primitive 타입은 driver 호환을 위해 boxed wrapper로 변환해서 row.get에 전달한다.
+            // 자세한 사유는 mapRow의 동일 주석 참고.
+            Object raw = row.get(property.columnName(), wrapPrimitive(property.javaType()));
             arguments[i] = property.toPropertyValue(raw);
         }
         try {
@@ -882,6 +888,30 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return (short) 0;
         }
         throw new IllegalStateException("Unsupported version type " + type.getName());
+    }
+
+    /**
+     * Java primitive class를 대응하는 wrapper class로 변환한다. 일부 R2DBC driver(r2dbc-h2 1.0.0)는
+     * {@code row.get(name, boolean.class)}처럼 primitive class를 받으면
+     * {@code IllegalArgumentException: Cannot decode value of type boolean}을 던지므로,
+     * row 디코딩과 generated key 회수 경로에서 항상 boxed class를 사용해 driver 호환을 보장한다.
+     * <p>
+     * primitive가 아니면 입력을 그대로 반환한다. boxed → primitive 변환은 reflection
+     * {@code Field.set}가 자동으로 처리하므로 entity 필드 주입에 영향이 없다.
+     */
+    static Class<?> wrapPrimitive(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == boolean.class) return Boolean.class;
+        if (type == long.class) return Long.class;
+        if (type == int.class) return Integer.class;
+        if (type == double.class) return Double.class;
+        if (type == float.class) return Float.class;
+        if (type == short.class) return Short.class;
+        if (type == byte.class) return Byte.class;
+        if (type == char.class) return Character.class;
+        return type;
     }
 
     private Object nextVersionValue(PersistentProperty versionProperty, Object current) {
