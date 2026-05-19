@@ -102,3 +102,13 @@ source-less grouping projects. Keep the root `build.gradle.kts` guard:
   `refactor:`, `docs:`, and `chore:`.
 - Keep each PR focused on one change.
 - Do not add an AI agent as `Co-Authored-By`.
+
+## Default work pattern
+
+For any multi-feature batch (3+ features in one request, "cycle"/"Pack X"/"batch"
+keywords, or follow-up bundles), invoke the `parallel-cycle` project skill
+(`.claude/skills/parallel-cycle/SKILL.md`) rather than improvising. It encodes
+the 4-worktree spawn → 4-reviewer → sequential ff-merge → cleanup → next-scope
+confirm workflow, including hub-conflict abort criteria and marker-namespace
+separation for parallel metadata changes. Single isolated changes (typo fix,
+one-file refactor) skip the skill and proceed directly.
