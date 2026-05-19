@@ -6,6 +6,7 @@ import io.nova.sql.SqlRenderer;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -43,8 +44,10 @@ class H2DialectTest {
     }
 
     @Test
-    void reportsUseOfReturningClauseForGeneratedKeys() {
-        assertTrue(dialect.usesReturningForGeneratedKeys());
+    void doesNotUseReturningClauseBecauseH2DriverRejectsIt() {
+        // H2 2.1.214는 INSERT...RETURNING 구문을 지원하지 않으므로 dialect는 기본값(false)을 유지한다.
+        // 생성된 키는 R2DBC Statement.returnGeneratedValues(...) 경로로 회수된다.
+        assertFalse(dialect.usesReturningForGeneratedKeys());
     }
 
     @Test

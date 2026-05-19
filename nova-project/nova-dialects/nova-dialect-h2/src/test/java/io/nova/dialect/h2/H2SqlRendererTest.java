@@ -48,21 +48,23 @@ class H2SqlRendererTest {
     }
 
     @Test
-    void rendersInsertWithQuestionMarkMarkersAndReturningClauseForIdentityId() {
+    void rendersInsertWithQuestionMarkMarkersWithoutReturningClauseForIdentityId() {
+        // H2 2.1.214는 INSERT...RETURNING을 지원하지 않으므로 dialect는 RETURNING 절을 붙이지 않는다.
+        // 생성된 IDENTITY 키는 R2DBC Statement.returnGeneratedValues(...) 경로로 회수된다.
         SqlStatement statement = dialect.sqlRenderer().insert(
                 metadata,
                 new H2SampleAccount("h2@nova.io", true)
         );
 
         assertEquals(
-                "insert into \"accounts\" (\"email_address\", \"active\") values (?, ?) returning \"id\"",
+                "insert into \"accounts\" (\"email_address\", \"active\") values (?, ?)",
                 statement.sql()
         );
         assertEquals(List.of("h2@nova.io", true), statement.bindings());
     }
 
     @Test
-    void omitsReturningClauseForAssignedId() {
+    void rendersInsertForAssignedIdWithoutReturningClause() {
         EntityMetadata<H2AssignedIdAccount> assigned = new EntityMetadataFactory(new DefaultNamingStrategy())
                 .getEntityMetadata(H2AssignedIdAccount.class);
 

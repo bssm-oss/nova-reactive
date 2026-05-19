@@ -6,11 +6,13 @@ import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 
 /**
- * 물음표 bind marker와 double-quote 식별자, identity 컬럼 및 RETURNING 절을 지원하는 H2 dialect다.
+ * 물음표 bind marker와 double-quote 식별자, identity 컬럼을 지원하는 H2 dialect다.
  *
  * <p>H2는 ANSI SQL 호환 모드에서 식별자를 double-quote로 감싸고 prepared statement는 positional
  * {@code ?} marker를 사용한다. identity 컬럼은 {@code GENERATED ALWAYS AS IDENTITY}를 사용하며,
- * INSERT 시 생성된 키는 PostgreSQL과 동일하게 {@code RETURNING} 절로 회수한다.
+ * INSERT 시 생성된 키는 R2DBC SPI의 {@code Statement.returnGeneratedValues(...)} 경로로 회수한다 —
+ * H2 2.1.214는 {@code INSERT ... RETURNING ...} 구문을 지원하지 않으므로 PostgreSQL과 달리
+ * RETURNING 절을 사용할 수 없다.
  */
 public final class H2Dialect implements Dialect {
     private final BindMarkerStrategy bindMarkers = index -> "?";
@@ -40,10 +42,5 @@ public final class H2Dialect implements Dialect {
     @Override
     public SchemaGenerator schemaGenerator() {
         return schemaGenerator;
-    }
-
-    @Override
-    public boolean usesReturningForGeneratedKeys() {
-        return true;
     }
 }
