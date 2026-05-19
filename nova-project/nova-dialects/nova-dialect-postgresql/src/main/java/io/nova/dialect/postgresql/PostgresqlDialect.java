@@ -51,7 +51,7 @@ public final class PostgresqlDialect implements Dialect {
     @Override
     public String renderILike(String column, String marker, boolean negate) {
         // PostgreSQL은 native ILIKE/NOT ILIKE 연산자를 지원하므로 lower() 래핑 없이 그대로 사용한다 —
-        // 인덱스를 사용할 수 있고 (text_pattern_ops 등) collation 기반 비교를 dialect에 위임할 수 있다.
+        // pg_trgm GIN/GiST 인덱스로 가속 가능하며 collation 기반 비교를 dialect에 위임할 수 있다.
         return column + (negate ? " not ilike " : " ilike ") + marker;
     }
 
