@@ -2,7 +2,9 @@ package io.nova.sql;
 
 import io.nova.annotation.GenerationType;
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.IndexDefinition;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.UniqueConstraintDefinition;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +26,47 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             columns.add(columnDefinition(property));
         }
         return "create table " + dialect.quote(metadata.tableName()) + " (" + String.join(", ", columns) + ")";
+    }
+
+    @Override
+    public List<String> createIndexes(EntityMetadata<?> metadata) {
+        List<String> statements = new ArrayList<>(
+                metadata.indexes().size() + metadata.uniqueConstraints().size());
+        String quotedTable = dialect.quote(metadata.tableName());
+        for (IndexDefinition index : metadata.indexes()) {
+            statements.add(
+                    "create index " + dialect.quote(index.name()) + " on " + quotedTable
+                            + " (" + joinQuoted(index.columns()) + ")");
+        }
+        for (UniqueConstraintDefinition constraint : metadata.uniqueConstraints()) {
+            statements.add(
+                    "create unique index " + dialect.quote(constraint.name()) + " on " + quotedTable
+                            + " (" + joinQuoted(constraint.columns()) + ")");
+        }
+        return statements;
+    }
+
+    @Override
+    public String alterTableAddColumn(EntityMetadata<?> metadata, PersistentProperty newColumn) {
+        return "alter table " + dialect.quote(metadata.tableName())
+                + " add column " + columnDefinition(newColumn);
+    }
+
+    @Override
+    public String alterTableDropColumn(EntityMetadata<?> metadata, String columnName) {
+        return "alter table " + dialect.quote(metadata.tableName())
+                + " drop column " + dialect.quote(columnName);
+    }
+
+    private String joinQuoted(List<String> identifiers) {
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < identifiers.size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            builder.append(dialect.quote(identifiers.get(i)));
+        }
+        return builder.toString();
     }
 
     /**
