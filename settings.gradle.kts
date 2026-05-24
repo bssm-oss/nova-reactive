@@ -15,6 +15,7 @@ include(
     ":nova-project:nova-dialects:nova-dialect-mysql",
     ":nova-project:nova-dialects:nova-dialect-h2",
     ":nova-project:nova-dialects:nova-dialect-mariadb",
+    ":nova-project:nova-dialects:nova-dialect-oracle",
     ":nova-project:nova-spring-boot-starter",
     ":nova-project:nova-spring-data",
     ":nova-project:nova-metrics-micrometer",
