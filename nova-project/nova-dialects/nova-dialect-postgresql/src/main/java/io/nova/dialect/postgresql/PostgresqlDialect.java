@@ -49,6 +49,13 @@ public final class PostgresqlDialect implements Dialect {
     }
 
     @Override
+    public String jsonColumnType() {
+        // PostgreSQL은 binary JSON 저장 타입인 jsonb를 지원한다 — 인덱싱과 연산자 지원이 우수하므로
+        // 기본 json 대신 jsonb로 컬럼을 생성한다.
+        return "jsonb";
+    }
+
+    @Override
     public String renderILike(String column, String marker, boolean negate) {
         // PostgreSQL은 native ILIKE/NOT ILIKE 연산자를 지원하므로 lower() 래핑 없이 그대로 사용한다 —
         // pg_trgm GIN/GiST 인덱스로 가속 가능하며 collation 기반 비교를 dialect에 위임할 수 있다.
