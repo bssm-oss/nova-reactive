@@ -825,11 +825,21 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     protected static final class RenderContext {
         private final List<Object> bindings = new ArrayList<>();
 
-        int nextIndex() {
+        /**
+         * 다음 bind marker가 차지할 1-based 인덱스를 반환한다. dialect별 {@link #appendPage} override가
+         * 다른 패키지에서 marker 인덱스를 계산할 수 있도록 {@code public}으로 노출한다 — 노출 범위는
+         * {@code protected}인 {@link RenderContext} 타입 자체가 게이트한다.
+         */
+        public int nextIndex() {
             return bindings.size() + 1;
         }
 
-        void addBinding(Object value) {
+        /**
+         * 렌더링 순서대로 bind 값을 누적한다. executor가 0-based 인덱스로 위치 바인딩하므로 호출 순서가
+         * 곧 binding 순서다. dialect별 {@link #appendPage} override가 다른 패키지에서 binding을 추가할 수
+         * 있도록 {@code public}으로 노출한다.
+         */
+        public void addBinding(Object value) {
             bindings.add(value);
         }
 
