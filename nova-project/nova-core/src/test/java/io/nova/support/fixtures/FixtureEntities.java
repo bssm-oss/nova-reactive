@@ -12,6 +12,7 @@ import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
 import io.nova.annotation.Index;
 import io.nova.annotation.JoinColumn;
+import io.nova.annotation.Json;
 import io.nova.annotation.ManyToOne;
 import io.nova.annotation.OneToMany;
 import io.nova.annotation.PostLoad;
@@ -1707,6 +1708,136 @@ public final class FixtureEntities {
         private AuthorWithBooksAnnotated author;
 
         public AuthorBookJoinColumnConflict() {
+        }
+    }
+
+    /**
+     * {@code @Json} 컬럼 타입 검증과 라운드트립 테스트에 사용하는 entity. {@code prefs}는 단순한
+     * value object 필드로, 등록된 {@link io.nova.json.JsonCodec}이 JSON 문자열로 직렬화한다.
+     */
+    @Entity
+    @Table("json_accounts")
+    public static class JsonAccount {
+        @Id
+        private Long id;
+
+        @Column("email_address")
+        private String email;
+
+        @Json
+        @Column("preferences")
+        private Preferences prefs;
+
+        public JsonAccount() {
+        }
+
+        public JsonAccount(Long id, String email, Preferences prefs) {
+            this.id = id;
+            this.email = email;
+            this.prefs = prefs;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public Preferences getPrefs() {
+            return prefs;
+        }
+    }
+
+    /**
+     * {@code @Json} 필드가 직렬화하는 작은 value object. JSON 라이브러리에 의존하지 않도록 테스트 codec이
+     * 직접 직렬화/역직렬화한다.
+     */
+    public static final class Preferences {
+        private String theme;
+        private int fontSize;
+
+        public Preferences() {
+        }
+
+        public Preferences(String theme, int fontSize) {
+            this.theme = theme;
+            this.fontSize = fontSize;
+        }
+
+        public String getTheme() {
+            return theme;
+        }
+
+        public int getFontSize() {
+            return fontSize;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (!(other instanceof Preferences that)) {
+                return false;
+            }
+            return fontSize == that.fontSize && java.util.Objects.equals(theme, that.theme);
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(theme, fontSize);
+        }
+
+        @Override
+        public String toString() {
+            return "Preferences{theme=" + theme + ", fontSize=" + fontSize + "}";
+        }
+    }
+
+    /**
+     * {@code @Json} + {@code @Enumerated}를 한 필드에 선언해 metadata 생성이 거부하는지 검증하는 invalid entity.
+     */
+    @Entity
+    public static class JsonAndEnumeratedEntity {
+        @Id
+        private Long id;
+
+        @Json
+        @Enumerated(EnumType.STRING)
+        private Status status;
+
+        public JsonAndEnumeratedEntity() {
+        }
+    }
+
+    /**
+     * {@code @Json} + {@code @ManyToOne}을 한 필드에 선언해 metadata 생성이 거부하는지 검증하는 invalid entity.
+     */
+    @Entity
+    public static class JsonAndRelationEntity {
+        @Id
+        private Long id;
+
+        @Json
+        @ManyToOne
+        private SampleAccount account;
+
+        public JsonAndRelationEntity() {
+        }
+    }
+
+    /**
+     * 등록된 user converter와 충돌하는 {@code @Json} 필드를 가진 invalid entity. {@code Status} 타입에 대해
+     * converter를 등록한 factory에서 metadata 생성이 거부되는지 검증한다.
+     */
+    @Entity
+    public static class JsonWithRegisteredConverterEntity {
+        @Id
+        private Long id;
+
+        @Json
+        private Status status;
+
+        public JsonWithRegisteredConverterEntity() {
         }
     }
 }

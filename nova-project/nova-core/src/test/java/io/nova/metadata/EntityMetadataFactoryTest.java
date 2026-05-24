@@ -29,6 +29,11 @@ import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumWithConverterEntity;
 import io.nova.support.fixtures.FixtureEntities.IndexWithUnknownColumnEntity;
+import io.nova.support.fixtures.FixtureEntities.JsonAccount;
+import io.nova.support.fixtures.FixtureEntities.JsonAndEnumeratedEntity;
+import io.nova.support.fixtures.FixtureEntities.JsonAndRelationEntity;
+import io.nova.support.fixtures.FixtureEntities.JsonWithRegisteredConverterEntity;
+import io.nova.support.fixtures.FixtureEntities.Preferences;
 import io.nova.support.fixtures.FixtureEntities.LongAutoNamedIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.MultipleCallbacksEntity;
 import io.nova.support.fixtures.FixtureEntities.RepeatedIndexEntity;
@@ -880,6 +885,100 @@ class EntityMetadataFactoryTest {
         assertNotNull(email);
     }
 
+    @Test
+    void installsJsonAttributeConverterAndRoundTripsThroughCodec() {
+        EntityMetadataFactory jsonFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), new PreferencesJsonCodec());
+
+        EntityMetadata<JsonAccount> metadata = jsonFactory.getEntityMetadata(JsonAccount.class);
+        PersistentProperty prefs = metadata.findProperty("prefs").orElseThrow();
+
+        assertTrue(prefs.json(), "@Json 필드는 json() marker가 true여야 한다");
+        assertFalse(prefs.enumerated());
+
+        Preferences value = new Preferences("dark", 14);
+        Object encoded = prefs.toColumnValue(value);
+        assertEquals("theme=dark;fontSize=14", encoded, "toColumnValue는 codec이 만든 JSON 문자열이어야 한다");
+
+        Object decoded = prefs.toPropertyValue(encoded);
+        assertEquals(value, decoded, "toPropertyValue는 원본 value object로 복원되어야 한다");
+    }
+
+    @Test
+    void jsonConverterPassesThroughNullValues() {
+        EntityMetadataFactory jsonFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), new PreferencesJsonCodec());
+        PersistentProperty prefs = jsonFactory.getEntityMetadata(JsonAccount.class)
+                .findProperty("prefs").orElseThrow();
+
+        assertNull(prefs.toColumnValue(null));
+        assertNull(prefs.toPropertyValue(null));
+    }
+
+    @Test
+    void jsonPropertyIsColumnMapped() {
+        EntityMetadataFactory jsonFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), new PreferencesJsonCodec());
+        EntityMetadata<JsonAccount> metadata = jsonFactory.getEntityMetadata(JsonAccount.class);
+
+        boolean present = metadata.columnMappedProperties().stream()
+                .anyMatch(property -> property.propertyName().equals("prefs"));
+        assertTrue(present, "@Json 필드는 일반 컬럼 매핑 property로 columnMappedProperties()에 포함돼야 한다");
+    }
+
+    @Test
+    void unconfiguredJsonCodecThrowsWhenJsonValueIsConverted() {
+        // 기본 생성자는 JsonCodec.unconfigured()를 사용한다. metadata 생성은 성공하지만 값 변환 시점에 던진다.
+        PersistentProperty prefs = factory.getEntityMetadata(JsonAccount.class)
+                .findProperty("prefs").orElseThrow();
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> prefs.toColumnValue(new Preferences("light", 12))
+        );
+        assertTrue(exception.getMessage().contains("No JsonCodec configured"),
+                "메시지는 codec 미등록을 알려야 한다, got " + exception.getMessage());
+    }
+
+    @Test
+    void rejectsJsonCombinedWithEnumerated() {
+        EntityMetadataFactory jsonFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), new PreferencesJsonCodec());
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> jsonFactory.getEntityMetadata(JsonAndEnumeratedEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@Json"));
+        assertTrue(exception.getMessage().contains("@Enumerated"));
+    }
+
+    @Test
+    void rejectsJsonCombinedWithRelationAnnotation() {
+        EntityMetadataFactory jsonFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), new PreferencesJsonCodec());
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> jsonFactory.getEntityMetadata(JsonAndRelationEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@Json"));
+    }
+
+    @Test
+    void rejectsJsonCombinedWithRegisteredConverter() {
+        EntityMetadataFactory jsonFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), new PreferencesJsonCodec());
+        jsonFactory.registerConverter(Status.class, new EnumStatusConverter());
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> jsonFactory.getEntityMetadata(JsonWithRegisteredConverterEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@Json"));
+        assertTrue(exception.getMessage().contains("AttributeConverter"));
+    }
+
     private static final class EnumStatusConverter implements io.nova.convert.AttributeConverter<Status, String> {
         @Override
         public String write(Status source) {
@@ -889,6 +988,36 @@ class EntityMetadataFactoryTest {
         @Override
         public Status read(String source) {
             return Status.valueOf(source.toUpperCase());
+        }
+    }
+
+    /**
+     * JSON 라이브러리 없이 {@link Preferences}만 직렬화/역직렬화하는 손수 만든 {@link io.nova.json.JsonCodec}
+     * 테스트 더블이다. {@code theme=...;fontSize=...} 형태의 결정적 문자열을 사용한다.
+     */
+    private static final class PreferencesJsonCodec implements io.nova.json.JsonCodec {
+        @Override
+        public String encode(Object value) {
+            Preferences prefs = (Preferences) value;
+            return "theme=" + prefs.getTheme() + ";fontSize=" + prefs.getFontSize();
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> T decode(String json, Class<T> type) {
+            String theme = null;
+            int fontSize = 0;
+            for (String part : json.split(";")) {
+                int eq = part.indexOf('=');
+                String key = part.substring(0, eq);
+                String raw = part.substring(eq + 1);
+                if (key.equals("theme")) {
+                    theme = raw;
+                } else if (key.equals("fontSize")) {
+                    fontSize = Integer.parseInt(raw);
+                }
+            }
+            return (T) new Preferences(theme, fontSize);
         }
     }
 }

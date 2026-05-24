@@ -8,6 +8,7 @@ import io.nova.support.fixtures.FixtureEntities.AlterTargetEntity;
 import io.nova.support.fixtures.FixtureEntities.AutoNamedIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
+import io.nova.support.fixtures.FixtureEntities.JsonAccount;
 import io.nova.support.fixtures.FixtureEntities.RepeatedIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.SingleIndexEntity;
@@ -146,6 +147,31 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void rendersJsonPropertyWithDefaultDialectJsonType() {
+        String statement = dialect.schemaGenerator().createTable(
+                factory.getEntityMetadata(JsonAccount.class)
+        );
+
+        assertEquals(
+                "create table json_accounts (id bigint primary key, email_address varchar(255), preferences json)",
+                statement
+        );
+    }
+
+    @Test
+    void rendersJsonPropertyWithDialectOverriddenJsonType() {
+        Dialect jsonb = new JsonbTestDialect();
+        String statement = jsonb.schemaGenerator().createTable(
+                factory.getEntityMetadata(JsonAccount.class)
+        );
+
+        assertEquals(
+                "create table json_accounts (id bigint primary key, email_address varchar(255), preferences jsonb)",
+                statement
+        );
+    }
+
+    @Test
     void alterTableDropColumnRejectsUnknownColumn() {
         EntityMetadata<AlterTargetEntity> metadata = factory.getEntityMetadata(AlterTargetEntity.class);
 
@@ -190,6 +216,49 @@ class AbstractSchemaGeneratorTest {
         @Override
         public SchemaGenerator schemaGenerator() {
             return schemaGenerator;
+        }
+    }
+
+    /**
+     * {@link Dialect#jsonColumnType()}을 {@code jsonb}로 override 하는 dialect double로, PostgreSQL의
+     * jsonb 동작을 nova-core 안에서 module dependency 없이 재현한다. PostgresqlDialect 자체 검증은
+     * postgresql 모듈 테스트가 담당한다.
+     */
+    private static final class JsonbTestDialect implements Dialect {
+        private final BindMarkerStrategy bindMarkers = index -> "?";
+        private final SqlRenderer renderer = new AbstractSqlRenderer(this) {
+        };
+        private final SchemaGenerator schemaGenerator = new AbstractSchemaGenerator(this) {
+        };
+
+        @Override
+        public String name() {
+            return "jsonb-test";
+        }
+
+        @Override
+        public String quote(String identifier) {
+            return identifier;
+        }
+
+        @Override
+        public BindMarkerStrategy bindMarkers() {
+            return bindMarkers;
+        }
+
+        @Override
+        public SqlRenderer sqlRenderer() {
+            return renderer;
+        }
+
+        @Override
+        public SchemaGenerator schemaGenerator() {
+            return schemaGenerator;
+        }
+
+        @Override
+        public String jsonColumnType() {
+            return "jsonb";
         }
     }
 }

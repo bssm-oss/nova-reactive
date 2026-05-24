@@ -80,6 +80,22 @@ class PostgresqlDialectTest {
     }
 
     @Test
+    void jsonColumnTypeIsJsonb() {
+        assertEquals("jsonb", dialect.jsonColumnType());
+    }
+
+    @Test
+    void rendersJsonColumnAsJsonbInSchema() {
+        EntityMetadata<PostgresqlJsonAccount> jsonMetadata = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(PostgresqlJsonAccount.class);
+
+        assertEquals(
+                "create table \"json_accounts\" (\"id\" bigint primary key, \"payload\" jsonb)",
+                dialect.schemaGenerator().createTable(jsonMetadata)
+        );
+    }
+
+    @Test
     void rendersSequenceNextValueSqlWithStableAlias() {
         assertEquals(
                 "select nextval('account_id_seq') as " + io.nova.sql.Dialect.SEQUENCE_VALUE_COLUMN,
