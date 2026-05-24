@@ -12,6 +12,7 @@ import io.nova.annotation.GenerationType;
 import io.nova.annotation.Id;
 import io.nova.annotation.Index;
 import io.nova.annotation.JoinColumn;
+import io.nova.annotation.Json;
 import io.nova.annotation.ManyToOne;
 import io.nova.annotation.OneToMany;
 import io.nova.annotation.PostLoad;
@@ -26,6 +27,8 @@ import io.nova.annotation.Version;
 import io.nova.convert.AttributeConverter;
 import io.nova.convert.EnumOrdinalConverter;
 import io.nova.convert.EnumStringConverter;
+import io.nova.convert.JsonAttributeConverter;
+import io.nova.json.JsonCodec;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
@@ -70,11 +73,25 @@ public final class EntityMetadataFactory {
             Pattern.compile("^[A-Za-z_][A-Za-z0-9_$.]*$");
 
     private final NamingStrategy namingStrategy;
+    private final JsonCodec jsonCodec;
     private final Map<Class<?>, EntityMetadata<?>> cache = new ConcurrentHashMap<>();
     private final Map<Class<?>, AttributeConverter<?, ?>> converters = new ConcurrentHashMap<>();
 
+    /**
+     * {@link JsonCodec} 없이 factory를 만든다 — {@code @Json} 필드가 없는 엔티티만 다룰 때 사용한다.
+     * {@code @Json} 필드가 발견되면 {@link JsonCodec#unconfigured()}가 변환 시점에
+     * {@link IllegalStateException}을 던진다.
+     */
     public EntityMetadataFactory(NamingStrategy namingStrategy) {
+        this(namingStrategy, JsonCodec.unconfigured());
+    }
+
+    /**
+     * 주어진 {@link JsonCodec}을 {@code @Json} 필드 변환에 사용하는 factory를 만든다.
+     */
+    public EntityMetadataFactory(NamingStrategy namingStrategy, JsonCodec jsonCodec) {
         this.namingStrategy = namingStrategy;
+        this.jsonCodec = jsonCodec;
     }
 
     /**
@@ -590,11 +607,17 @@ public final class EntityMetadataFactory {
         }
 
         Enumerated enumerated = field.getAnnotation(Enumerated.class);
+        boolean isJson = field.isAnnotationPresent(Json.class);
         AttributeConverter<?, ?> userConverter = converters.get(field.getType());
         boolean isEnumerated = false;
         EnumType enumType = null;
         AttributeConverter<?, ?> converter = userConverter;
         if (enumerated != null) {
+            if (isJson) {
+                throw new IllegalStateException(
+                        declaringType.getName() + "." + field.getName()
+                                + " cannot declare both @Json and @Enumerated");
+            }
             if (!field.getType().isEnum()) {
                 throw new IllegalArgumentException(
                         declaringType.getName() + "." + field.getName()
@@ -610,6 +633,17 @@ public final class EntityMetadataFactory {
             isEnumerated = true;
             enumType = enumerated.value();
             converter = createEnumConverter(field.getType(), enumType);
+        }
+        if (isJson) {
+            if (userConverter != null) {
+                throw new IllegalStateException(
+                        declaringType.getName() + "." + field.getName()
+                                + " cannot use both @Json and a registered AttributeConverter for "
+                                + field.getType().getName());
+            }
+            // @Json은 dialect의 jsonColumnType()으로 컬럼 타입을 받고, 값 변환은 주입된 JsonCodec을 감싼
+            // JsonAttributeConverter로 일반 converter 경로(toColumnValue/toPropertyValue)를 그대로 탄다.
+            converter = new JsonAttributeConverter(jsonCodec, field.getType());
         }
 
         boolean embedded = hostPath != null && !hostPath.isEmpty();
@@ -631,6 +665,7 @@ public final class EntityMetadataFactory {
                 embedded ? hostPath : List.of(),
                 isEnumerated,
                 enumType,
+                isJson,
                 false,
                 null,
                 true,
@@ -677,6 +712,9 @@ public final class EntityMetadataFactory {
         if (field.isAnnotationPresent(Enumerated.class)) {
             throw new IllegalStateException(location + " cannot declare @Enumerated together with a relation annotation");
         }
+        if (field.isAnnotationPresent(Json.class)) {
+            throw new IllegalStateException(location + " cannot declare @Json together with a relation annotation");
+        }
     }
 
     /**
@@ -714,6 +752,7 @@ public final class EntityMetadataFactory {
                 List.of(),
                 false,
                 null,
+                false,
                 false,
                 null,
                 true,
@@ -762,6 +801,7 @@ public final class EntityMetadataFactory {
                 List.of(),
                 false,
                 null,
+                false,
                 true,
                 targetType,
                 nullable,

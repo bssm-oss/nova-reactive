@@ -122,6 +122,11 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      * {@code varchar(255)}(STRING) 또는 {@code integer}(ORDINAL)로 고정한다.
      */
     protected String sqlType(PersistentProperty property) {
+        if (property.json()) {
+            // @Json 컬럼은 Java 타입과 무관하게 dialect가 제공하는 JSON 타입을 사용한다
+            // (기본 json, PostgreSQL jsonb). 컬럼 이름/nullability는 일반 컬럼과 동일하게 결정된다.
+            return dialect.jsonColumnType();
+        }
         if (property.enumerated()) {
             return property.enumType() == EnumType.STRING ? "varchar(255)" : "integer";
         }

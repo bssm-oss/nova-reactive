@@ -31,6 +31,7 @@ public final class PersistentProperty {
     private final List<Field> embeddedHostPath;
     private final boolean enumerated;
     private final EnumType enumType;
+    private final boolean json;
     private final boolean manyToOne;
     private final Class<?> manyToOneTargetType;
     private final boolean manyToOneNullable;
@@ -57,6 +58,7 @@ public final class PersistentProperty {
             List<Field> embeddedHostPath,
             boolean enumerated,
             EnumType enumType,
+            boolean json,
             boolean manyToOne,
             Class<?> manyToOneTargetType,
             boolean manyToOneNullable,
@@ -85,6 +87,7 @@ public final class PersistentProperty {
         }
         this.enumerated = enumerated;
         this.enumType = enumType;
+        this.json = json;
         this.manyToOne = manyToOne;
         this.manyToOneTargetType = manyToOneTargetType;
         this.manyToOneNullable = manyToOneNullable;
@@ -189,6 +192,15 @@ public final class PersistentProperty {
      */
     public EnumType enumType() {
         return enumType;
+    }
+
+    /**
+     * {@code true}이면 이 property는 {@link io.nova.annotation.Json}으로 마킹되어 값이 JSON 문자열로
+     * 직렬화돼 단일 컬럼에 저장된다. 컬럼 SQL 타입은 {@link io.nova.sql.Dialect#jsonColumnType()}이
+     * 결정하고, 값 변환은 {@link io.nova.convert.JsonAttributeConverter}를 통한 일반 converter 경로로 흐른다.
+     */
+    public boolean json() {
+        return json;
     }
 
     /**

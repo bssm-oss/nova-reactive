@@ -72,6 +72,16 @@ public interface Dialect {
     }
 
     /**
+     * {@code @Json}으로 표시된 컬럼에 사용할 SQL 타입을 반환한다. 기본값은 표준 {@code json}이며,
+     * PostgreSQL처럼 binary JSON 타입을 지원하는 dialect는 {@code jsonb} 등으로 override 한다.
+     * 컬럼 이름과 nullability는 schema generator가 일반 컬럼과 동일하게 결정하고, 이 메서드는 타입
+     * 토큰만 제공한다.
+     */
+    default String jsonColumnType() {
+        return "json";
+    }
+
+    /**
      * 주어진 {@link LockMode}에 해당하는 pessimistic lock 절을 반환한다. 절은 SELECT SQL의
      * 맨 뒤에 그대로 이어 붙일 수 있도록 선행 공백을 포함한다. {@link LockMode#NONE}은 빈 문자열이다.
      * <p>
