@@ -5,6 +5,7 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.dialect.mysql.MySqlDialect;
 import io.nova.dialect.postgresql.PostgresqlDialect;
+import io.nova.json.JsonCodec;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.r2dbc.R2dbcSqlExecutor;
@@ -26,7 +27,17 @@ public final class Nova {
     }
 
     public static ReactiveEntityOperations create(ConnectionFactory connectionFactory, Dialect dialect) {
-        EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        return create(connectionFactory, dialect, JsonCodec.unconfigured());
+    }
+
+    /**
+     * {@code @Json} 필드 직렬화에 사용할 {@link JsonCodec}을 명시해 operations를 조립한다.
+     * codec은 {@link EntityMetadataFactory}로 전달돼 {@code @Json} 필드의 converter에 주입된다.
+     */
+    public static ReactiveEntityOperations create(
+            ConnectionFactory connectionFactory, Dialect dialect, JsonCodec jsonCodec) {
+        EntityMetadataFactory metadataFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), jsonCodec);
         R2dbcSqlExecutor executor = new R2dbcSqlExecutor(connectionFactory, dialect);
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
         return new SimpleReactiveEntityOperations(
