@@ -96,6 +96,9 @@ Nova는 다음 환경에서 테스트되었습니다.
 | Driver SPI       | R2DBC SPI 1.0.0.RELEASE         |                                        |
 | PostgreSQL       | 14, 15, 16, 17                  | `nova-dialect-postgresql`              |
 | MySQL            | 8.0, 8.4                        | `nova-dialect-mysql`                   |
+| MariaDB          | 10.5+, 11                       | `nova-dialect-mariadb`                 |
+| H2               | 2.x (MODE 무관)                 | `nova-dialect-h2`                      |
+| Oracle           | 12c+, 19c, 21c+                 | `nova-dialect-oracle`                  |
 
 > **Note**: Nova 코어는 R2DBC **SPI**에만 의존합니다. 실제 사용 시에는 데이터베이스에 맞는
 > R2DBC 드라이버(`r2dbc-postgresql`, `r2dbc-mysql` 등)를 별도로 의존성에 추가하세요.
@@ -110,8 +113,10 @@ Nova는 다음 환경에서 테스트되었습니다.
 | `nova-r2dbc`                 | R2DBC SPI 어댑터 — `R2dbcSqlExecutor`, `R2dbcTransactionManager`, `SqlExecutionListener` hook |
 | `nova-dialect-postgresql`    | PostgreSQL 다이얼렉트 (`$N` bind marker, `bigserial`/`serial` identity, `RETURNING`) |
 | `nova-dialect-mysql`         | MySQL 다이얼렉트 (`?` bind marker, `auto_increment` identity)                  |
-| `nova-dialect-h2`            | H2 다이얼렉트 (`?` bind marker, double-quote 식별자, `GENERATED ALWAYS AS IDENTITY`, `RETURNING`) |
-| `nova-spring-boot-starter`   | Spring Boot 자동 구성 — `NovaAutoConfiguration` + `nova.*` 프로퍼티 바인딩      |
+| `nova-dialect-h2`            | H2 다이얼렉트 (`?` bind marker, double-quote 식별자, `GENERATED ALWAYS AS IDENTITY`, generated-keys 경로) |
+| `nova-dialect-mariadb`       | MariaDB 다이얼렉트 (`?` bind marker, backtick 식별자, `auto_increment` identity) |
+| `nova-dialect-oracle`        | Oracle 다이얼렉트 (`?` bind marker, double-quote 식별자, `OFFSET..FETCH` 페이지네이션, `<seq>.nextval ... from dual`, `@Json`→`clob`) |
+| `nova-spring-boot-starter`   | Spring Boot 자동 구성 — `NovaAutoConfiguration` + `nova.*` 프로퍼티 바인딩, `ConnectionFactory` driver 메타데이터로 `Dialect` 자동 감지 |
 | `nova-spring-data`           | Spring Data 스타일 repository — `ReactiveCrudRepository<T, ID>` + `@EnableNovaRepositories` (Spring Data Commons 미의존) |
 | `nova-metrics-micrometer`    | Micrometer 어댑터 — `MicrometerSqlExecutionListener` (timer + error counter) |
 
@@ -728,6 +733,10 @@ public interface Dialect {
 | `PostgresqlDialect`  | `$1`, `$2`  | `bigserial` / `serial` primary key                              | `" "`      | `RETURNING` 절            | `nextval('seq')`         |
 | `MySqlDialect`       | `?`         | `bigint primary key auto_increment`                             | `` ` ` ``  | `Statement.returnGeneratedValues` | 미지원 (UOE)     |
 | `H2Dialect`          | `?`         | `bigint generated always as identity primary key`               | `" "`      | `Statement.returnGeneratedValues` (driver-side) | 미지원 (UOE)             |
+| `MariaDbDialect`     | `?`         | `bigint primary key auto_increment`                             | `` ` ` ``  | `Statement.returnGeneratedValues` | 미지원 (UOE)     |
+| `OracleDialect`      | `?`         | `number(19) generated always as identity primary key`           | `" "`      | `Statement.returnGeneratedValues` | `<seq>.nextval from dual` |
+
+> **Oracle 특이사항**: `LIMIT/OFFSET` 미지원 → 페이지네이션은 `OFFSET ? ROWS FETCH NEXT ? ROWS ONLY`, `exists()`는 `FETCH FIRST 1 ROWS ONLY`로 렌더됩니다. `FOR SHARE` row lock은 미지원이라 `UnsupportedOperationException`을 던지고, `@Json` 컬럼은 `clob`로 매핑됩니다(21c+ native `JSON`은 dialect override).
 
 `@GeneratedValue(strategy = SEQUENCE, generator = "account_seq")`이면 dialect의 `sequenceNextValueSql(generator)`로 `Dialect.SEQUENCE_VALUE_COLUMN` alias를 가진 SELECT을 발행해 id를 미리 받아옵니다. `UUID`는 `java.util.UUID` 또는 `String` field에 대해 ops가 INSERT 직전 `UUID.randomUUID()`를 stamp합니다.
 
@@ -952,7 +961,7 @@ nova/
 - [x] JSON column type (`@Json` — pluggable `JsonCodec` SPI, JSON 라이브러리 미의존, PostgreSQL `jsonb`)
 - [x] MariaDB 다이얼렉트 (`nova-dialect-mariadb`)
 - [x] Oracle 다이얼렉트 (`nova-dialect-oracle` — `OFFSET..FETCH` 페이지네이션, 시퀀스, IDENTITY)
-- [ ] 1.0 GA 릴리스 및 Maven Central 배포 (POM 메타데이터·서명 스캐폴딩 완료, GA 시 namespace/엔드포인트 확정 필요)
+- [ ] 1.0 GA 릴리스 및 Maven Central 배포 (Central Portal 엔드포인트·POM·조건부 서명 구성 완료; GA 시 namespace/SCM placeholder 실값 확정 + 버전 bump 필요)
 
 진행 중이거나 논의 중인 항목은 이슈 트래커를 참고하세요.
 
