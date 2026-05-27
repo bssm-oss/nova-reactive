@@ -136,12 +136,18 @@ class OracleSqlRendererTest {
     }
 
     @Test
-    void rendersExistsQuery() {
+    void rendersExistsQueryUsingFetchFirstRowsOnlyNotLimit() {
+        // Oracle은 LIMIT을 지원하지 않으므로(ORA-00933) exists()의 single-row 가드는
+        // 12c+ 표준 FETCH FIRST 1 ROWS ONLY로 렌더돼야 한다.
         SqlStatement statement = dialect.sqlRenderer().exists(
                 metadata,
                 QuerySpec.empty().where(Criteria.isNotNull("email"))
         );
 
-        assertEquals("select 1 from \"accounts\" where \"email_address\" is not null limit 1", statement.sql());
+        assertEquals(
+                "select 1 from \"accounts\" where \"email_address\" is not null fetch first 1 rows only",
+                statement.sql()
+        );
+        assertEquals(List.of(), statement.bindings());
     }
 }

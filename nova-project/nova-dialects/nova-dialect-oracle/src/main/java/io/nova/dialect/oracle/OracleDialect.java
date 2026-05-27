@@ -69,6 +69,16 @@ public final class OracleDialect implements Dialect {
     }
 
     /**
+     * {@code @Json} 컬럼에 사용할 SQL 타입을 반환한다. Oracle 21c+는 native {@code JSON} 타입을
+     * 지원하지만 그 이전 버전(12c~19c)은 없으므로, 광범위 호환을 위해 JSON 문자열을 길이 제한 없는
+     * {@code clob}로 매핑한다. 21c+ 전용 배포는 이 메서드를 override 해서 native {@code json}을 쓸 수 있다.
+     */
+    @Override
+    public String jsonColumnType() {
+        return "clob";
+    }
+
+    /**
      * Oracle은 {@code FOR UPDATE}만 row-level pessimistic lock으로 지원한다. ANSI {@code FOR SHARE}
      * (공유 행 잠금)는 Oracle에 대응 구문이 없으므로 {@link LockMode#FOR_SHARE} 요청은
      * {@link UnsupportedOperationException}으로 거부한다 — Oracle의 테이블 레벨 {@code LOCK TABLE ...
@@ -84,8 +94,9 @@ public final class OracleDialect implements Dialect {
     }
 
     /**
-     * Oracle 12c+ paging renderer다. {@code LIMIT/OFFSET}을 지원하지 않는 Oracle을 위해
-     * {@code OFFSET ? ROWS FETCH NEXT ? ROWS ONLY} 문법을 렌더한다.
+     * Oracle 12c+ SQL renderer다. {@code LIMIT/OFFSET}을 지원하지 않는 Oracle을 위해 paging은
+     * {@code OFFSET ? ROWS FETCH NEXT ? ROWS ONLY}로, exists()의 single-row 가드는
+     * {@code FETCH FIRST 1 ROWS ONLY}로 렌더한다.
      */
     private static final class OracleSqlRenderer extends AbstractSqlRenderer {
         // 부모(AbstractSqlRenderer)의 dialect 필드는 private이라 접근할 수 없으므로 생성자에서 받은
@@ -95,6 +106,15 @@ public final class OracleDialect implements Dialect {
         private OracleSqlRenderer(Dialect dialect) {
             super(dialect);
             this.dialect = dialect;
+        }
+
+        /**
+         * Oracle은 {@code LIMIT}을 지원하지 않으므로 exists()의 single-row 가드를 12c+ 표준
+         * {@code FETCH FIRST 1 ROWS ONLY}로 렌더한다 — 기본 {@code LIMIT 1}은 ORA-00933으로 실패한다.
+         */
+        @Override
+        protected String existsRowLimitClause() {
+            return " fetch first 1 rows only";
         }
 
         @Override
@@ -146,8 +166,8 @@ public final class OracleDialect implements Dialect {
         protected String sqlType(PersistentProperty property) {
             // base AbstractSchemaGenerator.sqlType은 @Json을 최우선으로 분기한다. Oracle은 dispatch 전체를
             // 재구현하므로 같은 우선순위로 json 가드를 가장 먼저 둔다 — 빠뜨리면 @Json String 같은 property가
-            // 아래 javaType 분기에서 varchar2(255)로 잘못 매핑된다. jsonColumnType()은 override하지 않아
-            // Dialect 기본값(json 토큰)을 따른다(Oracle 21c+는 native JSON 타입을 수용).
+            // 아래 javaType 분기에서 varchar2(255)로 잘못 매핑된다. jsonColumnType()은 OracleDialect가
+            // clob로 override 한다(12c~19c 호환; 21c+ native JSON은 배포별 override).
             if (property.json()) {
                 return dialect().jsonColumnType();
             }
