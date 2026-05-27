@@ -960,10 +960,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // outer host 전체가 all-null이면 outer까지 null로 설정해 빈 인스턴스가 남지 않도록 한다.
         List<EmbeddedValue> embeddedValues = new ArrayList<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
-            // primitive Java 타입을 그대로 row.get(..., type)에 넘기면 일부 R2DBC driver(예: r2dbc-h2)가
-            // "Cannot decode value of type boolean/long/..."으로 거부하므로 boxed wrapper로 변환한다.
-            // entity 필드 주입 시점에는 reflection이 boxed → primitive unboxing을 자동 처리한다.
-            Object raw = row.get(property.columnName(), wrapPrimitive(property.javaType()));
+            // converter가 있는 property(@Json, @Enumerated)는 driver가 디코딩 가능한 저장 타입(columnType)을
+            // 요청해야 한다 — driver는 varchar 컬럼을 enum/POJO로 직접 디코딩할 수 없다. converter가 없으면
+            // columnType()이 javaType을 그대로 돌려준다. primitive Java 타입을 그대로 row.get(..., type)에
+            // 넘기면 일부 R2DBC driver(예: r2dbc-h2)가 "Cannot decode value of type boolean/long/..."으로
+            // 거부하므로 boxed wrapper로 변환한다. entity 필드 주입 시점에는 reflection이 boxed → primitive
+            // unboxing을 자동 처리한다.
+            Object raw = row.get(property.columnName(), wrapPrimitive(property.columnType()));
             Object value = property.toPropertyValue(raw);
             if (property.embedded()) {
                 embeddedValues.add(new EmbeddedValue(property, value));
@@ -1111,9 +1114,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         Object[] arguments = new Object[properties.size()];
         for (int i = 0; i < properties.size(); i++) {
             PersistentProperty property = properties.get(i);
-            // primitive 타입은 driver 호환을 위해 boxed wrapper로 변환해서 row.get에 전달한다.
+            // converter property는 저장 타입(columnType)을, primitive는 boxed wrapper를 요청한다.
             // 자세한 사유는 mapRow의 동일 주석 참고.
-            Object raw = row.get(property.columnName(), wrapPrimitive(property.javaType()));
+            Object raw = row.get(property.columnName(), wrapPrimitive(property.columnType()));
             arguments[i] = property.toPropertyValue(raw);
         }
         try {

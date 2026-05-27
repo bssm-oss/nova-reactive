@@ -3,6 +3,7 @@ package io.nova.r2dbc.integration;
 import io.nova.core.EntityStateDetector;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
+import io.nova.json.JsonCodec;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.r2dbc.R2dbcSqlExecutor;
@@ -60,6 +61,30 @@ final class H2IntegrationTestSupport {
      */
     static H2IntegrationTestSupport create() {
         return create("");
+    }
+
+    /**
+     * {@code @Json} 필드를 사용하는 통합 테스트용으로 {@link JsonCodec}을 metadata factory에 주입한 support를
+     * 만든다. URL parameter는 기본값을 쓴다.
+     */
+    static H2IntegrationTestSupport create(JsonCodec jsonCodec) {
+        String dbName = "novaint_" + UUID.randomUUID().toString().replace("-", "");
+        String url = "r2dbc:h2:mem:///" + dbName + "?DB_CLOSE_DELAY=-1";
+        ConnectionFactory connectionFactory = ConnectionFactories.get(url);
+        Dialect dialect = new H2Dialect();
+        EntityMetadataFactory metadataFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), jsonCodec);
+        R2dbcSqlExecutor sqlExecutor = new R2dbcSqlExecutor(connectionFactory, dialect);
+        R2dbcTransactionManager transactionManager = new R2dbcTransactionManager(connectionFactory);
+        SimpleReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
+                metadataFactory,
+                dialect,
+                sqlExecutor,
+                new EntityStateDetector(),
+                new SimpleReactiveTransactionOperations(transactionManager)
+        );
+        return new H2IntegrationTestSupport(
+                connectionFactory, dialect, metadataFactory, sqlExecutor, transactionManager, operations);
     }
 
     /**

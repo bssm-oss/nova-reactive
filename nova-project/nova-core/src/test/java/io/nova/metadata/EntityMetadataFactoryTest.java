@@ -916,6 +916,34 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
+    void columnTypeReflectsConverterStorageType() {
+        // converter가 있는 property는 row 디코딩 시 도메인 타입이 아니라 driver가 받아들이는 저장 타입을
+        // 요청해야 한다 — driver는 varchar 컬럼을 enum/POJO로 직접 디코딩할 수 없다.
+        EntityMetadataFactory jsonFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), new PreferencesJsonCodec());
+
+        PersistentProperty json = jsonFactory.getEntityMetadata(JsonAccount.class)
+                .findProperty("prefs").orElseThrow();
+        assertEquals(String.class, json.columnType(), "@Json은 String으로 저장된다");
+
+        PersistentProperty enumString = factory.getEntityMetadata(EnumStringAccount.class)
+                .findProperty("status").orElseThrow();
+        assertEquals(String.class, enumString.columnType(), "@Enumerated(STRING)은 String으로 저장된다");
+
+        PersistentProperty enumOrdinal = factory.getEntityMetadata(EnumOrdinalAccount.class)
+                .findProperty("status").orElseThrow();
+        assertEquals(Integer.class, enumOrdinal.columnType(), "@Enumerated(ORDINAL)은 Integer로 저장된다");
+    }
+
+    @Test
+    void columnTypeFallsBackToJavaTypeWithoutConverter() {
+        PersistentProperty email = factory.getEntityMetadata(JsonAccount.class)
+                .findProperty("email").orElseThrow();
+        assertEquals(String.class, email.columnType(),
+                "converter가 없는 property는 도메인 타입(javaType)을 그대로 요청한다");
+    }
+
+    @Test
     void jsonPropertyIsColumnMapped() {
         EntityMetadataFactory jsonFactory =
                 new EntityMetadataFactory(new DefaultNamingStrategy(), new PreferencesJsonCodec());

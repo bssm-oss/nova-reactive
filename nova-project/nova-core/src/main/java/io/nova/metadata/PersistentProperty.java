@@ -204,6 +204,28 @@ public final class PersistentProperty {
     }
 
     /**
+     * row 디코딩 시 R2DBC driver에 요청해야 하는 컬럼 값의 Java 타입을 반환한다.
+     * <p>
+     * converter가 적용되는 property는 driver가 디코딩할 수 있는 <em>저장 표현 타입</em>을 요청해야 한다 —
+     * driver는 {@code varchar} 컬럼을 enum 클래스나 임의 POJO로 직접 디코딩할 수 없기 때문이다. row에서
+     * 저장 타입을 읽은 뒤 {@link #toPropertyValue(Object)}가 도메인 타입으로 복원한다. 구체적으로
+     * {@code @Json}과 {@code @Enumerated(STRING)}은 {@link String}, {@code @Enumerated(ORDINAL)}은
+     * {@link Integer}로 저장된다. converter가 없으면 도메인 타입({@link #javaType()})을 그대로 요청한다.
+     * <p>
+     * 이 타입은 {@link io.nova.sql.AbstractSchemaGenerator}가 emit하는 컬럼 SQL 타입과 짝을 이룬다
+     * (STRING/json → {@code varchar}, ORDINAL → {@code integer}).
+     */
+    public Class<?> columnType() {
+        if (json) {
+            return String.class;
+        }
+        if (enumerated) {
+            return enumType == EnumType.STRING ? String.class : Integer.class;
+        }
+        return javaType;
+    }
+
+    /**
      * {@code true}이면 이 property는 {@link io.nova.annotation.ManyToOne}의 owning side이며,
      * {@link #columnName()}은 FK 컬럼 이름, {@link #manyToOneTargetType()}는 참조 대상 entity 타입이다.
      * column read/write 시에는 child entity의 id 값을 직접 다룬다 — 이 property에서 entity 인스턴스를
