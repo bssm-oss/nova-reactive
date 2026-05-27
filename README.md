@@ -961,6 +961,7 @@ nova/
 - [x] JSON column type (`@Json` — pluggable `JsonCodec` SPI, JSON 라이브러리 미의존, PostgreSQL `jsonb`)
 - [x] MariaDB 다이얼렉트 (`nova-dialect-mariadb`)
 - [x] Oracle 다이얼렉트 (`nova-dialect-oracle` — `OFFSET..FETCH` 페이지네이션, 시퀀스, IDENTITY)
+- [x] `@Column(length / precision / scale)` 컬럼 타입 커스터마이징 + `BigDecimal`(`numeric`/`number`) 컬럼 지원
 - [ ] 1.0 GA 릴리스 및 Maven Central 배포 (Central Portal 엔드포인트·POM·조건부 서명 구성 완료; GA 시 namespace/SCM placeholder 실값 확정 + 버전 bump 필요)
 
 진행 중이거나 논의 중인 항목은 이슈 트래커를 참고하세요.
