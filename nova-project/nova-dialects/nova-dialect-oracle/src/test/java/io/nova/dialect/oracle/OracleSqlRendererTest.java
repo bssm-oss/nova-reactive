@@ -81,7 +81,7 @@ class OracleSqlRendererTest {
 
         assertEquals(
                 "select \"id\" as \"id\", \"email_address\" as \"email_address\", \"active\" as \"active\" "
-                        + "from \"accounts\" where (\"id\" < ?) order by \"id\" desc fetch first ? rows only",
+                        + "from \"accounts\" where ((\"id\" < ?)) order by \"id\" desc fetch first ? rows only",
                 statement.sql()
         );
         // cursor 비교 값(100L) 바인딩 후 fetch-first limit(5)만 추가된다 — offset은 생략된다.
