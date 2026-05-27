@@ -206,6 +206,11 @@ public final class FixtureEntities {
         @Column("default_decimal")
         private java.math.BigDecimal defaultDecimal;
 
+        // scale을 생략하면 numeric(precision, 0)으로 emit되어 소수부가 잘린다(JPA @Column 관례와 동일).
+        // 통화 컬럼에서 흔한 실수이므로 이 동작을 테스트로 명시 고정한다.
+        @Column(value = "precision_only", precision = 10)
+        private java.math.BigDecimal precisionOnly;
+
         public ColumnTypedEntity() {
         }
     }

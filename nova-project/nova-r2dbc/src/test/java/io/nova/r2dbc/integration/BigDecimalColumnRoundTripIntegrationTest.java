@@ -30,10 +30,10 @@ class BigDecimalColumnRoundTripIntegrationTest {
     @Test
     void bigDecimalColumnRoundTripsThroughSaveAndFindById() {
         H2IntegrationTestSupport support = H2IntegrationTestSupport.create();
-        // numeric(12, 2) 컬럼으로 scale 2의 통화 금액을 저장한다. id는 IDENTITY.
-        support.execute("create table \"priced_items\" ("
-                + "\"id\" bigint generated always as identity primary key, "
-                + "\"amount\" numeric(12, 2))");
+        // schema generator가 emit하는 DDL을 그대로 실행해, @Column(precision, scale)이 만든
+        // numeric(12, 2) 컬럼 정의를 실제 H2 driver가 수용하는지까지 end-to-end로 검증한다
+        // (수동 DDL은 emission↔수용 불일치를 가릴 수 있다).
+        support.execute(support.operations().createTableSql(PricedItem.class));
 
         BigDecimal amount = new BigDecimal("12345.67");
         PricedItem item = new PricedItem(amount);

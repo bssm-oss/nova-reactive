@@ -63,7 +63,9 @@ class AbstractSchemaGeneratorTest {
                         + "short_name varchar(64), "
                         + "description varchar(255), "
                         + "price numeric(12, 2), "
-                        + "default_decimal numeric(19, 2))",
+                        + "default_decimal numeric(19, 2), "
+                        // scale 생략 시 numeric(precision, 0) — 소수부 없는 정수 numeric으로 emit된다.
+                        + "precision_only numeric(10, 0))",
                 statement
         );
     }
