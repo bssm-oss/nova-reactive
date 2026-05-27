@@ -11,6 +11,7 @@ import io.nova.dialect.oracle.OracleDialect;
 import io.nova.dialect.postgresql.PostgresqlDialect;
 import io.nova.sql.Dialect;
 import io.r2dbc.spi.Connection;
+import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
 import io.r2dbc.spi.ConnectionFactoryMetadata;
 import org.junit.jupiter.api.Test;
@@ -60,10 +61,13 @@ class NovaResolveDialectTest {
     }
 
     @Test
-    void resolvesShortOracleDriverNameToOracleDialect() {
-        // 일부 oracle-r2dbc 버전은 "Oracle"로 노출하므로 alias도 매핑한다.
-        Dialect dialect = Nova.resolveDialect(connectionFactoryNamed("Oracle"));
-        assertInstanceOf(OracleDialect.class, dialect);
+    void realH2DriverExposesNameMatchedByResolveDialect() {
+        // stub이 아닌 실제 r2dbc-h2 driver가 노출하는 getName()이 우리가 매핑하는 "H2" 문자열과
+        // 정확히 일치하는지 고정한다 — driver 이름 매핑 정확성을 실드라이버로 검증하는 회귀 가드.
+        ConnectionFactory h2 = ConnectionFactories.get("r2dbc:h2:mem:///novaresolve");
+        assertEquals("H2", h2.getMetadata().getName(),
+                "r2dbc-h2 driver 이름이 resolveDialect의 case와 일치해야 한다");
+        assertInstanceOf(H2Dialect.class, Nova.resolveDialect(h2));
     }
 
     @Test

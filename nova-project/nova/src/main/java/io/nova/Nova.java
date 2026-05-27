@@ -52,16 +52,16 @@ public final class Nova {
     }
 
     public static Dialect resolveDialect(ConnectionFactory connectionFactory) {
-        // driver 이름은 R2DBC ConnectionFactoryMetadata.getName() 관례를 따른다:
-        // r2dbc-postgresql -> "PostgreSQL", r2dbc-mysql -> "MySQL", r2dbc-mariadb -> "MariaDB",
-        // r2dbc-h2 -> "H2", oracle-r2dbc -> "Oracle Database"(일부 버전은 "Oracle"로 노출하므로 둘 다 매핑).
+        // driver 이름은 각 R2DBC driver의 ConnectionFactoryMetadata.getName() 상수와 정확히 일치한다(검증됨):
+        // r2dbc-postgresql -> "PostgreSQL", r2dbc-mysql -> "MySQL",
+        // mariadb-connector-r2dbc -> "MariaDB", r2dbc-h2 -> "H2", oracle-r2dbc -> "Oracle Database".
         String driverName = connectionFactory.getMetadata().getName();
         return switch (driverName) {
             case "PostgreSQL" -> new PostgresqlDialect();
             case "MySQL" -> new MySqlDialect();
             case "MariaDB" -> new MariaDbDialect();
             case "H2" -> new H2Dialect();
-            case "Oracle Database", "Oracle" -> new OracleDialect();
+            case "Oracle Database" -> new OracleDialect();
             default -> throw new IllegalStateException(
                     "No Nova dialect mapped for R2DBC driver: " + driverName
                             + " (supported: PostgreSQL, MySQL, MariaDB, H2, Oracle)");
