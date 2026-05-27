@@ -11,9 +11,12 @@ import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import io.nova.tx.ReactiveTransactionManager;
+import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
+import io.r2dbc.spi.ConnectionFactoryMetadata;
 import org.junit.jupiter.api.Test;
+import org.reactivestreams.Publisher;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -103,6 +106,48 @@ class NovaAutoConfigurationTest {
                     Dialect dialect = context.getBean(Dialect.class);
                     assertSame(UserDialectConfig.USER_DIALECT, dialect,
                             "user-defined Dialect must win over auto-detection");
+                });
+    }
+
+    @Test
+    void unmappedDriverFailsFastWhenNoDialectBeanProvided() {
+        // driver 메타데이터가 어떤 Nova dialect에도 매핑되지 않고(예: "SQLServer") 사용자가
+        // Dialect 빈도 제공하지 않으면, novaDialect auto-detection이 Nova.resolveDialect로 위임하면서
+        // IllegalStateException을 던져 컨텍스트 기동이 명확히 실패해야 한다(silent degrade 금지).
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(NovaAutoConfiguration.class))
+                .withUserConfiguration(UnmappedConnectionFactoryConfig.class)
+                .run(context -> {
+                    Throwable startupFailure = context.getStartupFailure();
+                    assertNotNull(startupFailure,
+                            "context must fail to start when driver maps to no dialect and no Dialect bean is provided");
+                    Throwable rootCause = rootCauseOf(startupFailure);
+                    assertTrue(rootCause instanceof IllegalStateException,
+                            "root cause must be IllegalStateException from Nova.resolveDialect, but was: "
+                                    + rootCause);
+                    assertTrue(rootCause.getMessage() != null
+                                    && rootCause.getMessage().contains("No Nova dialect mapped for R2DBC driver"),
+                            "failure must surface the unmapped-driver diagnostic, but was: "
+                                    + rootCause.getMessage());
+                });
+    }
+
+    @Test
+    void unmappedDriverRecoversWhenUserProvidesDialectBean() {
+        // 미매핑 driver라도 사용자가 직접 Dialect 빈을 등록하면 @ConditionalOnMissingBean으로
+        // novaDialect auto-detection이 backoff하고, Nova.resolveDialect를 호출하지 않으므로
+        // 컨텍스트가 정상 기동한다. 사용자에게 탈출구(escape hatch)가 있음을 고정한다.
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(NovaAutoConfiguration.class))
+                .withUserConfiguration(UnmappedConnectionFactoryConfig.class, UserDialectConfig.class)
+                .run(context -> {
+                    assertNull(context.getStartupFailure(),
+                            "context must start when a user Dialect bean covers the unmapped driver");
+                    assertFalse(context.containsBean("novaDialect"),
+                            "auto-detection bean must back off so resolveDialect is never invoked for the unmapped driver");
+                    Dialect dialect = context.getBean(Dialect.class);
+                    assertSame(UserDialectConfig.USER_DIALECT, dialect,
+                            "user-defined Dialect must be adopted for the unmapped driver");
                 });
     }
 
@@ -200,6 +245,16 @@ class NovaAutoConfigurationTest {
     }
 
     @Configuration(proxyBeanMethods = false)
+    static class UnmappedConnectionFactoryConfig {
+        @Bean
+        ConnectionFactory connectionFactory() {
+            // 어떤 Nova dialect에도 매핑되지 않는 driver 이름. auto-detection이 메타데이터만 읽고
+            // 매핑 실패해야 하는 경로를 강제한다.
+            return new UnmappedConnectionFactory("SQLServer");
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
     static class UserDialectConfig {
         static final Dialect USER_DIALECT = new StubDialect();
 
@@ -216,6 +271,56 @@ class NovaAutoConfigurationTest {
         @Bean
         SqlExecutor sqlExecutor() {
             return USER_EXECUTOR;
+        }
+    }
+
+    /**
+     * Spring이 빈 생성 실패를 {@code BeanCreationException} 등으로 감싸기 때문에, 최종 원인까지
+     * cause 체인을 순회해 root cause를 반환한다. self-referential cause로 인한 무한 루프는
+     * {@code cause != cause.getCause()} 가드로 방지한다.
+     */
+    private static Throwable rootCauseOf(Throwable throwable) {
+        Throwable cause = throwable;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
+    /**
+     * driver 메타데이터 이름만 노출하는 stub {@link ConnectionFactory}. auto-detection은
+     * {@code getMetadata().getName()}만 읽고 connection을 열지 않으므로 {@code create()}는
+     * 호출되지 않으며, 혹시라도 호출되면 {@link UnsupportedOperationException}으로 방어한다.
+     */
+    private static final class UnmappedConnectionFactory implements ConnectionFactory {
+        private final ConnectionFactoryMetadata metadata;
+
+        UnmappedConnectionFactory(String driverName) {
+            this.metadata = new StubMetadata(driverName);
+        }
+
+        @Override
+        public Publisher<? extends Connection> create() {
+            throw new UnsupportedOperationException(
+                    "dialect auto-detection must not open a connection; it reads driver metadata only");
+        }
+
+        @Override
+        public ConnectionFactoryMetadata getMetadata() {
+            return metadata;
+        }
+    }
+
+    private static final class StubMetadata implements ConnectionFactoryMetadata {
+        private final String name;
+
+        StubMetadata(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public String getName() {
+            return name;
         }
     }
 
