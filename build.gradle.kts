@@ -15,6 +15,17 @@ subprojects {
     apply(plugin = "java-library")
     apply(plugin = "maven-publish")
 
+    // Centralized JUnit 5 test dependencies for every leaf module. In a
+    // `subprojects {}` block the typed `testImplementation(...)` /
+    // `testRuntimeOnly(...)` accessors are not available, so the configuration
+    // names are addressed as strings; this works because `java-library` has
+    // already been applied above, which registers those configurations.
+    dependencies {
+        "testImplementation"(platform("org.junit:junit-bom:5.12.0"))
+        "testImplementation"("org.junit.jupiter:junit-jupiter")
+        "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
+    }
+
     extensions.configure<JavaPluginExtension> {
         toolchain {
             languageVersion = JavaLanguageVersion.of(21)
