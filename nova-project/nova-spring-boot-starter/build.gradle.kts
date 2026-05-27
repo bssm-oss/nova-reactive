@@ -1,6 +1,9 @@
 dependencies {
     api(project(":nova-project:nova-core"))
     api(project(":nova-project:nova-r2dbc"))
+    // nova aggregate는 Nova 팩토리(resolveDialect)와 번들된 모든 dialect 클래스를 제공하므로
+    // starter가 ConnectionFactory driver 메타데이터 기반 dialect auto-detection을 컴파일/런타임에 쓸 수 있다.
+    api(project(":nova-project:nova"))
     api("org.springframework.boot:spring-boot-autoconfigure:3.4.0")
     compileOnly("org.springframework.boot:spring-boot-configuration-processor:3.4.0")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor:3.4.0")

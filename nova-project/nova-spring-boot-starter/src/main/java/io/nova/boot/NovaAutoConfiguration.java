@@ -1,5 +1,6 @@
 package io.nova.boot;
 
+import io.nova.Nova;
 import io.nova.core.CompositeSqlExecutionListener;
 import io.nova.core.EntityStateDetector;
 import io.nova.core.ReactiveEntityOperations;
@@ -28,9 +29,11 @@ import java.time.Duration;
 import java.util.List;
 
 /**
- * Nova starter의 Spring Boot auto-configuration. 사용자 컨텍스트에 {@link ConnectionFactory}와
- * {@link Dialect} 빈이 모두 있을 때만 동작하며, 모든 빈은 {@code @ConditionalOnMissingBean}으로 보호되어
- * 사용자가 직접 정의한 빈을 절대 덮어쓰지 않는다.
+ * Nova starter의 Spring Boot auto-configuration. 사용자 컨텍스트에 {@link ConnectionFactory} 빈이
+ * 있으면 동작하며, {@link Dialect}는 {@link Nova#resolveDialect(ConnectionFactory)}를 통해
+ * ConnectionFactory의 driver 메타데이터({@code ConnectionFactoryMetadata.getName()})로 자동 감지된다.
+ * 모든 빈은 {@code @ConditionalOnMissingBean}으로 보호되어 사용자가 직접 정의한 빈을 절대 덮어쓰지 않는다.
+ * 특히 사용자가 {@link Dialect} 빈을 직접 등록하면 auto-detection 빈은 backoff하고 사용자 빈이 우선한다.
  */
 @AutoConfiguration
 @ConditionalOnClass({ConnectionFactory.class, Dialect.class})
@@ -53,6 +56,19 @@ public class NovaAutoConfiguration {
     @ConditionalOnMissingBean
     public EntityStateDetector novaEntityStateDetector() {
         return new EntityStateDetector();
+    }
+
+    /**
+     * {@link ConnectionFactory}의 driver 메타데이터로 {@link Dialect}를 자동 감지한다. 매핑은
+     * {@link Nova#resolveDialect(ConnectionFactory)}에 위임해 단일 진실 공급원을 유지하며,
+     * 매핑되지 않은 driver의 경우 해당 메서드가 {@link IllegalStateException}을 던진다.
+     * {@code @ConditionalOnMissingBean}이므로 사용자가 직접 {@link Dialect} 빈을 등록하면
+     * 이 빈은 backoff하고 사용자 빈이 채택된다.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public Dialect novaDialect(ConnectionFactory connectionFactory) {
+        return Nova.resolveDialect(connectionFactory);
     }
 
     @Bean

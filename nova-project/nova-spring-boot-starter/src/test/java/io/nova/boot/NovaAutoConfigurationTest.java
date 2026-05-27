@@ -1,11 +1,15 @@
 package io.nova.boot;
 
+import io.nova.Nova;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SlowQueryLoggingListener;
 import io.nova.core.SqlExecutor;
 import io.nova.dialect.postgresql.PostgresqlDialect;
 import io.nova.r2dbc.PoolConfig;
+import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
+import io.nova.sql.SchemaGenerator;
+import io.nova.sql.SqlRenderer;
 import io.nova.tx.ReactiveTransactionManager;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
@@ -42,6 +46,64 @@ class NovaAutoConfigurationTest {
             assertNotNull(context.getBean(ReactiveEntityOperations.class));
             assertNotNull(context.getBean(ReactiveTransactionManager.class));
         });
+    }
+
+    @Test
+    void autoDetectsDialectFromConnectionFactoryWhenNoDialectBeanProvided() {
+        // ConnectionFactory만 제공하고 Dialect 빈은 일부러 제공하지 않는다.
+        // 이 경우에도 컨텍스트가 기동하고, novaDialect 빈이 driver 메타데이터로 자동 감지돼야 한다.
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(NovaAutoConfiguration.class))
+                .withUserConfiguration(ConnectionFactoryOnlyConfig.class)
+                .run(context -> {
+                    assertNull(context.getStartupFailure(),
+                            "context should start without a user-provided Dialect bean");
+                    assertTrue(context.containsBean("novaDialect"),
+                            "auto-detection bean should be registered when no Dialect bean exists");
+
+                    Dialect dialect = context.getBean(Dialect.class);
+                    assertNotNull(dialect, "auto-detected Dialect bean must be present");
+                    assertNotNull(dialect.name(), "auto-detected Dialect must be a usable dialect");
+
+                    // 단일 진실 공급원 검증: starter 빈은 Nova.resolveDialect와 동일한 dialect 타입을 산출해야 한다.
+                    // (현재 base의 H2 매핑이 무엇이든, 다른 worktree의 resolveDialect 확장 이후에도 일관되게 동작.)
+                    ConnectionFactory cf = context.getBean(ConnectionFactory.class);
+                    Class<?> expected = Nova.resolveDialect(cf).getClass();
+                    assertEquals(expected, dialect.getClass(),
+                            "auto-detected Dialect must match Nova.resolveDialect for the same ConnectionFactory");
+                });
+    }
+
+    @Test
+    void autoDetectedDialectDrivesFullEntityOperationsGraph() {
+        // auto-detection 빈이 dead config가 아님을 증명: Dialect 빈 없이도 SqlExecutor/
+        // ReactiveEntityOperations까지 전체 빈 그래프가 조립돼야 한다.
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(NovaAutoConfiguration.class))
+                .withUserConfiguration(ConnectionFactoryOnlyConfig.class)
+                .run(context -> {
+                    assertNull(context.getStartupFailure(),
+                            "full bean graph must assemble from an auto-detected Dialect");
+                    assertNotNull(context.getBean(Dialect.class));
+                    assertNotNull(context.getBean(SqlExecutor.class));
+                    assertNotNull(context.getBean(ReactiveEntityOperations.class));
+                    assertNotNull(context.getBean(ReactiveTransactionManager.class));
+                });
+    }
+
+    @Test
+    void userDefinedDialectWinsOverAutoDetection() {
+        // 사용자가 커스텀 Dialect 빈을 등록하면 @ConditionalOnMissingBean으로 novaDialect가 backoff해야 한다.
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(NovaAutoConfiguration.class))
+                .withUserConfiguration(ConnectionFactoryOnlyConfig.class, UserDialectConfig.class)
+                .run(context -> {
+                    assertFalse(context.containsBean("novaDialect"),
+                            "auto-detection bean must back off when a user Dialect bean exists");
+                    Dialect dialect = context.getBean(Dialect.class);
+                    assertSame(UserDialectConfig.USER_DIALECT, dialect,
+                            "user-defined Dialect must win over auto-detection");
+                });
     }
 
     @Test
@@ -130,12 +192,61 @@ class NovaAutoConfigurationTest {
     }
 
     @Configuration(proxyBeanMethods = false)
+    static class ConnectionFactoryOnlyConfig {
+        @Bean
+        ConnectionFactory connectionFactory() {
+            return ConnectionFactories.get("r2dbc:h2:mem:///nova-autodetect-test;DB_CLOSE_DELAY=-1");
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class UserDialectConfig {
+        static final Dialect USER_DIALECT = new StubDialect();
+
+        @Bean
+        Dialect dialect() {
+            return USER_DIALECT;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
     static class UserSqlExecutorConfig {
         static final SqlExecutor USER_EXECUTOR = new StubSqlExecutor();
 
         @Bean
         SqlExecutor sqlExecutor() {
             return USER_EXECUTOR;
+        }
+    }
+
+    /**
+     * 정체성 비교 전용 stub Dialect. {@code @ConditionalOnMissingBean} backoff 검증에만 쓰이며
+     * SQL을 렌더하지 않으므로 renderer/generator는 노출하지 않는다.
+     */
+    private static final class StubDialect implements Dialect {
+        @Override
+        public String name() {
+            return "stub";
+        }
+
+        @Override
+        public String quote(String identifier) {
+            return "\"" + identifier + "\"";
+        }
+
+        @Override
+        public BindMarkerStrategy bindMarkers() {
+            return index -> "?";
+        }
+
+        @Override
+        public SqlRenderer sqlRenderer() {
+            throw new UnsupportedOperationException("stub dialect renders no SQL");
+        }
+
+        @Override
+        public SchemaGenerator schemaGenerator() {
+            throw new UnsupportedOperationException("stub dialect generates no schema");
         }
     }
 
