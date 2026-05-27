@@ -1559,6 +1559,50 @@ class AbstractSqlRendererTest {
         );
     }
 
+    @Test
+    void existsDefaultRowLimitClauseIsAppendedWithoutBindings() {
+        SqlStatement statement = dialect.sqlRenderer().exists(metadata, QuerySpec.empty());
+
+        assertEquals("select 1 from accounts limit 1", statement.sql());
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void existsDelegatesRowLimitToOverriddenHookClause() {
+        // 비표준 row-limit 절을 내는 core-level 서브클래스. exists() 본문이 리터럴 " limit 1"을
+        // 박지 않고 existsRowLimitClause() hook을 호출함을 dialect 모듈과 독립적으로 고정한다.
+        SqlRenderer overriddenRenderer = new AbstractSqlRenderer(dialect) {
+            @Override
+            protected String existsRowLimitClause() {
+                return " fetch first 1 rows only";
+            }
+        };
+
+        SqlStatement statement = overriddenRenderer.exists(metadata, QuerySpec.empty());
+
+        assertEquals("select 1 from accounts fetch first 1 rows only", statement.sql());
+        assertEquals(java.util.List.of(), statement.bindings());
+    }
+
+    @Test
+    void existsAppendsOverriddenHookClauseAfterWherePredicate() {
+        // hook이 WHERE 절 뒤, SQL 맨 끝에 정확히 한 번 반영되는지까지 고정한다.
+        SqlRenderer overriddenRenderer = new AbstractSqlRenderer(dialect) {
+            @Override
+            protected String existsRowLimitClause() {
+                return " /*LIMIT*/ limit 1";
+            }
+        };
+
+        SqlStatement statement = overriddenRenderer.exists(
+                metadata,
+                QuerySpec.empty().where(Criteria.eq("active", true))
+        );
+
+        assertEquals("select 1 from accounts where active = ? /*LIMIT*/ limit 1", statement.sql());
+        assertEquals(java.util.List.of(true), statement.bindings());
+    }
+
     private static final class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
         private final SqlRenderer renderer = new AbstractSqlRenderer(this) {
