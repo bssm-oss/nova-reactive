@@ -37,14 +37,17 @@ subprojects {
                 from(components["java"])
 
                 pom {
-                    // Module-specific name/description fall back to a generic
-                    // value so newly added modules inherit valid metadata even
-                    // before they declare their own description.
                     name.set("Nova :: ${project.name}")
+                    // All leaf modules share this common description. To give a
+                    // module its own POM description, set `description = "..."`
+                    // in that module's own build.gradle.kts; the per-module value
+                    // is picked up here via project.description.
                     description.set(
                         project.description
                             ?: "Nova: lightweight reactive ORM for Java 21 on R2DBC and Project Reactor.",
                     )
+                    // TODO(GA): replace with the confirmed project homepage once the
+                    // GitHub org / domain is finalized.
                     url.set("https://github.com/nova-orm/nova")
 
                     licenses {
@@ -56,6 +59,8 @@ subprojects {
 
                     developers {
                         developer {
+                            // TODO(GA): replace placeholder developer id/email once the
+                            // real GitHub org and Central namespace are confirmed.
                             id.set("nova-orm")
                             name.set("Nova ORM Maintainers")
                             email.set("maintainers@nova-orm.example")
@@ -63,6 +68,8 @@ subprojects {
                     }
 
                     scm {
+                        // TODO(GA): replace placeholder SCM coordinates once the real
+                        // GitHub org / repository location is confirmed.
                         connection.set("scm:git:https://github.com/nova-orm/nova.git")
                         developerConnection.set("scm:git:ssh://git@github.com/nova-orm/nova.git")
                         url.set("https://github.com/nova-orm/nova")
@@ -73,22 +80,43 @@ subprojects {
 
         repositories {
             maven {
-                name = "ossrh"
-                val releasesUrl = uri("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
-                val snapshotsUrl = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
-                url = if (version.toString().endsWith("SNAPSHOT")) snapshotsUrl else releasesUrl
+                // Sonatype Central Portal. The legacy OSSRH host (s01.oss.sonatype.org)
+                // reached end of life on 2025-06-30, so publishing now targets the
+                // Central Portal OSSRH Staging API for releases and the Central
+                // snapshots repository for SNAPSHOT versions.
+                name = "central"
+                val centralReleasesUrl =
+                    uri("https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/")
+                val centralSnapshotsUrl =
+                    uri("https://central.sonatype.com/repository/maven-snapshots/")
+                url = if (version.toString().endsWith("SNAPSHOT")) centralSnapshotsUrl else centralReleasesUrl
                 credentials {
-                    username = (findProperty("ossrhUsername") as String?) ?: System.getenv("OSSRH_USERNAME")
-                    password = (findProperty("ossrhPassword") as String?) ?: System.getenv("OSSRH_PASSWORD")
+                    // Treat blank values as absent so an exported-but-empty env var
+                    // (e.g. `export CENTRAL_USERNAME=`) does not authenticate with "".
+                    // Falls back to the legacy ossrh* property/env names for continuity.
+                    username = (findProperty("centralUsername") as String?)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: System.getenv("CENTRAL_USERNAME")?.takeIf { it.isNotBlank() }
+                        ?: (findProperty("ossrhUsername") as String?)?.takeIf { it.isNotBlank() }
+                        ?: System.getenv("OSSRH_USERNAME")?.takeIf { it.isNotBlank() }
+                    password = (findProperty("centralPassword") as String?)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: System.getenv("CENTRAL_PASSWORD")?.takeIf { it.isNotBlank() }
+                        ?: (findProperty("ossrhPassword") as String?)?.takeIf { it.isNotBlank() }
+                        ?: System.getenv("OSSRH_PASSWORD")?.takeIf { it.isNotBlank() }
                 }
             }
         }
     }
 
-    // Sign published artifacts only when PGP credentials are supplied, so that
+    // Sign published artifacts only when a non-blank PGP key is supplied, so that
     // `./gradlew build` and `publishToMavenLocal` succeed locally without keys.
-    val signingKey = (findProperty("signingKey") as String?) ?: System.getenv("SIGNING_KEY")
-    val signingPassword = (findProperty("signingPassword") as String?) ?: System.getenv("SIGNING_PASSWORD")
+    // Blank values (e.g. `export SIGNING_KEY=`) are treated as absent; otherwise
+    // the signing plugin would activate and then fail with an empty key.
+    val signingKey = ((findProperty("signingKey") as String?) ?: System.getenv("SIGNING_KEY"))
+        ?.takeIf { it.isNotBlank() }
+    val signingPassword = ((findProperty("signingPassword") as String?) ?: System.getenv("SIGNING_PASSWORD"))
+        ?.takeIf { it.isNotBlank() }
     if (signingKey != null) {
         apply(plugin = "signing")
         extensions.configure<SigningExtension> {
