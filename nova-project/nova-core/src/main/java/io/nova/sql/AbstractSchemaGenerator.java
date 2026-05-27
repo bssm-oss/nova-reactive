@@ -132,7 +132,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         }
         Class<?> type = property.javaType();
         if (type == String.class) {
-            return "varchar(255)";
+            return "varchar(" + property.length() + ")";
         }
         if (type == Long.class || type == long.class) {
             return "bigint";
@@ -145,6 +145,13 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         }
         if (type == Double.class || type == double.class) {
             return "double precision";
+        }
+        if (type == java.math.BigDecimal.class) {
+            // precision이 지정되면 그대로 numeric(p, s)로, 미지정(0)이면 통화/금액류에 흔히 쓰는
+            // numeric(19, 2)를 기본값으로 emit한다. row 디코딩은 columnType()=BigDecimal로 driver가 native 처리한다.
+            return property.precision() > 0
+                    ? "numeric(" + property.precision() + ", " + property.scale() + ")"
+                    : "numeric(19, 2)";
         }
         throw new IllegalArgumentException("Unsupported column type: " + type.getName());
     }

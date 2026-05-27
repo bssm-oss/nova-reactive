@@ -647,6 +647,9 @@ public final class EntityMetadataFactory {
         }
 
         boolean embedded = hostPath != null && !hostPath.isEmpty();
+        int length = column != null ? column.length() : 255;
+        int precision = column != null ? column.precision() : 0;
+        int scale = column != null ? column.scale() : 0;
         return new PersistentProperty(
                 field,
                 propertyName,
@@ -655,6 +658,9 @@ public final class EntityMetadataFactory {
                 isId,
                 isVersion,
                 column == null || column.nullable(),
+                length,
+                precision,
+                scale,
                 generationType,
                 generator,
                 converter,
@@ -742,6 +748,9 @@ public final class EntityMetadataFactory {
                 false,
                 false,
                 true,
+                255,
+                0,
+                0,
                 GenerationType.NONE,
                 "",
                 null,
@@ -791,6 +800,9 @@ public final class EntityMetadataFactory {
                 false,
                 false,
                 nullable,
+                255,
+                0,
+                0,
                 GenerationType.NONE,
                 "",
                 null,

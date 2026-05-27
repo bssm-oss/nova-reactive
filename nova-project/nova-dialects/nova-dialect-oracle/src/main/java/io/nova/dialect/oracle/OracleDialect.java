@@ -176,7 +176,7 @@ public final class OracleDialect implements Dialect {
             }
             Class<?> type = property.javaType();
             if (type == String.class) {
-                return "varchar2(255)";
+                return "varchar2(" + property.length() + ")";
             }
             if (type == Long.class || type == long.class) {
                 return "number(19)";
@@ -189,6 +189,13 @@ public final class OracleDialect implements Dialect {
             }
             if (type == Double.class || type == double.class) {
                 return "binary_double";
+            }
+            if (type == java.math.BigDecimal.class) {
+                // Oracle은 임의 정밀도 수치를 number(p, s)로 표현한다. precision 미지정(0)이면 통화류 기본값
+                // number(19, 2)를 emit한다 — base의 numeric(19, 2)와 동일 의미.
+                return property.precision() > 0
+                        ? "number(" + property.precision() + ", " + property.scale() + ")"
+                        : "number(19, 2)";
             }
             // 그 외(미지원 타입 등)는 base의 IllegalArgumentException을 그대로 전파한다.
             return super.sqlType(property);

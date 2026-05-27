@@ -16,6 +16,9 @@ public final class PersistentProperty {
     private final boolean id;
     private final boolean version;
     private final boolean nullable;
+    private final int length;
+    private final int precision;
+    private final int scale;
     private final GenerationType generationType;
     private final String generator;
     private final AttributeConverter<Object, Object> converter;
@@ -48,6 +51,9 @@ public final class PersistentProperty {
             boolean id,
             boolean version,
             boolean nullable,
+            int length,
+            int precision,
+            int scale,
             GenerationType generationType,
             String generator,
             AttributeConverter<?, ?> converter,
@@ -74,6 +80,9 @@ public final class PersistentProperty {
         this.id = id;
         this.version = version;
         this.nullable = nullable;
+        this.length = length;
+        this.precision = precision;
+        this.scale = scale;
         this.generationType = generationType;
         this.generator = generator == null ? "" : generator;
         this.converter = (AttributeConverter<Object, Object>) converter;
@@ -122,6 +131,29 @@ public final class PersistentProperty {
 
     public boolean nullable() {
         return nullable;
+    }
+
+    /**
+     * varchar 등 가변 길이 문자열 컬럼의 길이. {@link io.nova.annotation.Column#length()}에서 오며
+     * 기본값은 255다. {@link io.nova.sql.AbstractSchemaGenerator}가 {@code varchar(length)}를 emit할 때 쓴다.
+     */
+    public int length() {
+        return length;
+    }
+
+    /**
+     * {@link java.math.BigDecimal} numeric 컬럼의 전체 자릿수. {@code 0}이면 미지정이며 dialect가
+     * 합리적 기본값을 적용한다. {@link io.nova.annotation.Column#precision()}에서 온다.
+     */
+    public int precision() {
+        return precision;
+    }
+
+    /**
+     * {@link java.math.BigDecimal} numeric 컬럼의 소수 자릿수. {@link io.nova.annotation.Column#scale()}에서 온다.
+     */
+    public int scale() {
+        return scale;
     }
 
     public GenerationType generationType() {

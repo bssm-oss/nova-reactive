@@ -170,9 +170,43 @@ public final class FixtureEntities {
         @Id
         private Long id;
 
-        private java.math.BigDecimal total;
+        // BigDecimal은 이제 numeric으로 지원되므로, schema generator가 거부하는 타입을 검증하기 위해
+        // converter도 sqlType 분기도 없는 임의 타입(Locale)을 사용한다.
+        private java.util.Locale locale;
 
         public UnsupportedTypeEntity() {
+        }
+    }
+
+    /**
+     * {@code @Column}의 length/precision/scale 매핑을 검증하기 위한 픽스처다. id는 명시적으로 할당하며
+     * (IDENTITY 아님) bigint primary key가 된다.
+     * <ul>
+     *   <li>{@code shortName}은 {@code @Column(length=64)}로 {@code varchar(64)}</li>
+     *   <li>{@code description}은 {@code @Column} length 미지정으로 기본 {@code varchar(255)}</li>
+     *   <li>{@code price}는 {@code @Column(precision=12, scale=2)}로 {@code numeric(12, 2)}</li>
+     *   <li>{@code defaultDecimal}은 {@code @Column} precision 미지정으로 기본 {@code numeric(19, 2)}</li>
+     * </ul>
+     */
+    @Entity
+    @Table("column_typed")
+    public static class ColumnTypedEntity {
+        @Id
+        private Long id;
+
+        @Column(value = "short_name", length = 64)
+        private String shortName;
+
+        @Column("description")
+        private String description;
+
+        @Column(value = "price", precision = 12, scale = 2)
+        private java.math.BigDecimal price;
+
+        @Column("default_decimal")
+        private java.math.BigDecimal defaultDecimal;
+
+        public ColumnTypedEntity() {
         }
     }
 

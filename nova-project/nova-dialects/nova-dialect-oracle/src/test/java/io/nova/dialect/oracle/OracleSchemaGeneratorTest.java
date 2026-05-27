@@ -46,6 +46,22 @@ class OracleSchemaGeneratorTest {
     }
 
     @Test
+    void mapsColumnLengthPrecisionAndScaleToOracleNativeTypes() {
+        EntityMetadata<OracleColumnTypedAccount> metadata =
+                metadataFactory.getEntityMetadata(OracleColumnTypedAccount.class);
+
+        assertEquals(
+                "create table \"column_typed\" ("
+                        + "\"id\" number(19) primary key, "
+                        + "\"short_name\" varchar2(64), "
+                        + "\"description\" varchar2(255), "
+                        + "\"price\" number(12, 2), "
+                        + "\"default_decimal\" number(19, 2))",
+                dialect.schemaGenerator().createTable(metadata)
+        );
+    }
+
+    @Test
     void mapsScalarAndEnumTypesToOracleNativeTypes() {
         EntityMetadata<OracleTypeAccount> metadata = metadataFactory.getEntityMetadata(OracleTypeAccount.class);
 

@@ -6,6 +6,7 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
 import io.nova.support.fixtures.FixtureEntities.AlterTargetEntity;
 import io.nova.support.fixtures.FixtureEntities.AutoNamedIndexEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnTypedEntity;
 import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.JsonAccount;
@@ -47,7 +48,24 @@ class AbstractSchemaGeneratorTest {
                 )
         );
 
-        assertEquals("Unsupported column type: java.math.BigDecimal", exception.getMessage());
+        assertEquals("Unsupported column type: java.util.Locale", exception.getMessage());
+    }
+
+    @Test
+    void rendersColumnLengthPrecisionAndScale() {
+        String statement = dialect.schemaGenerator().createTable(
+                factory.getEntityMetadata(ColumnTypedEntity.class)
+        );
+
+        assertEquals(
+                "create table column_typed ("
+                        + "id bigint primary key, "
+                        + "short_name varchar(64), "
+                        + "description varchar(255), "
+                        + "price numeric(12, 2), "
+                        + "default_decimal numeric(19, 2))",
+                statement
+        );
     }
 
     @Test
