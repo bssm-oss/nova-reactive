@@ -949,9 +949,10 @@ nova/
 - [x] 관계 매핑 (`@ManyToOne` / `@OneToMany` / `@JoinColumn`) — eager only, lazy proxy 없이, `findById`/`findAll` 자동 hydration
 - [x] Page / Slice 결과 타입 + `PageRequest` page-number 친화 API
 - [x] Spring Data 스타일 Repository (`nova-spring-data` — `@EnableNovaRepositories`, Spring Data Commons 미의존)
-- [ ] JSON column type
-- [ ] MariaDB / Oracle 다이얼렉트
-- [ ] 1.0 GA 릴리스 및 Maven Central 배포
+- [x] JSON column type (`@Json` — pluggable `JsonCodec` SPI, JSON 라이브러리 미의존, PostgreSQL `jsonb`)
+- [x] MariaDB 다이얼렉트 (`nova-dialect-mariadb`)
+- [x] Oracle 다이얼렉트 (`nova-dialect-oracle` — `OFFSET..FETCH` 페이지네이션, 시퀀스, IDENTITY)
+- [ ] 1.0 GA 릴리스 및 Maven Central 배포 (POM 메타데이터·서명 스캐폴딩 완료, GA 시 namespace/엔드포인트 확정 필요)
 
 진행 중이거나 논의 중인 항목은 이슈 트래커를 참고하세요.
 
