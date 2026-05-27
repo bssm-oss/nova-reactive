@@ -433,8 +433,16 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("select 1 from ").append(table(metadata));
         appendWhereClause(sql, context, metadata, querySpec.predicate());
-        sql.append(" limit 1");
+        sql.append(existsRowLimitClause());
         return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    /**
+     * exists()처럼 "한 행이라도 있는지"만 판정할 때 SELECT 끝에 붙일 row-limit 절을 반환한다.
+     * 선행 공백을 포함한다. 기본은 표준 {@code LIMIT 1}이며, LIMIT 미지원 dialect(Oracle)는 override 한다.
+     */
+    protected String existsRowLimitClause() {
+        return " limit 1";
     }
 
     @Override
