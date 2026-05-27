@@ -144,6 +144,13 @@ public final class OracleDialect implements Dialect {
          */
         @Override
         protected String sqlType(PersistentProperty property) {
+            // base AbstractSchemaGenerator.sqlType은 @Json을 최우선으로 분기한다. Oracle은 dispatch 전체를
+            // 재구현하므로 같은 우선순위로 json 가드를 가장 먼저 둔다 — 빠뜨리면 @Json String 같은 property가
+            // 아래 javaType 분기에서 varchar2(255)로 잘못 매핑된다. jsonColumnType()은 override하지 않아
+            // Dialect 기본값(json 토큰)을 따른다(Oracle 21c+는 native JSON 타입을 수용).
+            if (property.json()) {
+                return dialect().jsonColumnType();
+            }
             if (property.enumerated()) {
                 return property.enumType() == EnumType.STRING ? "varchar2(255)" : "number(10)";
             }

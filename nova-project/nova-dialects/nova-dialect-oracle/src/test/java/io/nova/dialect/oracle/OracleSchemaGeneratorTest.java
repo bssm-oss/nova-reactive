@@ -33,6 +33,18 @@ class OracleSchemaGeneratorTest {
     }
 
     @Test
+    void mapsJsonColumnToDialectJsonTypeNotJavaTypeVarchar() {
+        // @Json payload의 javaType은 String이지만, sqlType override가 json 가드를 가장 먼저 두므로
+        // varchar2(255)가 아니라 dialect의 jsonColumnType()(기본 "json")으로 매핑돼야 한다.
+        EntityMetadata<OracleJsonAccount> metadata = metadataFactory.getEntityMetadata(OracleJsonAccount.class);
+
+        assertEquals(
+                "create table \"json_accounts\" (\"id\" number(19) primary key, \"payload\" json)",
+                dialect.schemaGenerator().createTable(metadata)
+        );
+    }
+
+    @Test
     void mapsScalarAndEnumTypesToOracleNativeTypes() {
         EntityMetadata<OracleTypeAccount> metadata = metadataFactory.getEntityMetadata(OracleTypeAccount.class);
 
