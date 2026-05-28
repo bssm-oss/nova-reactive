@@ -5,7 +5,9 @@ plugins {
 }
 
 allprojects {
-    group = "io.nova"
+    group = "io.github.bssm-oss"
+    // GA 릴리스 시 "1.0.0" 등 release 버전으로 bump한다. SNAPSHOT인 동안은 Central snapshots
+    // 저장소로, release 버전은 Central Portal staging으로 발행된다(아래 publishing repositories 참고).
     version = "1.0-SNAPSHOT"
 }
 
@@ -57,9 +59,7 @@ subprojects {
                         project.description
                             ?: "Nova: lightweight reactive ORM for Java 21 on R2DBC and Project Reactor.",
                     )
-                    // TODO(GA): replace with the confirmed project homepage once the
-                    // GitHub org / domain is finalized.
-                    url.set("https://github.com/nova-orm/nova")
+                    url.set("https://github.com/bssm-oss/nova-reactive")
 
                     licenses {
                         license {
@@ -70,20 +70,17 @@ subprojects {
 
                     developers {
                         developer {
-                            // TODO(GA): replace placeholder developer id/email once the
-                            // real GitHub org and Central namespace are confirmed.
-                            id.set("nova-orm")
-                            name.set("Nova ORM Maintainers")
-                            email.set("maintainers@nova-orm.example")
+                            id.set("bssm-oss")
+                            name.set("BSSM OSS")
+                            organization.set("BSSM OSS")
+                            organizationUrl.set("https://github.com/bssm-oss")
                         }
                     }
 
                     scm {
-                        // TODO(GA): replace placeholder SCM coordinates once the real
-                        // GitHub org / repository location is confirmed.
-                        connection.set("scm:git:https://github.com/nova-orm/nova.git")
-                        developerConnection.set("scm:git:ssh://git@github.com/nova-orm/nova.git")
-                        url.set("https://github.com/nova-orm/nova")
+                        connection.set("scm:git:https://github.com/bssm-oss/nova-reactive.git")
+                        developerConnection.set("scm:git:ssh://git@github.com/bssm-oss/nova-reactive.git")
+                        url.set("https://github.com/bssm-oss/nova-reactive")
                     }
                 }
             }
