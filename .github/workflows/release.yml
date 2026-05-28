@@ -1,0 +1,69 @@
+name: Release to Maven Central
+
+# tag push 시(예: v1.0.0) Sonatype Central Portal로 자동 publish한다.
+# - tag 이름은 반드시 v<version> 형태(예: v1.0.0, v1.0.1-rc.1, v1.1.0-SNAPSHOT).
+# - 워크플로가 tag에서 'v'를 떼고 nova.version Gradle property로 주입하므로,
+#   build.gradle.kts의 기본 1.0-SNAPSHOT는 release 시 override된다.
+# - 버전이 -SNAPSHOT으로 끝나면 Central snapshots 저장소로, 아니면 Central staging으로 발행된다.
+#
+# 필요한 repo Secrets (Settings → Secrets and variables → Actions):
+#   CENTRAL_USERNAME   Central Portal user token id
+#   CENTRAL_PASSWORD   Central Portal user token password
+#   SIGNING_KEY        GPG armored private key (가공 전체 블록, ----BEGIN PGP PRIVATE KEY BLOCK---- 포함)
+#   SIGNING_PASSWORD   GPG private key passphrase
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version (예: 1.0.1-SNAPSHOT). 비우면 1.0-SNAPSHOT.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Derive version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # refs/tags/v1.0.0 → 1.0.0
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: ${VERSION:-<default 1.0-SNAPSHOT>}"
+
+      - name: Verify build (test + assemble) before publishing
+        # publish 전 전 모듈 test/build를 한 번 더 돌려, 깨진 상태로 Central에 올라가는 사고를 막는다.
+        run: ./gradlew build -Pnova.version=${{ steps.ver.outputs.version }}
+
+      - name: Publish to Sonatype Central
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        # --no-configuration-cache: configuration cache가 env-based 자격증명 읽기와 충돌할 수 있다.
+        run: ./gradlew publishAllPublicationsToCentralRepository -Pnova.version=${{ steps.ver.outputs.version }} --no-configuration-cache

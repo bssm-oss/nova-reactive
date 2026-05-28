@@ -6,9 +6,10 @@ plugins {
 
 allprojects {
     group = "io.github.bssm-oss"
-    // GA 릴리스 시 "1.0.0" 등 release 버전으로 bump한다. SNAPSHOT인 동안은 Central snapshots
-    // 저장소로, release 버전은 Central Portal staging으로 발행된다(아래 publishing repositories 참고).
-    version = "1.0-SNAPSHOT"
+    // 기본은 1.0-SNAPSHOT(개발 빌드). release 워크플로가 git tag(예: v1.0.0)에서 파생한 값을
+    // -Pnova.version=1.0.0으로 주입하면 그 값을 우선 사용한다. SNAPSHOT 버전은 Central snapshots
+    // 저장소로, release 버전은 Central Portal staging으로 자동 라우팅된다(publishing repositories 참고).
+    version = (findProperty("nova.version") as String?)?.takeIf { it.isNotBlank() } ?: "1.0-SNAPSHOT"
 }
 
 subprojects {
