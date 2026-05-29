@@ -67,3 +67,17 @@ jobs:
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         # --no-configuration-cache: configuration cache가 env-based 자격증명 읽기와 충돌할 수 있다.
         run: ./gradlew publishAllPublicationsToCentralRepository -Pnova.version=${{ steps.ver.outputs.version }} --no-configuration-cache
+
+      - name: Transfer OSSRH staging to Central Portal
+        # OSSRH Staging API compat endpoint로의 PUT 업로드만으로는 Central Portal Deployments
+        # 페이지에 노출되지 않는다. 같은 runner IP에서 manual transfer API를 호출해 staging을
+        # Portal로 옮긴다. publishing_type=automatic: 검증 통과 즉시 Central에 자동 release.
+        # SNAPSHOT 발행에서는 transfer 단계가 의미가 없으므로 SNAPSHOT 버전은 skip한다.
+        if: ${{ !endsWith(steps.ver.outputs.version, 'SNAPSHOT') }}
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+        run: |
+          curl --fail-with-body -X POST \
+            -H "Authorization: Bearer $(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)" \
+            "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/io.github.bssm-oss?publishing_type=automatic"
