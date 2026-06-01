@@ -30,8 +30,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String createTable(EntityMetadata<?> metadata) {
+        // raw properties()는 @OneToMany inverse side 같은 비-컬럼 마커도 포함하므로
+        // SchemaGenerator가 컬럼 DDL을 만들 때 사용하면 List 타입 컬럼 같은 거짓 컬럼이 섞인다.
         List<String> columns = new ArrayList<>();
-        for (PersistentProperty property : metadata.properties()) {
+        for (PersistentProperty property : metadata.columnMappedProperties()) {
             columns.add(columnDefinition(property));
         }
         return "create table " + dialect.quote(metadata.tableName()) + " (" + String.join(", ", columns) + ")";

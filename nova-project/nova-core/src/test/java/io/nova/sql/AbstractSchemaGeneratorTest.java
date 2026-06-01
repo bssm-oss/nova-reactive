@@ -5,6 +5,8 @@ import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
 import io.nova.support.fixtures.FixtureEntities.AlterTargetEntity;
+import io.nova.support.fixtures.FixtureEntities.AuthorWithBooksAnnotated;
+import io.nova.support.fixtures.FixtureEntities.BookWithAuthorAnnotated;
 import io.nova.support.fixtures.FixtureEntities.AutoNamedIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnTypedEntity;
 import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
@@ -36,6 +38,28 @@ class AbstractSchemaGeneratorTest {
         assertEquals(
                 "create table accounts (id bigint primary key, email_address varchar(255), active boolean not null)",
                 statement
+        );
+    }
+
+    @Test
+    void createTableSkipsOneToManyInverseSideAndIncludesManyToOneFkColumn() {
+        // OneToMany inverse 필드(List<Book> books)는 부모 테이블에 컬럼을 만들지 않아야 한다.
+        // raw properties()를 사용하던 시절에는 List 타입을 sqlType에 넘겨 IllegalArgumentException이 났다.
+        String parent = dialect.schemaGenerator().createTable(
+                factory.getEntityMetadata(AuthorWithBooksAnnotated.class)
+        );
+        assertEquals(
+                "create table annotated_authors (id bigint primary key, name varchar(255))",
+                parent
+        );
+
+        // ManyToOne owning 필드는 FK 컬럼으로 매핑된다.
+        String child = dialect.schemaGenerator().createTable(
+                factory.getEntityMetadata(BookWithAuthorAnnotated.class)
+        );
+        assertEquals(
+                "create table annotated_books (id bigint primary key, title varchar(255), author_id bigint)",
+                child
         );
     }
 
