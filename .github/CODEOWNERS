@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Code owners are automatically requested for review when a PR
+# modifies matching paths. Order matters — the LAST matching pattern
+# wins. See https://docs.github.com/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+#
+# 현재는 단일 owner(@guhyunwoo)가 모든 경로를 담당.
+# 모듈별 책임이 분화되면 path-specific override를 추가하세요.
+
+# 기본 owner — 명시되지 않은 모든 경로
+*                                       @guhyunwoo
+
+# 거버넌스 / 메타 파일 — 무엇이든 admin review 필요
+/AGENTS.md                              @guhyunwoo
+/CONTRIBUTING.md                        @guhyunwoo
+/LICENSE                                @guhyunwoo
+/.github/                               @guhyunwoo
+/.github/workflows/                     @guhyunwoo
+
+# 빌드 / 배포 — Maven 좌표 / 버전 / publication 영향
+/build.gradle.kts                       @guhyunwoo
+/settings.gradle.kts                    @guhyunwoo
+/gradle.properties                      @guhyunwoo
+/gradle/                                @guhyunwoo
+
+# 코어 추상화 — 시그니처 변경은 AGENTS.md "Ask first" 대상
+/nova-project/nova-core/                @guhyunwoo
+/nova-project/nova-r2dbc/               @guhyunwoo
+/nova-project/nova/                     @guhyunwoo
+
+# Dialect 모듈
+/nova-project/nova-dialects/            @guhyunwoo
+
+# Spring 통합
+/nova-project/nova-spring-boot-starter/ @guhyunwoo
+/nova-project/nova-spring-data/         @guhyunwoo
+
+# Metrics 어댑터
+/nova-project/nova-metrics-micrometer/  @guhyunwoo
+
+# 문서
+/README.md                              @guhyunwoo
+/docs/                                  @guhyunwoo
