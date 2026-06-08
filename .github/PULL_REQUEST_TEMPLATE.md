@@ -1,34 +1,34 @@
 <!--
-PR 작성 가이드: CONTRIBUTING.md "PR 규격" 섹션 참고.
-빈 칸을 모두 작성하세요. 해당 없는 항목은 "N/A"로 남겨둡니다.
+PR authoring guide: see the "PR conventions" section in CONTRIBUTING.md.
+Fill in every section. Use "N/A" for items that do not apply.
 -->
 
 ## Summary
-<!-- 1-3 줄로: 무엇을 / 왜 -->
+<!-- 1-3 lines: what changed and why. -->
 
 ## Related issue
-<!-- 단일 이슈를 닫는 PR이면: Closes #N -->
-<!-- 관련만 있는 경우: Refs #N -->
+<!-- For a PR that fully resolves a single issue: Closes #N -->
+<!-- For a PR that is only adjacent: Refs #N -->
 
 
 ## Changes
-<!-- 사용자 가시적 / 구조적 변경 항목 단위로 -->
+<!-- One bullet per user-visible or structural change. -->
 -
 -
 
 ## Test plan
-- [ ] `./gradlew build` 통과
-- [ ] 변경 모듈 narrow test (`./gradlew :nova-project:<module>:test`) 통과
-- [ ] 새 기능 / 버그 fix는 회귀 테스트 추가
-- [ ] (해당 시) 문서 갱신 — README / `docs/` / javadoc
+- [ ] `./gradlew build` passes
+- [ ] Narrow test for the changed module passes (`./gradlew :nova-project:<module>:test`)
+- [ ] New behavior or bug fix is covered by a regression test
+- [ ] Documentation updated as needed — README / `docs/` / javadoc
 
 ## Breaking change
 - [ ] No
-- [ ] Yes — 영향 범위와 마이그레이션 경로:
+- [ ] Yes — describe the impact and the migration path:
 
 ## Checklist
-- [ ] 커밋 메시지가 [Conventional Commits](https://www.conventionalcommits.org/) 형식
-- [ ] PR이 단일 관심사에 집중 (무관 변경은 별도 PR로 분리)
-- [ ] (해당 시) `docs/`에 사용자 가시적 변경 문서화
-- [ ] (해당 시) 새 의존성 / 모듈 추가는 `AGENTS.md` "Boundaries" 사전 합의 완료
-- [ ] AI agent를 `Co-Authored-By:`로 추가하지 않음
+- [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
+- [ ] PR is scoped to a single concern (unrelated changes go in a separate PR)
+- [ ] User-visible changes are documented under `docs/` (as applicable)
+- [ ] New dependencies or modules have prior agreement per `AGENTS.md` "Boundaries" (as applicable)
+- [ ] No AI agent listed as `Co-Authored-By:`

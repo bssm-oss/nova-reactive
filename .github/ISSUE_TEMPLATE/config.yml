@@ -2,10 +2,10 @@ blank_issues_enabled: false
 contact_links:
   - name: Documentation
     url: https://github.com/bssm-oss/nova-reactive/tree/main/docs
-    about: 문서 인덱스 — Getting started / Entities / Queries / Transactions / Dialects / Spring / Observability
-  - name: AGENTS.md (코드 컨벤션)
+    about: Documentation index — Getting started / Entities / Queries / Transactions / Dialects / Spring / Observability
+  - name: AGENTS.md (code conventions)
     url: https://github.com/bssm-oss/nova-reactive/blob/main/AGENTS.md
-    about: 아키텍처 경계 / 테스트 표준 / 코딩 컨벤션
+    about: Architecture boundaries, testing standards, and coding conventions
   - name: CONTRIBUTING.md
     url: https://github.com/bssm-oss/nova-reactive/blob/main/CONTRIBUTING.md
-    about: 이슈 / PR / 커밋 메시지 규격
+    about: Issue, PR, and commit-message conventions

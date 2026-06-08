@@ -1,43 +1,43 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Code owners are automatically requested for review when a PR
-# modifies matching paths. Order matters — the LAST matching pattern
-# wins. See https://docs.github.com/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+# Code owners are automatically requested for review when a PR modifies
+# matching paths. Order matters — the LAST matching pattern wins.
+# See https://docs.github.com/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
 #
-# 현재는 단일 owner(@guhyunwoo)가 모든 경로를 담당.
-# 모듈별 책임이 분화되면 path-specific override를 추가하세요.
+# Today a single owner (@guhyunwoo) covers all paths. As module ownership
+# diverges, add path-specific overrides below to route reviews more finely.
 
-# 기본 owner — 명시되지 않은 모든 경로
+# Default owner — applies to every path not matched below.
 *                                       @guhyunwoo
 
-# 거버넌스 / 메타 파일 — 무엇이든 admin review 필요
+# Governance / meta — admin review required for any change.
 /AGENTS.md                              @guhyunwoo
 /CONTRIBUTING.md                        @guhyunwoo
 /LICENSE                                @guhyunwoo
 /.github/                               @guhyunwoo
 /.github/workflows/                     @guhyunwoo
 
-# 빌드 / 배포 — Maven 좌표 / 버전 / publication 영향
+# Build / publishing — touches Maven coordinates, versions, and release shape.
 /build.gradle.kts                       @guhyunwoo
 /settings.gradle.kts                    @guhyunwoo
 /gradle.properties                      @guhyunwoo
 /gradle/                                @guhyunwoo
 
-# 코어 추상화 — 시그니처 변경은 AGENTS.md "Ask first" 대상
+# Core abstractions — signature changes require AGENTS.md "Ask first" review.
 /nova-project/nova-core/                @guhyunwoo
 /nova-project/nova-r2dbc/               @guhyunwoo
 /nova-project/nova/                     @guhyunwoo
 
-# Dialect 모듈
+# Dialect modules.
 /nova-project/nova-dialects/            @guhyunwoo
 
-# Spring 통합
+# Spring integration.
 /nova-project/nova-spring-boot-starter/ @guhyunwoo
 /nova-project/nova-spring-data/         @guhyunwoo
 
-# Metrics 어댑터
+# Metrics adapter.
 /nova-project/nova-metrics-micrometer/  @guhyunwoo
 
-# 문서
+# Documentation.
 /README.md                              @guhyunwoo
 /docs/                                  @guhyunwoo
