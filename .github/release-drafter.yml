@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Config for release-drafter — drafts the next GitHub Release by grouping
+# merged PRs into categories. Triggered by .github/workflows/release-drafter.yml.
+
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+
+# semver bump derived from PR labels — major beats minor beats patch.
+version-resolver:
+  major:
+    labels:
+      - breaking-change
+  minor:
+    labels:
+      - enhancement
+  patch:
+    labels:
+      - bug
+      - chore
+      - refactor
+      - test
+      - build
+      - ci
+      - dependencies
+      - documentation
+      - performance
+  default: patch
+
+categories:
+  - title: ":warning: Breaking changes"
+    labels:
+      - breaking-change
+  - title: ":rocket: Features"
+    labels:
+      - enhancement
+  - title: ":bug: Bug fixes"
+    labels:
+      - bug
+  - title: ":zap: Performance"
+    labels:
+      - performance
+  - title: ":books: Documentation"
+    labels:
+      - documentation
+  - title: ":wrench: Maintenance"
+    labels:
+      - chore
+      - refactor
+      - test
+      - build
+      - ci
+  - title: ":package: Dependencies"
+    labels:
+      - dependencies
+  - title: ":sparkles: Module changes"
+    labels:
+      - core
+      - r2dbc
+      - schema
+      - spring-boot
+      - spring-data
+      - metrics
+      - dialect-postgresql
+      - dialect-mysql
+      - dialect-mariadb
+      - dialect-h2
+      - dialect-oracle
+
+# Exclude internal noise from the changelog.
+exclude-labels:
+  - duplicate
+  - invalid
+  - wontfix
+  - question
+
+change-template: "- $TITLE (#$NUMBER) — @$AUTHOR"
+change-title-escapes: '\<*_&'
+
+template: |
+  ## What's changed in $RESOLVED_VERSION
+
+  $CHANGES
+
+  **Full changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
