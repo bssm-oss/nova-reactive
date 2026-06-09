@@ -1,8 +1,11 @@
 package io.nova.boot;
 
+import io.nova.schema.DdlAuto;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Nova starter 환경 설정 prefix {@code nova.*} 바인딩 holder. Spring Boot의
@@ -14,12 +17,47 @@ public class NovaProperties {
     private final Pool pool = new Pool();
     private final SlowQuery slowQuery = new SlowQuery();
 
+    /**
+     * Schema lifecycle policy applied on Spring context startup, mirroring
+     * JPA's {@code spring.jpa.hibernate.ddl-auto}. Defaults to
+     * {@link DdlAuto#NONE} so the starter never touches an unsuspecting
+     * database. Phase 1 supports {@code NONE}, {@code CREATE}, and
+     * {@code CREATE_DROP}; the JPA {@code UPDATE} / {@code VALIDATE} modes
+     * require schema introspection that is not yet implemented.
+     */
+    private DdlAuto ddlAuto = DdlAuto.NONE;
+
+    /**
+     * Explicit list of packages to scan for {@code @Entity} classes when
+     * {@link #ddlAuto} runs the bootstrap. When empty, the starter falls back
+     * to the packages registered by
+     * {@code @SpringBootApplication}/{@code @EnableAutoConfiguration} via
+     * {@code AutoConfigurationPackages}.
+     */
+    private List<String> entityPackages = new ArrayList<>();
+
     public Pool getPool() {
         return pool;
     }
 
     public SlowQuery getSlowQuery() {
         return slowQuery;
+    }
+
+    public DdlAuto getDdlAuto() {
+        return ddlAuto;
+    }
+
+    public void setDdlAuto(DdlAuto ddlAuto) {
+        this.ddlAuto = ddlAuto == null ? DdlAuto.NONE : ddlAuto;
+    }
+
+    public List<String> getEntityPackages() {
+        return entityPackages;
+    }
+
+    public void setEntityPackages(List<String> entityPackages) {
+        this.entityPackages = entityPackages == null ? new ArrayList<>() : entityPackages;
     }
 
     /**

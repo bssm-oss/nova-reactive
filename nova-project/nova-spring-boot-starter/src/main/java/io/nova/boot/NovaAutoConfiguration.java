@@ -14,9 +14,13 @@ import io.nova.metadata.NamingStrategy;
 import io.nova.r2dbc.PoolConfig;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
+import io.nova.schema.DdlAuto;
+import io.nova.schema.SchemaInitializer;
+import io.nova.schema.SimpleSchemaInitializer;
 import io.nova.sql.Dialect;
 import io.nova.tx.ReactiveTransactionManager;
 import io.r2dbc.spi.ConnectionFactory;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -126,5 +130,44 @@ public class NovaAutoConfiguration {
                 pool.getMaxSize() != null ? pool.getMaxSize() : defaults.maxSize(),
                 pool.getMaxIdleTime() != null ? pool.getMaxIdleTime() : defaults.maxIdleTime(),
                 pool.getAcquireTimeout() != null ? pool.getAcquireTimeout() : defaults.acquireTimeout());
+    }
+
+    /**
+     * Always-on helper that lets users call {@code schemaInitializer.create(MyEntity.class)}
+     * from anywhere in their code. Drop-in target for integration tests that want to
+     * provision tables imperatively without going through {@code nova.ddl-auto}.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SchemaInitializer novaSchemaInitializer(
+            ReactiveEntityOperations operations,
+            EntityMetadataFactory metadataFactory,
+            Dialect dialect) {
+        return new SimpleSchemaInitializer(operations, metadataFactory, dialect);
+    }
+
+    /**
+     * Runs the {@link DdlAuto} bootstrap on application startup. Only registered when
+     * {@code nova.ddl-auto} is set to anything other than {@code none} so that the
+     * runner does not appear in the context for the default (do-nothing) configuration.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "nova", name = "ddl-auto", havingValue = "create", matchIfMissing = false)
+    public SchemaBootstrapRunner novaSchemaBootstrapRunnerCreate(
+            SchemaInitializer schemaInitializer,
+            NovaProperties properties,
+            BeanFactory beanFactory) {
+        return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
+    }
+
+    @Bean(name = "novaSchemaBootstrapRunner")
+    @ConditionalOnMissingBean(SchemaBootstrapRunner.class)
+    @ConditionalOnProperty(prefix = "nova", name = "ddl-auto", havingValue = "create-drop", matchIfMissing = false)
+    public SchemaBootstrapRunner novaSchemaBootstrapRunnerCreateDrop(
+            SchemaInitializer schemaInitializer,
+            NovaProperties properties,
+            BeanFactory beanFactory) {
+        return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 }
