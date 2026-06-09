@@ -13,6 +13,8 @@ import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
+import io.nova.schema.SchemaInitializer;
+import io.nova.schema.SimpleSchemaInitializer;
 import io.nova.sql.Dialect;
 import io.r2dbc.spi.ConnectionFactory;
 
@@ -49,6 +51,27 @@ public final class Nova {
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
         return new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
+    }
+
+    /**
+     * Convenience entry point for one-line schema bootstrap. Auto-detects the
+     * dialect via {@link #resolveDialect(ConnectionFactory)} and wires a
+     * fresh {@link EntityMetadataFactory} + a minimal
+     * {@link ReactiveEntityOperations} pipeline behind the returned helper.
+     *
+     * <p>Use this for integration tests and demo seeding only — production
+     * schema management belongs to a real migration tool such as Flyway or
+     * Liquibase.
+     */
+    public static SchemaInitializer schemaInitializer(ConnectionFactory connectionFactory) {
+        return schemaInitializer(connectionFactory, resolveDialect(connectionFactory));
+    }
+
+    public static SchemaInitializer schemaInitializer(ConnectionFactory connectionFactory, Dialect dialect) {
+        EntityMetadataFactory metadataFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), JsonCodec.unconfigured());
+        ReactiveEntityOperations operations = create(connectionFactory, dialect);
+        return new SimpleSchemaInitializer(operations, metadataFactory, dialect);
     }
 
     public static Dialect resolveDialect(ConnectionFactory connectionFactory) {

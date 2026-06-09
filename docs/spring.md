@@ -27,18 +27,40 @@ Activated when both `ConnectionFactory` and `Dialect` beans are present in the c
 | `novaEntityOperations`        | `SimpleReactiveEntityOperations`    | The user-facing entry point                                              |
 | `novaPoolConfig`              | `PoolConfig`                        | Always exposed; unspecified fields fall back to `PoolConfig.defaults()`  |
 | `novaSlowQueryLoggingListener`| `SlowQueryLoggingListener`          | Registered only when `nova.slow-query.threshold-ms` is set               |
+| `novaSchemaInitializer`       | `SchemaInitializer`                 | Always exposed — call `schemaInitializer.create(MyEntity.class)` from anywhere |
+| `novaSchemaBootstrapRunner*`  | `SchemaBootstrapRunner`             | Registered only when `nova.ddl-auto` is `create` or `create-drop`        |
 
 Add a `SqlExecutionListener` bean (e.g. `MicrometerSqlExecutionListener`) to the context and it is automatically composed into the executor.
 
+### Schema bootstrap (`nova.ddl-auto`)
+
+The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto` for projects that want a one-line schema bootstrap during integration tests or demos. When the property is set to `create` or `create-drop`, a `SchemaBootstrapRunner` is registered that:
+
+1. Scans the configured packages for `@io.nova.annotation.Entity` classes.
+2. Issues `CREATE TABLE IF NOT EXISTS` (plus indexes) during context refresh via `InitializingBean#afterPropertiesSet()` so the schema is ready before any other refresh-time bean queries it.
+3. For `create-drop`, also issues `DROP TABLE IF EXISTS` in reverse order on context close via `DisposableBean#destroy()` — FK friendly.
+
+Production deployments should keep the default of `none` and manage schema with a real migration tool such as Flyway or Liquibase. `update` and `validate` modes are intentionally not implemented yet — they require schema introspection that is on the Phase 2 roadmap.
+
+```yaml
+nova:
+  ddl-auto: create-drop          # none | create | create-drop
+  entity-packages:               # optional; falls back to @SpringBootApplication's package
+    - com.example.domain
+    - com.example.billing.domain
+```
+
 ### Auto-configuration properties
 
-| Property                          | Type       | Default                       | Description                                          |
-|-----------------------------------|------------|-------------------------------|------------------------------------------------------|
-| `nova.pool.initial-size`          | `Integer`  | `PoolConfig.defaults()` value | Initial connection count                              |
-| `nova.pool.max-size`              | `Integer`  | `PoolConfig.defaults()` value | Maximum connection count                              |
-| `nova.pool.max-idle-time`         | `Duration` | `PoolConfig.defaults()` value | Idle-connection expiration                            |
-| `nova.pool.acquire-timeout`       | `Duration` | `PoolConfig.defaults()` value | Acquire wait timeout                                  |
-| `nova.slow-query.threshold-ms`    | `Long`     | (unset)                       | When set, registers `SlowQueryLoggingListener`         |
+| Property                          | Type            | Default                       | Description                                          |
+|-----------------------------------|-----------------|-------------------------------|------------------------------------------------------|
+| `nova.pool.initial-size`          | `Integer`       | `PoolConfig.defaults()` value | Initial connection count                              |
+| `nova.pool.max-size`              | `Integer`       | `PoolConfig.defaults()` value | Maximum connection count                              |
+| `nova.pool.max-idle-time`         | `Duration`      | `PoolConfig.defaults()` value | Idle-connection expiration                            |
+| `nova.pool.acquire-timeout`       | `Duration`      | `PoolConfig.defaults()` value | Acquire wait timeout                                  |
+| `nova.slow-query.threshold-ms`    | `Long`          | (unset)                       | When set, registers `SlowQueryLoggingListener`         |
+| `nova.ddl-auto`                   | `DdlAuto`       | `none`                        | `none` / `create` / `create-drop` schema bootstrap     |
+| `nova.entity-packages`            | `List<String>`  | (empty → AutoConfigurationPackages) | Packages to scan for `@Entity` when `ddl-auto` runs |
 
 > The starter only exposes a `PoolConfig` bean; it does not bundle a pool implementation such as `r2dbc-pool`. If you need pooling, add the dependency yourself and feed this `PoolConfig` into your `ConnectionFactory` bean.
 

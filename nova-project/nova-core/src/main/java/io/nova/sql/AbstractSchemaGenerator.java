@@ -30,13 +30,34 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String createTable(EntityMetadata<?> metadata) {
+        return createTableInternal(metadata, false);
+    }
+
+    @Override
+    public String createTableIfNotExists(EntityMetadata<?> metadata) {
+        return createTableInternal(metadata, true);
+    }
+
+    @Override
+    public String dropTable(EntityMetadata<?> metadata) {
+        return "drop table " + dialect.quote(metadata.tableName());
+    }
+
+    @Override
+    public String dropTableIfExists(EntityMetadata<?> metadata) {
+        return "drop table if exists " + dialect.quote(metadata.tableName());
+    }
+
+    private String createTableInternal(EntityMetadata<?> metadata, boolean ifNotExists) {
         // raw properties()는 @OneToMany inverse side 같은 비-컬럼 마커도 포함하므로
         // SchemaGenerator가 컬럼 DDL을 만들 때 사용하면 List 타입 컬럼 같은 거짓 컬럼이 섞인다.
         List<String> columns = new ArrayList<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
             columns.add(columnDefinition(property));
         }
-        return "create table " + dialect.quote(metadata.tableName()) + " (" + String.join(", ", columns) + ")";
+        return "create table " + (ifNotExists ? "if not exists " : "")
+                + dialect.quote(metadata.tableName())
+                + " (" + String.join(", ", columns) + ")";
     }
 
     @Override

@@ -45,9 +45,44 @@ class NovaAutoConfigurationTest {
             assertTrue(context.containsBean("novaSqlExecutor"));
             assertTrue(context.containsBean("novaEntityOperations"));
             assertTrue(context.containsBean("novaTransactionManager"));
+            assertTrue(context.containsBean("novaSchemaInitializer"));
             assertNotNull(context.getBean(SqlExecutor.class));
             assertNotNull(context.getBean(ReactiveEntityOperations.class));
             assertNotNull(context.getBean(ReactiveTransactionManager.class));
+            assertNotNull(context.getBean(io.nova.schema.SchemaInitializer.class));
+        });
+    }
+
+    @Test
+    void doesNotRegisterSchemaBootstrapRunnerWhenDdlAutoIsUnset() {
+        runner.run(context -> {
+            // ddl-auto 미설정 → 기본 NONE → runner는 컨텍스트에 없어야 한다.
+            assertFalse(context.containsBean("novaSchemaBootstrapRunner"));
+            assertFalse(context.containsBean("novaSchemaBootstrapRunnerCreate"));
+        });
+    }
+
+    @Test
+    void doesNotRegisterSchemaBootstrapRunnerWhenDdlAutoIsExplicitlyNone() {
+        runner.withPropertyValues("nova.ddl-auto=none").run(context -> {
+            assertFalse(context.containsBean("novaSchemaBootstrapRunner"));
+            assertFalse(context.containsBean("novaSchemaBootstrapRunnerCreate"));
+        });
+    }
+
+    @Test
+    void registersSchemaBootstrapRunnerWhenDdlAutoIsCreate() {
+        runner.withPropertyValues("nova.ddl-auto=create").run(context -> {
+            assertTrue(context.containsBean("novaSchemaBootstrapRunnerCreate"));
+            assertNotNull(context.getBean(SchemaBootstrapRunner.class));
+        });
+    }
+
+    @Test
+    void registersSchemaBootstrapRunnerWhenDdlAutoIsCreateDrop() {
+        runner.withPropertyValues("nova.ddl-auto=create-drop").run(context -> {
+            assertTrue(context.containsBean("novaSchemaBootstrapRunner"));
+            assertNotNull(context.getBean(SchemaBootstrapRunner.class));
         });
     }
 
