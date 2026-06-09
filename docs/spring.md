@@ -4,7 +4,7 @@
 
 ## Spring Boot starter
 
-`nova-spring-boot-starter`를 의존성에 추가하면 `NovaAutoConfiguration`이 모든 핵심 빈을 등록합니다. 사용자가 직접 정의한 빈은 `@ConditionalOnMissingBean`으로 보호되어 절대 덮어쓰지 않습니다.
+Adding `nova-spring-boot-starter` registers every core bean via `NovaAutoConfiguration`. User-defined beans are guarded with `@ConditionalOnMissingBean` and are never overridden.
 
 ```kotlin
 // build.gradle.kts
@@ -15,38 +15,38 @@ dependencies {
 }
 ```
 
-사용자 컨텍스트에 `ConnectionFactory`와 `Dialect` 빈이 모두 있을 때 활성화되며, 다음 빈을 자동으로 등록합니다 (모두 missing 시에만).
+Activated when both `ConnectionFactory` and `Dialect` beans are present in the context, the starter registers the following beans (each only when missing):
 
-| Bean                          | Type                                | 비고                                                                  |
+| Bean                          | Type                                | Notes                                                                  |
 |-------------------------------|-------------------------------------|------------------------------------------------------------------------|
-| `novaNamingStrategy`          | `DefaultNamingStrategy`             | 클래스 → snake_case 변환                                                |
-| `novaEntityMetadataFactory`   | `EntityMetadataFactory`             | 메타데이터 캐싱                                                          |
-| `novaEntityStateDetector`     | `EntityStateDetector`               | id 기반 insert/update 판정                                              |
-| `novaTransactionManager`      | `R2dbcTransactionManager`           | Reactor Context 기반 tx 전파                                            |
-| `novaSqlExecutor`             | `R2dbcSqlExecutor`                  | 컨텍스트의 모든 `SqlExecutionListener` 빈을 `CompositeSqlExecutionListener`로 자동 합성 |
-| `novaEntityOperations`        | `SimpleReactiveEntityOperations`    | 사용자 진입점                                                            |
-| `novaPoolConfig`              | `PoolConfig`                        | 항상 노출. 미지정 필드는 `PoolConfig.defaults()` 채택                    |
-| `novaSlowQueryLoggingListener`| `SlowQueryLoggingListener`          | `nova.slow-query.threshold-ms`가 설정된 경우에만 등록                    |
+| `novaNamingStrategy`          | `DefaultNamingStrategy`             | Class → snake_case conversion                                            |
+| `novaEntityMetadataFactory`   | `EntityMetadataFactory`             | Caches entity metadata                                                   |
+| `novaEntityStateDetector`     | `EntityStateDetector`               | Decides insert vs update based on the identifier                         |
+| `novaTransactionManager`      | `R2dbcTransactionManager`           | Tx propagation via Reactor Context                                       |
+| `novaSqlExecutor`             | `R2dbcSqlExecutor`                  | Composes every `SqlExecutionListener` bean into a `CompositeSqlExecutionListener` automatically |
+| `novaEntityOperations`        | `SimpleReactiveEntityOperations`    | The user-facing entry point                                              |
+| `novaPoolConfig`              | `PoolConfig`                        | Always exposed; unspecified fields fall back to `PoolConfig.defaults()`  |
+| `novaSlowQueryLoggingListener`| `SlowQueryLoggingListener`          | Registered only when `nova.slow-query.threshold-ms` is set               |
 
-`SqlExecutionListener` 빈(예: `MicrometerSqlExecutionListener`)을 컨텍스트에 추가하면 자동으로 executor에 합성됩니다.
+Add a `SqlExecutionListener` bean (e.g. `MicrometerSqlExecutionListener`) to the context and it is automatically composed into the executor.
 
-### 자동 구성 properties
+### Auto-configuration properties
 
-| Property                          | Type       | Default                       | 설명                                                |
-|-----------------------------------|------------|-------------------------------|-----------------------------------------------------|
-| `nova.pool.initial-size`          | `Integer`  | `PoolConfig.defaults()` 값    | 초기 connection 수                                   |
-| `nova.pool.max-size`              | `Integer`  | `PoolConfig.defaults()` 값    | 최대 connection 수                                   |
-| `nova.pool.max-idle-time`         | `Duration` | `PoolConfig.defaults()` 값    | 유휴 connection 만료 시간                            |
-| `nova.pool.acquire-timeout`       | `Duration` | `PoolConfig.defaults()` 값    | acquire 대기 timeout                                 |
-| `nova.slow-query.threshold-ms`    | `Long`     | (unset)                       | 설정 시 `SlowQueryLoggingListener` 자동 등록         |
+| Property                          | Type       | Default                       | Description                                          |
+|-----------------------------------|------------|-------------------------------|------------------------------------------------------|
+| `nova.pool.initial-size`          | `Integer`  | `PoolConfig.defaults()` value | Initial connection count                              |
+| `nova.pool.max-size`              | `Integer`  | `PoolConfig.defaults()` value | Maximum connection count                              |
+| `nova.pool.max-idle-time`         | `Duration` | `PoolConfig.defaults()` value | Idle-connection expiration                            |
+| `nova.pool.acquire-timeout`       | `Duration` | `PoolConfig.defaults()` value | Acquire wait timeout                                  |
+| `nova.slow-query.threshold-ms`    | `Long`     | (unset)                       | When set, registers `SlowQueryLoggingListener`         |
 
-> Starter는 `PoolConfig` 빈만 노출하고 `r2dbc-pool` 같은 pool 구현체를 번들하지 않습니다. pool이 필요하면 직접 의존성을 추가한 뒤 `ConnectionFactory` 빈을 만들 때 이 `PoolConfig`를 입력으로 사용하세요.
+> The starter only exposes a `PoolConfig` bean; it does not bundle a pool implementation such as `r2dbc-pool`. If you need pooling, add the dependency yourself and feed this `PoolConfig` into your `ConnectionFactory` bean.
 
 ---
 
-## Spring Data 스타일 Repository (`nova-spring-data`)
+## Spring Data-style repositories (`nova-spring-data`)
 
-JPA/Spring Data 사용자에게 익숙한 `interface ... extends ReactiveCrudRepository<T, ID>` 패턴을 별도 의존(`io.github.bssm-oss:nova-spring-data:1.0.1`)으로 제공합니다. Spring Data Commons에는 의존하지 않으며 Spring Framework `spring-context`만 사용합니다.
+The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:1.0.1`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
 
 ```java
 import io.nova.spring.data.ReactiveCrudRepository;
@@ -59,7 +59,7 @@ public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
 class AppConfig {}
 ```
 
-`@EnableNovaRepositories`가 base package를 스캔해 발견된 인터페이스마다 JDK proxy + `NovaRepositoryFactoryBean`을 등록합니다. 모든 메서드는 `ReactiveEntityOperations`(`novaEntityOperations` 빈)에 위임됩니다. 제공 메서드:
+`@EnableNovaRepositories` scans the base packages and registers a JDK proxy + `NovaRepositoryFactoryBean` for every discovered interface. Every method delegates to `ReactiveEntityOperations` (the `novaEntityOperations` bean). Methods provided:
 
 ```java
 Mono<T> save(T entity);
@@ -77,4 +77,4 @@ Mono<Long> delete(T entity);
 Mono<Long> deleteAll(Iterable<T> entities);
 ```
 
-derived query parsing(`findByEmail`) 같은 magic은 지원하지 않습니다 — 명시적인 `findAll(QuerySpec)` 또는 native query를 사용하세요. Project Focus("magic 회피") 원칙과 일관됩니다.
+Derived-query parsing (`findByEmail`) and similar magic are not supported — use an explicit `findAll(QuerySpec)` or a native query. This is consistent with Nova's project focus of avoiding magic.

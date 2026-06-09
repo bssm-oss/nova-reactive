@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Code owners are automatically requested for review when a PR modifies
+# matching paths. Order matters — the LAST matching pattern wins.
+# See https://docs.github.com/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+#
+# Today a single owner (@guhyunwoo) covers all paths. As module ownership
+# diverges, add path-specific overrides below to route reviews more finely.
+
+# Default owner — applies to every path not matched below.
+*                                       @guhyunwoo
+
+# Governance / meta — admin review required for any change.
+/AGENTS.md                              @guhyunwoo
+/CONTRIBUTING.md                        @guhyunwoo
+/LICENSE                                @guhyunwoo
+/.github/                               @guhyunwoo
+/.github/workflows/                     @guhyunwoo
+
+# Build / publishing — touches Maven coordinates, versions, and release shape.
+/build.gradle.kts                       @guhyunwoo
+/settings.gradle.kts                    @guhyunwoo
+/gradle.properties                      @guhyunwoo
+/gradle/                                @guhyunwoo
+
+# Core abstractions — signature changes require AGENTS.md "Ask first" review.
+/nova-project/nova-core/                @guhyunwoo
+/nova-project/nova-r2dbc/               @guhyunwoo
+/nova-project/nova/                     @guhyunwoo
+
+# Dialect modules.
+/nova-project/nova-dialects/            @guhyunwoo
+
+# Spring integration.
+/nova-project/nova-spring-boot-starter/ @guhyunwoo
+/nova-project/nova-spring-data/         @guhyunwoo
+
+# Metrics adapter.
+/nova-project/nova-metrics-micrometer/  @guhyunwoo
+
+# Documentation.
+/README.md                              @guhyunwoo
+/docs/                                  @guhyunwoo

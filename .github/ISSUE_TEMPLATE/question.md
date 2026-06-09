@@ -1,22 +1,22 @@
 ---
 name: Question
-about: Nova 사용법 질문 (가능하면 Discussions 우선 고려)
+about: Ask a usage question (consider GitHub Discussions first if available)
 title: "[question] "
 labels: ["question"]
 ---
 
-> GitHub Discussions가 활성화되어 있다면 그쪽이 더 빠를 수 있습니다. 답변이 일반화되면 문서 / 이슈로 승격됩니다.
+> If GitHub Discussions is enabled on this repository, ask there first — you will usually get a faster answer. If the answer turns out to be generally useful, it can be promoted into a documentation patch or a tracked issue.
 
-## 목표
-<!-- 무엇을 하고 싶은지 -->
+## What you are trying to do
+<!-- The goal, not the immediate failure. -->
 
-## 시도한 것
-<!-- 어떤 코드 / 문서를 봤고 무엇이 막혔는지 -->
+## What you have tried
+<!-- Which code paths / docs you consulted and where you got stuck. -->
 
 ```java
 
 ```
 
-## 환경 (해당 시)
-- Nova 버전:
+## Environment (if relevant)
+- Nova version:
 - Dialect:

@@ -2,11 +2,11 @@
 
 # Getting started
 
-Nova `1.0.1`은 Maven Central에서 받을 수 있습니다 (`1.0.0` GA 이후 최신 릴리스).
+Nova `1.0.1` is available from Maven Central (the latest release after the `1.0.0` GA).
 
-## 1. 의존성 추가
+## 1. Add dependencies
 
-가장 빠른 진입은 aggregate 모듈 `io.github.bssm-oss:nova` + 사용할 DB의 **R2DBC 드라이버** 조합입니다. aggregate는 core/r2dbc 어댑터/모든 번들 dialect(PostgreSQL/MySQL/MariaDB/H2/Oracle)를 한 번에 끌어옵니다.
+The fastest path is the aggregate module `io.github.bssm-oss:nova` plus an R2DBC driver for the database you target. The aggregate pulls in core, the R2DBC adapter, and every bundled dialect (PostgreSQL / MySQL / MariaDB / H2 / Oracle).
 
 ```kotlin
 // build.gradle.kts
@@ -17,14 +17,14 @@ repositories {
 dependencies {
     implementation("io.github.bssm-oss:nova:1.0.1")
 
-    // 사용할 데이터베이스의 R2DBC 드라이버 (택1)
+    // The R2DBC driver for your database (pick one)
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
     // runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
     // runtimeOnly("io.asyncer:r2dbc-mysql:1.3.0")
 }
 ```
 
-특정 dialect만 골라 쓰고 싶다면 aggregate 대신 `nova-core` + `nova-r2dbc` + 원하는 dialect 모듈을 직접 선언해도 됩니다.
+To pull in only a specific dialect instead of the aggregate, depend on `nova-core` + `nova-r2dbc` + the dialect module directly:
 
 ```kotlin
 // build.gradle.kts
@@ -46,7 +46,7 @@ dependencies {
 }
 ```
 
-> **Snapshot 사용**: 다음 dev 빌드(`1.0.2-SNAPSHOT` 등)는 Central snapshots 저장소에서 받을 수 있습니다.
+> **Snapshots**: next-dev builds (e.g. `1.0.2-SNAPSHOT`) are available from the Central snapshots repository.
 >
 > ```kotlin
 > repositories {
@@ -55,7 +55,7 @@ dependencies {
 > }
 > ```
 
-## 2. 엔티티 정의
+## 2. Define an entity
 
 ```java
 @Entity
@@ -88,11 +88,11 @@ public class Account {
 }
 ```
 
-전체 어노테이션 레퍼런스는 [Entities](entities.md)를 참고하세요.
+For the full annotation reference, see [Entities](entities.md).
 
-## 3. 작업 실행
+## 3. Run operations
 
-`Nova.create(connectionFactory)`가 R2DBC driver metadata로 dialect를 자동 감지(PostgreSQL/MySQL/MariaDB/H2/Oracle)해 `ReactiveEntityOperations`를 조립합니다. 매핑되지 않는 driver는 `Nova.create(cf, dialect)`로 dialect를 직접 주입하세요.
+`Nova.create(connectionFactory)` reads the R2DBC driver metadata to auto-detect the dialect (PostgreSQL / MySQL / MariaDB / H2 / Oracle) and assembles a `ReactiveEntityOperations`. For drivers that are not auto-mapped, inject a dialect explicitly with `Nova.create(cf, dialect)`.
 
 ```java
 import io.nova.Nova;
@@ -109,9 +109,9 @@ operations.save(new Account(null, "user@example.com", true))
           .subscribe(System.out::println);
 ```
 
-## 4. 스키마 초기화 (선택)
+## 4. Initialize the schema (optional)
 
-운영에서는 Flyway/Liquibase 같은 마이그레이션 도구를 권장하지만, 통합 테스트나 데모 시드용으로 `SchemaGenerator`가 발행한 DDL을 그대로 실행할 수 있습니다.
+In production, prefer a migration tool such as Flyway or Liquibase. For integration tests and demo seeding, you can execute the DDL emitted by `SchemaGenerator` directly:
 
 ```java
 import io.nova.metadata.DefaultNamingStrategy;
@@ -128,15 +128,15 @@ String ddl = dialect.schemaGenerator()
 operations.executeNative(NativeQuery.of(ddl)).block();
 ```
 
-자세한 schema generation API는 [Dialects & Schema](dialects.md)를 참고.
+For the full schema generation API, see [Dialects & Schema](dialects.md).
 
-## Spring Boot 환경
+## With Spring Boot
 
-Spring Boot에서는 [`nova-spring-boot-starter`](spring.md)가 `ConnectionFactory` 빈을 보고 dialect를 자동 감지해 `ReactiveEntityOperations` 빈을 등록합니다. 별도 `Nova.create(...)` 호출이 필요 없습니다.
+In a Spring Boot application, the [`nova-spring-boot-starter`](spring.md) reads your `ConnectionFactory` bean, auto-detects the dialect, and registers a `ReactiveEntityOperations` bean. No explicit `Nova.create(...)` call is needed.
 
-## 다음 단계
+## Next steps
 
-- [Entities](entities.md) — 어노테이션, 관계 매핑, composite types, 인덱스
-- [Queries](queries.md) — Query DSL, Updater, Projection, Aggregations, Pagination
-- [Transactions](transactions.md) — Propagation, pessimistic locking, retry
-- [Spring](spring.md) — Spring Boot starter, Spring Data 스타일 Repository
+- [Entities](entities.md) — annotations, relationship mapping, composite types, indexes
+- [Queries](queries.md) — Query DSL, Updater, Projection, Aggregations, pagination
+- [Transactions](transactions.md) — propagation, pessimistic locking, retry
+- [Spring](spring.md) — Spring Boot starter, Spring Data-style repositories
