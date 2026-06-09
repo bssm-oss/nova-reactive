@@ -207,5 +207,33 @@ public final class OracleDialect implements Dialect {
             return dialect().quote(property.columnName())
                     + " number(19) generated always as identity primary key";
         }
+
+        /**
+         * Oracle has no {@code CREATE TABLE IF NOT EXISTS} syntax. Wrap the raw
+         * DDL in a PL/SQL anonymous block and swallow ORA-00955 (name already
+         * used by an existing object), re-raising any other error so column /
+         * syntax problems are not hidden. {@code EXECUTE IMMEDIATE} avoids the
+         * embedded-quote escaping required by static DDL in PL/SQL.
+         */
+        @Override
+        public String createTableIfNotExists(io.nova.metadata.EntityMetadata<?> metadata) {
+            String inner = createTable(metadata).replace("'", "''");
+            return "begin execute immediate '" + inner
+                    + "'; exception when others then if sqlcode != -955 then raise; end if; end;";
+        }
+
+        /**
+         * Oracle has no {@code DROP TABLE IF EXISTS} syntax. Mirror the
+         * {@link #createTableIfNotExists} pattern and swallow ORA-00942 (table
+         * or view does not exist). {@code purge} keeps the recycle bin clean so
+         * a follow-up {@code CREATE TABLE} of the same name does not collide
+         * with a recently dropped object.
+         */
+        @Override
+        public String dropTableIfExists(io.nova.metadata.EntityMetadata<?> metadata) {
+            String inner = ("drop table " + dialect().quote(metadata.tableName()) + " purge").replace("'", "''");
+            return "begin execute immediate '" + inner
+                    + "'; exception when others then if sqlcode != -942 then raise; end if; end;";
+        }
     }
 }

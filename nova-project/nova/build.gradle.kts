@@ -9,4 +9,6 @@ dependencies {
 
     // 실제 r2dbc-h2 driver로 resolveDialect의 driver 이름 매핑 정확성을 검증한다.
     testImplementation("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
+    // SchemaInitializerH2IntegrationTest가 StepVerifier로 reactive 파이프라인을 검증한다.
+    testImplementation("io.projectreactor:reactor-test:3.7.3")
 }

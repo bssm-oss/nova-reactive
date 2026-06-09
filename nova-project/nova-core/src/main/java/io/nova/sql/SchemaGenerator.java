@@ -17,6 +17,37 @@ public interface SchemaGenerator {
     }
 
     /**
+     * Returns an idempotent {@code CREATE TABLE} statement that no-ops if the
+     * table already exists. The default implementation rewrites the prefix of
+     * {@link #createTable(EntityMetadata)} so any existing override is honored
+     * verbatim. Dialects that need a different syntax (Oracle, which lacks
+     * {@code IF NOT EXISTS} on {@code CREATE TABLE}) should override.
+     */
+    default String createTableIfNotExists(EntityMetadata<?> metadata) {
+        String ddl = createTable(metadata);
+        return ddl.replaceFirst("(?i)^create table\\s+", "create table if not exists ");
+    }
+
+    /**
+     * Returns a {@code DROP TABLE} statement that fails if the table does not
+     * exist. Dialect-aware implementations (see {@link AbstractSchemaGenerator})
+     * quote the table identifier; the default is a best-effort fallback that
+     * uses the raw {@code metadata.tableName()}.
+     */
+    default String dropTable(EntityMetadata<?> metadata) {
+        return "drop table " + metadata.tableName();
+    }
+
+    /**
+     * Returns an idempotent {@code DROP TABLE} statement that no-ops if the
+     * table does not exist. Dialects without {@code IF EXISTS} support (Oracle)
+     * should override with the equivalent error-swallowing block.
+     */
+    default String dropTableIfExists(EntityMetadata<?> metadata) {
+        return "drop table if exists " + metadata.tableName();
+    }
+
+    /**
      * 기존 테이블에 컬럼을 추가하는 {@code ALTER TABLE ... ADD COLUMN} 구문을 반환한다.
      * 기본 구현은 미지원으로 처리하므로 dialect가 직접 override 해야 한다.
      */

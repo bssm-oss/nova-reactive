@@ -42,6 +42,36 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void rendersCreateTableIfNotExistsSql() {
+        String statement = dialect.schemaGenerator().createTableIfNotExists(
+                factory.getEntityMetadata(SampleAccount.class)
+        );
+
+        assertEquals(
+                "create table if not exists accounts (id bigint primary key, email_address varchar(255), active boolean not null)",
+                statement
+        );
+    }
+
+    @Test
+    void rendersDropTableSql() {
+        String statement = dialect.schemaGenerator().dropTable(
+                factory.getEntityMetadata(SampleAccount.class)
+        );
+
+        assertEquals("drop table accounts", statement);
+    }
+
+    @Test
+    void rendersDropTableIfExistsSql() {
+        String statement = dialect.schemaGenerator().dropTableIfExists(
+                factory.getEntityMetadata(SampleAccount.class)
+        );
+
+        assertEquals("drop table if exists accounts", statement);
+    }
+
+    @Test
     void createTableSkipsOneToManyInverseSideAndIncludesManyToOneFkColumn() {
         // OneToMany inverse 필드(List<Book> books)는 부모 테이블에 컬럼을 만들지 않아야 한다.
         // raw properties()를 사용하던 시절에는 List 타입을 sqlType에 넘겨 IllegalArgumentException이 났다.
