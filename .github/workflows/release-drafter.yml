@@ -2,6 +2,11 @@
 #
 # Keeps a draft GitHub Release up to date with the next version's changelog.
 # Each merged PR refreshes the draft; tagging the release manually publishes it.
+#
+# Runs only on push to main. release-drafter requires its config to live on
+# the default branch, so a pull_request trigger would fail on the very PR
+# that introduces the config. Labels are handled separately by boring-cyborg,
+# so we do not need release-drafter's autolabeler on pull_request events.
 
 name: Release drafter
 
@@ -9,8 +14,6 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    types: [opened, reopened, synchronize, edited]
 
 permissions:
   contents: read
