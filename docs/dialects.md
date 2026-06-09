@@ -48,6 +48,33 @@ Use it directly for dev-environment bootstrap scripts and integration-test fixtu
 
 ---
 
+## Idempotent DDL
+
+`createTableIfNotExists` and `dropTableIfExists` emit idempotent variants of the standard DDL — useful when bootstrapping a dev/test schema that may already exist:
+
+```java
+String safeCreate = dialect.schemaGenerator().createTableIfNotExists(metadata);
+// PostgreSQL / MySQL / MariaDB / H2: "create table if not exists ..."
+String safeDrop = dialect.schemaGenerator().dropTableIfExists(metadata);
+// "drop table if exists ..."
+```
+
+**Oracle caveat**: Oracle has no `IF [NOT] EXISTS` syntax on `CREATE TABLE` / `DROP TABLE`. `OracleSchemaGenerator` wraps the raw DDL in a PL/SQL anonymous block that swallows `ORA-00955` (object already exists) on create and `ORA-00942` (table or view does not exist) on drop, re-raising any other error. The `dropTableIfExists` variant also appends `purge` so the recycle bin stays clean and a follow-up `CREATE TABLE` of the same name does not collide.
+
+```sql
+-- Oracle dropTableIfExists output (formatted)
+begin
+  execute immediate 'drop table "accounts" purge';
+exception
+  when others then
+    if sqlcode != -942 then raise; end if;
+end;
+```
+
+For high-level orchestration (multi-entity create / drop / recreate), use [`SchemaInitializer`](../README.md) — `Nova.schemaInitializer(cf)` or the Spring Boot `nova.ddl-auto` property.
+
+---
+
 ## Schema migration
 
 Alongside `createTable`, `SchemaGenerator` ships lightweight DDL helpers for migration. All of them are implemented by the dialect modules (`AbstractSchemaGenerator`); unsupported dialects throw `UnsupportedOperationException`.

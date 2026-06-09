@@ -70,12 +70,13 @@ ConnectionFactory cf = ConnectionFactories.get(
         "r2dbc:h2:mem:///nova-smoke?options=DB_CLOSE_DELAY=-1");
 ReactiveEntityOperations operations = Nova.create(cf);
 
-operations.save(new Account(null, "user@example.com"))
-          .flatMap(saved -> operations.findById(Account.class, saved.getId()))
-          .subscribe(System.out::println);
+Nova.schemaInitializer(cf).create(Account.class)
+    .then(operations.save(new Account(null, "user@example.com")))
+    .flatMap(saved -> operations.findById(Account.class, saved.getId()))
+    .subscribe(System.out::println);
 ```
 
-`Nova.create(cf)` auto-detects the dialect (PostgreSQL / MySQL / MariaDB / H2 / Oracle) from the R2DBC driver metadata. For setup details, schema initialization, and Spring Boot integration, see [Getting started](docs/getting-started.md).
+`Nova.create(cf)` and `Nova.schemaInitializer(cf)` auto-detect the dialect (PostgreSQL / MySQL / MariaDB / H2 / Oracle) from the R2DBC driver metadata. In Spring Boot, the starter wires both beans automatically and supports JPA-style `nova.ddl-auto=create-drop`. See [Getting started](docs/getting-started.md) for details.
 
 ---
 

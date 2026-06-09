@@ -111,28 +111,44 @@ operations.save(new Account(null, "user@example.com", true))
 
 ## 4. Initialize the schema (optional)
 
-In production, prefer a migration tool such as Flyway or Liquibase. For integration tests and demo seeding, you can execute the DDL emitted by `SchemaGenerator` directly:
+In production, prefer a migration tool such as Flyway or Liquibase. For integration tests and demo seeding, `Nova.schemaInitializer(cf)` returns a one-liner that auto-detects the dialect and issues idempotent DDL:
 
 ```java
-import io.nova.metadata.DefaultNamingStrategy;
-import io.nova.metadata.EntityMetadataFactory;
-import io.nova.query.NativeQuery;
-import io.nova.sql.Dialect;
+import io.nova.Nova;
+import io.nova.schema.SchemaInitializer;
 
-EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
-Dialect dialect = Nova.resolveDialect(cf);
+SchemaInitializer schema = Nova.schemaInitializer(cf);
 
-String ddl = dialect.schemaGenerator()
-        .createTable(metadataFactory.getEntityMetadata(Account.class));
-
-operations.executeNative(NativeQuery.of(ddl)).block();
+schema.create(Account.class)
+      .then(operations.save(new Account(null, "user@example.com", true)))
+      .block();
 ```
 
-For the full schema generation API, see [Dialects & Schema](dialects.md).
+By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
+
+Batch and lifecycle variants:
+
+```java
+schema.create(Author.class, Book.class);        // emits parent then child
+schema.drop(Book.class, Author.class);          // drops child then parent
+schema.recreate(Author.class, Book.class);      // drop + recreate, FK-safe ordering
+```
+
+For lower-level control, the raw `dialect.schemaGenerator()` DDL strings stay available — see [Dialects & Schema](dialects.md).
 
 ## With Spring Boot
 
 In a Spring Boot application, the [`nova-spring-boot-starter`](spring.md) reads your `ConnectionFactory` bean, auto-detects the dialect, and registers a `ReactiveEntityOperations` bean. No explicit `Nova.create(...)` call is needed.
+
+The starter also exposes a `SchemaInitializer` bean and supports JPA-style `nova.ddl-auto` configuration. Set `nova.ddl-auto=create` (or `create-drop`) and the starter scans for `@Entity` classes and provisions the schema on startup — perfect for integration tests:
+
+```yaml
+nova:
+  ddl-auto: create-drop
+  entity-packages: com.example.domain   # optional; defaults to @SpringBootApplication's package
+```
+
+See [Spring](spring.md) for the full property reference.
 
 ## Next steps
 
