@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Config for kaxil/boring-cyborg — the same GitHub App Apache Airflow uses
+# for path-based label triage, first-time contributor welcome messages, and
+# PR-merge congratulations. Install the app at
+# https://github.com/apps/boring-cyborg and grant access to this repo.
+
+labelPRBasedOnFilePath:
+  documentation:
+    - README.md
+    - CONTRIBUTING.md
+    - AGENTS.md
+    - LICENSE
+    - docs/**/*
+    - "*.md"
+    - .github/ISSUE_TEMPLATE/**/*
+    - .github/PULL_REQUEST_TEMPLATE.md
+    - .github/CODEOWNERS
+
+  build:
+    - build.gradle.kts
+    - settings.gradle.kts
+    - gradle.properties
+    - gradle/**/*
+    - gradlew
+    - gradlew.bat
+
+  ci:
+    - .github/workflows/**/*
+    - .github/boring-cyborg.yml
+    - .github/release-drafter.yml
+
+  core:
+    - nova-project/nova-core/**/*
+    - nova-project/nova/**/*
+
+  r2dbc:
+    - nova-project/nova-r2dbc/**/*
+
+  schema:
+    - nova-project/nova-core/src/main/java/io/nova/schema/**/*
+    - nova-project/nova-core/src/test/java/io/nova/schema/**/*
+
+  spring-boot:
+    - nova-project/nova-spring-boot-starter/**/*
+
+  spring-data:
+    - nova-project/nova-spring-data/**/*
+
+  metrics:
+    - nova-project/nova-metrics-micrometer/**/*
+
+  dialect-postgresql:
+    - nova-project/nova-dialects/nova-dialect-postgresql/**/*
+  dialect-mysql:
+    - nova-project/nova-dialects/nova-dialect-mysql/**/*
+  dialect-mariadb:
+    - nova-project/nova-dialects/nova-dialect-mariadb/**/*
+  dialect-h2:
+    - nova-project/nova-dialects/nova-dialect-h2/**/*
+  dialect-oracle:
+    - nova-project/nova-dialects/nova-dialect-oracle/**/*
+
+# Welcome message for a contributor's first PR — added once per author.
+firstPRWelcomeComment: >
+  Thanks for opening your first pull request, @{{ user }}! :tada:
+
+  A maintainer will take a look soon. While you wait:
+
+  - Make sure your commits follow [Conventional Commits](https://www.conventionalcommits.org/)
+    (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`, ...).
+  - Run `./gradlew build` locally to confirm the test suite passes.
+  - See [CONTRIBUTING.md](https://github.com/bssm-oss/nova-reactive/blob/main/CONTRIBUTING.md)
+    for the full PR / issue / commit message conventions.
+
+# Congratulations comment posted when a contributor's first PR merges.
+firstPRMergeComment: >
+  Congrats on landing your first PR in Nova, @{{ user }}! :rocket:
+
+  Thank you for the contribution. If you have ideas for follow-up work,
+  please open an issue using one of the [issue templates](https://github.com/bssm-oss/nova-reactive/issues/new/choose).
+
+# Welcome message for a contributor's first issue.
+firstIssueWelcomeComment: >
+  Thanks for opening your first issue, @{{ user }}!
+
+  A maintainer will triage this shortly. To speed things up, please make
+  sure the relevant template fields (environment, reproduction, expected
+  behavior, etc.) are filled in.
+
+# Bot operation:
+# - `boring-cyborg` reads this file at every PR/issue event and applies labels.
+# - Welcome messages are posted exactly once per user (the bot tracks history
+#   via GitHub search), so re-running it on existing PRs/issues is safe.
