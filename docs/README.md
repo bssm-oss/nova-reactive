@@ -15,6 +15,7 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 | [Dialects & Schema](dialects.md)      | `Dialect` interface, the five bundled dialects, `SchemaGenerator`, alter helpers |
 | [Spring](spring.md)                   | Spring Boot starter (auto-detect, properties), `nova-spring-data` repositories   |
 | [Observability](observability.md)     | `SqlExecutionListener`, Micrometer adapter, pool reachability probe              |
+| [Metamodel](metamodel.md)             | `nova-metamodel` annotation processor for compile-time property-name constants   |
 
 ## API entry points
 
@@ -40,4 +41,5 @@ io.github.bssm-oss:nova-dialect-oracle
 io.github.bssm-oss:nova-spring-boot-starter
 io.github.bssm-oss:nova-spring-data
 io.github.bssm-oss:nova-metrics-micrometer
+io.github.bssm-oss:nova-metamodel                # opt-in annotation processor (compile-time only)
 ```
