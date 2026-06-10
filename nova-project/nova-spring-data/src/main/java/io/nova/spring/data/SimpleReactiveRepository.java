@@ -3,11 +3,13 @@ package io.nova.spring.data;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
+import io.nova.spring.data.derived.DerivedQueries;
 import reactor.core.publisher.Mono;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * {@link ReactiveCrudRepository} 메서드를 {@link ReactiveEntityOperations}로 위임하는 invocation
@@ -22,6 +24,7 @@ public final class SimpleReactiveRepository implements InvocationHandler {
     private final Class<?> entityType;
     private final Class<?> idType;
     private final ReactiveEntityOperations entityOperations;
+    private final DerivedQueries derivedQueries;
 
     public SimpleReactiveRepository(
             Class<?> entityType,
@@ -31,6 +34,7 @@ public final class SimpleReactiveRepository implements InvocationHandler {
         this.entityType = Objects.requireNonNull(entityType, "entityType");
         this.idType = Objects.requireNonNull(idType, "idType");
         this.entityOperations = Objects.requireNonNull(entityOperations, "entityOperations");
+        this.derivedQueries = new DerivedQueries(entityType, entityOperations);
     }
 
     /**
@@ -127,8 +131,15 @@ public final class SimpleReactiveRepository implements InvocationHandler {
                 }
             }
             default -> {
-                // fall through
+                // fall through to derived query parsing.
             }
+        }
+        // fixed-name switch가 처리하지 못한 호출은 derived query 파서에 한 번 더 기회를 준다.
+        // 파서가 메서드 이름을 인식하지 못하면 (Optional.empty) 진짜 unsupported,
+        // 인식했지만 잘못된 사용이면 (IllegalArgumentException) 명시적인 메시지로 fail-fast.
+        Optional<Object> derived = derivedQueries.tryDispatch(method, args);
+        if (derived.isPresent()) {
+            return derived.get();
         }
         return Mono.error(new UnsupportedOperationException(
                 "Unsupported repository method: " + method));
