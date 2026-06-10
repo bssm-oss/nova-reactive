@@ -99,4 +99,34 @@ Mono<Long> delete(T entity);
 Mono<Long> deleteAll(Iterable<T> entities);
 ```
 
-Derived-query parsing (`findByEmail`) and similar magic are not supported — use an explicit `findAll(QuerySpec)` or a native query. This is consistent with Nova's project focus of avoiding magic.
+### Derived query methods
+
+For familiarity with Spring Data, the proxy also parses method names that follow a `find / findFirst / count / exists / delete` convention. Anything the fixed-name switch above does not match falls through to the derived query parser; if that succeeds, it dispatches to `ReactiveEntityOperations`. If neither matches, the call returns `Mono.error(UnsupportedOperationException)`.
+
+```java
+public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
+    Mono<Author>  findByEmail(String email);                 // Mono → LIMIT 1
+    Flux<Author>  findByActiveTrue();                        // 0-arg keyword
+    Mono<Long>    countByActive(boolean active);
+    Mono<Boolean> existsByEmail(String email);
+    Mono<Long>    deleteByActiveFalse();
+    Flux<Author>  findByEmailIn(Iterable<String> emails);
+    Flux<Author>  findByCreatedAtAfter(Instant after);       // After / Before alias for Gt / Lt
+    Flux<Author>  findByEmailAndActiveTrueOrderByCreatedAtDesc(String email);
+    Mono<Author>  findFirstByActiveTrueOrderByCreatedAtDesc();
+}
+```
+
+**Subjects** — `find` (Mono = LIMIT 1, Flux = all), `findFirst`/`findTop`/`findOne` (always Mono with LIMIT 1), `count` (`Mono<Long>`), `exists` (`Mono<Boolean>`), `delete`/`remove` (`Mono<Long>`).
+
+**Keywords** — default (equality), `Not`, `LessThan`/`Lt` (alias `Before`), `LessThanEqual`/`Lte`, `GreaterThan`/`Gt` (alias `After`), `GreaterThanEqual`/`Gte`, `Like`, `StartingWith`/`StartsWith`, `EndingWith`/`EndsWith`, `Containing`/`Contains`, `In`, `NotIn`, `Between` (consumes two parameters), `IsNull` / `Null`, `IsNotNull` / `NotNull`, `True` / `IsTrue`, `False` / `IsFalse`.
+
+**Connectors** — `And` / `Or` (left-to-right; no precedence — parenthesisation matches Spring Data conventions).
+
+**Sort** — `OrderBy<Property>(Asc|Desc)?(And<Property>(Asc|Desc)?)*` appended after the predicate clause.
+
+**Property resolution** — greedy match against the entity's reflective top-level fields. Longer property names win to avoid prefix ambiguity. Method names use lowerCamelCase form (`findByEmailAddress` → property `emailAddress`).
+
+**Limitations** — `@Embedded` paths in method names, `IgnoreCase`, dynamic `Pageable` parameters, projections, and `@Query`-style native queries are not supported in derived names. Use `findAll(QuerySpec)` (or, with [`nova-metamodel`](metamodel.md), the generated property-name constants) for those cases.
+
+Misuse — unknown property, parameter-count mismatch, unrecognized keyword suffix — fails at the first call to that method with an `IllegalArgumentException` carrying a precise diagnostic. Method names whose subject prefix does not match (`saveAndPublish`, `magicMethod`, …) fall through to the existing `UnsupportedOperationException` as before.
