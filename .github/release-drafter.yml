@@ -66,6 +66,12 @@ categories:
       - dialect-mariadb
       - dialect-h2
       - dialect-oracle
+  # Catch-all for PRs that escape every named category. Without this, an
+  # unlabeled merged PR is still rendered (under no heading) but is easy to
+  # miss in the draft. The "*" wildcard matches "no labels at all".
+  - title: ":sparkles: Other changes"
+    labels:
+      - "*"
 
 # Exclude internal noise from the changelog.
 exclude-labels:
