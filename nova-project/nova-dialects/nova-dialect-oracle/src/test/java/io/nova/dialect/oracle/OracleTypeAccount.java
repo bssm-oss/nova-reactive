@@ -1,11 +1,11 @@
 package io.nova.dialect.oracle;
 
-import io.nova.annotation.Column;
-import io.nova.annotation.Entity;
-import io.nova.annotation.Enumerated;
-import io.nova.annotation.EnumType;
-import io.nova.annotation.Id;
-import io.nova.annotation.Table;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
 
 /**
  * Oracle sqlType 매핑 전체 경로(Integer/Double/Boolean/Long/String + STRING/ORDINAL enum)를

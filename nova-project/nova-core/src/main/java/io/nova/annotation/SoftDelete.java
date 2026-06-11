@@ -15,7 +15,7 @@ import java.lang.annotation.Target;
  * <p>
  * 지원 타입은 {@link java.time.Instant}, {@link java.time.LocalDateTime},
  * {@link java.time.OffsetDateTime}이다. 엔티티당 하나만 선언할 수 있으며,
- * {@link Id}와 동시에 선언할 수 없다.
+ * {@link jakarta.persistence.Id}와 동시에 선언할 수 없다.
  */
 @Target(ElementType.FIELD)
 @Retention(RetentionPolicy.RUNTIME)

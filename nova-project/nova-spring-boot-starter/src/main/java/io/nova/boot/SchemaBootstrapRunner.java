@@ -1,6 +1,6 @@
 package io.nova.boot;
 
-import io.nova.annotation.Entity;
+import jakarta.persistence.Entity;
 import io.nova.schema.DdlAuto;
 import io.nova.schema.SchemaInitializer;
 import org.apache.commons.logging.Log;

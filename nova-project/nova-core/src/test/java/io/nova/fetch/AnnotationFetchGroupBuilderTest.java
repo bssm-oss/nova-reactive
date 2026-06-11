@@ -1,8 +1,8 @@
 package io.nova.fetch;
 
-import io.nova.annotation.Entity;
-import io.nova.annotation.Id;
-import io.nova.annotation.OneToMany;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.OneToMany;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.support.fixtures.FixtureEntities.AuthorWithBooksAnnotated;

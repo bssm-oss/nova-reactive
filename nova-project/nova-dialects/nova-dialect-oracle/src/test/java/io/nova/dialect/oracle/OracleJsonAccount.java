@@ -1,10 +1,10 @@
 package io.nova.dialect.oracle;
 
-import io.nova.annotation.Column;
-import io.nova.annotation.Entity;
-import io.nova.annotation.Id;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import io.nova.annotation.Json;
-import io.nova.annotation.Table;
+import jakarta.persistence.Table;
 
 /**
  * {@code @Json} 컬럼의 Oracle SQL 타입 매핑을 검증하는 fixture. {@code payload}의 javaType이 {@link String}이라,

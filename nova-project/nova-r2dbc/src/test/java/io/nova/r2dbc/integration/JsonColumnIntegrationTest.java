@@ -1,12 +1,12 @@
 package io.nova.r2dbc.integration;
 
-import io.nova.annotation.Column;
-import io.nova.annotation.Entity;
-import io.nova.annotation.GeneratedValue;
-import io.nova.annotation.GenerationType;
-import io.nova.annotation.Id;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
 import io.nova.annotation.Json;
-import io.nova.annotation.Table;
+import jakarta.persistence.Table;
 import io.nova.json.JsonCodec;
 import reactor.core.publisher.Mono;
 import org.junit.jupiter.api.Test;

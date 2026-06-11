@@ -28,6 +28,12 @@ import io.nova.support.fixtures.FixtureEntities.EnumOnNonEnumFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumWithConverterEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnInsertableFalseEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
+import io.nova.support.fixtures.FixtureEntities.GeneratedValueTableEntity;
+import io.nova.support.fixtures.FixtureEntities.ManyToOneCascadeEntity;
+import io.nova.support.fixtures.FixtureEntities.ManyToOneLazyEntity;
+import io.nova.support.fixtures.FixtureEntities.OneToManyOrphanRemovalEntity;
 import io.nova.support.fixtures.FixtureEntities.IndexWithUnknownColumnEntity;
 import io.nova.support.fixtures.FixtureEntities.JsonAccount;
 import io.nova.support.fixtures.FixtureEntities.JsonAndEnumeratedEntity;
@@ -73,9 +79,9 @@ import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedSoftDeletableAccount;
 import org.junit.jupiter.api.Test;
 
-import io.nova.annotation.GenerationType;
+import jakarta.persistence.GenerationType;
 
-import io.nova.annotation.EnumType;
+import jakarta.persistence.EnumType;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -802,12 +808,13 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void enumeratedDefaultsToStringStrategy() {
+    void enumeratedDefaultsToOrdinalStrategy() {
+        // jakarta.persistence.Enumerated의 기본값은 JPA 표준과 동일하게 ORDINAL이다.
         EntityMetadata<EnumDefaultAccount> metadata = factory.getEntityMetadata(EnumDefaultAccount.class);
 
         PersistentProperty status = metadata.findProperty("status").orElseThrow();
         assertTrue(status.enumerated());
-        assertEquals(EnumType.STRING, status.enumType());
+        assertEquals(EnumType.ORDINAL, status.enumType());
     }
 
     @Test
@@ -1047,5 +1054,59 @@ class EntityMetadataFactoryTest {
             }
             return (T) new Preferences(theme, fontSize);
         }
+    }
+
+    @Test
+    void rejectsManyToOneLazyFetch() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ManyToOneLazyEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@ManyToOne(fetch=LAZY)"));
+    }
+
+    @Test
+    void rejectsManyToOneCascade() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ManyToOneCascadeEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@ManyToOne(cascade=...)"));
+    }
+
+    @Test
+    void rejectsOneToManyOrphanRemoval() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(OneToManyOrphanRemovalEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("orphanRemoval=true"));
+    }
+
+    @Test
+    void rejectsColumnInsertableFalse() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ColumnInsertableFalseEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@Column(insertable=false)"));
+    }
+
+    @Test
+    void rejectsColumnUnique() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ColumnUniqueEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@Column(unique=true)"));
+    }
+
+    @Test
+    void rejectsGeneratedValueTableStrategy() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(GeneratedValueTableEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@GeneratedValue(TABLE)"));
     }
 }

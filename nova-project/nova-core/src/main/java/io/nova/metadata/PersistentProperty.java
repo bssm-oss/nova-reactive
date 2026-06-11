@@ -1,7 +1,7 @@
 package io.nova.metadata;
 
-import io.nova.annotation.EnumType;
-import io.nova.annotation.GenerationType;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.GenerationType;
 import io.nova.convert.AttributeConverter;
 
 import java.lang.reflect.Field;
@@ -28,7 +28,7 @@ public final class PersistentProperty {
     private final boolean embedded;
     /**
      * 호스트 엔티티 인스턴스에서 이 property가 가리키는 leaf field까지 traverse해야 하는
-     * {@link io.nova.annotation.Embedded} 필드들의 outer → inner 순서 체인. top-level property는
+     * {@link jakarta.persistence.Embedded} 필드들의 outer → inner 순서 체인. top-level property는
      * 비어있다. nested 1-level은 길이 1, 2-level은 길이 2.
      */
     private final List<Field> embeddedHostPath;
@@ -134,7 +134,7 @@ public final class PersistentProperty {
     }
 
     /**
-     * varchar 등 가변 길이 문자열 컬럼의 길이. {@link io.nova.annotation.Column#length()}에서 오며
+     * varchar 등 가변 길이 문자열 컬럼의 길이. {@link jakarta.persistence.Column#length()}에서 오며
      * 기본값은 255다. {@link io.nova.sql.AbstractSchemaGenerator}가 {@code varchar(length)}를 emit할 때 쓴다.
      */
     public int length() {
@@ -143,14 +143,14 @@ public final class PersistentProperty {
 
     /**
      * {@link java.math.BigDecimal} numeric 컬럼의 전체 자릿수. {@code 0}이면 미지정이며 dialect가
-     * 합리적 기본값을 적용한다. {@link io.nova.annotation.Column#precision()}에서 온다.
+     * 합리적 기본값을 적용한다. {@link jakarta.persistence.Column#precision()}에서 온다.
      */
     public int precision() {
         return precision;
     }
 
     /**
-     * {@link java.math.BigDecimal} numeric 컬럼의 소수 자릿수. {@link io.nova.annotation.Column#scale()}에서 온다.
+     * {@link java.math.BigDecimal} numeric 컬럼의 소수 자릿수. {@link jakarta.persistence.Column#scale()}에서 온다.
      */
     public int scale() {
         return scale;
@@ -181,8 +181,8 @@ public final class PersistentProperty {
     }
 
     /**
-     * {@code true}이면 이 property는 호스트 엔티티의 {@link io.nova.annotation.Embedded}
-     * 필드에 위치한 {@link io.nova.annotation.Embeddable} 타입에서 펼쳐져 나온 것이다.
+     * {@code true}이면 이 property는 호스트 엔티티의 {@link jakarta.persistence.Embedded}
+     * 필드에 위치한 {@link jakarta.persistence.Embeddable} 타입에서 펼쳐져 나온 것이다.
      */
     public boolean embedded() {
         return embedded;
@@ -190,7 +190,7 @@ public final class PersistentProperty {
 
     /**
      * 이 property의 값을 read/write할 때 먼저 거쳐야 하는 호스트 엔티티의
-     * {@link io.nova.annotation.Embedded} 필드. top-level property는 {@code null}.
+     * {@link jakarta.persistence.Embedded} 필드. top-level property는 {@code null}.
      * 다단계 nested embedded일 때는 가장 안쪽(leaf field를 직접 담는) 호스트 필드를 반환한다.
      * 전체 chain은 {@link #embeddedHostPath()}를 사용한다.
      */
@@ -203,7 +203,7 @@ public final class PersistentProperty {
 
     /**
      * 호스트 엔티티 인스턴스에서 leaf field까지 도달하기 위해 outer → inner 순서로 거쳐야 하는
-     * {@link io.nova.annotation.Embedded} 호스트 필드 체인. top-level property는 빈 리스트를 반환한다.
+     * {@link jakarta.persistence.Embedded} 호스트 필드 체인. top-level property는 빈 리스트를 반환한다.
      * 1-level embedded는 길이 1, 2-level nested embedded는 길이 2.
      */
     public List<Field> embeddedHostPath() {
@@ -211,8 +211,8 @@ public final class PersistentProperty {
     }
 
     /**
-     * {@code true}이면 이 property는 {@link io.nova.annotation.Enumerated}로 마킹된 enum 필드이며
-     * {@link #enumType()}이 {@link io.nova.annotation.EnumType#STRING} 또는 {@code ORDINAL} 중 하나를
+     * {@code true}이면 이 property는 {@link jakarta.persistence.Enumerated}로 마킹된 enum 필드이며
+     * {@link #enumType()}이 {@link jakarta.persistence.EnumType#STRING} 또는 {@code ORDINAL} 중 하나를
      * 반환한다.
      */
     public boolean enumerated() {
@@ -258,7 +258,7 @@ public final class PersistentProperty {
     }
 
     /**
-     * {@code true}이면 이 property는 {@link io.nova.annotation.ManyToOne}의 owning side이며,
+     * {@code true}이면 이 property는 {@link jakarta.persistence.ManyToOne}의 owning side이며,
      * {@link #columnName()}은 FK 컬럼 이름, {@link #manyToOneTargetType()}는 참조 대상 entity 타입이다.
      * column read/write 시에는 child entity의 id 값을 직접 다룬다 — 이 property에서 entity 인스턴스를
      * 자동으로 다루지는 않는다.
@@ -272,7 +272,7 @@ public final class PersistentProperty {
     }
 
     /**
-     * {@link io.nova.annotation.ManyToOne#optional()}와 {@link io.nova.annotation.JoinColumn#nullable()}
+     * {@link jakarta.persistence.ManyToOne#optional()}와 {@link jakarta.persistence.JoinColumn#nullable()}
      * 중 더 strict한 값. {@code false}이면 FK 컬럼은 NOT NULL.
      */
     public boolean manyToOneNullable() {
@@ -280,7 +280,7 @@ public final class PersistentProperty {
     }
 
     /**
-     * {@code true}이면 이 property는 {@link io.nova.annotation.OneToMany}의 inverse side로, 부모 테이블에
+     * {@code true}이면 이 property는 {@link jakarta.persistence.OneToMany}의 inverse side로, 부모 테이블에
      * 컬럼을 갖지 않는다. INSERT/UPDATE 바인딩에서도 제외된다.
      */
     public boolean oneToMany() {
@@ -292,7 +292,7 @@ public final class PersistentProperty {
     }
 
     /**
-     * {@link io.nova.annotation.OneToMany#mappedBy()}로 지정된, child entity 안의 owning property 이름.
+     * {@link jakarta.persistence.OneToMany#mappedBy()}로 지정된, child entity 안의 owning property 이름.
      */
     public String oneToManyMappedBy() {
         return oneToManyMappedBy;
@@ -327,14 +327,14 @@ public final class PersistentProperty {
     }
 
     /**
-     * {@code @ManyToOne} 참조 대상 인스턴스에서 {@link io.nova.annotation.Id} 필드를 찾아 그 값을 꺼낸다.
+     * {@code @ManyToOne} 참조 대상 인스턴스에서 {@link jakarta.persistence.Id} 필드를 찾아 그 값을 꺼낸다.
      * cycle-aware EntityMetadataFactory 없이도 동작하도록 직접 reflection으로 @Id를 탐색하며, target 클래스
      * 계층에 @Id가 없으면 {@link IllegalStateException}으로 즉시 거부한다.
      */
     private static Object extractReferencedId(Object referenced) {
         Class<?> type = referenced.getClass();
         for (Field candidate : type.getDeclaredFields()) {
-            if (candidate.isAnnotationPresent(io.nova.annotation.Id.class)) {
+            if (candidate.isAnnotationPresent(jakarta.persistence.Id.class)) {
                 candidate.setAccessible(true);
                 try {
                     return candidate.get(referenced);
@@ -415,7 +415,7 @@ public final class PersistentProperty {
 
     private static Field findIdField(Class<?> targetType) {
         for (Field candidate : targetType.getDeclaredFields()) {
-            if (candidate.isAnnotationPresent(io.nova.annotation.Id.class)) {
+            if (candidate.isAnnotationPresent(jakarta.persistence.Id.class)) {
                 return candidate;
             }
         }

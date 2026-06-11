@@ -1,6 +1,6 @@
 package io.nova.dialect.oracle;
 
-import io.nova.annotation.EnumType;
+import jakarta.persistence.EnumType;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.LockMode;
 import io.nova.query.QuerySpec;

@@ -2,7 +2,11 @@
 
 # Entities
 
-Nova's annotations live in the `io.nova.annotation` package and align their semantics with JPA wherever practical.
+Nova maps entities with the **real JPA annotations** from `jakarta.persistence` — `@Entity`, `@Table`, `@Column`, `@Id`, `@GeneratedValue`, `@ManyToOne`, `@OneToMany`, `@Version`, `@Embeddable`, `@Enumerated`, the lifecycle callbacks, and so on. A JPA entity is source-compatible as-is; just add the `jakarta.persistence-api` dependency (Nova exports it transitively).
+
+Attributes Nova cannot honor reactively are **rejected fail-fast** at metadata build time rather than silently ignored — see [Unsupported JPA attributes](#unsupported-jpa-attributes) below.
+
+Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotation`: `@CreatedAt`, `@UpdatedAt`, `@SoftDelete`, `@Json`.
 
 ## Annotation reference
 
@@ -161,3 +165,22 @@ public class Account {
 - `@Index#columnList()` is a comma-separated list (JPA style); `@UniqueConstraint#columnNames()` is a string array. Both require at least one entry and must use the actual column names (the `@Column(name)` value or the snake_case-converted name). Names that do not exist in the entity metadata are rejected fail-fast.
 
 Emit the DDL with `createIndexes(...)` — see [Dialects & Schema](dialects.md).
+
+---
+
+## Unsupported JPA attributes
+
+Nova reuses the JPA annotations but is a non-blocking, persistence-context-free ORM, so a few JPA attributes cannot be honored. Rather than silently ignoring them (a debugging trap), Nova **rejects them fail-fast** when entity metadata is first built:
+
+| Annotation / attribute | Why rejected |
+|------------------------|--------------|
+| `@ManyToOne(fetch = LAZY)` | No lazy proxy. Relations are fetched eagerly with a single IN-query, or explicitly via `FetchGroup`. The JPA default `EAGER` is honored. |
+| `@ManyToOne(cascade = ...)` / `@OneToMany(cascade = ...)` | No persistence-context graph; persist related entities explicitly with `save` / `saveAll`. |
+| `@OneToMany(orphanRemoval = true)` | No dirty-tracking; delete children explicitly. |
+| `@Column(insertable = false)` / `@Column(updatable = false)` | Nova always binds the column on insert/update. |
+| `@Column(unique = true)` | Use `@Table(uniqueConstraints = ...)` instead. |
+| `@Column(table = ...)` | Secondary tables are not supported. |
+| `@Column(columnDefinition = ...)` | Column DDL is derived from the field type by the dialect. |
+| `@GeneratedValue(strategy = TABLE)` | Use `IDENTITY`, `SEQUENCE`, `UUID`, or `AUTO`. |
+
+`@OneToMany`'s default `fetch = LAZY` is the one exception: it is treated as eager (Nova's only mode) rather than rejected, since rejecting the default would reject every collection.

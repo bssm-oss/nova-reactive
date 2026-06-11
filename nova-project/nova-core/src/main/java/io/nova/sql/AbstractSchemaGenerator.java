@@ -1,7 +1,7 @@
 package io.nova.sql;
 
-import io.nova.annotation.EnumType;
-import io.nova.annotation.GenerationType;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.GenerationType;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.IndexDefinition;
 import io.nova.metadata.PersistentProperty;

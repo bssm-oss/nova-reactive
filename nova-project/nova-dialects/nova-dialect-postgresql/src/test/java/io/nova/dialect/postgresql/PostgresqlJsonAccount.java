@@ -1,10 +1,10 @@
 package io.nova.dialect.postgresql;
 
-import io.nova.annotation.Column;
-import io.nova.annotation.Entity;
-import io.nova.annotation.Id;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import io.nova.annotation.Json;
-import io.nova.annotation.Table;
+import jakarta.persistence.Table;
 
 import java.util.Map;
 

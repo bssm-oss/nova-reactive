@@ -1,6 +1,6 @@
 package io.nova.dialect.postgresql;
 
-import io.nova.annotation.GenerationType;
+import jakarta.persistence.GenerationType;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
 import io.nova.sql.AbstractSchemaGenerator;

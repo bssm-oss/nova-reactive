@@ -168,7 +168,9 @@ public final class EntityMetadata<T> {
         }
         return switch (property.generationType()) {
             case IDENTITY, AUTO -> true;
-            case SEQUENCE, UUID -> false;
+            // SEQUENCE/UUID는 애플리케이션이 INSERT 직전에 id를 채운다. TABLE은 metadata 빌드 단계에서
+            // 이미 거부되므로 여기 도달하지 않지만, switch 포괄성을 위해 app-supplied 쪽으로 분류한다.
+            case SEQUENCE, UUID, TABLE -> false;
         };
     }
 

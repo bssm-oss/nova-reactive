@@ -36,7 +36,7 @@ Add a `SqlExecutionListener` bean (e.g. `MicrometerSqlExecutionListener`) to the
 
 The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto` for projects that want a one-line schema bootstrap during integration tests or demos. When the property is set to `create` or `create-drop`, a `SchemaBootstrapRunner` is registered that:
 
-1. Scans the configured packages for `@io.nova.annotation.Entity` classes.
+1. Scans the configured packages for `@jakarta.persistence.Entity` classes.
 2. Issues `CREATE TABLE IF NOT EXISTS` (plus indexes) during context refresh via `InitializingBean#afterPropertiesSet()` so the schema is ready before any other refresh-time bean queries it.
 3. For `create-drop`, also issues `DROP TABLE IF EXISTS` in reverse order on context close via `DisposableBean#destroy()` — FK friendly.
 

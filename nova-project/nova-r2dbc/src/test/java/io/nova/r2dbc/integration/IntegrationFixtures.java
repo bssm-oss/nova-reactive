@@ -1,13 +1,13 @@
 package io.nova.r2dbc.integration;
 
-import io.nova.annotation.Column;
-import io.nova.annotation.Entity;
-import io.nova.annotation.GeneratedValue;
-import io.nova.annotation.GenerationType;
-import io.nova.annotation.Id;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
 import io.nova.annotation.SoftDelete;
-import io.nova.annotation.Table;
-import io.nova.annotation.Version;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import java.time.Instant;
 
