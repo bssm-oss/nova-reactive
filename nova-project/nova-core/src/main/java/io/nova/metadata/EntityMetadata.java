@@ -29,9 +29,12 @@ public final class EntityMetadata<T> {
     private final PersistentProperty softDeleteProperty;
     private final PersistentProperty versionProperty;
     private final List<Method> prePersistCallbacks;
+    private final List<Method> postPersistCallbacks;
     private final List<Method> preUpdateCallbacks;
+    private final List<Method> postUpdateCallbacks;
     private final List<Method> postLoadCallbacks;
     private final List<Method> preRemoveCallbacks;
+    private final List<Method> postRemoveCallbacks;
     private final List<IndexDefinition> indexes;
     private final List<UniqueConstraintDefinition> uniqueConstraints;
 
@@ -42,9 +45,12 @@ public final class EntityMetadata<T> {
             List<PersistentProperty> properties,
             PersistentProperty idProperty,
             List<Method> prePersistCallbacks,
+            List<Method> postPersistCallbacks,
             List<Method> preUpdateCallbacks,
+            List<Method> postUpdateCallbacks,
             List<Method> postLoadCallbacks,
             List<Method> preRemoveCallbacks,
+            List<Method> postRemoveCallbacks,
             List<IndexDefinition> indexes,
             List<UniqueConstraintDefinition> uniqueConstraints
     ) {
@@ -88,9 +94,12 @@ public final class EntityMetadata<T> {
         this.softDeleteProperty = softDelete;
         this.versionProperty = version;
         this.prePersistCallbacks = List.copyOf(prePersistCallbacks);
+        this.postPersistCallbacks = List.copyOf(postPersistCallbacks);
         this.preUpdateCallbacks = List.copyOf(preUpdateCallbacks);
+        this.postUpdateCallbacks = List.copyOf(postUpdateCallbacks);
         this.postLoadCallbacks = List.copyOf(postLoadCallbacks);
         this.preRemoveCallbacks = List.copyOf(preRemoveCallbacks);
+        this.postRemoveCallbacks = List.copyOf(postRemoveCallbacks);
         this.indexes = List.copyOf(indexes);
         this.uniqueConstraints = List.copyOf(uniqueConstraints);
     }
@@ -159,7 +168,7 @@ public final class EntityMetadata<T> {
         }
         return switch (property.generationType()) {
             case IDENTITY, AUTO -> true;
-            case SEQUENCE, UUID, NONE -> false;
+            case SEQUENCE, UUID -> false;
         };
     }
 
@@ -185,10 +194,24 @@ public final class EntityMetadata<T> {
     }
 
     /**
+     * {@code @PostPersist} 콜백 메서드들을 declaration 순서대로 반환한다.
+     */
+    public List<Method> postPersistCallbacks() {
+        return postPersistCallbacks;
+    }
+
+    /**
      * {@code @PreUpdate} 콜백 메서드들을 declaration 순서대로 반환한다.
      */
     public List<Method> preUpdateCallbacks() {
         return preUpdateCallbacks;
+    }
+
+    /**
+     * {@code @PostUpdate} 콜백 메서드들을 declaration 순서대로 반환한다.
+     */
+    public List<Method> postUpdateCallbacks() {
+        return postUpdateCallbacks;
     }
 
     /**
@@ -203,6 +226,13 @@ public final class EntityMetadata<T> {
      */
     public List<Method> preRemoveCallbacks() {
         return preRemoveCallbacks;
+    }
+
+    /**
+     * {@code @PostRemove} 콜백 메서드들을 declaration 순서대로 반환한다.
+     */
+    public List<Method> postRemoveCallbacks() {
+        return postRemoveCallbacks;
     }
 
     /**

@@ -13,13 +13,13 @@ import java.util.Map;
  * {@code metadata} 필드는 {@code @Json}으로 표시되며 DDL 생성 시 dialect가 {@code jsonb} 타입을 emit해야 한다.
  */
 @Entity
-@Table("json_accounts")
+@Table(name = "json_accounts")
 class PostgresqlJsonAccount {
     @Id
     private Long id;
 
     @Json
-    @Column("payload")
+    @Column(name = "payload")
     private Map<String, Object> metadata;
 
     PostgresqlJsonAccount() {

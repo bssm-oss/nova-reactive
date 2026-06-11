@@ -110,13 +110,13 @@ class EnableNovaRepositoriesTest {
     }
 
     @Entity
-    @Table("widgets")
+    @Table(name = "widgets")
     public static class Widget {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("widget_name")
+        @Column(name = "widget_name")
         private String name;
 
         public Widget() {

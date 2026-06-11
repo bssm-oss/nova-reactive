@@ -57,13 +57,13 @@ class BigDecimalColumnRoundTripIntegrationTest {
     }
 
     @Entity
-    @Table("priced_items")
+    @Table(name = "priced_items")
     static class PricedItem {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         Long id;
 
-        @Column(value = "amount", precision = 12, scale = 2)
+        @Column(name = "amount", precision = 12, scale = 2)
         BigDecimal amount;
 
         PricedItem() {

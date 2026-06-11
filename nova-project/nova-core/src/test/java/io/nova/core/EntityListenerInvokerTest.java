@@ -67,17 +67,53 @@ class EntityListenerInvokerTest {
     }
 
     @Test
+    void invokesPostPersistCallback() {
+        EntityMetadata<EntityWithCallbacks> metadata = factory.getEntityMetadata(EntityWithCallbacks.class);
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "user@nova.io");
+
+        invoker.invokePostPersist(entity, metadata);
+
+        assertEquals(1, EntityWithCallbacks.postPersistCount.get());
+    }
+
+    @Test
+    void invokesPostUpdateCallback() {
+        EntityMetadata<EntityWithCallbacks> metadata = factory.getEntityMetadata(EntityWithCallbacks.class);
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "user@nova.io");
+
+        invoker.invokePostUpdate(entity, metadata);
+
+        assertEquals(1, EntityWithCallbacks.postUpdateCount.get());
+    }
+
+    @Test
+    void invokesPostRemoveCallback() {
+        EntityMetadata<EntityWithCallbacks> metadata = factory.getEntityMetadata(EntityWithCallbacks.class);
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "user@nova.io");
+
+        invoker.invokePostRemove(entity, metadata);
+
+        assertEquals(1, EntityWithCallbacks.postRemoveCount.get());
+    }
+
+    @Test
     void isNoOpForEntitiesWithoutCallbacks() {
         EntityMetadata<SampleAccount> metadata = factory.getEntityMetadata(SampleAccount.class);
         SampleAccount entity = new SampleAccount(7L, "x@nova.io", true);
 
         invoker.invokePrePersist(entity, metadata);
+        invoker.invokePostPersist(entity, metadata);
         invoker.invokePreUpdate(entity, metadata);
+        invoker.invokePostUpdate(entity, metadata);
         invoker.invokePostLoad(entity, metadata);
         invoker.invokePreRemove(entity, metadata);
+        invoker.invokePostRemove(entity, metadata);
 
         // 어떤 호출도 예외를 던지지 않아야 한다.
         assertTrue(metadata.prePersistCallbacks().isEmpty());
+        assertTrue(metadata.postPersistCallbacks().isEmpty());
+        assertTrue(metadata.postUpdateCallbacks().isEmpty());
+        assertTrue(metadata.postRemoveCallbacks().isEmpty());
     }
 
     @Test

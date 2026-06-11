@@ -71,6 +71,9 @@ class EntityMetadataTest {
                         List.of(),
                         List.of(),
                         List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
                         List.of()
                 )
         );

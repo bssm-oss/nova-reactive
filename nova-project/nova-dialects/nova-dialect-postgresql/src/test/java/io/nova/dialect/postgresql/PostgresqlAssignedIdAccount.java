@@ -6,12 +6,12 @@ import io.nova.annotation.Id;
 import io.nova.annotation.Table;
 
 @Entity
-@Table("assigned_accounts")
+@Table(name = "assigned_accounts")
 class PostgresqlAssignedIdAccount {
     @Id
     private Long id;
 
-    @Column("email_address")
+    @Column(name = "email_address")
     private String email;
 
     PostgresqlAssignedIdAccount() {

@@ -31,13 +31,13 @@ final class IntegrationFixtures {
      * 동일한 fix를 inversion으로 보호한다.
      */
     @Entity
-    @Table("identity_accounts")
+    @Table(name = "identity_accounts")
     static class IdentityAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Column(nullable = false)
@@ -68,16 +68,16 @@ final class IntegrationFixtures {
      * Soft delete 라운드트립 검증용 entity. {@code deleted_at}이 NULL이면 살아있다는 가드 규약을 따른다.
      */
     @Entity
-    @Table("soft_delete_accounts")
+    @Table(name = "soft_delete_accounts")
     static class SoftDeleteAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @SoftDelete
-        @Column("deleted_at")
+        @Column(name = "deleted_at")
         private Instant deletedAt;
 
         SoftDeleteAccount() {
@@ -109,15 +109,15 @@ final class IntegrationFixtures {
      * wrapping 경로가 실제 r2dbc-h2 driver와 round-trip 되는지 함께 검증한다.
      */
     @Entity
-    @Table("locked_accounts")
+    @Table(name = "locked_accounts")
     static class LockedAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
-        @Column("balance_cents")
+        @Column(name = "balance_cents")
         private long balanceCents;
 
         LockedAccount() {
@@ -148,13 +148,13 @@ final class IntegrationFixtures {
      * assigned id는 {@code isNew==false}로 분류되어 항상 UPDATE 경로로 들어가기 때문이다.
      */
     @Entity
-    @Table("versioned_accounts")
+    @Table(name = "versioned_accounts")
     static class VersionedAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Version

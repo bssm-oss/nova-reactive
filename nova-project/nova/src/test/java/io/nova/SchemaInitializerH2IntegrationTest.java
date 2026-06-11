@@ -125,13 +125,13 @@ class SchemaInitializerH2IntegrationTest {
     }
 
     @Entity
-    @Table("integration_accounts")
+    @Table(name = "integration_accounts")
     public static class IntegrationAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         public IntegrationAccount() {}
@@ -151,14 +151,14 @@ class SchemaInitializerH2IntegrationTest {
     }
 
     @Entity
-    @Table("indexed_integration_accounts")
-    @Index(columns = {"email"})
+    @Table(name = "indexed_integration_accounts",
+            indexes = @Index(columnList = "email"))
     public static class IndexedAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("email")
+        @Column(name = "email")
         private String email;
 
         public IndexedAccount() {}

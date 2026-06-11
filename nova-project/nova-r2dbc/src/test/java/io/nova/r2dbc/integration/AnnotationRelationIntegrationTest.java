@@ -118,7 +118,7 @@ class AnnotationRelationIntegrationTest {
     }
 
     @Entity
-    @Table("int_author")
+    @Table(name = "int_author")
     static class IntAuthor {
         @Id
         private Long id;
@@ -149,7 +149,7 @@ class AnnotationRelationIntegrationTest {
     }
 
     @Entity
-    @Table("int_book")
+    @Table(name = "int_book")
     static class IntBook {
         @Id
         private Long id;

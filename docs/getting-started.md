@@ -59,14 +59,14 @@ dependencies {
 
 ```java
 @Entity
-@Table("accounts")
+@Table(name = "accounts")
 public class Account {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column("email_address")
+    @Column(name = "email_address")
     private String email;
 
     @Column(nullable = false)

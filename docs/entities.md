@@ -11,20 +11,23 @@ Nova's annotations live in the `io.nova.annotation` package and align their sema
 | `@Entity`         | Marks a class as persistent. Without `name`, the class-name-based default naming applies. |
 | `@Table`          | Explicit table name. When omitted, the `NamingStrategy` decides.                          |
 | `@Id`             | Identifier field. Exactly one is required per entity.                                     |
-| `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`, `NONE`). For `SEQUENCE`, set `generator` to the sequence name. |
+| `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, set `generator` to the sequence name. |
 | `@Column`         | Column name, `nullable`, `length` / `precision` / `scale`, and other mapping metadata.    |
 | `@CreatedAt`      | Auto-populates the field with the current time on insert (`Instant` / `LocalDateTime` / `OffsetDateTime`). Preserves a value the user pre-sets. |
 | `@UpdatedAt`      | Overwritten with the current time on insert, update, partial update, and Updater paths.   |
 | `@SoftDelete`     | Rewrites DELETE as `UPDATE deleted_at = now`. Every SELECT path automatically gets a `WHERE deleted_at IS NULL` guard. |
 | `@Version`        | Optimistic locking. `Long` / `Integer` / `Short` supported. Surfaces `OptimisticLockingFailureException` on conflict. |
 | `@PrePersist`     | Entity lifecycle callback — invoked just before insert (`void`, no-arg).                  |
+| `@PostPersist`    | Invoked right after a successful insert (generated id already assigned).                   |
 | `@PreUpdate`      | Invoked just before update / partial update.                                              |
+| `@PostUpdate`     | Invoked right after a successful update / partial update.                                  |
 | `@PostLoad`       | Invoked right after hydration in `findById` / `findAll`.                                  |
 | `@PreRemove`      | Invoked just before delete (soft or hard).                                                |
+| `@PostRemove`     | Invoked right after a successful delete (soft or hard).                                    |
 | `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; columns flatten into the host entity's table. |
 | `@Embedded`       | FIELD-level marker indicating that an entity field is an `@Embeddable` flattened into host columns. |
-| `@Index`          | Table-level secondary index (TYPE-level, `@Repeatable`). Without `name`, generated as `ix_{table}_{cols}`. |
-| `@UniqueConstraint` | Table-level unique constraint (TYPE-level, `@Repeatable`). Without `name`, generated as `uk_{table}_{cols}`. |
+| `@Index`          | Table-level secondary index, declared in `@Table(indexes = ...)` with a comma-separated `columnList`. Without `name`, generated as `ix_{table}_{cols}`. |
+| `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
 | `@JoinColumn`     | FK column name and nullability seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
@@ -64,7 +67,7 @@ public static class Address {
 }
 
 @Entity
-@Table("customer")
+@Table(name = "customer")
 public static class Customer {
     @Id
     private Long id;
@@ -90,7 +93,7 @@ Declare the owning side with `@ManyToOne` (+ optional `@JoinColumn`) and the inv
 
 ```java
 @Entity
-@Table("authors")
+@Table(name = "authors")
 public static class Author {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
     private String name;
@@ -101,7 +104,7 @@ public static class Author {
 }
 
 @Entity
-@Table("books")
+@Table(name = "books")
 public static class Book {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
     private String title;
@@ -121,36 +124,40 @@ public static class Book {
 
 ## Indexes and unique constraints
 
-Declare table-level secondary indexes and unique constraints on the entity type with `@Index` / `@UniqueConstraint`. Both are `@Repeatable`, so apply as many as needed.
+Declare table-level secondary indexes and unique constraints as members of `@Table`
+(`indexes` / `uniqueConstraints`), exactly like JPA. Each member array takes as many
+`@Index` / `@UniqueConstraint` as needed.
 
 ```java
 @Entity
-@Table("accounts")
-@Index(columns = {"email"})                                 // auto-named ix_accounts_email
-@Index(name = "ix_active_created", columns = {"active", "created_at"})
-@UniqueConstraint(columns = {"tenant_id", "email"})         // uk_accounts_tenant_id_email
+@Table(name = "accounts",
+        indexes = {
+                @Index(columnList = "email"),                              // auto-named ix_accounts_email
+                @Index(name = "ix_active_created", columnList = "active, created_at")
+        },
+        uniqueConstraints = @UniqueConstraint(columnNames = {"tenant_id", "email"}))  // uk_accounts_tenant_id_email
 public class Account {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column("tenant_id")
+    @Column(name = "tenant_id")
     private Long tenantId;
 
-    @Column("email")
+    @Column(name = "email")
     private String email;
 
-    @Column("active")
+    @Column(name = "active")
     private boolean active;
 
     @CreatedAt
-    @Column("created_at")
+    @Column(name = "created_at")
     private Instant createdAt;
 }
 ```
 
 - When `name` is blank, names are generated as `ix_{table}_{col1}_{col2}_...` / `uk_{table}_{col1}_{col2}_...`.
 - If an auto-generated name exceeds the dialect's identifier-length limit, it is truncated with a short hash suffix.
-- `columns()` requires at least one entry and must use the actual column names (the `@Column` value or the snake_case-converted name). Names that do not exist in the entity metadata are rejected fail-fast.
+- `@Index#columnList()` is a comma-separated list (JPA style); `@UniqueConstraint#columnNames()` is a string array. Both require at least one entry and must use the actual column names (the `@Column(name)` value or the snake_case-converted name). Names that do not exist in the entity metadata are rejected fail-fast.
 
 Emit the DDL with `createIndexes(...)` — see [Dialects & Schema](dialects.md).

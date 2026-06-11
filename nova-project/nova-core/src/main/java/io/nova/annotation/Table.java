@@ -8,5 +8,9 @@ import java.lang.annotation.Target;
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 public @interface Table {
-    String value() default "";
+    String name() default "";
+
+    Index[] indexes() default {};
+
+    UniqueConstraint[] uniqueConstraints() default {};
 }
