@@ -35,6 +35,8 @@ import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
 import io.nova.support.fixtures.FixtureEntities.GeneratedValueTableEntity;
 import io.nova.support.fixtures.FixtureEntities.TransientFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.MappedSubEntity;
+import io.nova.support.fixtures.FixtureEntities.JoinColumnAttributesEntity;
+import io.nova.support.fixtures.FixtureEntities.NamedSequenceGeneratorEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneCascadeEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneLazyEntity;
 import io.nova.support.fixtures.FixtureEntities.OneToManyOrphanRemovalEntity;
@@ -1137,6 +1139,26 @@ class EntityMetadataFactoryTest {
         assertTrue(metadata.findProperty("createdAt").isPresent());
         assertTrue(metadata.findProperty("email").isPresent());
         assertEquals("id", metadata.idProperty().propertyName());
+    }
+
+    @Test
+    void honorsJoinColumnInsertableAndUnique() {
+        EntityMetadata<JoinColumnAttributesEntity> metadata =
+                factory.getEntityMetadata(JoinColumnAttributesEntity.class);
+
+        PersistentProperty owner = metadata.findProperty("owner").orElseThrow();
+        assertTrue(owner.unique());
+        // insertable=false인 FK는 INSERT 바인딩에서 빠진다.
+        assertTrue(metadata.insertableProperties().stream().noneMatch(p -> p.propertyName().equals("owner")));
+    }
+
+    @Test
+    void resolvesSequenceNameFromSequenceGenerator() {
+        EntityMetadata<NamedSequenceGeneratorEntity> metadata =
+                factory.getEntityMetadata(NamedSequenceGeneratorEntity.class);
+
+        // @GeneratedValue(generator="user_gen") -> @SequenceGenerator(sequenceName="user_seq")
+        assertEquals("user_seq", metadata.idProperty().generator());
     }
 
     @Test

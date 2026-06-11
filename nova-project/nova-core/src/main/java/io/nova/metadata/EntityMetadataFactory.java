@@ -24,6 +24,7 @@ import jakarta.persistence.PostUpdate;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
+import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Transient;
 import io.nova.annotation.SoftDelete;
 import jakarta.persistence.Table;
@@ -258,6 +259,7 @@ public final class EntityMetadataFactory {
                 entityType,
                 entityName,
                 tableName,
+                table != null ? table.schema() : "",
                 properties,
                 idProperty,
                 prePersistCallbacks,
@@ -380,6 +382,24 @@ public final class EntityMetadataFactory {
                 || Modifier.isStatic(field.getModifiers())
                 || Modifier.isTransient(field.getModifiers())
                 || field.isAnnotationPresent(Transient.class);
+    }
+
+    /**
+     * {@code @GeneratedValue(generator=...)}의 논리 이름을, 같은 필드 또는 엔티티 타입에 선언된
+     * {@link SequenceGenerator}(이름이 일치하는 것)의 {@code sequenceName}으로 해석한다. 매칭되는
+     * {@code @SequenceGenerator}가 없으면 generator 값을 그대로(시퀀스 이름으로) 반환한다.
+     * {@code allocationSize}/{@code initialValue}는 Nova가 매 INSERT마다 nextval만 호출하므로 무시된다.
+     */
+    private static String resolveSequenceName(Class<?> declaringType, Field field, String generatorName) {
+        SequenceGenerator sg = field.getAnnotation(SequenceGenerator.class);
+        if (sg == null || !sg.name().equals(generatorName)) {
+            SequenceGenerator onType = declaringType.getAnnotation(SequenceGenerator.class);
+            sg = onType != null && onType.name().equals(generatorName) ? onType : null;
+        }
+        if (sg == null) {
+            return generatorName;
+        }
+        return sg.sequenceName().isBlank() ? sg.name() : sg.sequenceName();
     }
 
     private static void rejectUnsupportedColumnAttributes(Class<?> declaringType, Field field, Column column) {
@@ -654,6 +674,10 @@ public final class EntityMetadataFactory {
                             declaringType.getName() + "." + field.getName()
                                     + " uses @GeneratedValue(SEQUENCE) but does not specify generator (sequence name)");
                 }
+                // JPA: @GeneratedValue(generator="name")가 @SequenceGenerator(name="name", sequenceName=...)를
+                // 가리키면 그 sequenceName으로 해석한다. 매칭되는 @SequenceGenerator가 없으면 generator 값을
+                // 시퀀스 이름으로 그대로 사용한다(shorthand).
+                generator = resolveSequenceName(declaringType, field, generator);
                 if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(generator).matches()) {
                     throw new IllegalArgumentException(
                             "Invalid sequence generator name: '" + generator + "' on "
@@ -911,6 +935,10 @@ public final class EntityMetadataFactory {
             columnName = namingStrategy.columnName(field.getName() + "_id");
         }
         boolean nullable = manyToOne.optional() && (joinColumn == null || joinColumn.nullable());
+        boolean fkInsertable = joinColumn == null || joinColumn.insertable();
+        boolean fkUpdatable = joinColumn == null || joinColumn.updatable();
+        boolean fkUnique = joinColumn != null && joinColumn.unique();
+        String fkColumnDefinition = joinColumn == null ? "" : joinColumn.columnDefinition();
         return new PersistentProperty(
                 field,
                 field.getName(),
@@ -939,10 +967,10 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 "",
-                true,
-                true,
-                false,
-                ""
+                fkInsertable,
+                fkUpdatable,
+                fkUnique,
+                fkColumnDefinition
         );
     }
 

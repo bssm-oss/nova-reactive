@@ -11,6 +11,7 @@ import io.nova.support.fixtures.FixtureEntities.AutoNamedIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnTypedEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
+import io.nova.support.fixtures.FixtureEntities.SchemaQualifiedEntity;
 import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.JsonAccount;
@@ -157,6 +158,13 @@ class AbstractSchemaGeneratorTest {
         String sql = dialect.schemaGenerator().createTable(factory.getEntityMetadata(ColumnDefinitionEntity.class));
         // columnDefinition="text"이 dialect 유도 타입(varchar(255)) 대신 그대로 쓰인다.
         assertTrue(sql.contains("note text"), sql);
+    }
+
+    @Test
+    void rendersSchemaQualifiedTableName() {
+        String sql = dialect.schemaGenerator().createTable(factory.getEntityMetadata(SchemaQualifiedEntity.class));
+        // @Table(schema="app") -> 스키마 한정 테이블 참조.
+        assertTrue(sql.contains("app.accounts"), sql);
     }
 
     @Test

@@ -13,9 +13,10 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | Annotation        | Purpose                                                                                  |
 |-------------------|------------------------------------------------------------------------------------------|
 | `@Entity`         | Marks a class as persistent. Without `name`, the class-name-based default naming applies. |
-| `@Table`          | Explicit table name. When omitted, the `NamingStrategy` decides.                          |
+| `@Table`          | Explicit table name (+ optional `schema`; `catalog` is ignored). When omitted, the `NamingStrategy` decides. |
 | `@Id`             | Identifier field. Exactly one is required per entity.                                     |
-| `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, set `generator` to the sequence name. |
+| `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. |
+| `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). |
 | `@Column`         | Column name, `nullable`, `length` / `precision` / `scale`, and other mapping metadata.    |
 | `@CreatedAt`      | Auto-populates the field with the current time on insert (`Instant` / `LocalDateTime` / `OffsetDateTime`). Preserves a value the user pre-sets. |
 | `@UpdatedAt`      | Overwritten with the current time on insert, update, partial update, and Updater paths.   |
@@ -36,7 +37,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
-| `@JoinColumn`     | FK column name and nullability seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
+| `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
 | `@Enumerated`     | Enum column mapping. `EnumType.ORDINAL` (default) or `EnumType.STRING`.                    |
 | `@Json`           | JSON column mapping. Requires a `JsonCodec` SPI. Maps to `jsonb` on PostgreSQL, `clob` on Oracle, and `text` elsewhere. |
 

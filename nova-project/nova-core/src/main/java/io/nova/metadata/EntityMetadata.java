@@ -11,6 +11,7 @@ public final class EntityMetadata<T> {
     private final Class<T> entityType;
     private final String entityName;
     private final String tableName;
+    private final String schema;
     /**
      * 선언된 모든 property를 declaration 순서로 보관한다. {@code @OneToMany} 같이 컬럼이 없는 marker-only
      * property도 포함된다. {@link #properties()}가 이 리스트를 그대로 반환한다.
@@ -42,6 +43,7 @@ public final class EntityMetadata<T> {
             Class<T> entityType,
             String entityName,
             String tableName,
+            String schema,
             List<PersistentProperty> properties,
             PersistentProperty idProperty,
             List<Method> prePersistCallbacks,
@@ -57,6 +59,7 @@ public final class EntityMetadata<T> {
         this.entityType = entityType;
         this.entityName = entityName;
         this.tableName = tableName;
+        this.schema = schema == null ? "" : schema;
         this.properties = List.copyOf(properties);
         LinkedHashMap<String, PersistentProperty> index = new LinkedHashMap<>();
         java.util.ArrayList<PersistentProperty> columnMapped = new java.util.ArrayList<>(this.properties.size());
@@ -114,6 +117,14 @@ public final class EntityMetadata<T> {
 
     public String tableName() {
         return tableName;
+    }
+
+    /**
+     * {@code @Table(schema=...)}로 지정된 스키마 이름. 미지정이면 빈 문자열이며, 이 경우 테이블 참조는
+     * 스키마 한정 없이 렌더링된다.
+     */
+    public String schema() {
+        return schema;
     }
 
     /**

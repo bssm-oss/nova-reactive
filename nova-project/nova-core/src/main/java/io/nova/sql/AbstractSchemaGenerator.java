@@ -40,12 +40,12 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String dropTable(EntityMetadata<?> metadata) {
-        return "drop table " + dialect.quote(metadata.tableName());
+        return "drop table " + qualifiedTable(metadata);
     }
 
     @Override
     public String dropTableIfExists(EntityMetadata<?> metadata) {
-        return "drop table if exists " + dialect.quote(metadata.tableName());
+        return "drop table if exists " + qualifiedTable(metadata);
     }
 
     private String createTableInternal(EntityMetadata<?> metadata, boolean ifNotExists) {
@@ -56,7 +56,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             columns.add(columnDefinition(property));
         }
         return "create table " + (ifNotExists ? "if not exists " : "")
-                + dialect.quote(metadata.tableName())
+                + qualifiedTable(metadata)
                 + " (" + String.join(", ", columns) + ")";
     }
 
@@ -64,7 +64,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     public List<String> createIndexes(EntityMetadata<?> metadata) {
         List<String> statements = new ArrayList<>(
                 metadata.indexes().size() + metadata.uniqueConstraints().size());
-        String quotedTable = dialect.quote(metadata.tableName());
+        String quotedTable = qualifiedTable(metadata);
         for (IndexDefinition index : metadata.indexes()) {
             statements.add(
                     "create index " + dialect.quote(index.name()) + " on " + quotedTable
@@ -80,7 +80,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String alterTableAddColumn(EntityMetadata<?> metadata, PersistentProperty newColumn) {
-        return "alter table " + dialect.quote(metadata.tableName())
+        return "alter table " + qualifiedTable(metadata)
                 + " add column " + columnDefinition(newColumn);
     }
 
@@ -97,7 +97,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                             + "' on " + metadata.entityType().getName()
                             + "; known columns: " + knownColumns);
         }
-        return "alter table " + dialect.quote(metadata.tableName())
+        return "alter table " + qualifiedTable(metadata)
                 + " drop column " + dialect.quote(columnName);
     }
 
@@ -115,6 +115,17 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     /**
      * 매핑된 프로퍼티에 대해 primary key, nullability를 포함한 컬럼 정의를 만든다.
      */
+    /**
+     * 스키마 한정 테이블 참조를 만든다. {@code @Table(schema=...)}이 지정되면 {@code "schema"."table"}
+     * 형태로, 아니면 {@code "table"}만 quote해서 반환한다.
+     */
+    protected String qualifiedTable(EntityMetadata<?> metadata) {
+        String quotedTable = dialect.quote(metadata.tableName());
+        return metadata.schema().isBlank()
+                ? quotedTable
+                : dialect.quote(metadata.schema()) + "." + quotedTable;
+    }
+
     protected String columnDefinition(PersistentProperty property) {
         if (property.generated() && property.generationType() == GenerationType.IDENTITY) {
             return identityColumn(property);

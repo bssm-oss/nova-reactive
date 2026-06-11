@@ -19,6 +19,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.PostLoad;
+import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.PostPersist;
 import jakarta.persistence.PostRemove;
 import jakarta.persistence.PostUpdate;
@@ -2060,6 +2061,45 @@ public final class FixtureEntities {
 
         public String getEmail() {
             return email;
+        }
+    }
+
+    @Entity
+    @Table(name = "join_col_attrs")
+    public static class JoinColumnAttributesEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne
+        @JoinColumn(name = "owner_id", insertable = false, unique = true)
+        private SampleAccount owner;
+
+        public JoinColumnAttributesEntity() {
+        }
+    }
+
+    @Entity
+    @Table(name = "seq_gen_accounts")
+    @SequenceGenerator(name = "user_gen", sequenceName = "user_seq")
+    public static class NamedSequenceGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "user_gen")
+        private Long id;
+
+        public NamedSequenceGeneratorEntity() {
+        }
+    }
+
+    @Entity
+    @Table(name = "accounts", schema = "app")
+    public static class SchemaQualifiedEntity {
+        @Id
+        private Long id;
+
+        @Column(name = "email")
+        private String email;
+
+        public SchemaQualifiedEntity() {
         }
     }
 }

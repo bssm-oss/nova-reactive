@@ -64,6 +64,7 @@ class EntityMetadataTest {
                         SampleAccount.class,
                         "SampleAccount",
                         "accounts",
+                        "",
                         duplicates,
                         idProperty,
                         List.of(),
