@@ -1,11 +1,11 @@
 package io.nova.r2dbc.integration;
 
-import io.nova.annotation.Column;
-import io.nova.annotation.Entity;
-import io.nova.annotation.GeneratedValue;
-import io.nova.annotation.GenerationType;
-import io.nova.annotation.Id;
-import io.nova.annotation.Table;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * {@code @Column(precision, scale)}로 매핑된 {@link BigDecimal} 컬럼이 실제 r2dbc-h2 driver를 통해
  * {@code save()} → {@code findById()}로 정확히 round-trip 되는지 검증한다.
  *
- * <p>이 테스트는 precision/scale 설정이 dead config가 아님을 증명한다. {@link io.nova.annotation.Column}의
+ * <p>이 테스트는 precision/scale 설정이 dead config가 아님을 증명한다. {@link jakarta.persistence.Column}의
  * precision/scale은 {@link io.nova.sql.AbstractSchemaGenerator}가 {@code numeric(p, s)} DDL을 emit할 때
  * 쓰이고, 읽기 경로에서는 {@link io.nova.metadata.PersistentProperty#columnType()}이 converter 없는
  * BigDecimal에 대해 {@code BigDecimal.class}를 반환하므로 driver가 numeric 컬럼을 native BigDecimal로

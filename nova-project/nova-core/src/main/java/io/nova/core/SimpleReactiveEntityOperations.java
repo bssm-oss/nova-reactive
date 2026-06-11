@@ -1,6 +1,6 @@
 package io.nova.core;
 
-import io.nova.annotation.GenerationType;
+import jakarta.persistence.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.fetch.AnnotationFetchGroupBuilder;
 import io.nova.fetch.FetchGroup;

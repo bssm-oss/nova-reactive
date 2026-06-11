@@ -1,11 +1,11 @@
 package io.nova.boot.ddlauto;
 
-import io.nova.annotation.Column;
-import io.nova.annotation.Entity;
-import io.nova.annotation.GeneratedValue;
-import io.nova.annotation.GenerationType;
-import io.nova.annotation.Id;
-import io.nova.annotation.Table;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
 
 /**
  * Test-only entity placed in its own package so that {@code nova.entity-packages}

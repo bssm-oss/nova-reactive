@@ -1,17 +1,17 @@
 package io.nova.metadata;
 
 import io.nova.annotation.CreatedAt;
-import io.nova.annotation.Embeddable;
-import io.nova.annotation.Embedded;
-import io.nova.annotation.Entity;
-import io.nova.annotation.Enumerated;
-import io.nova.annotation.Id;
-import io.nova.annotation.JoinColumn;
-import io.nova.annotation.ManyToOne;
-import io.nova.annotation.OneToMany;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
 import io.nova.annotation.SoftDelete;
 import io.nova.annotation.UpdatedAt;
-import io.nova.annotation.Version;
+import jakarta.persistence.Version;
 import io.nova.support.fixtures.FixtureEntities.AuthorBookJoinColumnConflict;
 import io.nova.support.fixtures.FixtureEntities.AuthorWithBooksAnnotated;
 import io.nova.support.fixtures.FixtureEntities.BookWithAuthorAnnotated;

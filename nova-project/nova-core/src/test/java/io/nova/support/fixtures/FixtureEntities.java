@@ -1,32 +1,37 @@
 package io.nova.support.fixtures;
 
-import io.nova.annotation.Column;
+import jakarta.persistence.CascadeType;
+import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
-import io.nova.annotation.Embeddable;
-import io.nova.annotation.Embedded;
-import io.nova.annotation.Entity;
-import io.nova.annotation.EnumType;
-import io.nova.annotation.Enumerated;
-import io.nova.annotation.GeneratedValue;
-import io.nova.annotation.GenerationType;
-import io.nova.annotation.Id;
-import io.nova.annotation.Index;
-import io.nova.annotation.JoinColumn;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.JoinColumn;
 import io.nova.annotation.Json;
-import io.nova.annotation.ManyToOne;
-import io.nova.annotation.OneToMany;
-import io.nova.annotation.PostLoad;
-import io.nova.annotation.PostPersist;
-import io.nova.annotation.PostRemove;
-import io.nova.annotation.PostUpdate;
-import io.nova.annotation.PrePersist;
-import io.nova.annotation.PreRemove;
-import io.nova.annotation.PreUpdate;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MappedSuperclass;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.SequenceGenerator;
+import jakarta.persistence.PostPersist;
+import jakarta.persistence.PostRemove;
+import jakarta.persistence.PostUpdate;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreRemove;
+import jakarta.persistence.PreUpdate;
 import io.nova.annotation.SoftDelete;
-import io.nova.annotation.Table;
-import io.nova.annotation.UniqueConstraint;
+import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
+import jakarta.persistence.UniqueConstraint;
 import io.nova.annotation.UpdatedAt;
-import io.nova.annotation.Version;
+import jakarta.persistence.Version;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -1908,6 +1913,193 @@ public final class FixtureEntities {
         private Status status;
 
         public JsonWithRegisteredConverterEntity() {
+        }
+    }
+
+    // --- JPA 속성 중 Nova가 honor하지 않아 fail-fast 거부되는 invalid 엔티티들 ---
+
+    @Entity
+    public static class ManyToOneLazyEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne(fetch = FetchType.LAZY)
+        private SampleAccount account;
+
+        public ManyToOneLazyEntity() {
+        }
+    }
+
+    @Entity
+    public static class ManyToOneCascadeEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.PERSIST)
+        private SampleAccount account;
+
+        public ManyToOneCascadeEntity() {
+        }
+    }
+
+    @Entity
+    public static class OneToManyOrphanRemovalEntity {
+        @Id
+        private Long id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = SampleAccount.class, orphanRemoval = true)
+        private java.util.List<SampleAccount> children;
+
+        public OneToManyOrphanRemovalEntity() {
+        }
+    }
+
+    @Entity
+    public static class ColumnInsertableFalseEntity {
+        @Id
+        private Long id;
+
+        @Column(insertable = false)
+        private String name;
+
+        public ColumnInsertableFalseEntity() {
+        }
+    }
+
+    @Entity
+    public static class ColumnUniqueEntity {
+        @Id
+        private Long id;
+
+        @Column(unique = true)
+        private String email;
+
+        public ColumnUniqueEntity() {
+        }
+    }
+
+    @Entity
+    public static class ColumnUpdatableFalseEntity {
+        @Id
+        private Long id;
+
+        @Column(updatable = false)
+        private String name;
+
+        public ColumnUpdatableFalseEntity() {
+        }
+    }
+
+    @Entity
+    public static class ColumnDefinitionEntity {
+        @Id
+        private Long id;
+
+        @Column(columnDefinition = "text")
+        private String note;
+
+        public ColumnDefinitionEntity() {
+        }
+    }
+
+    @Entity
+    public static class GeneratedValueTableEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.TABLE)
+        private Long id;
+
+        public GeneratedValueTableEntity() {
+        }
+    }
+
+    @Entity
+    @Table(name = "transient_accounts")
+    public static class TransientFieldEntity {
+        @Id
+        private Long id;
+
+        @Column(name = "email")
+        private String email;
+
+        // JPA @Transient: 매핑에서 제외되어야 한다.
+        @Transient
+        private String cachedDisplay;
+
+        public TransientFieldEntity() {
+        }
+    }
+
+    /**
+     * {@code @MappedSuperclass} 상속 매핑 검증용. id/createdAt를 base에서 상속받고 email은 자신이 선언한다.
+     */
+    @MappedSuperclass
+    public abstract static class BaseAuditEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "created_at")
+        private Instant createdAt;
+
+        public Long getId() {
+            return id;
+        }
+
+        public Instant getCreatedAt() {
+            return createdAt;
+        }
+    }
+
+    @Entity
+    @Table(name = "mapped_sub")
+    public static class MappedSubEntity extends BaseAuditEntity {
+        @Column(name = "email")
+        private String email;
+
+        public MappedSubEntity() {
+        }
+
+        public String getEmail() {
+            return email;
+        }
+    }
+
+    @Entity
+    @Table(name = "join_col_attrs")
+    public static class JoinColumnAttributesEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne
+        @JoinColumn(name = "owner_id", insertable = false, unique = true)
+        private SampleAccount owner;
+
+        public JoinColumnAttributesEntity() {
+        }
+    }
+
+    @Entity
+    @Table(name = "seq_gen_accounts")
+    @SequenceGenerator(name = "user_gen", sequenceName = "user_seq")
+    public static class NamedSequenceGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "user_gen")
+        private Long id;
+
+        public NamedSequenceGeneratorEntity() {
+        }
+    }
+
+    @Entity
+    @Table(name = "accounts", schema = "app")
+    public static class SchemaQualifiedEntity {
+        @Id
+        private Long id;
+
+        @Column(name = "email")
+        private String email;
+
+        public SchemaQualifiedEntity() {
         }
     }
 }

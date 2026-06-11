@@ -2,16 +2,21 @@
 
 # Entities
 
-Nova's annotations live in the `io.nova.annotation` package and align their semantics with JPA wherever practical.
+Nova maps entities with the **real JPA annotations** from `jakarta.persistence` — `@Entity`, `@Table`, `@Column`, `@Id`, `@GeneratedValue`, `@ManyToOne`, `@OneToMany`, `@Version`, `@Embeddable`, `@Enumerated`, the lifecycle callbacks, and so on. A JPA entity is source-compatible as-is; just add the `jakarta.persistence-api` dependency (Nova exports it transitively).
+
+Attributes Nova cannot honor reactively are **rejected fail-fast** at metadata build time rather than silently ignored — see [Unsupported JPA attributes](#unsupported-jpa-attributes) below.
+
+Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotation`: `@CreatedAt`, `@UpdatedAt`, `@SoftDelete`, `@Json`.
 
 ## Annotation reference
 
 | Annotation        | Purpose                                                                                  |
 |-------------------|------------------------------------------------------------------------------------------|
 | `@Entity`         | Marks a class as persistent. Without `name`, the class-name-based default naming applies. |
-| `@Table`          | Explicit table name. When omitted, the `NamingStrategy` decides.                          |
+| `@Table`          | Explicit table name (+ optional `schema`; `catalog` is ignored). When omitted, the `NamingStrategy` decides. |
 | `@Id`             | Identifier field. Exactly one is required per entity.                                     |
-| `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, set `generator` to the sequence name. |
+| `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. |
+| `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). |
 | `@Column`         | Column name, `nullable`, `length` / `precision` / `scale`, and other mapping metadata.    |
 | `@CreatedAt`      | Auto-populates the field with the current time on insert (`Instant` / `LocalDateTime` / `OffsetDateTime`). Preserves a value the user pre-sets. |
 | `@UpdatedAt`      | Overwritten with the current time on insert, update, partial update, and Updater paths.   |
@@ -26,11 +31,13 @@ Nova's annotations live in the `io.nova.annotation` package and align their sema
 | `@PostRemove`     | Invoked right after a successful delete (soft or hard).                                    |
 | `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; columns flatten into the host entity's table. |
 | `@Embedded`       | FIELD-level marker indicating that an entity field is an `@Embeddable` flattened into host columns. |
+| `@MappedSuperclass` | TYPE-level marker on a non-entity base class. Its fields (e.g. an inherited id / audit columns) are mapped into every entity that extends it. |
+| `@Transient`      | Excludes a field from mapping entirely (same effect as the Java `transient` keyword). |
 | `@Index`          | Table-level secondary index, declared in `@Table(indexes = ...)` with a comma-separated `columnList`. Without `name`, generated as `ix_{table}_{cols}`. |
 | `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
-| `@JoinColumn`     | FK column name and nullability seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
+| `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
 | `@Enumerated`     | Enum column mapping. `EnumType.ORDINAL` (default) or `EnumType.STRING`.                    |
 | `@Json`           | JSON column mapping. Requires a `JsonCodec` SPI. Maps to `jsonb` on PostgreSQL, `clob` on Oracle, and `text` elsewhere. |
 
@@ -161,3 +168,31 @@ public class Account {
 - `@Index#columnList()` is a comma-separated list (JPA style); `@UniqueConstraint#columnNames()` is a string array. Both require at least one entry and must use the actual column names (the `@Column(name)` value or the snake_case-converted name). Names that do not exist in the entity metadata are rejected fail-fast.
 
 Emit the DDL with `createIndexes(...)` — see [Dialects & Schema](dialects.md).
+
+---
+
+## `@Column` attributes
+
+Nova honors the column attributes that have a clear non-blocking meaning:
+
+| Attribute | Behavior |
+|-----------|----------|
+| `name`, `nullable`, `length`, `precision`, `scale` | Mapping + DDL as in JPA. |
+| `insertable = false` | Column is excluded from generated `INSERT` statements. |
+| `updatable = false` | Column is excluded from generated `UPDATE` statements. |
+| `unique = true` | Emits an inline `UNIQUE` constraint in the column DDL. |
+| `columnDefinition = "..."` | Used verbatim as the column's type in `CREATE TABLE`, replacing the dialect-derived type. |
+
+## Unsupported JPA attributes
+
+Nova reuses the JPA annotations but is a non-blocking, persistence-context-free ORM, so a few attributes cannot be honored. Rather than silently ignoring them (a debugging trap), Nova **rejects them fail-fast** when entity metadata is first built:
+
+| Annotation / attribute | Why rejected |
+|------------------------|--------------|
+| `@ManyToOne(fetch = LAZY)` | No lazy proxy. Relations are fetched eagerly with a single IN-query, or explicitly via `FetchGroup`. The JPA default `EAGER` is honored. |
+| `@ManyToOne(cascade = ...)` / `@OneToMany(cascade = ...)` | No persistence-context graph; persist related entities explicitly with `save` / `saveAll`. |
+| `@OneToMany(orphanRemoval = true)` | No dirty-tracking; delete children explicitly. |
+| `@Column(table = ...)` | Secondary tables are not supported. |
+| `@GeneratedValue(strategy = TABLE)` | Use `IDENTITY`, `SEQUENCE`, `UUID`, or `AUTO`. |
+
+`@OneToMany`'s default `fetch = LAZY` is the one exception: it is treated as eager (Nova's only mode) rather than rejected, since rejecting the default would reject every collection.

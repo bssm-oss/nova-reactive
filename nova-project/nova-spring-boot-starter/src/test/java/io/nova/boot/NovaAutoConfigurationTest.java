@@ -87,6 +87,23 @@ class NovaAutoConfigurationTest {
     }
 
     @Test
+    void registersSchemaBootstrapRunnerWhenDdlAutoIsUpdate() {
+        runner.withPropertyValues("nova.ddl-auto=update").run(context -> {
+            assertTrue(context.containsBean("novaSchemaBootstrapRunner"));
+            assertNotNull(context.getBean(SchemaBootstrapRunner.class));
+        });
+    }
+
+    @Test
+    void registersSchemaBootstrapRunnerWhenDdlAutoIsValidate() {
+        // validate도 binding되어 runner가 등록된다. 실제 검증(테이블 존재)은 통합 테스트에서 다룬다.
+        runner.withPropertyValues("nova.ddl-auto=validate").run(context -> {
+            assertTrue(context.containsBean("novaSchemaBootstrapRunner"));
+            assertNotNull(context.getBean(SchemaBootstrapRunner.class));
+        });
+    }
+
+    @Test
     void autoDetectsDialectFromConnectionFactoryWhenNoDialectBeanProvided() {
         // ConnectionFactory만 제공하고 Dialect 빈은 일부러 제공하지 않는다.
         // 이 경우에도 컨텍스트가 기동하고, novaDialect 빈이 driver 메타데이터로 자동 감지돼야 한다.

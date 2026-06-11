@@ -1,32 +1,36 @@
 package io.nova.metadata;
 
-import io.nova.annotation.Column;
+import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
-import io.nova.annotation.Embeddable;
-import io.nova.annotation.Embedded;
-import io.nova.annotation.Entity;
-import io.nova.annotation.EnumType;
-import io.nova.annotation.Enumerated;
-import io.nova.annotation.GeneratedValue;
-import io.nova.annotation.GenerationType;
-import io.nova.annotation.Id;
-import io.nova.annotation.Index;
-import io.nova.annotation.JoinColumn;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.JoinColumn;
 import io.nova.annotation.Json;
-import io.nova.annotation.ManyToOne;
-import io.nova.annotation.OneToMany;
-import io.nova.annotation.PostLoad;
-import io.nova.annotation.PostPersist;
-import io.nova.annotation.PostRemove;
-import io.nova.annotation.PostUpdate;
-import io.nova.annotation.PrePersist;
-import io.nova.annotation.PreRemove;
-import io.nova.annotation.PreUpdate;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MappedSuperclass;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PostPersist;
+import jakarta.persistence.PostRemove;
+import jakarta.persistence.PostUpdate;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreRemove;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.SequenceGenerator;
+import jakarta.persistence.Transient;
 import io.nova.annotation.SoftDelete;
-import io.nova.annotation.Table;
-import io.nova.annotation.UniqueConstraint;
+import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import io.nova.annotation.UpdatedAt;
-import io.nova.annotation.Version;
+import jakarta.persistence.Version;
 import io.nova.convert.AttributeConverter;
 import io.nova.convert.EnumOrdinalConverter;
 import io.nova.convert.EnumStringConverter;
@@ -134,8 +138,8 @@ public final class EntityMetadataFactory {
         PersistentProperty updatedAtProperty = null;
         PersistentProperty softDeleteProperty = null;
         PersistentProperty versionProperty = null;
-        for (Field field : entityType.getDeclaredFields()) {
-            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
+        for (Field field : mappedFields(entityType)) {
+            if (isNotPersistable(field)) {
                 continue;
             }
             rejectIncompatibleRelationAnnotations(entityType, field);
@@ -255,6 +259,7 @@ public final class EntityMetadataFactory {
                 entityType,
                 entityName,
                 tableName,
+                table != null ? table.schema() : "",
                 properties,
                 idProperty,
                 prePersistCallbacks,
@@ -341,6 +346,68 @@ public final class EntityMetadataFactory {
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .toArray(String[]::new);
+    }
+
+    /**
+     * jakarta.persistence.Column 중 Nova가 honor하지 않는 속성이 설정되면 metadata 빌드 시점에
+     * 명확히 거부한다 ("조용히 무시되는 거짓말 매핑" 방지). name / nullable / length / precision /
+     * scale / insertable / updatable / unique / columnDefinition은 honor한다. secondary table 매핑만
+     * 지원하지 않는다.
+     */
+    /**
+     * 엔티티 자신의 필드와, 연속된 {@link MappedSuperclass} 조상들의 필드를 함께 반환한다. 상위
+     * {@code @MappedSuperclass}(예: id/audit를 가진 BaseEntity)의 필드가 먼저 오도록 정렬한다.
+     */
+    private static List<Field> mappedFields(Class<?> entityType) {
+        List<Class<?>> chain = new ArrayList<>();
+        chain.add(entityType);
+        Class<?> ancestor = entityType.getSuperclass();
+        while (ancestor != null && ancestor.isAnnotationPresent(MappedSuperclass.class)) {
+            chain.add(ancestor);
+            ancestor = ancestor.getSuperclass();
+        }
+        List<Field> fields = new ArrayList<>();
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            fields.addAll(Arrays.asList(chain.get(i).getDeclaredFields()));
+        }
+        return fields;
+    }
+
+    /**
+     * 영속 대상이 아닌 필드인지 판정한다. synthetic / static / Java {@code transient} 키워드뿐 아니라
+     * JPA {@link Transient} 애너테이션이 붙은 필드도 매핑에서 제외한다.
+     */
+    private static boolean isNotPersistable(Field field) {
+        return field.isSynthetic()
+                || Modifier.isStatic(field.getModifiers())
+                || Modifier.isTransient(field.getModifiers())
+                || field.isAnnotationPresent(Transient.class);
+    }
+
+    /**
+     * {@code @GeneratedValue(generator=...)}의 논리 이름을, 같은 필드 또는 엔티티 타입에 선언된
+     * {@link SequenceGenerator}(이름이 일치하는 것)의 {@code sequenceName}으로 해석한다. 매칭되는
+     * {@code @SequenceGenerator}가 없으면 generator 값을 그대로(시퀀스 이름으로) 반환한다.
+     * {@code allocationSize}/{@code initialValue}는 Nova가 매 INSERT마다 nextval만 호출하므로 무시된다.
+     */
+    private static String resolveSequenceName(Class<?> declaringType, Field field, String generatorName) {
+        SequenceGenerator sg = field.getAnnotation(SequenceGenerator.class);
+        if (sg == null || !sg.name().equals(generatorName)) {
+            SequenceGenerator onType = declaringType.getAnnotation(SequenceGenerator.class);
+            sg = onType != null && onType.name().equals(generatorName) ? onType : null;
+        }
+        if (sg == null) {
+            return generatorName;
+        }
+        return sg.sequenceName().isBlank() ? sg.name() : sg.sequenceName();
+    }
+
+    private static void rejectUnsupportedColumnAttributes(Class<?> declaringType, Field field, Column column) {
+        if (!column.table().isBlank()) {
+            throw new IllegalArgumentException(
+                    declaringType.getName() + "." + field.getName()
+                            + " @Column(table=...) (secondary tables) is not supported");
+        }
     }
 
     private static void validateColumnsExist(
@@ -443,7 +510,7 @@ public final class EntityMetadataFactory {
         embeddableStack.add(embeddableType);
         try {
             for (Field subField : embeddableType.getDeclaredFields()) {
-                if (subField.isSynthetic() || Modifier.isStatic(subField.getModifiers())) {
+                if (isNotPersistable(subField)) {
                     continue;
                 }
                 rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
@@ -474,7 +541,7 @@ public final class EntityMetadataFactory {
 
     private static boolean hasIdAnnotatedField(Class<?> embeddableType) {
         for (Field field : embeddableType.getDeclaredFields()) {
-            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
+            if (isNotPersistable(field)) {
                 continue;
             }
             if (field.isAnnotationPresent(Id.class)) {
@@ -555,6 +622,9 @@ public final class EntityMetadataFactory {
             String columnPrefix
     ) {
         Column column = field.getAnnotation(Column.class);
+        if (column != null) {
+            rejectUnsupportedColumnAttributes(declaringType, field, column);
+        }
         GeneratedValue generatedValue = field.getAnnotation(GeneratedValue.class);
         boolean isId = field.isAnnotationPresent(Id.class);
         boolean isSoftDelete = field.isAnnotationPresent(SoftDelete.class);
@@ -587,6 +657,12 @@ public final class EntityMetadataFactory {
         GenerationType generationType = generatedValue == null ? null : generatedValue.strategy();
         String generator = generatedValue == null ? "" : generatedValue.generator();
         if (generatedValue != null) {
+            if (generationType == GenerationType.TABLE) {
+                throw new IllegalArgumentException(
+                        declaringType.getName() + "." + field.getName()
+                                + " uses @GeneratedValue(TABLE) which Nova does not support;"
+                                + " use IDENTITY, SEQUENCE, UUID, or AUTO");
+            }
             if (generationType == GenerationType.SEQUENCE) {
                 if (!isId) {
                     throw new IllegalArgumentException(
@@ -598,6 +674,10 @@ public final class EntityMetadataFactory {
                             declaringType.getName() + "." + field.getName()
                                     + " uses @GeneratedValue(SEQUENCE) but does not specify generator (sequence name)");
                 }
+                // JPA: @GeneratedValue(generator="name")가 @SequenceGenerator(name="name", sequenceName=...)를
+                // 가리키면 그 sequenceName으로 해석한다. 매칭되는 @SequenceGenerator가 없으면 generator 값을
+                // 시퀀스 이름으로 그대로 사용한다(shorthand).
+                generator = resolveSequenceName(declaringType, field, generator);
                 if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(generator).matches()) {
                     throw new IllegalArgumentException(
                             "Invalid sequence generator name: '" + generator + "' on "
@@ -680,6 +760,10 @@ public final class EntityMetadataFactory {
         int length = column != null ? column.length() : 255;
         int precision = column != null ? column.precision() : 0;
         int scale = column != null ? column.scale() : 0;
+        boolean insertable = column == null || column.insertable();
+        boolean updatable = column == null || column.updatable();
+        boolean unique = column != null && column.unique();
+        String columnDefinition = column == null ? "" : column.columnDefinition();
         return new PersistentProperty(
                 field,
                 propertyName,
@@ -707,7 +791,11 @@ public final class EntityMetadataFactory {
                 true,
                 false,
                 null,
-                ""
+                "",
+                insertable,
+                updatable,
+                unique,
+                columnDefinition
         );
     }
 
@@ -759,6 +847,16 @@ public final class EntityMetadataFactory {
      */
     private PersistentProperty createOneToManyProperty(Class<?> entityType, Field field) {
         OneToMany annotation = field.getAnnotation(OneToMany.class);
+        if (annotation.cascade().length > 0) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @OneToMany(cascade=...) is not supported; persist children explicitly via save/saveAll");
+        }
+        if (annotation.orphanRemoval()) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @OneToMany(orphanRemoval=true) is not supported; delete children explicitly");
+        }
         String mappedBy = annotation.mappedBy();
         if (mappedBy == null || mappedBy.isBlank()) {
             throw new IllegalStateException(
@@ -797,7 +895,11 @@ public final class EntityMetadataFactory {
                 true,
                 true,
                 targetType,
-                mappedBy
+                mappedBy,
+                true,
+                true,
+                false,
+                ""
         );
     }
 
@@ -810,6 +912,17 @@ public final class EntityMetadataFactory {
      */
     private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {
         ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
+        if (manyToOne.fetch() == FetchType.LAZY) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ManyToOne(fetch=LAZY) is not supported; Nova has no lazy proxy."
+                            + " Use the default eager fetch or drive a FetchGroup explicitly");
+        }
+        if (manyToOne.cascade().length > 0) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ManyToOne(cascade=...) is not supported; persist the parent explicitly");
+        }
         JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
         Class<?> targetType = manyToOne.targetEntity();
         if (targetType == void.class) {
@@ -822,6 +935,10 @@ public final class EntityMetadataFactory {
             columnName = namingStrategy.columnName(field.getName() + "_id");
         }
         boolean nullable = manyToOne.optional() && (joinColumn == null || joinColumn.nullable());
+        boolean fkInsertable = joinColumn == null || joinColumn.insertable();
+        boolean fkUpdatable = joinColumn == null || joinColumn.updatable();
+        boolean fkUnique = joinColumn != null && joinColumn.unique();
+        String fkColumnDefinition = joinColumn == null ? "" : joinColumn.columnDefinition();
         return new PersistentProperty(
                 field,
                 field.getName(),
@@ -849,7 +966,11 @@ public final class EntityMetadataFactory {
                 nullable,
                 false,
                 null,
-                ""
+                "",
+                fkInsertable,
+                fkUpdatable,
+                fkUnique,
+                fkColumnDefinition
         );
     }
 

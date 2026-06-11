@@ -1,6 +1,6 @@
 package io.nova.dialect.oracle;
 
-import io.nova.annotation.EnumType;
+import jakarta.persistence.EnumType;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.LockMode;
 import io.nova.query.QuerySpec;
@@ -66,6 +66,12 @@ public final class OracleDialect implements Dialect {
         // Oracle은 단순 SELECT에도 FROM 절이 필수이므로 dual pseudo-table을 사용한다. 단일 컬럼은
         // driver별 라벨 차이 없이 RowAccessor가 항상 읽을 수 있도록 명시적 alias로 고정한다.
         return "select " + sequenceName + ".nextval as " + Dialect.SEQUENCE_VALUE_COLUMN + " from dual";
+    }
+
+    @Override
+    public String listTablesSql() {
+        // Oracle은 information_schema가 없으므로 현재 스키마의 테이블을 user_tables에서 조회한다.
+        return "select table_name as " + Dialect.TABLE_NAME_COLUMN + " from user_tables";
     }
 
     /**

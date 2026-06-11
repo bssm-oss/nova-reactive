@@ -21,9 +21,10 @@ public class NovaProperties {
      * Schema lifecycle policy applied on Spring context startup, mirroring
      * JPA's {@code spring.jpa.hibernate.ddl-auto}. Defaults to
      * {@link DdlAuto#NONE} so the starter never touches an unsuspecting
-     * database. Phase 1 supports {@code NONE}, {@code CREATE}, and
-     * {@code CREATE_DROP}; the JPA {@code UPDATE} / {@code VALIDATE} modes
-     * require schema introspection that is not yet implemented.
+     * database. {@code NONE}, {@code UPDATE} (create missing tables),
+     * {@code CREATE} and {@code CREATE_DROP} (drop + recreate) are executed;
+     * {@code VALIDATE} checks that a table exists for every entity (via the
+     * dialect catalog query) and fails startup with any missing ones.
      */
     private DdlAuto ddlAuto = DdlAuto.NONE;
 

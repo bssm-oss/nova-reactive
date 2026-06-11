@@ -817,7 +817,10 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     protected String table(EntityMetadata<?> metadata) {
-        return dialect.quote(metadata.tableName());
+        String quotedTable = dialect.quote(metadata.tableName());
+        return metadata.schema().isBlank()
+                ? quotedTable
+                : dialect.quote(metadata.schema()) + "." + quotedTable;
     }
 
     protected String column(PersistentProperty property) {

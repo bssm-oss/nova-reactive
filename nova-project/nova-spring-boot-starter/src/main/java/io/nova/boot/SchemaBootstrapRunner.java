@@ -1,6 +1,6 @@
 package io.nova.boot;
 
-import io.nova.annotation.Entity;
+import jakarta.persistence.Entity;
 import io.nova.schema.DdlAuto;
 import io.nova.schema.SchemaInitializer;
 import org.apache.commons.logging.Log;
@@ -69,11 +69,23 @@ public class SchemaBootstrapRunner implements InitializingBean, DisposableBean {
                     + effectivePackages() + " — schema bootstrap skipped");
             return;
         }
-        log.info("nova.ddl-auto=" + mode + " — creating schema for " + entities.size()
-                + " entit" + (entities.size() == 1 ? "y" : "ies"));
         // Block until complete: ApplicationRunner contract is synchronous and the rest of the
         // application is allowed to assume the schema exists once startup finishes.
-        schemaInitializer.create(entities).block();
+        if (mode == DdlAuto.VALIDATE) {
+            log.info("nova.ddl-auto=validate — checking " + entities.size() + " table(s) exist");
+            // Errors (missing tables) propagate and fail context startup, as JPA's validate does.
+            schemaInitializer.validate(entities).block();
+            return;
+        }
+        log.info("nova.ddl-auto=" + mode + " — provisioning schema for " + entities.size()
+                + " entit" + (entities.size() == 1 ? "y" : "ies"));
+        if (mode == DdlAuto.UPDATE) {
+            // Non-destructive: create only the tables that do not exist yet.
+            schemaInitializer.create(entities).block();
+        } else {
+            // CREATE / CREATE_DROP: drop then recreate, matching Hibernate's destructive create.
+            schemaInitializer.recreate(entities).block();
+        }
         this.bootstrapped = entities;
     }
 

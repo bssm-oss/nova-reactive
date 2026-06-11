@@ -28,6 +28,18 @@ import io.nova.support.fixtures.FixtureEntities.EnumOnNonEnumFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumWithConverterEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnInsertableFalseEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnUpdatableFalseEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
+import io.nova.support.fixtures.FixtureEntities.GeneratedValueTableEntity;
+import io.nova.support.fixtures.FixtureEntities.TransientFieldEntity;
+import io.nova.support.fixtures.FixtureEntities.MappedSubEntity;
+import io.nova.support.fixtures.FixtureEntities.JoinColumnAttributesEntity;
+import io.nova.support.fixtures.FixtureEntities.NamedSequenceGeneratorEntity;
+import io.nova.support.fixtures.FixtureEntities.ManyToOneCascadeEntity;
+import io.nova.support.fixtures.FixtureEntities.ManyToOneLazyEntity;
+import io.nova.support.fixtures.FixtureEntities.OneToManyOrphanRemovalEntity;
 import io.nova.support.fixtures.FixtureEntities.IndexWithUnknownColumnEntity;
 import io.nova.support.fixtures.FixtureEntities.JsonAccount;
 import io.nova.support.fixtures.FixtureEntities.JsonAndEnumeratedEntity;
@@ -73,9 +85,9 @@ import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedSoftDeletableAccount;
 import org.junit.jupiter.api.Test;
 
-import io.nova.annotation.GenerationType;
+import jakarta.persistence.GenerationType;
 
-import io.nova.annotation.EnumType;
+import jakarta.persistence.EnumType;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -802,12 +814,13 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void enumeratedDefaultsToStringStrategy() {
+    void enumeratedDefaultsToOrdinalStrategy() {
+        // jakarta.persistence.Enumerated의 기본값은 JPA 표준과 동일하게 ORDINAL이다.
         EntityMetadata<EnumDefaultAccount> metadata = factory.getEntityMetadata(EnumDefaultAccount.class);
 
         PersistentProperty status = metadata.findProperty("status").orElseThrow();
         assertTrue(status.enumerated());
-        assertEquals(EnumType.STRING, status.enumType());
+        assertEquals(EnumType.ORDINAL, status.enumType());
     }
 
     @Test
@@ -1047,5 +1060,113 @@ class EntityMetadataFactoryTest {
             }
             return (T) new Preferences(theme, fontSize);
         }
+    }
+
+    @Test
+    void rejectsManyToOneLazyFetch() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ManyToOneLazyEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@ManyToOne(fetch=LAZY)"));
+    }
+
+    @Test
+    void rejectsManyToOneCascade() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ManyToOneCascadeEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@ManyToOne(cascade=...)"));
+    }
+
+    @Test
+    void rejectsOneToManyOrphanRemoval() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(OneToManyOrphanRemovalEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("orphanRemoval=true"));
+    }
+
+    @Test
+    void honorsColumnInsertableFalse() {
+        EntityMetadata<ColumnInsertableFalseEntity> metadata =
+                factory.getEntityMetadata(ColumnInsertableFalseEntity.class);
+
+        // insertable=false 컬럼은 INSERT 바인딩에서 빠지지만 UPDATE에는 남는다.
+        assertTrue(metadata.insertableProperties().stream().noneMatch(p -> p.propertyName().equals("name")));
+        assertTrue(metadata.updatableProperties().stream().anyMatch(p -> p.propertyName().equals("name")));
+    }
+
+    @Test
+    void honorsColumnUpdatableFalse() {
+        EntityMetadata<ColumnUpdatableFalseEntity> metadata =
+                factory.getEntityMetadata(ColumnUpdatableFalseEntity.class);
+
+        assertTrue(metadata.updatableProperties().stream().noneMatch(p -> p.propertyName().equals("name")));
+        assertTrue(metadata.insertableProperties().stream().anyMatch(p -> p.propertyName().equals("name")));
+    }
+
+    @Test
+    void honorsColumnUnique() {
+        EntityMetadata<ColumnUniqueEntity> metadata = factory.getEntityMetadata(ColumnUniqueEntity.class);
+
+        assertTrue(metadata.findProperty("email").orElseThrow().unique());
+    }
+
+    @Test
+    void honorsColumnDefinition() {
+        EntityMetadata<ColumnDefinitionEntity> metadata = factory.getEntityMetadata(ColumnDefinitionEntity.class);
+
+        assertEquals("text", metadata.findProperty("note").orElseThrow().columnDefinition());
+    }
+
+    @Test
+    void excludesTransientAnnotatedFields() {
+        EntityMetadata<TransientFieldEntity> metadata = factory.getEntityMetadata(TransientFieldEntity.class);
+
+        assertTrue(metadata.findProperty("email").isPresent());
+        assertTrue(metadata.findProperty("cachedDisplay").isEmpty(), "@Transient field must not be mapped");
+    }
+
+    @Test
+    void mapsInheritedFieldsFromMappedSuperclass() {
+        EntityMetadata<MappedSubEntity> metadata = factory.getEntityMetadata(MappedSubEntity.class);
+
+        // base의 id/createdAt와 자신의 email이 모두 매핑되고, @Id도 상속된 base 필드에서 잡힌다.
+        assertTrue(metadata.findProperty("id").isPresent());
+        assertTrue(metadata.findProperty("createdAt").isPresent());
+        assertTrue(metadata.findProperty("email").isPresent());
+        assertEquals("id", metadata.idProperty().propertyName());
+    }
+
+    @Test
+    void honorsJoinColumnInsertableAndUnique() {
+        EntityMetadata<JoinColumnAttributesEntity> metadata =
+                factory.getEntityMetadata(JoinColumnAttributesEntity.class);
+
+        PersistentProperty owner = metadata.findProperty("owner").orElseThrow();
+        assertTrue(owner.unique());
+        // insertable=false인 FK는 INSERT 바인딩에서 빠진다.
+        assertTrue(metadata.insertableProperties().stream().noneMatch(p -> p.propertyName().equals("owner")));
+    }
+
+    @Test
+    void resolvesSequenceNameFromSequenceGenerator() {
+        EntityMetadata<NamedSequenceGeneratorEntity> metadata =
+                factory.getEntityMetadata(NamedSequenceGeneratorEntity.class);
+
+        // @GeneratedValue(generator="user_gen") -> @SequenceGenerator(sequenceName="user_seq")
+        assertEquals("user_seq", metadata.idProperty().generator());
+    }
+
+    @Test
+    void rejectsGeneratedValueTableStrategy() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(GeneratedValueTableEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("@GeneratedValue(TABLE)"));
     }
 }

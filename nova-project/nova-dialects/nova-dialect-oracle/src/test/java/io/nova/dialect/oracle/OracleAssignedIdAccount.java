@@ -1,9 +1,9 @@
 package io.nova.dialect.oracle;
 
-import io.nova.annotation.Column;
-import io.nova.annotation.Entity;
-import io.nova.annotation.Id;
-import io.nova.annotation.Table;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
 
 @Entity
 @Table(name = "assigned_accounts")

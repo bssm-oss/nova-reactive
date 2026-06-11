@@ -26,9 +26,9 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Column;
-                import io.nova.annotation.Entity;
-                import io.nova.annotation.Id;
+                import jakarta.persistence.Column;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
 
                 @Entity
                 public class Author {
@@ -65,9 +65,9 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Embedded;
-                import io.nova.annotation.Entity;
-                import io.nova.annotation.Id;
+                import jakarta.persistence.Embedded;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
 
                 @Entity
                 public class Customer {
@@ -83,7 +83,7 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Embeddable;
+                import jakarta.persistence.Embeddable;
 
                 @Embeddable
                 public class Address {
@@ -113,9 +113,9 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Embedded;
-                import io.nova.annotation.Entity;
-                import io.nova.annotation.Id;
+                import jakarta.persistence.Embedded;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
 
                 @Entity
                 public class Shop {
@@ -131,8 +131,8 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Embeddable;
-                import io.nova.annotation.Embedded;
+                import jakarta.persistence.Embeddable;
+                import jakarta.persistence.Embedded;
 
                 @Embeddable
                 public class Location {
@@ -145,7 +145,7 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Embeddable;
+                import jakarta.persistence.Embeddable;
 
                 @Embeddable
                 public class Geo {
@@ -173,9 +173,9 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Entity;
-                import io.nova.annotation.Id;
-                import io.nova.annotation.OneToMany;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                import jakarta.persistence.OneToMany;
 
                 import java.util.List;
 
@@ -195,9 +195,9 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Entity;
-                import io.nova.annotation.Id;
-                import io.nova.annotation.ManyToOne;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                import jakarta.persistence.ManyToOne;
 
                 @Entity
                 public class Book {
@@ -234,8 +234,8 @@ class MetamodelProcessorTest {
                 """
                 package fixtures;
 
-                import io.nova.annotation.Entity;
-                import io.nova.annotation.Id;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
 
                 @Entity
                 public class Sample {
@@ -281,9 +281,9 @@ class MetamodelProcessorTest {
                     """
                     package fixtures;
 
-                    import io.nova.annotation.Embedded;
-                    import io.nova.annotation.Entity;
-                    import io.nova.annotation.Id;
+                    import jakarta.persistence.Embedded;
+                    import jakarta.persistence.Entity;
+                    import jakarta.persistence.Id;
 
                     @Entity
                     public class Conflict {
@@ -301,7 +301,7 @@ class MetamodelProcessorTest {
                     """
                     package fixtures;
 
-                    import io.nova.annotation.Embeddable;
+                    import jakarta.persistence.Embeddable;
 
                     @Embeddable
                     public class Place {
@@ -327,8 +327,8 @@ class MetamodelProcessorTest {
                     """
                     package fixtures;
 
-                    import io.nova.annotation.Embeddable;
-                    import io.nova.annotation.Embedded;
+                    import jakarta.persistence.Embeddable;
+                    import jakarta.persistence.Embedded;
 
                     @Embeddable
                     public class Loop {
@@ -341,9 +341,9 @@ class MetamodelProcessorTest {
                     """
                     package fixtures;
 
-                    import io.nova.annotation.Embedded;
-                    import io.nova.annotation.Entity;
-                    import io.nova.annotation.Id;
+                    import jakarta.persistence.Embedded;
+                    import jakarta.persistence.Entity;
+                    import jakarta.persistence.Id;
 
                     @Entity
                     public class Holder {

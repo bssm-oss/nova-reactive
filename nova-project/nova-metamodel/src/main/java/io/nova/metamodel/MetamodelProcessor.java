@@ -45,13 +45,13 @@ import java.util.Set;
  *       발행한다.
  * </ul>
  */
-@SupportedAnnotationTypes("io.nova.annotation.Entity")
+@SupportedAnnotationTypes("jakarta.persistence.Entity")
 @SupportedSourceVersion(SourceVersion.RELEASE_21)
 public final class MetamodelProcessor extends AbstractProcessor {
 
-    private static final String ENTITY = "io.nova.annotation.Entity";
-    private static final String EMBEDDED = "io.nova.annotation.Embedded";
-    private static final String ONE_TO_MANY = "io.nova.annotation.OneToMany";
+    private static final String ENTITY = "jakarta.persistence.Entity";
+    private static final String EMBEDDED = "jakarta.persistence.Embedded";
+    private static final String ONE_TO_MANY = "jakarta.persistence.OneToMany";
 
     /**
      * 잘못 정의된 {@code @Embedded} 사이클로 인한 무한 재귀를 방지하는 안전 한계.

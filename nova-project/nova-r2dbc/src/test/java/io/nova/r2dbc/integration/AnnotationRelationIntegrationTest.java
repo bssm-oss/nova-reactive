@@ -1,11 +1,11 @@
 package io.nova.r2dbc.integration;
 
-import io.nova.annotation.Entity;
-import io.nova.annotation.Id;
-import io.nova.annotation.JoinColumn;
-import io.nova.annotation.ManyToOne;
-import io.nova.annotation.OneToMany;
-import io.nova.annotation.Table;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.Table;
 import io.nova.fetch.FetchGroup;
 import io.nova.query.QuerySpec;
 import org.junit.jupiter.api.BeforeEach;

@@ -43,6 +43,24 @@ public interface Dialect {
     String SEQUENCE_VALUE_COLUMN = "nova_seq_value";
 
     /**
+     * 데이터베이스에 존재하는 모든 테이블 이름을 한 컬럼으로 나열하는 SELECT 구문을 반환한다.
+     * {@code nova.ddl-auto=validate}가 엔티티 테이블 존재 여부를 확인할 때 사용한다. 기본 구현은
+     * 표준 {@code information_schema.tables}를 조회하며(H2 / PostgreSQL / MySQL / MariaDB), Oracle처럼
+     * information_schema가 없는 dialect는 override한다.
+     *
+     * <p>구문은 반드시 단일 컬럼을 {@link #TABLE_NAME_COLUMN} alias로 노출해야 한다. validator는
+     * 결과 이름들을 대소문자 무시로 비교하므로 dialect별 식별자 case-folding 차이는 흡수된다.
+     */
+    default String listTablesSql() {
+        return "select table_name as " + TABLE_NAME_COLUMN + " from information_schema.tables";
+    }
+
+    /**
+     * {@link #listTablesSql()} 결과의 테이블 이름 컬럼 alias.
+     */
+    String TABLE_NAME_COLUMN = "nova_table_name";
+
+    /**
      * 값이 {@code null}인 binding에 대해 R2DBC {@code Statement.bindNull(index, type)}으로 전달할
      * Java 타입을 반환한다. 기본값은 {@link Object} 클래스다 — driver가 type-agnostic null encoding을
      * 지원하면 이 기본값으로 충분하다.

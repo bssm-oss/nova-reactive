@@ -1,22 +1,35 @@
 package io.nova.schema;
 
 /**
- * Schema lifecycle policy mirrored from JPA's {@code hibernate.hbm2ddl.auto}
- * but constrained to what {@link SchemaInitializer} can do today.
- *
- * <p>Phase 1 supports the three modes that do not require schema introspection
- * or diffing. {@code VALIDATE} and {@code UPDATE} are deliberately omitted
- * because they require querying the live database catalog, which is dialect
- * work not yet in Nova.
+ * Schema lifecycle policy mirrored from JPA's {@code spring.jpa.hibernate.ddl-auto} /
+ * {@code hibernate.hbm2ddl.auto}. All five JPA values bind, so a JPA config can be
+ * copied as-is; what Nova can actually execute differs where live-catalog
+ * introspection would be required.
  */
 public enum DdlAuto {
     /** Do nothing on startup. */
     NONE,
 
     /**
-     * Drop the configured tables (if any) and recreate them on startup. Useful
-     * for integration tests and demo seeding. Production should use a real
-     * migration tool such as Flyway or Liquibase instead.
+     * Validate that a table exists in the database for every entity, failing startup
+     * with the list of missing tables otherwise. This is a table-existence check only
+     * (via the dialect's catalog query) — it does not compare columns or types. For
+     * full schema validation use a migration tool such as Flyway or Liquibase.
+     */
+    VALIDATE,
+
+    /**
+     * Create any missing tables without dropping existing ones
+     * ({@code CREATE TABLE IF NOT EXISTS}). Non-destructive. Unlike Hibernate's
+     * {@code update}, Nova does not diff and {@code ALTER} existing tables to add
+     * missing columns — only whole missing tables are created.
+     */
+    UPDATE,
+
+    /**
+     * Drop the configured tables (if any) and recreate them on startup, matching
+     * Hibernate's destructive {@code create}. Useful for integration tests and demo
+     * seeding. Production should use a real migration tool instead.
      */
     CREATE,
 
