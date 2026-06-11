@@ -13,13 +13,13 @@ import io.nova.annotation.Table;
  * doubles in {@code io.nova.boot}.
  */
 @Entity
-@Table("ddl_auto_accounts")
+@Table(name = "ddl_auto_accounts")
 public class DdlAutoBootstrapEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column("email_address")
+    @Column(name = "email_address")
     private String email;
 
     public DdlAutoBootstrapEntity() {}

@@ -16,6 +16,9 @@ import io.nova.annotation.Json;
 import io.nova.annotation.ManyToOne;
 import io.nova.annotation.OneToMany;
 import io.nova.annotation.PostLoad;
+import io.nova.annotation.PostPersist;
+import io.nova.annotation.PostRemove;
+import io.nova.annotation.PostUpdate;
 import io.nova.annotation.PrePersist;
 import io.nova.annotation.PreRemove;
 import io.nova.annotation.PreUpdate;
@@ -123,7 +126,7 @@ public final class EntityMetadataFactory {
 
         Table table = entityType.getAnnotation(Table.class);
         String entityName = entity.name().isBlank() ? entityType.getSimpleName() : entity.name();
-        String tableName = table != null && !table.value().isBlank() ? table.value() : namingStrategy.tableName(entityType);
+        String tableName = table != null && !table.name().isBlank() ? table.name() : namingStrategy.tableName(entityType);
 
         List<PersistentProperty> properties = new ArrayList<>();
         PersistentProperty idProperty = null;
@@ -210,17 +213,23 @@ public final class EntityMetadataFactory {
         }
 
         List<Method> prePersistCallbacks = new ArrayList<>();
+        List<Method> postPersistCallbacks = new ArrayList<>();
         List<Method> preUpdateCallbacks = new ArrayList<>();
+        List<Method> postUpdateCallbacks = new ArrayList<>();
         List<Method> postLoadCallbacks = new ArrayList<>();
         List<Method> preRemoveCallbacks = new ArrayList<>();
+        List<Method> postRemoveCallbacks = new ArrayList<>();
         for (Method method : entityType.getDeclaredMethods()) {
             if (method.isSynthetic()) {
                 continue;
             }
             collectCallback(entityType, method, PrePersist.class, prePersistCallbacks);
+            collectCallback(entityType, method, PostPersist.class, postPersistCallbacks);
             collectCallback(entityType, method, PreUpdate.class, preUpdateCallbacks);
+            collectCallback(entityType, method, PostUpdate.class, postUpdateCallbacks);
             collectCallback(entityType, method, PostLoad.class, postLoadCallbacks);
             collectCallback(entityType, method, PreRemove.class, preRemoveCallbacks);
+            collectCallback(entityType, method, PostRemove.class, postRemoveCallbacks);
         }
 
         Set<String> columnNames = new LinkedHashSet<>();
@@ -235,9 +244,12 @@ public final class EntityMetadataFactory {
                                 + "'; check @Column overrides and @Embedded host field names");
             }
         }
-        List<IndexDefinition> indexes = extractIndexes(entityType, tableName, columnNames);
-        List<UniqueConstraintDefinition> uniqueConstraints =
-                extractUniqueConstraints(entityType, tableName, columnNames);
+        List<IndexDefinition> indexes = extractIndexes(
+                entityType, tableName, columnNames,
+                table == null ? new Index[0] : table.indexes());
+        List<UniqueConstraintDefinition> uniqueConstraints = extractUniqueConstraints(
+                entityType, tableName, columnNames,
+                table == null ? new UniqueConstraint[0] : table.uniqueConstraints());
 
         return new EntityMetadata<>(
                 entityType,
@@ -246,31 +258,35 @@ public final class EntityMetadataFactory {
                 properties,
                 idProperty,
                 prePersistCallbacks,
+                postPersistCallbacks,
                 preUpdateCallbacks,
+                postUpdateCallbacks,
                 postLoadCallbacks,
                 preRemoveCallbacks,
+                postRemoveCallbacks,
                 indexes,
                 uniqueConstraints
         );
     }
 
     /**
-     * 타입에 선언된 {@link Index} 어노테이션(반복 포함)을 모아 검증 후 {@link IndexDefinition}으로 변환한다.
+     * {@link Table#indexes()}에 선언된 {@link Index}를 모아 검증 후 {@link IndexDefinition}으로 변환한다.
      * 이름이 비어있으면 {@code ix_{table}_{col1}_{col2}_...} 패턴으로 자동 생성한다.
+     * {@link Index#columnList()}는 JPA와 동일하게 콤마로 구분한 컬럼 이름 목록이다.
      */
     private static List<IndexDefinition> extractIndexes(
             Class<?> entityType,
             String tableName,
-            Set<String> columnNames
+            Set<String> columnNames,
+            Index[] declarations
     ) {
-        Index[] declarations = entityType.getAnnotationsByType(Index.class);
         if (declarations.length == 0) {
             return List.of();
         }
         List<IndexDefinition> result = new ArrayList<>(declarations.length);
         for (Index declaration : declarations) {
-            String[] columns = declaration.columns();
-            if (columns == null || columns.length == 0) {
+            String[] columns = parseColumnList(declaration.columnList());
+            if (columns.length == 0) {
                 throw new IllegalArgumentException(
                         entityType.getName() + " @Index must declare at least one column");
             }
@@ -284,22 +300,22 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * 타입에 선언된 {@link UniqueConstraint} 어노테이션(반복 포함)을 모아 검증 후
+     * {@link Table#uniqueConstraints()}에 선언된 {@link UniqueConstraint}를 모아 검증 후
      * {@link UniqueConstraintDefinition}으로 변환한다. 이름이 비어있으면
      * {@code uk_{table}_{col1}_{col2}_...} 패턴으로 자동 생성한다.
      */
     private static List<UniqueConstraintDefinition> extractUniqueConstraints(
             Class<?> entityType,
             String tableName,
-            Set<String> columnNames
+            Set<String> columnNames,
+            UniqueConstraint[] declarations
     ) {
-        UniqueConstraint[] declarations = entityType.getAnnotationsByType(UniqueConstraint.class);
         if (declarations.length == 0) {
             return List.of();
         }
         List<UniqueConstraintDefinition> result = new ArrayList<>(declarations.length);
         for (UniqueConstraint declaration : declarations) {
-            String[] columns = declaration.columns();
+            String[] columns = declaration.columnNames();
             if (columns == null || columns.length == 0) {
                 throw new IllegalArgumentException(
                         entityType.getName() + " @UniqueConstraint must declare at least one column");
@@ -311,6 +327,20 @@ public final class EntityMetadataFactory {
             result.add(new UniqueConstraintDefinition(name, List.of(columns)));
         }
         return result;
+    }
+
+    /**
+     * JPA {@link Index#columnList()} 형식(콤마 구분)을 컬럼 이름 배열로 파싱한다. 각 항목의 공백은
+     * 제거하고 빈 항목은 버린다.
+     */
+    private static String[] parseColumnList(String columnList) {
+        if (columnList == null || columnList.isBlank()) {
+            return new String[0];
+        }
+        return Arrays.stream(columnList.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toArray(String[]::new);
     }
 
     private static void validateColumnsExist(
@@ -554,7 +584,7 @@ public final class EntityMetadataFactory {
                                 + "; supported types are Long, Integer, Short");
             }
         }
-        GenerationType generationType = generatedValue == null ? GenerationType.NONE : generatedValue.strategy();
+        GenerationType generationType = generatedValue == null ? null : generatedValue.strategy();
         String generator = generatedValue == null ? "" : generatedValue.generator();
         if (generatedValue != null) {
             if (generationType == GenerationType.SEQUENCE) {
@@ -590,8 +620,8 @@ public final class EntityMetadataFactory {
                 }
             }
         }
-        String baseColumnName = column != null && !column.value().isBlank()
-                ? column.value()
+        String baseColumnName = column != null && !column.name().isBlank()
+                ? column.name()
                 : namingStrategy.columnName(field.getName());
         String columnName = columnPrefix + baseColumnName;
         String propertyName;
@@ -751,7 +781,7 @@ public final class EntityMetadataFactory {
                 255,
                 0,
                 0,
-                GenerationType.NONE,
+                null,
                 "",
                 null,
                 false,
@@ -803,7 +833,7 @@ public final class EntityMetadataFactory {
                 255,
                 0,
                 0,
-                GenerationType.NONE,
+                null,
                 "",
                 null,
                 false,

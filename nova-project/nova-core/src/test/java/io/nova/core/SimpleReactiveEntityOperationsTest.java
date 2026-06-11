@@ -2096,6 +2096,66 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void saveFiresPostPersistCallbackAfterInsert() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 42L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(null, "callback@nova.io");
+
+        StepVerifier.create(operations.save(entity))
+                .expectNext(entity)
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.postPersistCount.get());
+        // generated id가 주입된 뒤 @PostPersist가 호출되어야 한다.
+        assertEquals(42L, entity.getId());
+    }
+
+    @Test
+    void saveFiresPostUpdateCallbackAfterUpdate() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "USER@NOVA.IO");
+
+        StepVerifier.create(operations.save(entity))
+                .expectNext(entity)
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.postUpdateCount.get());
+    }
+
+    @Test
+    void updatePartialFiresPostUpdateCallback() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "USER@NOVA.IO");
+
+        StepVerifier.create(operations.update(entity, List.of("email")))
+                .expectNext(entity)
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.postUpdateCount.get());
+    }
+
+    @Test
+    void deleteFiresPostRemoveCallbackAfterDelete() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(11L, "x@nova.io");
+
+        StepVerifier.create(operations.delete(entity))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(1, EntityWithCallbacks.postRemoveCount.get());
+    }
+
+    @Test
     void findByIdFiresPostLoadCallbackAfterHydration() {
         EntityWithCallbacks.reset();
         CapturingExecutor executor = new CapturingExecutor();

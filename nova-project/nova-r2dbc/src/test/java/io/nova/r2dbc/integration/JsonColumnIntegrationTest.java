@@ -74,17 +74,17 @@ class JsonColumnIntegrationTest {
      * 테스트 codec이 {@code k=v&k=v} 형태의 결정적 문자열로 직렬화한다.
      */
     @Entity
-    @Table("json_profiles")
+    @Table(name = "json_profiles")
     static class JsonProfile {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         String email;
 
         @Json
-        @Column("settings")
+        @Column(name = "settings")
         Map<String, String> settings;
 
         JsonProfile() {

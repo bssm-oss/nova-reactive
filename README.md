@@ -57,10 +57,10 @@ import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
 
 @Entity
-@Table("accounts")
+@Table(name = "accounts")
 public class Account {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
-    @Column("email_address") private String email;
+    @Column(name = "email_address") private String email;
     public Account() {}
     public Account(Long id, String email) { this.id = id; this.email = email; }
     // getters/setters...
@@ -151,7 +151,7 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 - [x] Optimistic locking (`@Version`) — Long / Integer / Short, surfaces `OptimisticLockingFailureException` on conflict
 - [x] Soft delete (`@SoftDelete`) — rewrites DELETE as UPDATE; SELECT gets an automatic alive guard
 - [x] Audit fields (`@CreatedAt` / `@UpdatedAt`) — injectable `Clock`
-- [x] Entity lifecycle callbacks (`@PrePersist` / `@PreUpdate` / `@PostLoad` / `@PreRemove`)
+- [x] Entity lifecycle callbacks (`@PrePersist` / `@PostPersist` / `@PreUpdate` / `@PostUpdate` / `@PostLoad` / `@PreRemove` / `@PostRemove`)
 - [x] Updater builder DSL — criteria-based partial UPDATE without an entity instance
 - [x] Projections (record / DTO mapping)
 - [x] Aggregations (`count` / `countDistinct` / `sum` / `avg` / `min` / `max` + `groupBy` + `having`)

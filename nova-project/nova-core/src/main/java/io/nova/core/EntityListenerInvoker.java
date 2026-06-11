@@ -7,9 +7,10 @@ import java.lang.reflect.Method;
 import java.util.List;
 
 /**
- * {@code @PrePersist}, {@code @PreUpdate}, {@code @PostLoad}, {@code @PreRemove} 콜백을 entity 인스턴스에
- * 대해 reflective하게 invoke한다. 메서드 시그니처 검증과 {@code setAccessible(true)}는 metadata 단계에서
- * 이미 처리되었으므로, 여기서는 단순히 invoke만 수행한다.
+ * {@code @PrePersist}, {@code @PostPersist}, {@code @PreUpdate}, {@code @PostUpdate}, {@code @PostLoad},
+ * {@code @PreRemove}, {@code @PostRemove} 콜백을 entity 인스턴스에 대해 reflective하게 invoke한다.
+ * 메서드 시그니처 검증과 {@code setAccessible(true)}는 metadata 단계에서 이미 처리되었으므로, 여기서는
+ * 단순히 invoke만 수행한다.
  *
  * <p>각 phase는 entity의 declaration 순서대로 콜백을 호출한다. 콜백이 checked exception을 던지면
  * {@link InvocationTargetException}으로 감싸여 도착하므로, 원본 cause를 보존한 채
@@ -21,8 +22,16 @@ final class EntityListenerInvoker {
         invokeAll(entity, metadata.prePersistCallbacks(), "@PrePersist");
     }
 
+    void invokePostPersist(Object entity, EntityMetadata<?> metadata) {
+        invokeAll(entity, metadata.postPersistCallbacks(), "@PostPersist");
+    }
+
     void invokePreUpdate(Object entity, EntityMetadata<?> metadata) {
         invokeAll(entity, metadata.preUpdateCallbacks(), "@PreUpdate");
+    }
+
+    void invokePostUpdate(Object entity, EntityMetadata<?> metadata) {
+        invokeAll(entity, metadata.postUpdateCallbacks(), "@PostUpdate");
     }
 
     void invokePostLoad(Object entity, EntityMetadata<?> metadata) {
@@ -31,6 +40,10 @@ final class EntityListenerInvoker {
 
     void invokePreRemove(Object entity, EntityMetadata<?> metadata) {
         invokeAll(entity, metadata.preRemoveCallbacks(), "@PreRemove");
+    }
+
+    void invokePostRemove(Object entity, EntityMetadata<?> metadata) {
+        invokeAll(entity, metadata.postRemoveCallbacks(), "@PostRemove");
     }
 
     private void invokeAll(Object entity, List<Method> callbacks, String phase) {

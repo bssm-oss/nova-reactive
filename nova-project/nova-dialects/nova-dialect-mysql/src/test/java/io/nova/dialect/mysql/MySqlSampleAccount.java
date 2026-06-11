@@ -8,13 +8,13 @@ import io.nova.annotation.Id;
 import io.nova.annotation.Table;
 
 @Entity
-@Table("accounts")
+@Table(name = "accounts")
 class MySqlSampleAccount {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column("email_address")
+    @Column(name = "email_address")
     private String email;
 
     @Column(nullable = false)

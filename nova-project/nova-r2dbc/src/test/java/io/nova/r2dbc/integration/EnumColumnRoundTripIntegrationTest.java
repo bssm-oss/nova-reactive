@@ -59,18 +59,18 @@ class EnumColumnRoundTripIntegrationTest {
     }
 
     @Entity
-    @Table("enum_accounts")
+    @Table(name = "enum_accounts")
     static class EnumAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         Long id;
 
         @Enumerated(EnumType.STRING)
-        @Column("status_string")
+        @Column(name = "status_string")
         Status statusString;
 
         @Enumerated(EnumType.ORDINAL)
-        @Column("status_ordinal")
+        @Column(name = "status_ordinal")
         Status statusOrdinal;
 
         EnumAccount() {

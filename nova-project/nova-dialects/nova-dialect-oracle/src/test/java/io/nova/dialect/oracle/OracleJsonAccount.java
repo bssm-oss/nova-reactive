@@ -12,13 +12,13 @@ import io.nova.annotation.Table;
  * dialect의 jsonColumnType()을 따른다.
  */
 @Entity
-@Table("json_accounts")
+@Table(name = "json_accounts")
 class OracleJsonAccount {
     @Id
     private Long id;
 
     @Json
-    @Column("payload")
+    @Column(name = "payload")
     private String payload;
 
     OracleJsonAccount() {

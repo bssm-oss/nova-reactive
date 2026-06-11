@@ -12,7 +12,7 @@ import io.nova.annotation.Table;
  * 검증하기 위한 테스트 픽스처다.
  */
 @Entity
-@Table("type_accounts")
+@Table(name = "type_accounts")
 class OracleTypeAccount {
     enum Tier {
         FREE,
@@ -22,23 +22,23 @@ class OracleTypeAccount {
     @Id
     private Long id;
 
-    @Column("balance")
+    @Column(name = "balance")
     private int balance;
 
-    @Column("ratio")
+    @Column(name = "ratio")
     private double ratio;
 
-    @Column(value = "enabled", nullable = false)
+    @Column(name = "enabled", nullable = false)
     private boolean enabled;
 
-    @Column("name")
+    @Column(name = "name")
     private String name;
 
-    @Column("tier")
+    @Column(name = "tier")
     @Enumerated(EnumType.STRING)
     private Tier tier;
 
-    @Column("ordinal_tier")
+    @Column(name = "ordinal_tier")
     @Enumerated(EnumType.ORDINAL)
     private Tier ordinalTier;
 

@@ -165,7 +165,7 @@ public final class PersistentProperty {
     }
 
     public boolean generated() {
-        return generationType != GenerationType.NONE;
+        return generationType != null;
     }
 
     public boolean createdAt() {

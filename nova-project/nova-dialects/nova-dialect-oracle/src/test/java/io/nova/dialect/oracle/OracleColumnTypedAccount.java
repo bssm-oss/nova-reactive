@@ -17,21 +17,21 @@ import java.math.BigDecimal;
  * </ul>
  */
 @Entity
-@Table("column_typed")
+@Table(name = "column_typed")
 class OracleColumnTypedAccount {
     @Id
     private Long id;
 
-    @Column(value = "short_name", length = 64)
+    @Column(name = "short_name", length = 64)
     private String shortName;
 
-    @Column("description")
+    @Column(name = "description")
     private String description;
 
-    @Column(value = "price", precision = 12, scale = 2)
+    @Column(name = "price", precision = 12, scale = 2)
     private BigDecimal price;
 
-    @Column("default_decimal")
+    @Column(name = "default_decimal")
     private BigDecimal defaultDecimal;
 
     OracleColumnTypedAccount() {

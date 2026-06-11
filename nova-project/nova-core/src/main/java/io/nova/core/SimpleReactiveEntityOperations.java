@@ -101,7 +101,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             } catch (RuntimeException exception) {
                 return Mono.error(exception);
             }
-            return insertNew(metadata, entity);
+            return insertNew(metadata, entity)
+                    .doOnNext(saved -> listenerInvoker.invokePostPersist(saved, metadata));
         }
         try {
             auditApplier.applyOnUpdate(entity, metadata);
@@ -109,7 +110,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         } catch (RuntimeException exception) {
             return Mono.error(exception);
         }
-        return updateExisting(metadata, entity);
+        return updateExisting(metadata, entity)
+                .doOnNext(saved -> listenerInvoker.invokePostUpdate(saved, metadata));
     }
 
     private <T> Mono<T> insertNew(EntityMetadata<T> metadata, T entity) {
@@ -207,7 +209,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
         if (versionProperty == null) {
-            return sqlExecutor.execute(statement).thenReturn(entity);
+            return sqlExecutor.execute(statement)
+                    .thenReturn(entity)
+                    .doOnNext(updated -> listenerInvoker.invokePostUpdate(updated, metadata));
         }
         Object current = versionProperty.read(entity);
         Object next = nextVersionValue(versionProperty, current);
@@ -222,7 +226,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     }
                     versionProperty.write(entity, next);
                     return Mono.just(entity);
-                });
+                })
+                .doOnNext(updated -> listenerInvoker.invokePostUpdate(updated, metadata));
     }
 
     private static Iterable<String> augmentWithExtraField(Iterable<String> fields, String extraField) {
@@ -319,6 +324,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         } catch (RuntimeException exception) {
             return Mono.error(exception);
         }
+        return performDelete(metadata, entity, id)
+                .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata));
+    }
+
+    /**
+     * hard/soft delete 분기를 수행한다. {@code @PreRemove}는 호출 측에서 이미 발화했고, 성공적으로
+     * 행이 영향받았을 때 {@code @PostRemove}는 이 {@code Mono}를 구독하는 {@link #delete(Object)}가 발화한다.
+     * optimistic locking 실패는 {@code Mono.error}로 끝나므로 {@code @PostRemove}가 호출되지 않는다.
+     */
+    private <T> Mono<Long> performDelete(EntityMetadata<T> metadata, T entity, Object id) {
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         Optional<PersistentProperty> version = metadata.versionProperty();
         if (softDelete.isPresent() && version.isPresent()) {
@@ -891,7 +906,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // SQL 셰이프 혹은 binding 개수가 그룹 안에서 다르면 안전하게 단건 fallback로 처리한다.
             return Flux.fromIterable(statements)
                     .concatMap(sqlExecutor::execute)
-                    .thenMany(Flux.fromIterable(entities));
+                    .thenMany(Flux.fromIterable(entities))
+                    .doOnNext(saved -> invokePostSave(key.isNew(), saved, metadata));
         }
         List<List<Object>> bindingsList = new ArrayList<>(statements.size());
         for (SqlStatement statement : statements) {
@@ -919,10 +935,24 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             idProperty.write(entities.get(i), idProperty.toPropertyValue(collectedKeys.get(i)));
                         }
                         return Flux.fromIterable(entities);
-                    }));
+                    }))
+                    .doOnNext(saved -> invokePostSave(key.isNew(), saved, metadata));
         }
         return sqlExecutor.executeBatch(sharedSql, bindingsList)
-                .thenMany(Flux.fromIterable(entities));
+                .thenMany(Flux.fromIterable(entities))
+                .doOnNext(saved -> invokePostSave(key.isNew(), saved, metadata));
+    }
+
+    /**
+     * batch save 성공 후 그룹 종류에 따라 {@code @PostPersist}(insert) 또는 {@code @PostUpdate}(update)를
+     * entity별로 발화한다.
+     */
+    private <T> void invokePostSave(boolean isNew, T entity, EntityMetadata<T> metadata) {
+        if (isNew) {
+            listenerInvoker.invokePostPersist(entity, metadata);
+        } else {
+            listenerInvoker.invokePostUpdate(entity, metadata);
+        }
     }
 
     private static <T> List<T> toList(Iterable<T> iterable) {

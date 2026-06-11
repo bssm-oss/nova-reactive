@@ -16,6 +16,9 @@ import io.nova.annotation.Json;
 import io.nova.annotation.ManyToOne;
 import io.nova.annotation.OneToMany;
 import io.nova.annotation.PostLoad;
+import io.nova.annotation.PostPersist;
+import io.nova.annotation.PostRemove;
+import io.nova.annotation.PostUpdate;
 import io.nova.annotation.PrePersist;
 import io.nova.annotation.PreRemove;
 import io.nova.annotation.PreUpdate;
@@ -35,13 +38,13 @@ public final class FixtureEntities {
     }
 
     @Entity(name = "account_entity")
-    @Table("accounts")
+    @Table(name = "accounts")
     public static class SampleAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Column(nullable = false)
@@ -70,16 +73,16 @@ public final class FixtureEntities {
     }
 
     @Entity(name = "order_entity")
-    @Table("orders")
+    @Table(name = "orders")
     public static class SampleOrder {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("customer_email")
+        @Column(name = "customer_email")
         private String customerEmail;
 
-        @Column("total_cents")
+        @Column(name = "total_cents")
         private long totalCents;
 
         public SampleOrder() {
@@ -105,12 +108,12 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("assigned_accounts")
+    @Table(name = "assigned_accounts")
     public static class AssignedIdAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         public AssignedIdAccount() {
@@ -189,26 +192,26 @@ public final class FixtureEntities {
      * </ul>
      */
     @Entity
-    @Table("column_typed")
+    @Table(name = "column_typed")
     public static class ColumnTypedEntity {
         @Id
         private Long id;
 
-        @Column(value = "short_name", length = 64)
+        @Column(name = "short_name", length = 64)
         private String shortName;
 
-        @Column("description")
+        @Column(name = "description")
         private String description;
 
-        @Column(value = "price", precision = 12, scale = 2)
+        @Column(name = "price", precision = 12, scale = 2)
         private java.math.BigDecimal price;
 
-        @Column("default_decimal")
+        @Column(name = "default_decimal")
         private java.math.BigDecimal defaultDecimal;
 
         // scale을 생략하면 numeric(precision, 0)으로 emit되어 소수부가 잘린다(JPA @Column 관례와 동일).
         // 통화 컬럼에서 흔한 실수이므로 이 동작을 테스트로 명시 고정한다.
-        @Column(value = "precision_only", precision = 10)
+        @Column(name = "precision_only", precision = 10)
         private java.math.BigDecimal precisionOnly;
 
         public ColumnTypedEntity() {
@@ -261,12 +264,12 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("versioned_accounts")
+    @Table(name = "versioned_accounts")
     public static class VersionedAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Version
@@ -295,13 +298,13 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("generated_versioned_accounts")
+    @Table(name = "generated_versioned_accounts")
     public static class GeneratedVersionedAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Version
@@ -330,12 +333,12 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("int_versioned_accounts")
+    @Table(name = "int_versioned_accounts")
     public static class IntegerVersionedAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Version
@@ -364,12 +367,12 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("short_versioned_accounts")
+    @Table(name = "short_versioned_accounts")
     public static class ShortVersionedAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Version
@@ -441,7 +444,7 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("enum_string_accounts")
+    @Table(name = "enum_string_accounts")
     public static class EnumStringAccount {
         @Id
         private Long id;
@@ -467,7 +470,7 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("enum_ordinal_accounts")
+    @Table(name = "enum_ordinal_accounts")
     public static class EnumOrdinalAccount {
         @Id
         private Long id;
@@ -493,7 +496,7 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("enum_default_accounts")
+    @Table(name = "enum_default_accounts")
     public static class EnumDefaultAccount {
         @Id
         private Long id;
@@ -530,21 +533,21 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("audited_accounts")
+    @Table(name = "audited_accounts")
     public static class AuditedAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @CreatedAt
-        @Column("created_at")
+        @Column(name = "created_at")
         private Instant createdAt;
 
         @UpdatedAt
-        @Column("updated_at")
+        @Column(name = "updated_at")
         private Instant updatedAt;
 
         public AuditedAccount() {
@@ -580,16 +583,16 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("soft_deletable_accounts")
+    @Table(name = "soft_deletable_accounts")
     public static class SoftDeletableAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @SoftDelete
-        @Column("deleted_at")
+        @Column(name = "deleted_at")
         private Instant deletedAt;
 
         public SoftDeletableAccount() {
@@ -615,13 +618,13 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("local_audited_accounts")
+    @Table(name = "local_audited_accounts")
     public static class LocalDateTimeAuditedAccount {
         @Id
         private Long id;
 
         @UpdatedAt
-        @Column("updated_at")
+        @Column(name = "updated_at")
         private LocalDateTime updatedAt;
 
         public LocalDateTimeAuditedAccount() {
@@ -633,13 +636,13 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("soft_deletable_local")
+    @Table(name = "soft_deletable_local")
     public static class SoftDeletableLocalAccount {
         @Id
         private Long id;
 
         @SoftDelete
-        @Column("deleted_at")
+        @Column(name = "deleted_at")
         private LocalDateTime deletedAt;
 
         public SoftDeletableLocalAccount() {
@@ -651,13 +654,13 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("offset_audited_accounts")
+    @Table(name = "offset_audited_accounts")
     public static class OffsetDateTimeAuditedAccount {
         @Id
         private Long id;
 
         @UpdatedAt
-        @Column("updated_at")
+        @Column(name = "updated_at")
         private OffsetDateTime updatedAt;
 
         public OffsetDateTimeAuditedAccount() {
@@ -669,19 +672,19 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("versioned_soft_deletable_accounts")
+    @Table(name = "versioned_soft_deletable_accounts")
     public static class VersionedSoftDeletableAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Version
         private Long version;
 
         @SoftDelete
-        @Column("deleted_at")
+        @Column(name = "deleted_at")
         private Instant deletedAt;
 
         public VersionedSoftDeletableAccount() {
@@ -712,13 +715,13 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("soft_deletable_offset")
+    @Table(name = "soft_deletable_offset")
     public static class SoftDeletableOffsetAccount {
         @Id
         private Long id;
 
         @SoftDelete
-        @Column("deleted_at")
+        @Column(name = "deleted_at")
         private OffsetDateTime deletedAt;
 
         public SoftDeletableOffsetAccount() {
@@ -785,13 +788,13 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("sequenced_accounts")
+    @Table(name = "sequenced_accounts")
     public static class SequencedAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "sequenced_accounts_seq")
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         public SequencedAccount() {
@@ -812,13 +815,13 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("uuid_accounts")
+    @Table(name = "uuid_accounts")
     public static class UuidAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.UUID)
         private UUID id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         public UuidAccount() {
@@ -839,13 +842,13 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("string_uuid_accounts")
+    @Table(name = "string_uuid_accounts")
     public static class StringUuidAccount {
         @Id
         @GeneratedValue(strategy = GenerationType.UUID)
         private String id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         public StringUuidAccount() {
@@ -941,29 +944,38 @@ public final class FixtureEntities {
      * 카운터/이벤트는 정적 상태이므로 테스트는 {@link #reset()}로 초기화한 뒤 사용한다.
      */
     @Entity
-    @Table("callback_entities")
+    @Table(name = "callback_entities")
     public static class EntityWithCallbacks {
         public static final java.util.concurrent.atomic.AtomicInteger prePersistCount =
                 new java.util.concurrent.atomic.AtomicInteger();
+        public static final java.util.concurrent.atomic.AtomicInteger postPersistCount =
+                new java.util.concurrent.atomic.AtomicInteger();
         public static final java.util.concurrent.atomic.AtomicInteger preUpdateCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        public static final java.util.concurrent.atomic.AtomicInteger postUpdateCount =
                 new java.util.concurrent.atomic.AtomicInteger();
         public static final java.util.concurrent.atomic.AtomicInteger postLoadCount =
                 new java.util.concurrent.atomic.AtomicInteger();
         public static final java.util.concurrent.atomic.AtomicInteger preRemoveCount =
                 new java.util.concurrent.atomic.AtomicInteger();
+        public static final java.util.concurrent.atomic.AtomicInteger postRemoveCount =
+                new java.util.concurrent.atomic.AtomicInteger();
 
         public static void reset() {
             prePersistCount.set(0);
+            postPersistCount.set(0);
             preUpdateCount.set(0);
+            postUpdateCount.set(0);
             postLoadCount.set(0);
             preRemoveCount.set(0);
+            postRemoveCount.set(0);
         }
 
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         public EntityWithCallbacks() {
@@ -982,12 +994,22 @@ public final class FixtureEntities {
             }
         }
 
+        @PostPersist
+        void onPostPersist() {
+            postPersistCount.incrementAndGet();
+        }
+
         @PreUpdate
         void onPreUpdate() {
             preUpdateCount.incrementAndGet();
             if (email != null) {
                 email = email.toLowerCase();
             }
+        }
+
+        @PostUpdate
+        void onPostUpdate() {
+            postUpdateCount.incrementAndGet();
         }
 
         @PostLoad
@@ -998,6 +1020,11 @@ public final class FixtureEntities {
         @PreRemove
         void onPreRemove() {
             preRemoveCount.incrementAndGet();
+        }
+
+        @PostRemove
+        void onPostRemove() {
+            postRemoveCount.incrementAndGet();
         }
 
         public Long getId() {
@@ -1088,121 +1115,125 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("indexed_accounts")
-    @Index(name = "ix_indexed_email", columns = {"email"})
+    @Table(name = "indexed_accounts",
+            indexes = @Index(name = "ix_indexed_email", columnList = "email"))
     public static class SingleIndexEntity {
         @Id
         private Long id;
-        @Column("email")
+        @Column(name = "email")
         private String email;
     }
 
     @Entity
-    @Table("multi_indexed_accounts")
-    @Index(columns = {"first_name", "last_name"})
+    @Table(name = "multi_indexed_accounts",
+            indexes = @Index(columnList = "first_name, last_name"))
     public static class AutoNamedIndexEntity {
         @Id
         private Long id;
-        @Column("first_name")
+        @Column(name = "first_name")
         private String firstName;
-        @Column("last_name")
+        @Column(name = "last_name")
         private String lastName;
     }
 
     @Entity
-    @Table("repeating_index_accounts")
-    @Index(columns = {"email"})
-    @Index(columns = {"first_name", "last_name"})
+    @Table(name = "repeating_index_accounts",
+            indexes = {
+                    @Index(columnList = "email"),
+                    @Index(columnList = "first_name, last_name")
+            })
     public static class RepeatedIndexEntity {
         @Id
         private Long id;
-        @Column("email")
+        @Column(name = "email")
         private String email;
-        @Column("first_name")
+        @Column(name = "first_name")
         private String firstName;
-        @Column("last_name")
+        @Column(name = "last_name")
         private String lastName;
     }
 
     @Entity
-    @Table("unique_accounts")
-    @UniqueConstraint(name = "uk_email", columns = {"email"})
+    @Table(name = "unique_accounts",
+            uniqueConstraints = @UniqueConstraint(name = "uk_email", columnNames = {"email"}))
     public static class SingleUniqueConstraintEntity {
         @Id
         private Long id;
-        @Column("email")
+        @Column(name = "email")
         private String email;
     }
 
     @Entity
-    @Table("composite_unique_accounts")
-    @UniqueConstraint(columns = {"first_name", "last_name"})
+    @Table(name = "composite_unique_accounts",
+            uniqueConstraints = @UniqueConstraint(columnNames = {"first_name", "last_name"}))
     public static class AutoNamedUniqueConstraintEntity {
         @Id
         private Long id;
-        @Column("first_name")
+        @Column(name = "first_name")
         private String firstName;
-        @Column("last_name")
+        @Column(name = "last_name")
         private String lastName;
     }
 
     @Entity
-    @Table("repeating_unique_accounts")
-    @UniqueConstraint(columns = {"email"})
-    @UniqueConstraint(columns = {"first_name", "last_name"})
+    @Table(name = "repeating_unique_accounts",
+            uniqueConstraints = {
+                    @UniqueConstraint(columnNames = {"email"}),
+                    @UniqueConstraint(columnNames = {"first_name", "last_name"})
+            })
     public static class RepeatedUniqueConstraintEntity {
         @Id
         private Long id;
-        @Column("email")
+        @Column(name = "email")
         private String email;
-        @Column("first_name")
+        @Column(name = "first_name")
         private String firstName;
-        @Column("last_name")
+        @Column(name = "last_name")
         private String lastName;
     }
 
     @Entity
-    @Table("missing_column_indexed")
-    @Index(columns = {"nonexistent"})
+    @Table(name = "missing_column_indexed",
+            indexes = @Index(columnList = "nonexistent"))
     public static class IndexWithUnknownColumnEntity {
         @Id
         private Long id;
-        @Column("email")
+        @Column(name = "email")
         private String email;
     }
 
     @Entity
-    @Table("missing_column_unique")
-    @UniqueConstraint(columns = {"nonexistent"})
+    @Table(name = "missing_column_unique",
+            uniqueConstraints = @UniqueConstraint(columnNames = {"nonexistent"}))
     public static class UniqueConstraintWithUnknownColumnEntity {
         @Id
         private Long id;
-        @Column("email")
+        @Column(name = "email")
         private String email;
     }
 
     @Entity
-    @Table("empty_columns_indexed")
-    @Index(columns = {})
+    @Table(name = "empty_columns_indexed",
+            indexes = @Index(columnList = ""))
     public static class EmptyIndexColumnsEntity {
         @Id
         private Long id;
     }
 
     @Entity
-    @Table("empty_columns_unique")
-    @UniqueConstraint(columns = {})
+    @Table(name = "empty_columns_unique",
+            uniqueConstraints = @UniqueConstraint(columnNames = {}))
     public static class EmptyUniqueConstraintColumnsEntity {
         @Id
         private Long id;
     }
 
     @Entity
-    @Table("alter_target")
+    @Table(name = "alter_target")
     public static class AlterTargetEntity {
         @Id
         private Long id;
-        @Column("email")
+        @Column(name = "email")
         private String email;
     }
 
@@ -1211,12 +1242,12 @@ public final class FixtureEntities {
      * 결과 fallback 이름은 한도 안에 들어와야 한다.
      */
     @Entity
-    @Table("medium_long_table_name_for_index_truncation_tests")
-    @Index(columns = {"email_address"})
+    @Table(name = "medium_long_table_name_for_index_truncation_tests",
+            indexes = @Index(columnList = "email_address"))
     public static class LongAutoNamedIndexEntity {
         @Id
         private Long id;
-        @Column("email_address")
+        @Column(name = "email_address")
         private String emailAddress;
     }
 
@@ -1224,12 +1255,12 @@ public final class FixtureEntities {
      * 자동 생성된 이름이 한도를 넘고, hash fallback 또한 한도를 초과해 truncate가 적용되는 경우.
      */
     @Entity
-    @Table("extremely_long_table_name_for_testing_identifier_limit_guard")
-    @UniqueConstraint(columns = {"email_address"})
+    @Table(name = "extremely_long_table_name_for_testing_identifier_limit_guard",
+            uniqueConstraints = @UniqueConstraint(columnNames = {"email_address"}))
     public static class VeryLongAutoNamedUniqueConstraintEntity {
         @Id
         private Long id;
-        @Column("email_address")
+        @Column(name = "email_address")
         private String emailAddress;
     }
 
@@ -1262,7 +1293,7 @@ public final class FixtureEntities {
     }
 
     @Entity
-    @Table("customer")
+    @Table(name = "customer")
     public static class Customer {
         @Id
         private Long id;
@@ -1446,7 +1477,7 @@ public final class FixtureEntities {
      * FetchGroup setter로만 채워진다.
      */
     @Entity
-    @Table("authors")
+    @Table(name = "authors")
     public static class Author {
         @Id
         private Long id;
@@ -1484,14 +1515,14 @@ public final class FixtureEntities {
      * FetchGroup fixture: child 측. {@code authorId}가 parent {@link Author#id}에 대한 FK 컬럼이다.
      */
     @Entity
-    @Table("books")
+    @Table(name = "books")
     public static class Book {
         @Id
         private Long id;
 
         private String title;
 
-        @Column("author_id")
+        @Column(name = "author_id")
         private Long authorId;
 
         public Book() {
@@ -1579,7 +1610,7 @@ public final class FixtureEntities {
      * H4 fixture: 2-level nested @Embedded entity. 컬럼은 address_street/address_zip/address_geo_country/address_geo_city.
      */
     @Entity
-    @Table("office")
+    @Table(name = "office")
     public static class Office {
         @Id
         private Long id;
@@ -1652,7 +1683,7 @@ public final class FixtureEntities {
      * 테이블에 컬럼을 만들지 않는다.
      */
     @Entity
-    @Table("annotated_authors")
+    @Table(name = "annotated_authors")
     public static class AuthorWithBooksAnnotated {
         @Id
         private Long id;
@@ -1692,7 +1723,7 @@ public final class FixtureEntities {
      * @JoinColumn은 명시 — 기본 naming도 같은 값을 만들어내지만, 명시 케이스를 함께 검증한다.
      */
     @Entity
-    @Table("annotated_books")
+    @Table(name = "annotated_books")
     public static class BookWithAuthorAnnotated {
         @Id
         private Long id;
@@ -1734,12 +1765,12 @@ public final class FixtureEntities {
      * 두 번 declare하면 EntityMetadataFactory의 column uniqueness 검증이 거부해야 한다 (silent dedupe 방지).
      */
     @Entity
-    @Table("author_book_join_conflict")
+    @Table(name = "author_book_join_conflict")
     public static class AuthorBookJoinColumnConflict {
         @Id
         private Long id;
 
-        @Column("author_id")
+        @Column(name = "author_id")
         private Long authorId;
 
         @ManyToOne(targetEntity = AuthorWithBooksAnnotated.class)
@@ -1755,16 +1786,16 @@ public final class FixtureEntities {
      * value object 필드로, 등록된 {@link io.nova.json.JsonCodec}이 JSON 문자열로 직렬화한다.
      */
     @Entity
-    @Table("json_accounts")
+    @Table(name = "json_accounts")
     public static class JsonAccount {
         @Id
         private Long id;
 
-        @Column("email_address")
+        @Column(name = "email_address")
         private String email;
 
         @Json
-        @Column("preferences")
+        @Column(name = "preferences")
         private Preferences prefs;
 
         public JsonAccount() {
