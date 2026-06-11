@@ -21,6 +21,11 @@ public final class MySqlDialect implements Dialect {
     }
 
     @Override
+    public String lobType(boolean binary) {
+        return binary ? "longblob" : "longtext";
+    }
+
+    @Override
     public String quote(String identifier) {
         return "`" + identifier + "`";
     }

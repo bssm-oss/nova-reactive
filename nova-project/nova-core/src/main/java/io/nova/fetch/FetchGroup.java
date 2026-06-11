@@ -1,5 +1,7 @@
 package io.nova.fetch;
 
+import io.nova.query.Sort;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -77,6 +79,20 @@ public final class FetchGroup<P> {
                 Function<P, Object> parentIdExtractor,
                 BiConsumer<P, List<C>> setter
         ) {
+            return with(childType, childForeignKeyColumn, parentIdExtractor, setter, null);
+        }
+
+        /**
+         * child 리스트 정렬({@code @OneToMany}의 {@code @OrderBy})을 함께 지정하는 변형. {@code orderBy}가
+         * {@code null}이면 정렬 없이 IN-query 결과 순서를 그대로 쓴다.
+         */
+        public <C> Builder<P> with(
+                Class<C> childType,
+                String childForeignKeyColumn,
+                Function<P, Object> parentIdExtractor,
+                BiConsumer<P, List<C>> setter,
+                Sort orderBy
+        ) {
             Objects.requireNonNull(childType, "childType must not be null");
             Objects.requireNonNull(childForeignKeyColumn, "childForeignKeyColumn must not be null");
             if (childForeignKeyColumn.isBlank()) {
@@ -84,7 +100,7 @@ public final class FetchGroup<P> {
             }
             Objects.requireNonNull(parentIdExtractor, "parentIdExtractor must not be null");
             Objects.requireNonNull(setter, "setter must not be null");
-            specs.add(new FetchSpec<>(childType, childForeignKeyColumn, parentIdExtractor, setter, false));
+            specs.add(new FetchSpec<>(childType, childForeignKeyColumn, parentIdExtractor, setter, false, orderBy));
             return this;
         }
 
@@ -114,7 +130,7 @@ public final class FetchGroup<P> {
             // singleSetter를 list 기반 BiConsumer로 adapt — 호출자가 boilerplate를 짜지 않게 한다.
             BiConsumer<P, List<C>> listSetter = (parent, children) ->
                     singleSetter.accept(parent, children == null || children.isEmpty() ? null : children.get(0));
-            specs.add(new FetchSpec<>(childType, childPrimaryKeyColumn, parentForeignKeyExtractor, listSetter, true));
+            specs.add(new FetchSpec<>(childType, childPrimaryKeyColumn, parentForeignKeyExtractor, listSetter, true, null));
             return this;
         }
 
@@ -135,13 +151,15 @@ public final class FetchGroup<P> {
             String childForeignKeyColumn,
             Function<P, Object> parentIdExtractor,
             BiConsumer<P, List<C>> setter,
-            boolean single
+            boolean single,
+            Sort orderBy
     ) {
         public FetchSpec {
             Objects.requireNonNull(childType, "childType must not be null");
             Objects.requireNonNull(childForeignKeyColumn, "childForeignKeyColumn must not be null");
             Objects.requireNonNull(parentIdExtractor, "parentIdExtractor must not be null");
             Objects.requireNonNull(setter, "setter must not be null");
+            // orderBy는 선택값(null 허용)
         }
     }
 }

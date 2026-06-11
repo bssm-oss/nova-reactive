@@ -12,6 +12,7 @@ import io.nova.support.fixtures.FixtureEntities.ColumnTypedEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
 import io.nova.support.fixtures.FixtureEntities.SchemaQualifiedEntity;
+import io.nova.support.fixtures.FixtureEntities.LobEntity;
 import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.JsonAccount;
@@ -158,6 +159,14 @@ class AbstractSchemaGeneratorTest {
         String sql = dialect.schemaGenerator().createTable(factory.getEntityMetadata(ColumnDefinitionEntity.class));
         // columnDefinition="text"이 dialect 유도 타입(varchar(255)) 대신 그대로 쓰인다.
         assertTrue(sql.contains("note text"), sql);
+    }
+
+    @Test
+    void rendersLobColumnTypes() {
+        String sql = dialect.schemaGenerator().createTable(factory.getEntityMetadata(LobEntity.class));
+        // 기본 dialect lobType: 문자 LOB=clob, 바이너리 LOB=blob.
+        assertTrue(sql.contains("content clob"), sql);
+        assertTrue(sql.contains("data blob"), sql);
     }
 
     @Test

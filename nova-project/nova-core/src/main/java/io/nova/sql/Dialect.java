@@ -61,6 +61,24 @@ public interface Dialect {
     String TABLE_NAME_COLUMN = "nova_table_name";
 
     /**
+     * 주어진 테이블의 컬럼 이름들을 한 컬럼으로 나열하는 SELECT 구문을 반환한다.
+     * {@code nova.ddl-auto=validate}가 컬럼 누락까지 검증할 때 사용한다. 기본 구현은 표준
+     * {@code information_schema.columns}를 조회하며, Oracle처럼 information_schema가 없는 dialect는
+     * override한다. 테이블 이름 비교는 {@code upper(...)}로 case를 흡수한다.
+     *
+     * <p>구문은 단일 컬럼을 {@link #COLUMN_NAME_COLUMN} alias로 노출해야 한다.
+     */
+    default String listColumnsSql(String tableName) {
+        return "select column_name as " + COLUMN_NAME_COLUMN
+                + " from information_schema.columns where upper(table_name) = upper('" + tableName + "')";
+    }
+
+    /**
+     * {@link #listColumnsSql(String)} 결과의 컬럼 이름 컬럼 alias.
+     */
+    String COLUMN_NAME_COLUMN = "nova_column_name";
+
+    /**
      * 값이 {@code null}인 binding에 대해 R2DBC {@code Statement.bindNull(index, type)}으로 전달할
      * Java 타입을 반환한다. 기본값은 {@link Object} 클래스다 — driver가 type-agnostic null encoding을
      * 지원하면 이 기본값으로 충분하다.
@@ -97,6 +115,16 @@ public interface Dialect {
      */
     default String jsonColumnType() {
         return "json";
+    }
+
+    /**
+     * {@code @Lob}으로 표시된 컬럼에 사용할 SQL 타입을 반환한다. {@code binary}가 {@code true}이면
+     * 바이너리 LOB({@code byte[]} 필드), {@code false}이면 문자 LOB({@code String} 필드)다. 기본값은
+     * 표준 {@code blob}/{@code clob}이며, PostgreSQL({@code bytea}/{@code text})이나
+     * MySQL({@code longblob}/{@code longtext})처럼 다른 dialect는 override 한다.
+     */
+    default String lobType(boolean binary) {
+        return binary ? "blob" : "clob";
     }
 
     /**

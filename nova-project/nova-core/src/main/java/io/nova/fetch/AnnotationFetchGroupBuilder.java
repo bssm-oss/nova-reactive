@@ -3,8 +3,12 @@ package io.nova.fetch;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
+import io.nova.query.Sort;
+import jakarta.persistence.OrderBy;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -55,7 +59,8 @@ public final class AnnotationFetchGroupBuilder {
                     (Class<Object>) childType,
                     fkColumn,
                     parentIdExtractor,
-                    setter
+                    setter,
+                    resolveOrderBy(oneToMany.field(), childType)
             );
         }
         // @ManyToOne — child 측 PK column으로 IN-query를 발행한다. parent에서 FK 값을 꺼내 IN 키로 사용.
@@ -79,6 +84,31 @@ public final class AnnotationFetchGroupBuilder {
             );
         }
         return builder.build();
+    }
+
+    /**
+     * {@code @OneToMany} 필드의 {@code @OrderBy}를 child 정렬 {@link Sort}로 변환한다. 애너테이션이 없으면
+     * {@code null}(정렬 없음). 값이 비어 있으면 JPA 규약대로 child PK 오름차순. 그 외에는 {@code "prop ASC,
+     * prop2 DESC"} 형식을 파싱한다 — 프로퍼티 이름은 child 엔티티 기준이며 SQL 렌더링 단계에서 컬럼으로 매핑된다.
+     */
+    private Sort resolveOrderBy(Field oneToManyField, Class<?> childType) {
+        OrderBy orderBy = oneToManyField.getAnnotation(OrderBy.class);
+        if (orderBy == null) {
+            return null;
+        }
+        String value = orderBy.value().trim();
+        if (value.isEmpty()) {
+            String childId = metadataFactory.getEntityMetadata(childType).idProperty().propertyName();
+            return Sort.by(Sort.Order.asc(childId));
+        }
+        List<Sort.Order> orders = new ArrayList<>();
+        for (String part : value.split(",")) {
+            String[] tokens = part.trim().split("\\s+");
+            String property = tokens[0];
+            boolean descending = tokens.length > 1 && tokens[1].equalsIgnoreCase("DESC");
+            orders.add(descending ? Sort.Order.desc(property) : Sort.Order.asc(property));
+        }
+        return Sort.by(orders.toArray(new Sort.Order[0]));
     }
 
     /**

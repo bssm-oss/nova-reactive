@@ -17,7 +17,8 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@Id`             | Identifier field. Exactly one is required per entity.                                     |
 | `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. |
 | `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). |
-| `@Column`         | Column name, `nullable`, `length` / `precision` / `scale`, and other mapping metadata.    |
+| `@Column`         | Column name, `nullable`, `length` / `precision` / `scale`, `insertable` / `updatable` / `unique` / `columnDefinition`. |
+| `@Lob`            | Maps the column to the dialect LOB type — character LOB (`clob` / `text` / `longtext`) for `String`, binary LOB (`blob` / `bytea` / `longblob`) for `byte[]`. |
 | `@CreatedAt`      | Auto-populates the field with the current time on insert (`Instant` / `LocalDateTime` / `OffsetDateTime`). Preserves a value the user pre-sets. |
 | `@UpdatedAt`      | Overwritten with the current time on insert, update, partial update, and Updater paths.   |
 | `@SoftDelete`     | Rewrites DELETE as `UPDATE deleted_at = now`. Every SELECT path automatically gets a `WHERE deleted_at IS NULL` guard. |
@@ -37,6 +38,8 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
+| `@OrderBy`        | On `@OneToMany`, orders hydrated children. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY` to the child query; an empty `@OrderBy` sorts by the child's `@Id` ascending. |
+| `@AttributeOverride` | On an `@Embedded` field, overrides a sub-property's column name with an absolute name (e.g. `@AttributeOverride(name = "city", column = @Column(name = "ship_city"))`). |
 | `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
 | `@Enumerated`     | Enum column mapping. `EnumType.ORDINAL` (default) or `EnumType.STRING`.                    |
 | `@Json`           | JSON column mapping. Requires a `JsonCodec` SPI. Maps to `jsonb` on PostgreSQL, `clob` on Oracle, and `text` elsewhere. |

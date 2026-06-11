@@ -721,7 +721,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     spec.childType(),
                     spec.childForeignKeyColumn(),
                     spec.parentIdExtractor(),
-                    spec.setter()
+                    spec.setter(),
+                    spec.orderBy()
             );
         }
     }
@@ -760,6 +761,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         EntityMetadata<C> childMetadata = metadataFactory.getEntityMetadata(spec.childType());
         PersistentProperty fkProperty = findPropertyByColumnName(childMetadata, spec.childForeignKeyColumn());
         QuerySpec querySpec = QuerySpec.empty().where(Criteria.in(fkProperty.propertyName(), new ArrayList<>(parentIds)));
+        if (spec.orderBy() != null) {
+            // @OneToMany(@OrderBy)로 지정된 child 정렬을 IN-query에 적용한다.
+            querySpec = querySpec.orderBy(spec.orderBy());
+        }
         // child fetch는 내부 경로로만 수행해 cyclical 관계가 무한 재귀를 일으키지 않게 한다.
         // 호출자가 child entity의 추가 관계까지 자동으로 hydrate되길 원하면 명시적 FetchGroup을 별도로 추가해야 한다.
         return findAllInternal(childMetadata, querySpec)

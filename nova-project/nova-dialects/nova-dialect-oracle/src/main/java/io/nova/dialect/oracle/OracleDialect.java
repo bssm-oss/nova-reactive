@@ -74,6 +74,12 @@ public final class OracleDialect implements Dialect {
         return "select table_name as " + Dialect.TABLE_NAME_COLUMN + " from user_tables";
     }
 
+    @Override
+    public String listColumnsSql(String tableName) {
+        return "select column_name as " + Dialect.COLUMN_NAME_COLUMN
+                + " from user_tab_columns where upper(table_name) = upper('" + tableName + "')";
+    }
+
     /**
      * {@code @Json} 컬럼에 사용할 SQL 타입을 반환한다. Oracle 21c+는 native {@code JSON} 타입을
      * 지원하지만 그 이전 버전(12c~19c)은 없으므로, 광범위 호환을 위해 JSON 문자열을 길이 제한 없는
@@ -179,6 +185,9 @@ public final class OracleDialect implements Dialect {
             }
             if (property.enumerated()) {
                 return property.enumType() == EnumType.STRING ? "varchar2(255)" : "number(10)";
+            }
+            if (property.lob()) {
+                return dialect().lobType(property.javaType() == byte[].class);
             }
             Class<?> type = property.javaType();
             if (type == String.class) {

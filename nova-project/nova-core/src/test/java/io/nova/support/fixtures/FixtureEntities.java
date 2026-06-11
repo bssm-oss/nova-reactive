@@ -15,6 +15,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.Lob;
 import io.nova.annotation.Json;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MappedSuperclass;
@@ -2077,6 +2078,24 @@ public final class FixtureEntities {
 
         public String getEmail() {
             return email;
+        }
+    }
+
+    @Entity
+    @Table(name = "lob_docs")
+    public static class LobEntity {
+        @Id
+        private Long id;
+
+        @Lob
+        @Column(name = "content")
+        private String content;
+
+        @Lob
+        @Column(name = "data")
+        private byte[] data;
+
+        public LobEntity() {
         }
     }
 

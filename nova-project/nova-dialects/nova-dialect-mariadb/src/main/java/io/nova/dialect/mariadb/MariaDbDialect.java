@@ -24,6 +24,11 @@ public final class MariaDbDialect implements Dialect {
     }
 
     @Override
+    public String lobType(boolean binary) {
+        return binary ? "longblob" : "longtext";
+    }
+
+    @Override
     public String quote(String identifier) {
         return "`" + identifier + "`";
     }

@@ -14,6 +14,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.Lob;
 import io.nova.annotation.Json;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MappedSuperclass;
@@ -789,6 +790,7 @@ public final class EntityMetadataFactory {
         boolean updatable = column == null || column.updatable();
         boolean unique = column != null && column.unique();
         String columnDefinition = column == null ? "" : column.columnDefinition();
+        boolean lob = field.isAnnotationPresent(Lob.class);
         return new PersistentProperty(
                 field,
                 propertyName,
@@ -820,7 +822,8 @@ public final class EntityMetadataFactory {
                 insertable,
                 updatable,
                 unique,
-                columnDefinition
+                columnDefinition,
+                lob
         );
     }
 
@@ -924,7 +927,8 @@ public final class EntityMetadataFactory {
                 true,
                 true,
                 false,
-                ""
+                "",
+                false
         );
     }
 
@@ -995,7 +999,8 @@ public final class EntityMetadataFactory {
                 fkInsertable,
                 fkUpdatable,
                 fkUnique,
-                fkColumnDefinition
+                fkColumnDefinition,
+                false
         );
     }
 
