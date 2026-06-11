@@ -29,7 +29,9 @@ import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumWithConverterEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnInsertableFalseEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnUpdatableFalseEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
+import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
 import io.nova.support.fixtures.FixtureEntities.GeneratedValueTableEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneCascadeEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneLazyEntity;
@@ -1084,21 +1086,36 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void rejectsColumnInsertableFalse() {
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(ColumnInsertableFalseEntity.class)
-        );
-        assertTrue(exception.getMessage().contains("@Column(insertable=false)"));
+    void honorsColumnInsertableFalse() {
+        EntityMetadata<ColumnInsertableFalseEntity> metadata =
+                factory.getEntityMetadata(ColumnInsertableFalseEntity.class);
+
+        // insertable=false 컬럼은 INSERT 바인딩에서 빠지지만 UPDATE에는 남는다.
+        assertTrue(metadata.insertableProperties().stream().noneMatch(p -> p.propertyName().equals("name")));
+        assertTrue(metadata.updatableProperties().stream().anyMatch(p -> p.propertyName().equals("name")));
     }
 
     @Test
-    void rejectsColumnUnique() {
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(ColumnUniqueEntity.class)
-        );
-        assertTrue(exception.getMessage().contains("@Column(unique=true)"));
+    void honorsColumnUpdatableFalse() {
+        EntityMetadata<ColumnUpdatableFalseEntity> metadata =
+                factory.getEntityMetadata(ColumnUpdatableFalseEntity.class);
+
+        assertTrue(metadata.updatableProperties().stream().noneMatch(p -> p.propertyName().equals("name")));
+        assertTrue(metadata.insertableProperties().stream().anyMatch(p -> p.propertyName().equals("name")));
+    }
+
+    @Test
+    void honorsColumnUnique() {
+        EntityMetadata<ColumnUniqueEntity> metadata = factory.getEntityMetadata(ColumnUniqueEntity.class);
+
+        assertTrue(metadata.findProperty("email").orElseThrow().unique());
+    }
+
+    @Test
+    void honorsColumnDefinition() {
+        EntityMetadata<ColumnDefinitionEntity> metadata = factory.getEntityMetadata(ColumnDefinitionEntity.class);
+
+        assertEquals("text", metadata.findProperty("note").orElseThrow().columnDefinition());
     }
 
     @Test

@@ -41,6 +41,10 @@ public final class PersistentProperty {
     private final boolean oneToMany;
     private final Class<?> oneToManyTargetType;
     private final String oneToManyMappedBy;
+    private final boolean insertable;
+    private final boolean updatable;
+    private final boolean unique;
+    private final String columnDefinition;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -70,7 +74,11 @@ public final class PersistentProperty {
             boolean manyToOneNullable,
             boolean oneToMany,
             Class<?> oneToManyTargetType,
-            String oneToManyMappedBy
+            String oneToManyMappedBy,
+            boolean insertable,
+            boolean updatable,
+            boolean unique,
+            String columnDefinition
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -103,6 +111,39 @@ public final class PersistentProperty {
         this.oneToMany = oneToMany;
         this.oneToManyTargetType = oneToManyTargetType;
         this.oneToManyMappedBy = oneToManyMappedBy == null ? "" : oneToManyMappedBy;
+        this.insertable = insertable;
+        this.updatable = updatable;
+        this.unique = unique;
+        this.columnDefinition = columnDefinition == null ? "" : columnDefinition;
+    }
+
+    /**
+     * INSERT 절에 이 컬럼을 바인딩할지 여부. {@code @Column(insertable=false)}이면 {@code false}.
+     */
+    public boolean insertable() {
+        return insertable;
+    }
+
+    /**
+     * UPDATE 절에 이 컬럼을 바인딩할지 여부. {@code @Column(updatable=false)}이면 {@code false}.
+     */
+    public boolean updatable() {
+        return updatable;
+    }
+
+    /**
+     * 컬럼에 UNIQUE 제약을 둘지 여부. {@code @Column(unique=true)}이면 {@code true}.
+     */
+    public boolean unique() {
+        return unique;
+    }
+
+    /**
+     * {@code @Column(columnDefinition=...)}로 지정된 raw 컬럼 DDL 조각. 비어 있으면 dialect가
+     * 필드 타입에서 컬럼 타입을 유도한다.
+     */
+    public String columnDefinition() {
+        return columnDefinition;
     }
 
     public Field field() {

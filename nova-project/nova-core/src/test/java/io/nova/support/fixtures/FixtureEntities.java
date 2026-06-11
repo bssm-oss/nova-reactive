@@ -1976,6 +1976,30 @@ public final class FixtureEntities {
     }
 
     @Entity
+    public static class ColumnUpdatableFalseEntity {
+        @Id
+        private Long id;
+
+        @Column(updatable = false)
+        private String name;
+
+        public ColumnUpdatableFalseEntity() {
+        }
+    }
+
+    @Entity
+    public static class ColumnDefinitionEntity {
+        @Id
+        private Long id;
+
+        @Column(columnDefinition = "text")
+        private String note;
+
+        public ColumnDefinitionEntity() {
+        }
+    }
+
+    @Entity
     public static class GeneratedValueTableEntity {
         @Id
         @GeneratedValue(strategy = GenerationType.TABLE)

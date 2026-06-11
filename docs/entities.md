@@ -168,19 +168,28 @@ Emit the DDL with `createIndexes(...)` — see [Dialects & Schema](dialects.md).
 
 ---
 
+## `@Column` attributes
+
+Nova honors the column attributes that have a clear non-blocking meaning:
+
+| Attribute | Behavior |
+|-----------|----------|
+| `name`, `nullable`, `length`, `precision`, `scale` | Mapping + DDL as in JPA. |
+| `insertable = false` | Column is excluded from generated `INSERT` statements. |
+| `updatable = false` | Column is excluded from generated `UPDATE` statements. |
+| `unique = true` | Emits an inline `UNIQUE` constraint in the column DDL. |
+| `columnDefinition = "..."` | Used verbatim as the column's type in `CREATE TABLE`, replacing the dialect-derived type. |
+
 ## Unsupported JPA attributes
 
-Nova reuses the JPA annotations but is a non-blocking, persistence-context-free ORM, so a few JPA attributes cannot be honored. Rather than silently ignoring them (a debugging trap), Nova **rejects them fail-fast** when entity metadata is first built:
+Nova reuses the JPA annotations but is a non-blocking, persistence-context-free ORM, so a few attributes cannot be honored. Rather than silently ignoring them (a debugging trap), Nova **rejects them fail-fast** when entity metadata is first built:
 
 | Annotation / attribute | Why rejected |
 |------------------------|--------------|
 | `@ManyToOne(fetch = LAZY)` | No lazy proxy. Relations are fetched eagerly with a single IN-query, or explicitly via `FetchGroup`. The JPA default `EAGER` is honored. |
 | `@ManyToOne(cascade = ...)` / `@OneToMany(cascade = ...)` | No persistence-context graph; persist related entities explicitly with `save` / `saveAll`. |
 | `@OneToMany(orphanRemoval = true)` | No dirty-tracking; delete children explicitly. |
-| `@Column(insertable = false)` / `@Column(updatable = false)` | Nova always binds the column on insert/update. |
-| `@Column(unique = true)` | Use `@Table(uniqueConstraints = ...)` instead. |
 | `@Column(table = ...)` | Secondary tables are not supported. |
-| `@Column(columnDefinition = ...)` | Column DDL is derived from the field type by the dialect. |
 | `@GeneratedValue(strategy = TABLE)` | Use `IDENTITY`, `SEQUENCE`, `UUID`, or `AUTO`. |
 
 `@OneToMany`'s default `fetch = LAZY` is the one exception: it is treated as eager (Nova's only mode) rather than rejected, since rejecting the default would reject every collection.

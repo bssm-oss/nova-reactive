@@ -116,18 +116,23 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      * 매핑된 프로퍼티에 대해 primary key, nullability를 포함한 컬럼 정의를 만든다.
      */
     protected String columnDefinition(PersistentProperty property) {
+        if (property.generated() && property.generationType() == GenerationType.IDENTITY) {
+            return identityColumn(property);
+        }
+        // @Column(columnDefinition=...)이 지정되면 dialect가 유도한 타입 대신 raw DDL 조각을 그대로 쓴다.
+        String type = property.columnDefinition().isBlank() ? sqlType(property) : property.columnDefinition();
         StringBuilder builder = new StringBuilder()
                 .append(dialect.quote(property.columnName()))
                 .append(' ')
-                .append(sqlType(property));
+                .append(type);
         if (property.id()) {
             builder.append(" primary key");
         }
         if (!property.nullable()) {
             builder.append(" not null");
         }
-        if (property.generated() && property.generationType() == GenerationType.IDENTITY) {
-            builder = new StringBuilder(identityColumn(property));
+        if (property.unique() && !property.id()) {
+            builder.append(" unique");
         }
         return builder.toString();
     }

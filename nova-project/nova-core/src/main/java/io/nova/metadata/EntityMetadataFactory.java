@@ -346,27 +346,15 @@ public final class EntityMetadataFactory {
 
     /**
      * jakarta.persistence.Column 중 Nova가 honor하지 않는 속성이 설정되면 metadata 빌드 시점에
-     * 명확히 거부한다 ("조용히 무시되는 거짓말 매핑" 방지). Nova가 지원하는 속성은
-     * name / nullable / length / precision / scale 뿐이다.
+     * 명확히 거부한다 ("조용히 무시되는 거짓말 매핑" 방지). name / nullable / length / precision /
+     * scale / insertable / updatable / unique / columnDefinition은 honor한다. secondary table 매핑만
+     * 지원하지 않는다.
      */
     private static void rejectUnsupportedColumnAttributes(Class<?> declaringType, Field field, Column column) {
-        String where = declaringType.getName() + "." + field.getName();
-        if (!column.insertable()) {
-            throw new IllegalArgumentException(where + " @Column(insertable=false) is not supported");
-        }
-        if (!column.updatable()) {
-            throw new IllegalArgumentException(where + " @Column(updatable=false) is not supported");
-        }
-        if (column.unique()) {
-            throw new IllegalArgumentException(
-                    where + " @Column(unique=true) is not supported; declare it in @Table(uniqueConstraints=...)");
-        }
         if (!column.table().isBlank()) {
-            throw new IllegalArgumentException(where + " @Column(table=...) (secondary tables) is not supported");
-        }
-        if (!column.columnDefinition().isBlank()) {
             throw new IllegalArgumentException(
-                    where + " @Column(columnDefinition=...) is not supported; Nova derives column DDL from the field type");
+                    declaringType.getName() + "." + field.getName()
+                            + " @Column(table=...) (secondary tables) is not supported");
         }
     }
 
@@ -716,6 +704,10 @@ public final class EntityMetadataFactory {
         int length = column != null ? column.length() : 255;
         int precision = column != null ? column.precision() : 0;
         int scale = column != null ? column.scale() : 0;
+        boolean insertable = column == null || column.insertable();
+        boolean updatable = column == null || column.updatable();
+        boolean unique = column != null && column.unique();
+        String columnDefinition = column == null ? "" : column.columnDefinition();
         return new PersistentProperty(
                 field,
                 propertyName,
@@ -743,7 +735,11 @@ public final class EntityMetadataFactory {
                 true,
                 false,
                 null,
-                ""
+                "",
+                insertable,
+                updatable,
+                unique,
+                columnDefinition
         );
     }
 
@@ -843,7 +839,11 @@ public final class EntityMetadataFactory {
                 true,
                 true,
                 targetType,
-                mappedBy
+                mappedBy,
+                true,
+                true,
+                false,
+                ""
         );
     }
 
@@ -906,6 +906,10 @@ public final class EntityMetadataFactory {
                 nullable,
                 false,
                 null,
+                "",
+                true,
+                true,
+                false,
                 ""
         );
     }

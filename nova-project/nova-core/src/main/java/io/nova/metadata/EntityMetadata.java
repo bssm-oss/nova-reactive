@@ -155,6 +155,7 @@ public final class EntityMetadata<T> {
     public List<PersistentProperty> insertableProperties() {
         return columnMappedProperties.stream()
                 .filter(property -> !property.id() || !isDatabaseGeneratedId(property))
+                .filter(PersistentProperty::insertable)
                 .toList();
     }
 
@@ -177,6 +178,7 @@ public final class EntityMetadata<T> {
     public List<PersistentProperty> updatableProperties() {
         return columnMappedProperties.stream()
                 .filter(property -> !property.id())
+                .filter(PersistentProperty::updatable)
                 .toList();
     }
 
