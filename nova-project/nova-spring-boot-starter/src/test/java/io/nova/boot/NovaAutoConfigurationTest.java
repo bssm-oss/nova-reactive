@@ -95,12 +95,11 @@ class NovaAutoConfigurationTest {
     }
 
     @Test
-    void ddlAutoValidateFailsFastWithClearMessage() {
-        // validate는 binding은 되지만 introspection 미지원이라 startup에서 명확히 실패해야 한다.
+    void registersSchemaBootstrapRunnerWhenDdlAutoIsValidate() {
+        // validate도 binding되어 runner가 등록된다. 실제 검증(테이블 존재)은 통합 테스트에서 다룬다.
         runner.withPropertyValues("nova.ddl-auto=validate").run(context -> {
-            assertNotNull(context.getStartupFailure(), "validate must fail startup");
-            assertTrue(context.getStartupFailure().getMessage() != null
-                            || context.getStartupFailure().getCause() != null);
+            assertTrue(context.containsBean("novaSchemaBootstrapRunner"));
+            assertNotNull(context.getBean(SchemaBootstrapRunner.class));
         });
     }
 

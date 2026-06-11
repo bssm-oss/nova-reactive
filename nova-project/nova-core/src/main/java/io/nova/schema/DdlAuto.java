@@ -11,10 +11,10 @@ public enum DdlAuto {
     NONE,
 
     /**
-     * Validate that the schema matches the entities. Not yet supported — it requires
-     * querying the live database catalog, which Nova does not do today. Selecting it
-     * fails fast at startup with a clear message rather than silently doing nothing;
-     * use a migration tool (Flyway, Liquibase) for validation.
+     * Validate that a table exists in the database for every entity, failing startup
+     * with the list of missing tables otherwise. This is a table-existence check only
+     * (via the dialect's catalog query) — it does not compare columns or types. For
+     * full schema validation use a migration tool such as Flyway or Liquibase.
      */
     VALIDATE,
 

@@ -23,8 +23,8 @@ public class NovaProperties {
      * {@link DdlAuto#NONE} so the starter never touches an unsuspecting
      * database. {@code NONE}, {@code UPDATE} (create missing tables),
      * {@code CREATE} and {@code CREATE_DROP} (drop + recreate) are executed;
-     * {@code VALIDATE} binds but fails fast at startup because Nova does not
-     * introspect the live database catalog.
+     * {@code VALIDATE} checks that a table exists for every entity (via the
+     * dialect catalog query) and fails startup with any missing ones.
      */
     private DdlAuto ddlAuto = DdlAuto.NONE;
 

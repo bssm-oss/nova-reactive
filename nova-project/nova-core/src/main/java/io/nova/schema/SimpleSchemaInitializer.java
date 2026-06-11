@@ -138,6 +138,33 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                         .then());
     }
 
+    @Override
+    public Mono<Void> validate(Iterable<Class<?>> entityTypes) {
+        Objects.requireNonNull(entityTypes, "entityTypes must not be null");
+        List<Class<?>> ordered = copyOf(entityTypes);
+        return operations.queryNative(
+                        NativeQuery.of(dialect.listTablesSql()),
+                        row -> row.get(Dialect.TABLE_NAME_COLUMN, String.class))
+                // case-insensitive set so dialect identifier case-folding does not cause false negatives.
+                .collect(() -> new java.util.TreeSet<String>(String.CASE_INSENSITIVE_ORDER),
+                        java.util.TreeSet::add)
+                .flatMap(existing -> {
+                    List<String> missing = new ArrayList<>();
+                    for (Class<?> type : ordered) {
+                        String table = metadataFactory.getEntityMetadata(type).tableName();
+                        if (!existing.contains(table)) {
+                            missing.add(table);
+                        }
+                    }
+                    if (missing.isEmpty()) {
+                        return Mono.empty();
+                    }
+                    return Mono.error(new IllegalStateException(
+                            "Schema validation failed (nova.ddl-auto=validate) — missing tables: " + missing));
+                })
+                .then();
+    }
+
     private Mono<Void> createOne(Class<?> entityType, SchemaOptions options) {
         EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(entityType);
         SchemaGenerator generator = dialect.schemaGenerator();

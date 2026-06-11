@@ -55,4 +55,13 @@ public interface SchemaInitializer {
     Mono<Void> recreate(Class<?>... entityTypes);
 
     Mono<Void> recreate(Iterable<Class<?>> entityTypes);
+
+    /**
+     * Verifies that a table exists in the database for every given entity. Completes
+     * empty when all are present, or errors with the list of missing tables. Table
+     * names are compared case-insensitively so dialect identifier case-folding does
+     * not cause false negatives. This is a table-existence check only — it does not
+     * compare columns or types.
+     */
+    Mono<Void> validate(Iterable<Class<?>> entityTypes);
 }
