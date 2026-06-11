@@ -1,5 +1,6 @@
 package io.nova.support.fixtures;
 
+import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
@@ -1294,6 +1295,21 @@ public final class FixtureEntities {
 
         public String getZip() {
             return zip;
+        }
+    }
+
+    @Entity
+    @Table(name = "overridden_address")
+    public static class OverriddenAddressEntity {
+        @Id
+        private Long id;
+
+        // city는 ship_city로 재정의되고, street/zip은 기본 합성 규칙(shipping_*)을 그대로 따른다.
+        @Embedded
+        @AttributeOverride(name = "city", column = @Column(name = "ship_city"))
+        private Address shipping;
+
+        public OverriddenAddressEntity() {
         }
     }
 

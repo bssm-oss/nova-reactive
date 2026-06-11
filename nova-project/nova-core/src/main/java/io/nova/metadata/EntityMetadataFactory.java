@@ -1,5 +1,6 @@
 package io.nova.metadata;
 
+import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
 import jakarta.persistence.Embeddable;
@@ -506,6 +507,12 @@ public final class EntityMetadataFactory {
         hostPath.addAll(parentHostPath);
         hostPath.add(hostField);
         List<Field> immutableHostPath = List.copyOf(hostPath);
+        // @AttributeOverride(name="city", column=@Column(name="ship_city")) — 이 @Embedded 호스트 필드에
+        // 선언된 override를 immediate sub-property 이름 기준으로 모은다. 컬럼 name만 적용한다.
+        Map<String, String> columnOverrides = new java.util.HashMap<>();
+        for (AttributeOverride override : hostField.getAnnotationsByType(AttributeOverride.class)) {
+            columnOverrides.put(override.name(), override.column().name());
+        }
         List<PersistentProperty> result = new ArrayList<>();
         embeddableStack.add(embeddableType);
         try {
@@ -521,7 +528,9 @@ public final class EntityMetadataFactory {
                     result.addAll(nested);
                     continue;
                 }
-                PersistentProperty property = createProperty(embeddableType, subField, immutableHostPath, columnPrefix);
+                PersistentProperty property = createProperty(
+                        embeddableType, subField, immutableHostPath, columnPrefix,
+                        columnOverrides.get(subField.getName()));
                 result.add(property);
             }
         } finally {
@@ -621,6 +630,20 @@ public final class EntityMetadataFactory {
             List<Field> hostPath,
             String columnPrefix
     ) {
+        return createProperty(declaringType, field, hostPath, columnPrefix, null);
+    }
+
+    /**
+     * {@code columnNameOverride}가 비어있지 않으면 prefix/naming을 무시하고 그 이름을 컬럼 이름으로 쓴다.
+     * {@code @Embedded} 호스트 필드의 {@code @AttributeOverride}가 sub-property 컬럼명을 재정의할 때 사용된다.
+     */
+    private PersistentProperty createProperty(
+            Class<?> declaringType,
+            Field field,
+            List<Field> hostPath,
+            String columnPrefix,
+            String columnNameOverride
+    ) {
         Column column = field.getAnnotation(Column.class);
         if (column != null) {
             rejectUnsupportedColumnAttributes(declaringType, field, column);
@@ -703,7 +726,9 @@ public final class EntityMetadataFactory {
         String baseColumnName = column != null && !column.name().isBlank()
                 ? column.name()
                 : namingStrategy.columnName(field.getName());
-        String columnName = columnPrefix + baseColumnName;
+        String columnName = columnNameOverride != null && !columnNameOverride.isBlank()
+                ? columnNameOverride
+                : columnPrefix + baseColumnName;
         String propertyName;
         if (hostPath == null || hostPath.isEmpty()) {
             propertyName = field.getName();
