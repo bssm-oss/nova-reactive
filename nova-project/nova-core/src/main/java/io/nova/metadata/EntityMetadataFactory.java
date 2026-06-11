@@ -15,6 +15,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import io.nova.annotation.Json;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.PostLoad;
 import jakarta.persistence.PostPersist;
@@ -23,6 +24,7 @@ import jakarta.persistence.PostUpdate;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Transient;
 import io.nova.annotation.SoftDelete;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
@@ -135,8 +137,8 @@ public final class EntityMetadataFactory {
         PersistentProperty updatedAtProperty = null;
         PersistentProperty softDeleteProperty = null;
         PersistentProperty versionProperty = null;
-        for (Field field : entityType.getDeclaredFields()) {
-            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
+        for (Field field : mappedFields(entityType)) {
+            if (isNotPersistable(field)) {
                 continue;
             }
             rejectIncompatibleRelationAnnotations(entityType, field);
@@ -350,6 +352,36 @@ public final class EntityMetadataFactory {
      * scale / insertable / updatable / unique / columnDefinition은 honor한다. secondary table 매핑만
      * 지원하지 않는다.
      */
+    /**
+     * 엔티티 자신의 필드와, 연속된 {@link MappedSuperclass} 조상들의 필드를 함께 반환한다. 상위
+     * {@code @MappedSuperclass}(예: id/audit를 가진 BaseEntity)의 필드가 먼저 오도록 정렬한다.
+     */
+    private static List<Field> mappedFields(Class<?> entityType) {
+        List<Class<?>> chain = new ArrayList<>();
+        chain.add(entityType);
+        Class<?> ancestor = entityType.getSuperclass();
+        while (ancestor != null && ancestor.isAnnotationPresent(MappedSuperclass.class)) {
+            chain.add(ancestor);
+            ancestor = ancestor.getSuperclass();
+        }
+        List<Field> fields = new ArrayList<>();
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            fields.addAll(Arrays.asList(chain.get(i).getDeclaredFields()));
+        }
+        return fields;
+    }
+
+    /**
+     * 영속 대상이 아닌 필드인지 판정한다. synthetic / static / Java {@code transient} 키워드뿐 아니라
+     * JPA {@link Transient} 애너테이션이 붙은 필드도 매핑에서 제외한다.
+     */
+    private static boolean isNotPersistable(Field field) {
+        return field.isSynthetic()
+                || Modifier.isStatic(field.getModifiers())
+                || Modifier.isTransient(field.getModifiers())
+                || field.isAnnotationPresent(Transient.class);
+    }
+
     private static void rejectUnsupportedColumnAttributes(Class<?> declaringType, Field field, Column column) {
         if (!column.table().isBlank()) {
             throw new IllegalArgumentException(
@@ -458,7 +490,7 @@ public final class EntityMetadataFactory {
         embeddableStack.add(embeddableType);
         try {
             for (Field subField : embeddableType.getDeclaredFields()) {
-                if (subField.isSynthetic() || Modifier.isStatic(subField.getModifiers())) {
+                if (isNotPersistable(subField)) {
                     continue;
                 }
                 rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
@@ -489,7 +521,7 @@ public final class EntityMetadataFactory {
 
     private static boolean hasIdAnnotatedField(Class<?> embeddableType) {
         for (Field field : embeddableType.getDeclaredFields()) {
-            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
+            if (isNotPersistable(field)) {
                 continue;
             }
             if (field.isAnnotationPresent(Id.class)) {

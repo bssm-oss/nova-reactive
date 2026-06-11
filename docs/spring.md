@@ -28,19 +28,23 @@ Activated when both `ConnectionFactory` and `Dialect` beans are present in the c
 | `novaPoolConfig`              | `PoolConfig`                        | Always exposed; unspecified fields fall back to `PoolConfig.defaults()`  |
 | `novaSlowQueryLoggingListener`| `SlowQueryLoggingListener`          | Registered only when `nova.slow-query.threshold-ms` is set               |
 | `novaSchemaInitializer`       | `SchemaInitializer`                 | Always exposed — call `schemaInitializer.create(MyEntity.class)` from anywhere |
-| `novaSchemaBootstrapRunner*`  | `SchemaBootstrapRunner`             | Registered only when `nova.ddl-auto` is `create` or `create-drop`        |
+| `novaSchemaBootstrapRunner*`  | `SchemaBootstrapRunner`             | Registered when `nova.ddl-auto` is `update`, `create`, `create-drop`, or `validate` |
 
 Add a `SqlExecutionListener` bean (e.g. `MicrometerSqlExecutionListener`) to the context and it is automatically composed into the executor.
 
 ### Schema bootstrap (`nova.ddl-auto`)
 
-The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto` for projects that want a one-line schema bootstrap during integration tests or demos. When the property is set to `create` or `create-drop`, a `SchemaBootstrapRunner` is registered that:
+The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set binds. A `SchemaBootstrapRunner` runs during context refresh via `InitializingBean#afterPropertiesSet()` (so the schema is ready before any other refresh-time bean queries it) and scans the configured packages for `@jakarta.persistence.Entity` classes.
 
-1. Scans the configured packages for `@jakarta.persistence.Entity` classes.
-2. Issues `CREATE TABLE IF NOT EXISTS` (plus indexes) during context refresh via `InitializingBean#afterPropertiesSet()` so the schema is ready before any other refresh-time bean queries it.
-3. For `create-drop`, also issues `DROP TABLE IF EXISTS` in reverse order on context close via `DisposableBean#destroy()` — FK friendly.
+| `nova.ddl-auto` | Behavior |
+|-----------------|----------|
+| `none` (default) | Do nothing. |
+| `update` | `CREATE TABLE IF NOT EXISTS` (plus indexes) — creates missing tables only, never drops. Unlike Hibernate, Nova does not `ALTER` existing tables to add missing columns. |
+| `create` | Drop the tables (if any) and recreate them — destructive, matching Hibernate's `create`. |
+| `create-drop` | Like `create`, and also `DROP TABLE IF EXISTS` in reverse order on context close via `DisposableBean#destroy()` (FK-friendly). |
+| `validate` | Binds, but **fails fast at startup** with a clear message — Nova does not introspect the live catalog. Use a migration tool to validate. |
 
-Production deployments should keep the default of `none` and manage schema with a real migration tool such as Flyway or Liquibase. `update` and `validate` modes are intentionally not implemented yet — they require schema introspection that is on the Phase 2 roadmap.
+Production deployments should keep the default of `none` and manage schema with a real migration tool such as Flyway or Liquibase.
 
 ```yaml
 nova:

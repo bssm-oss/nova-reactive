@@ -16,6 +16,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import io.nova.annotation.Json;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.PostLoad;
 import jakarta.persistence.PostPersist;
@@ -26,6 +27,7 @@ import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
 import io.nova.annotation.SoftDelete;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.UniqueConstraint;
 import io.nova.annotation.UpdatedAt;
 import jakarta.persistence.Version;
@@ -2006,6 +2008,58 @@ public final class FixtureEntities {
         private Long id;
 
         public GeneratedValueTableEntity() {
+        }
+    }
+
+    @Entity
+    @Table(name = "transient_accounts")
+    public static class TransientFieldEntity {
+        @Id
+        private Long id;
+
+        @Column(name = "email")
+        private String email;
+
+        // JPA @Transient: 매핑에서 제외되어야 한다.
+        @Transient
+        private String cachedDisplay;
+
+        public TransientFieldEntity() {
+        }
+    }
+
+    /**
+     * {@code @MappedSuperclass} 상속 매핑 검증용. id/createdAt를 base에서 상속받고 email은 자신이 선언한다.
+     */
+    @MappedSuperclass
+    public abstract static class BaseAuditEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "created_at")
+        private Instant createdAt;
+
+        public Long getId() {
+            return id;
+        }
+
+        public Instant getCreatedAt() {
+            return createdAt;
+        }
+    }
+
+    @Entity
+    @Table(name = "mapped_sub")
+    public static class MappedSubEntity extends BaseAuditEntity {
+        @Column(name = "email")
+        private String email;
+
+        public MappedSubEntity() {
+        }
+
+        public String getEmail() {
+            return email;
         }
     }
 }

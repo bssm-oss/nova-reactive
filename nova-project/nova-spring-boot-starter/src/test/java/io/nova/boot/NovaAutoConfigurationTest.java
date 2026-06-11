@@ -87,6 +87,24 @@ class NovaAutoConfigurationTest {
     }
 
     @Test
+    void registersSchemaBootstrapRunnerWhenDdlAutoIsUpdate() {
+        runner.withPropertyValues("nova.ddl-auto=update").run(context -> {
+            assertTrue(context.containsBean("novaSchemaBootstrapRunner"));
+            assertNotNull(context.getBean(SchemaBootstrapRunner.class));
+        });
+    }
+
+    @Test
+    void ddlAutoValidateFailsFastWithClearMessage() {
+        // validate는 binding은 되지만 introspection 미지원이라 startup에서 명확히 실패해야 한다.
+        runner.withPropertyValues("nova.ddl-auto=validate").run(context -> {
+            assertNotNull(context.getStartupFailure(), "validate must fail startup");
+            assertTrue(context.getStartupFailure().getMessage() != null
+                            || context.getStartupFailure().getCause() != null);
+        });
+    }
+
+    @Test
     void autoDetectsDialectFromConnectionFactoryWhenNoDialectBeanProvided() {
         // ConnectionFactory만 제공하고 Dialect 빈은 일부러 제공하지 않는다.
         // 이 경우에도 컨텍스트가 기동하고, novaDialect 빈이 driver 메타데이터로 자동 감지돼야 한다.

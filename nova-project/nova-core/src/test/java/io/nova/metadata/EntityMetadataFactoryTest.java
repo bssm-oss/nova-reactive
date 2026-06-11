@@ -33,6 +33,8 @@ import io.nova.support.fixtures.FixtureEntities.ColumnUpdatableFalseEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
 import io.nova.support.fixtures.FixtureEntities.GeneratedValueTableEntity;
+import io.nova.support.fixtures.FixtureEntities.TransientFieldEntity;
+import io.nova.support.fixtures.FixtureEntities.MappedSubEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneCascadeEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneLazyEntity;
 import io.nova.support.fixtures.FixtureEntities.OneToManyOrphanRemovalEntity;
@@ -1116,6 +1118,25 @@ class EntityMetadataFactoryTest {
         EntityMetadata<ColumnDefinitionEntity> metadata = factory.getEntityMetadata(ColumnDefinitionEntity.class);
 
         assertEquals("text", metadata.findProperty("note").orElseThrow().columnDefinition());
+    }
+
+    @Test
+    void excludesTransientAnnotatedFields() {
+        EntityMetadata<TransientFieldEntity> metadata = factory.getEntityMetadata(TransientFieldEntity.class);
+
+        assertTrue(metadata.findProperty("email").isPresent());
+        assertTrue(metadata.findProperty("cachedDisplay").isEmpty(), "@Transient field must not be mapped");
+    }
+
+    @Test
+    void mapsInheritedFieldsFromMappedSuperclass() {
+        EntityMetadata<MappedSubEntity> metadata = factory.getEntityMetadata(MappedSubEntity.class);
+
+        // base의 id/createdAt와 자신의 email이 모두 매핑되고, @Id도 상속된 base 필드에서 잡힌다.
+        assertTrue(metadata.findProperty("id").isPresent());
+        assertTrue(metadata.findProperty("createdAt").isPresent());
+        assertTrue(metadata.findProperty("email").isPresent());
+        assertEquals("id", metadata.idProperty().propertyName());
     }
 
     @Test

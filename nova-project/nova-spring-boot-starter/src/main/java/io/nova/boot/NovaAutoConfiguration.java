@@ -170,4 +170,24 @@ public class NovaAutoConfiguration {
             BeanFactory beanFactory) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
+
+    @Bean(name = "novaSchemaBootstrapRunner")
+    @ConditionalOnMissingBean(SchemaBootstrapRunner.class)
+    @ConditionalOnProperty(prefix = "nova", name = "ddl-auto", havingValue = "update", matchIfMissing = false)
+    public SchemaBootstrapRunner novaSchemaBootstrapRunnerUpdate(
+            SchemaInitializer schemaInitializer,
+            NovaProperties properties,
+            BeanFactory beanFactory) {
+        return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
+    }
+
+    @Bean(name = "novaSchemaBootstrapRunner")
+    @ConditionalOnMissingBean(SchemaBootstrapRunner.class)
+    @ConditionalOnProperty(prefix = "nova", name = "ddl-auto", havingValue = "validate", matchIfMissing = false)
+    public SchemaBootstrapRunner novaSchemaBootstrapRunnerValidate(
+            SchemaInitializer schemaInitializer,
+            NovaProperties properties,
+            BeanFactory beanFactory) {
+        return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
+    }
 }
