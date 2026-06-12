@@ -45,6 +45,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@AttributeOverride` | On an `@Embedded` field, overrides a sub-property's column name with an absolute name (e.g. `@AttributeOverride(name = "city", column = @Column(name = "ship_city"))`). |
 | `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
 | `@Enumerated`     | Enum column mapping. `EnumType.ORDINAL` (default) or `EnumType.STRING`.                    |
+| `@Convert`        | Applies a `jakarta.persistence.AttributeConverter<X, Y>` to a field. The column is created with the **converter's storage type `Y`** (e.g. an `AttributeConverter<Rgb, Integer>` field gets an `integer` column). `disableConversion = true` turns it off. |
 | `@Json`           | JSON column mapping. Requires a `JsonCodec` SPI. Maps to `jsonb` on PostgreSQL, `clob` on Oracle, and `text` elsewhere. |
 
 Entity metadata is parsed once and cached by `EntityMetadataFactory`. The factory enforces the following invariants:
@@ -97,6 +98,39 @@ public static class Customer {
 Column names compose as `{field name (snake_case)}_{sub-property column name}` — the example above flattens to `shipping_city`, `shipping_street`, `shipping_zip`.
 
 An `@Embeddable` type cannot declare its own identifier (`@Id` is rejected). Markers such as `@Version` / `@SoftDelete` on the embedded sub-properties are also rejected at metadata build time.
+
+---
+
+## Custom types (`@Convert`)
+
+Map an arbitrary field type to a column with a standard JPA
+`jakarta.persistence.AttributeConverter<X, Y>` — `X` is the entity attribute type, `Y`
+is the database column type. Annotate the field with `@Convert(converter = ...)`.
+
+```java
+public class RgbConverter implements jakarta.persistence.AttributeConverter<Rgb, Integer> {
+    public Integer convertToDatabaseColumn(Rgb rgb)   { return rgb == null ? null : rgb.value(); }
+    public Rgb     convertToEntityAttribute(Integer v) { return v == null ? null : new Rgb(v); }
+}
+
+@Entity
+public class Swatch {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+
+    @Convert(converter = RgbConverter.class)
+    private Rgb color;        // stored as an `integer` column (the converter's Y type)
+}
+```
+
+- The column DDL and row decoding use the **converter's storage type `Y`** (here `integer`),
+  not the domain type `X`. `@Convert(disableConversion = true)` turns the converter off.
+- The converter class needs an accessible no-arg constructor; its `AttributeConverter<X, Y>`
+  type arguments must be concrete (resolved by reflection). Both are checked fail-fast.
+- `@Convert` cannot be combined with `@Enumerated` / `@Json` or a programmatically registered
+  converter for the same type.
+- **Not supported:** `@Converter(autoApply = true)` (auto-applying a converter to every field
+  of a type) and the `@Convert(attributeName = ...)` form. For "apply to all of type `X`",
+  register it programmatically via `EntityMetadataFactory#registerConverter`.
 
 ---
 

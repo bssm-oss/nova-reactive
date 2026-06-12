@@ -46,6 +46,11 @@ public final class PersistentProperty {
     private final boolean unique;
     private final String columnDefinition;
     private final boolean lob;
+    /**
+     * {@code @Convert} 변환기가 적용된 property의 저장 표현 타입(Y). row 디코딩과 schema 컬럼 타입이
+     * 도메인 타입(javaType=X)이 아니라 이 저장 타입을 따르게 한다. 변환기가 없으면 {@code null}.
+     */
+    private final Class<?> converterColumnType;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -80,7 +85,8 @@ public final class PersistentProperty {
             boolean updatable,
             boolean unique,
             String columnDefinition,
-            boolean lob
+            boolean lob,
+            Class<?> converterColumnType
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -118,6 +124,7 @@ public final class PersistentProperty {
         this.unique = unique;
         this.columnDefinition = columnDefinition == null ? "" : columnDefinition;
         this.lob = lob;
+        this.converterColumnType = converterColumnType;
     }
 
     /**
@@ -161,7 +168,8 @@ public final class PersistentProperty {
                 updatable,
                 unique,
                 columnDefinition,
-                lob
+                lob,
+                converterColumnType
         );
     }
 
@@ -350,7 +358,19 @@ public final class PersistentProperty {
         if (enumerated) {
             return enumType == EnumType.STRING ? String.class : Integer.class;
         }
+        if (converterColumnType != null) {
+            return converterColumnType;
+        }
         return javaType;
+    }
+
+    /**
+     * {@code @Convert} 변환기가 적용된 경우 그 저장 표현 타입(Y), 아니면 {@code null}.
+     * {@link io.nova.sql.AbstractSchemaGenerator}가 컬럼 SQL 타입을 도메인 타입이 아닌 저장 타입으로
+     * 유도할 때 사용한다.
+     */
+    public Class<?> converterColumnType() {
+        return converterColumnType;
     }
 
     /**
