@@ -2,7 +2,7 @@
 
 # Getting started
 
-Nova `1.0.1` is available from Maven Central (the latest release after the `1.0.0` GA).
+Nova `2.0.0` is available from Maven Central. **2.0.0 is a breaking release**: entities are now mapped with the standard `jakarta.persistence` annotations (Nova exports `jakarta.persistence-api` transitively), replacing the `1.x` `io.nova.annotation` clones. See [Entities](entities.md) for the full annotation set.
 
 ## 1. Add dependencies
 
@@ -15,7 +15,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:1.0.1")
+    implementation("io.github.bssm-oss:nova:2.0.0")
 
     // The R2DBC driver for your database (pick one)
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
@@ -29,9 +29,9 @@ To pull in only a specific dialect instead of the aggregate, depend on `nova-cor
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-core:1.0.1")
-    implementation("io.github.bssm-oss:nova-r2dbc:1.0.1")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:1.0.1")
+    implementation("io.github.bssm-oss:nova-core:2.0.0")
+    implementation("io.github.bssm-oss:nova-r2dbc:2.0.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.0.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -41,7 +41,7 @@ Groovy DSL:
 ```groovy
 // build.gradle
 dependencies {
-    implementation 'io.github.bssm-oss:nova:1.0.1'
+    implementation 'io.github.bssm-oss:nova:2.0.0'
     runtimeOnly 'io.r2dbc:r2dbc-h2:1.0.0.RELEASE'
 }
 ```

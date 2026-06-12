@@ -25,7 +25,7 @@ R2dbcSqlExecutor executor = new R2dbcSqlExecutor(connectionFactory, dialect, com
 
 ```kotlin
 // build.gradle.kts
-implementation("io.github.bssm-oss:nova-metrics-micrometer:1.0.1")
+implementation("io.github.bssm-oss:nova-metrics-micrometer:2.0.0")
 implementation("io.micrometer:micrometer-core:1.14.0")
 ```
 
