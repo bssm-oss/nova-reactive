@@ -45,6 +45,7 @@ public final class PersistentProperty {
     private final boolean updatable;
     private final boolean unique;
     private final String columnDefinition;
+    private final boolean lob;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -78,7 +79,8 @@ public final class PersistentProperty {
             boolean insertable,
             boolean updatable,
             boolean unique,
-            String columnDefinition
+            String columnDefinition,
+            boolean lob
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -115,6 +117,14 @@ public final class PersistentProperty {
         this.updatable = updatable;
         this.unique = unique;
         this.columnDefinition = columnDefinition == null ? "" : columnDefinition;
+        this.lob = lob;
+    }
+
+    /**
+     * {@code @Lob} 컬럼 여부. {@code true}이면 schema 생성 시 dialect의 LOB 타입(CLOB/BLOB류)을 쓴다.
+     */
+    public boolean lob() {
+        return lob;
     }
 
     /**

@@ -169,6 +169,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (property.enumerated()) {
             return property.enumType() == EnumType.STRING ? "varchar(255)" : "integer";
         }
+        if (property.lob()) {
+            // @Lob: byte[]는 binary LOB(BLOB류), 그 외(String 등)는 character LOB(CLOB류).
+            return dialect.lobType(property.javaType() == byte[].class);
+        }
         Class<?> type = property.javaType();
         if (type == String.class) {
             return "varchar(" + property.length() + ")";

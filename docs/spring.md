@@ -42,7 +42,7 @@ The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set
 | `update` | `CREATE TABLE IF NOT EXISTS` (plus indexes) — creates missing tables only, never drops. Unlike Hibernate, Nova does not `ALTER` existing tables to add missing columns. |
 | `create` | Drop the tables (if any) and recreate them — destructive, matching Hibernate's `create`. |
 | `create-drop` | Like `create`, and also `DROP TABLE IF EXISTS` in reverse order on context close via `DisposableBean#destroy()` (FK-friendly). |
-| `validate` | Checks that a table exists for every entity (via the dialect's catalog query, e.g. `information_schema.tables`); **fails startup** listing any missing tables. Table-existence only — columns and types are not compared. |
+| `validate` | Checks that a table **and all mapped columns** exist for every entity (via the dialect's catalog queries, e.g. `information_schema.tables` / `.columns`); **fails startup** listing any missing tables/columns. Column types are not compared. |
 
 Production deployments should keep the default of `none` and manage schema with a real migration tool such as Flyway or Liquibase.
 

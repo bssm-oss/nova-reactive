@@ -3,6 +3,7 @@ package io.nova.schema;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.metadata.PersistentProperty;
 import io.nova.query.NativeQuery;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
@@ -148,21 +149,40 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 // case-insensitive set so dialect identifier case-folding does not cause false negatives.
                 .collect(() -> new java.util.TreeSet<String>(String.CASE_INSENSITIVE_ORDER),
                         java.util.TreeSet::add)
-                .flatMap(existing -> {
-                    List<String> missing = new ArrayList<>();
-                    for (Class<?> type : ordered) {
-                        String table = metadataFactory.getEntityMetadata(type).tableName();
-                        if (!existing.contains(table)) {
-                            missing.add(table);
-                        }
-                    }
-                    if (missing.isEmpty()) {
-                        return Mono.empty();
-                    }
-                    return Mono.error(new IllegalStateException(
-                            "Schema validation failed (nova.ddl-auto=validate) — missing tables: " + missing));
-                })
+                .flatMapMany(existingTables -> Flux.fromIterable(ordered)
+                        .concatMap(type -> validateOne(type, existingTables)))
+                .filter(problem -> !problem.isEmpty())
+                .collectList()
+                .flatMap(problems -> problems.isEmpty()
+                        ? Mono.empty()
+                        : Mono.error(new IllegalStateException(
+                                "Schema validation failed (nova.ddl-auto=validate): " + String.join("; ", problems))))
                 .then();
+    }
+
+    /**
+     * 한 엔티티의 테이블 존재와 컬럼 존재를 검증해 문제 메시지(없으면 빈 문자열)를 발행한다.
+     */
+    private Mono<String> validateOne(Class<?> type, java.util.Set<String> existingTables) {
+        EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
+        String table = metadata.tableName();
+        if (!existingTables.contains(table)) {
+            return Mono.just("table '" + table + "' is missing");
+        }
+        List<String> expectedColumns = metadata.columnMappedProperties().stream()
+                .map(PersistentProperty::columnName)
+                .toList();
+        return operations.queryNative(
+                        NativeQuery.of(dialect.listColumnsSql(table)),
+                        row -> row.get(Dialect.COLUMN_NAME_COLUMN, String.class))
+                .collect(() -> new java.util.TreeSet<String>(String.CASE_INSENSITIVE_ORDER),
+                        java.util.TreeSet::add)
+                .map(actualColumns -> {
+                    List<String> missing = expectedColumns.stream()
+                            .filter(column -> !actualColumns.contains(column))
+                            .toList();
+                    return missing.isEmpty() ? "" : "table '" + table + "' is missing columns " + missing;
+                });
     }
 
     private Mono<Void> createOne(Class<?> entityType, SchemaOptions options) {

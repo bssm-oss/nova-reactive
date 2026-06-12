@@ -26,8 +26,8 @@ class SchemaInitializerValidateIntegrationTest {
 
         StepVerifier.create(schema.validate(List.of(IdentityAccount.class)))
                 .verifyErrorMatches(error -> error instanceof IllegalStateException
-                        && error.getMessage().contains("missing tables")
-                        && error.getMessage().contains("identity_accounts"));
+                        && error.getMessage().contains("identity_accounts")
+                        && error.getMessage().contains("is missing"));
     }
 
     @Test
@@ -39,5 +39,20 @@ class SchemaInitializerValidateIntegrationTest {
 
         StepVerifier.create(schema.validate(List.of(IdentityAccount.class)))
                 .verifyComplete();
+    }
+
+    @Test
+    void validateErrorsWhenColumnMissing() {
+        H2IntegrationTestSupport support = H2IntegrationTestSupport.create();
+        SchemaInitializer schema = schemaInitializer(support);
+
+        // 테이블은 있지만 entity의 "active" 컬럼이 빠져 있다.
+        support.execute("create table \"identity_accounts\" ("
+                + "\"id\" bigint primary key, \"email_address\" varchar(255))");
+
+        StepVerifier.create(schema.validate(List.of(IdentityAccount.class)))
+                .verifyErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("missing columns")
+                        && error.getMessage().contains("active"));
     }
 }

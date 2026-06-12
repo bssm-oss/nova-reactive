@@ -1,5 +1,6 @@
 package io.nova.support.fixtures;
 
+import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
@@ -14,6 +15,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.Lob;
 import io.nova.annotation.Json;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MappedSuperclass;
@@ -1298,6 +1300,21 @@ public final class FixtureEntities {
     }
 
     @Entity
+    @Table(name = "overridden_address")
+    public static class OverriddenAddressEntity {
+        @Id
+        private Long id;
+
+        // city는 ship_city로 재정의되고, street/zip은 기본 합성 규칙(shipping_*)을 그대로 따른다.
+        @Embedded
+        @AttributeOverride(name = "city", column = @Column(name = "ship_city"))
+        private Address shipping;
+
+        public OverriddenAddressEntity() {
+        }
+    }
+
+    @Entity
     @Table(name = "customer")
     public static class Customer {
         @Id
@@ -2061,6 +2078,24 @@ public final class FixtureEntities {
 
         public String getEmail() {
             return email;
+        }
+    }
+
+    @Entity
+    @Table(name = "lob_docs")
+    public static class LobEntity {
+        @Id
+        private Long id;
+
+        @Lob
+        @Column(name = "content")
+        private String content;
+
+        @Lob
+        @Column(name = "data")
+        private byte[] data;
+
+        public LobEntity() {
         }
     }
 

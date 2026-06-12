@@ -5,6 +5,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
+import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 import io.nova.fetch.FetchGroup;
 import io.nova.query.QuerySpec;
@@ -78,6 +79,18 @@ class AnnotationRelationIntegrationTest {
     }
 
     @Test
+    void findByIdHydratesChildrenInOrderByOrder() {
+        // @OrderBy("title DESC") — author 1의 책은 title 내림차순(y, x = id 11, 10)으로 와야 한다.
+        StepVerifier.create(support.operations().findById(IntAuthor.class, 1L))
+                .assertNext(author -> {
+                    assertEquals(2, author.getBooks().size());
+                    assertEquals(11L, author.getBooks().get(0).getId());
+                    assertEquals(10L, author.getBooks().get(1).getId());
+                })
+                .verifyComplete();
+    }
+
+    @Test
     void findByIdBookHydratesAnnotatedAuthorReference() {
         StepVerifier.create(support.operations().findById(IntBook.class, 10L))
                 .assertNext(book -> {
@@ -126,6 +139,7 @@ class AnnotationRelationIntegrationTest {
         private String name;
 
         @OneToMany(targetEntity = IntBook.class, mappedBy = "author")
+        @OrderBy("title DESC")
         private List<IntBook> books;
 
         IntAuthor() {

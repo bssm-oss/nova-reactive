@@ -37,6 +37,7 @@ import io.nova.support.fixtures.FixtureEntities.TransientFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.MappedSubEntity;
 import io.nova.support.fixtures.FixtureEntities.JoinColumnAttributesEntity;
 import io.nova.support.fixtures.FixtureEntities.NamedSequenceGeneratorEntity;
+import io.nova.support.fixtures.FixtureEntities.OverriddenAddressEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneCascadeEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneLazyEntity;
 import io.nova.support.fixtures.FixtureEntities.OneToManyOrphanRemovalEntity;
@@ -1150,6 +1151,17 @@ class EntityMetadataFactoryTest {
         assertTrue(owner.unique());
         // insertable=false인 FK는 INSERT 바인딩에서 빠진다.
         assertTrue(metadata.insertableProperties().stream().noneMatch(p -> p.propertyName().equals("owner")));
+    }
+
+    @Test
+    void honorsAttributeOverrideOnEmbeddedColumn() {
+        EntityMetadata<OverriddenAddressEntity> metadata =
+                factory.getEntityMetadata(OverriddenAddressEntity.class);
+
+        // @AttributeOverride가 city 컬럼을 절대 이름 ship_city로 재정의한다.
+        assertEquals("ship_city", metadata.findProperty("shipping.city").orElseThrow().columnName());
+        // 재정의하지 않은 sub-property는 기본 합성 규칙(shipping_street)을 유지한다.
+        assertEquals("shipping_street", metadata.findProperty("shipping.street").orElseThrow().columnName());
     }
 
     @Test
