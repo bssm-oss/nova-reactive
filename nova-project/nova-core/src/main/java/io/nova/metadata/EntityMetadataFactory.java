@@ -25,6 +25,7 @@ import io.nova.annotation.Json;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.PostLoad;
 import jakarta.persistence.PostPersist;
 import jakarta.persistence.PostRemove;
@@ -258,6 +259,11 @@ public final class EntityMetadataFactory {
                 properties.add(createManyToOneProperty(entityType, field));
                 continue;
             }
+            if (field.isAnnotationPresent(OneToOne.class)) {
+                // owning(@JoinColumn FK)은 컬럼이 있고, inverse(mappedBy)는 컬럼이 없는 마커다.
+                properties.add(createOneToOneProperty(entityType, field));
+                continue;
+            }
             if (field.isAnnotationPresent(Embedded.class)) {
                 List<PersistentProperty> expanded = createEmbeddedProperties(
                         entityType, field, List.of(), "", new LinkedHashSet<>());
@@ -351,8 +357,8 @@ public final class EntityMetadataFactory {
 
         Set<String> columnNames = new LinkedHashSet<>();
         for (PersistentProperty property : properties) {
-            if (property.oneToMany()) {
-                // @OneToMany는 parent 테이블 컬럼이 없는 marker-only property로, column uniqueness 검증 대상이 아니다.
+            if (property.oneToMany() || property.inverseToOne()) {
+                // @OneToMany / inverse @OneToOne은 parent 테이블 컬럼이 없는 marker-only이므로 uniqueness 검증 대상이 아니다.
                 continue;
             }
             if (!columnNames.add(property.columnName())) {
@@ -1093,7 +1099,8 @@ public final class EntityMetadataFactory {
                 unique,
                 columnDefinition,
                 lob,
-                converterColumnType
+                converterColumnType,
+                false
         );
     }
 
@@ -1191,15 +1198,16 @@ public final class EntityMetadataFactory {
     private static void rejectIncompatibleRelationAnnotations(Class<?> entityType, Field field) {
         boolean isManyToOne = field.isAnnotationPresent(ManyToOne.class);
         boolean isOneToMany = field.isAnnotationPresent(OneToMany.class);
-        if (!isManyToOne && !isOneToMany) {
+        boolean isOneToOne = field.isAnnotationPresent(OneToOne.class);
+        int relationCount = (isManyToOne ? 1 : 0) + (isOneToMany ? 1 : 0) + (isOneToOne ? 1 : 0);
+        if (relationCount == 0) {
             return;
         }
-        if (isManyToOne && isOneToMany) {
-            throw new IllegalStateException(
-                    entityType.getName() + "." + field.getName()
-                            + " cannot declare both @ManyToOne and @OneToMany");
-        }
         String location = entityType.getName() + "." + field.getName();
+        if (relationCount > 1) {
+            throw new IllegalStateException(
+                    location + " cannot declare more than one of @ManyToOne / @OneToMany / @OneToOne");
+        }
         if (field.isAnnotationPresent(Embedded.class)) {
             throw new IllegalStateException(location + " cannot declare @Embedded together with a relation annotation");
         }
@@ -1286,7 +1294,8 @@ public final class EntityMetadataFactory {
                 false,
                 "",
                 false,
-                null
+                null,
+                false
         );
     }
 
@@ -1359,7 +1368,123 @@ public final class EntityMetadataFactory {
                 fkUnique,
                 fkColumnDefinition,
                 false,
-                null
+                null,
+                false
+        );
+    }
+
+    /**
+     * {@link OneToOne} property를 만든다. {@code mappedBy}가 없으면 owning side로 FK 컬럼을 가지며
+     * {@code @ManyToOne}과 동일한 단건 참조 메커니즘({@code manyToOne=true})으로 모델링한다(FK는 unique 기본).
+     * {@code mappedBy}가 있으면 inverse side로 컬럼 없는 {@code inverseToOne} 마커가 되고, 소유 측 FK로
+     * 단건 child가 hydration된다. fetch=LAZY와 cascade는 거부한다.
+     */
+    private PersistentProperty createOneToOneProperty(Class<?> entityType, Field field) {
+        OneToOne oneToOne = field.getAnnotation(OneToOne.class);
+        if (oneToOne.fetch() == FetchType.LAZY) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @OneToOne(fetch=LAZY) is not supported; Nova has no lazy proxy."
+                            + " Use the default eager fetch or drive a FetchGroup explicitly");
+        }
+        if (oneToOne.cascade().length > 0) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @OneToOne(cascade=...) is not supported; persist the related entity explicitly");
+        }
+        Class<?> targetType = oneToOne.targetEntity();
+        if (targetType == void.class) {
+            targetType = field.getType();
+        }
+        String mappedBy = oneToOne.mappedBy();
+        if (mappedBy != null && !mappedBy.isBlank()) {
+            // inverse side — 컬럼 없는 마커. target/mappedBy는 oneToMany 필드 자리에 보관하고 inverseToOne로 구분한다.
+            return new PersistentProperty(
+                    field,
+                    field.getName(),
+                    "",
+                    field.getType(),
+                    false,
+                    false,
+                    true,
+                    255,
+                    0,
+                    0,
+                    null,
+                    "",
+                    null,
+                    false,
+                    false,
+                    false,
+                    false,
+                    List.of(),
+                    false,
+                    null,
+                    false,
+                    false,
+                    null,
+                    false,
+                    false,
+                    targetType,
+                    mappedBy,
+                    true,
+                    true,
+                    false,
+                    "",
+                    false,
+                    null,
+                    true
+            );
+        }
+        // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
+        JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
+        String columnName;
+        if (joinColumn != null && !joinColumn.name().isBlank()) {
+            columnName = joinColumn.name();
+        } else {
+            columnName = namingStrategy.columnName(field.getName() + "_id");
+        }
+        boolean nullable = oneToOne.optional() && (joinColumn == null || joinColumn.nullable());
+        boolean fkInsertable = joinColumn == null || joinColumn.insertable();
+        boolean fkUpdatable = joinColumn == null || joinColumn.updatable();
+        // @OneToOne의 FK는 일대일을 강제하기 위해 unique로 emit한다(@JoinColumn(unique=false)는 무시).
+        boolean fkUnique = true;
+        String fkColumnDefinition = joinColumn == null ? "" : joinColumn.columnDefinition();
+        return new PersistentProperty(
+                field,
+                field.getName(),
+                columnName,
+                Long.class,
+                false,
+                false,
+                nullable,
+                255,
+                0,
+                0,
+                null,
+                "",
+                null,
+                false,
+                false,
+                false,
+                false,
+                List.of(),
+                false,
+                null,
+                false,
+                true,
+                targetType,
+                nullable,
+                false,
+                null,
+                "",
+                fkInsertable,
+                fkUpdatable,
+                fkUnique,
+                fkColumnDefinition,
+                false,
+                null,
+                false
         );
     }
 

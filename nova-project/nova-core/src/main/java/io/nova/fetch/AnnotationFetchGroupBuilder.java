@@ -83,6 +83,25 @@ public final class AnnotationFetchGroupBuilder {
                     singleSetter
             );
         }
+        // inverse @OneToOne — 소유 측(반대편)이 FK를 가지므로 child 측 FK column으로 IN-query를 발행하고 단건만 주입한다.
+        for (PersistentProperty oneToOne : parentMetadata.oneToOneInverseProperties()) {
+            Class<?> childType = oneToOne.oneToManyTargetType();
+            if (childType == null) {
+                throw new IllegalStateException(
+                        parentType.getName() + "." + oneToOne.propertyName()
+                                + " inverse @OneToOne requires a resolvable target entity type");
+            }
+            String fkColumn = resolveOneToManyForeignKeyColumn(parentType, oneToOne, childType);
+            Function<P, Object> parentIdExtractor = parent -> idProperty.read(parent);
+            BiConsumer<P, Object> singleSetter = (parent, child) ->
+                    writeField(parent, oneToOne.field(), child);
+            builder.withInverseReference(
+                    (Class<Object>) childType,
+                    fkColumn,
+                    parentIdExtractor,
+                    singleSetter
+            );
+        }
         return builder.build();
     }
 

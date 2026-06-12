@@ -51,6 +51,12 @@ public final class PersistentProperty {
      * 도메인 타입(javaType=X)이 아니라 이 저장 타입을 따르게 한다. 변환기가 없으면 {@code null}.
      */
     private final Class<?> converterColumnType;
+    /**
+     * inverse-side {@code @OneToOne}({@code mappedBy} 지정) 마커. 이 테이블에는 컬럼이 없고(소유 측이 FK를
+     * 가짐) hydration 단계에서 단건 child로 주입된다. owning-side {@code @OneToOne}은 별도 플래그 없이
+     * {@code @ManyToOne}과 동일하게({@link #manyToOne}) 모델링된다.
+     */
+    private final boolean inverseToOne;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -86,7 +92,8 @@ public final class PersistentProperty {
             boolean unique,
             String columnDefinition,
             boolean lob,
-            Class<?> converterColumnType
+            Class<?> converterColumnType,
+            boolean inverseToOne
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -125,6 +132,7 @@ public final class PersistentProperty {
         this.columnDefinition = columnDefinition == null ? "" : columnDefinition;
         this.lob = lob;
         this.converterColumnType = converterColumnType;
+        this.inverseToOne = inverseToOne;
     }
 
     /**
@@ -169,7 +177,8 @@ public final class PersistentProperty {
                 unique,
                 columnDefinition,
                 lob,
-                converterColumnType
+                converterColumnType,
+                inverseToOne
         );
     }
 
@@ -418,7 +427,15 @@ public final class PersistentProperty {
      * {@link #manyToOne()} 또는 {@link #oneToMany()} 중 하나라도 {@code true}면 관계 property다.
      */
     public boolean isRelation() {
-        return manyToOne || oneToMany;
+        return manyToOne || oneToMany || inverseToOne;
+    }
+
+    /**
+     * inverse-side {@code @OneToOne}({@code mappedBy})이면 {@code true}. 이 테이블에 컬럼이 없는 마커이며
+     * hydration에서 단건 child가 주입된다.
+     */
+    public boolean inverseToOne() {
+        return inverseToOne;
     }
 
     public Object read(Object instance) {
@@ -465,9 +482,9 @@ public final class PersistentProperty {
     }
 
     public void write(Object instance, Object value) {
-        if (oneToMany) {
-            // @OneToMany inverse side는 부모 테이블 컬럼이 없으므로 row 디코딩 단계에서 주입할 값도 없다.
-            // 실제 child 컬렉션은 FetchGroup hydration 단계에서 별도 setter로 주입된다.
+        if (oneToMany || inverseToOne) {
+            // @OneToMany / inverse @OneToOne은 부모 테이블 컬럼이 없으므로 row 디코딩 단계에서 주입할 값이 없다.
+            // 실제 관계 값은 FetchGroup hydration 단계에서 별도 setter로 주입된다.
             return;
         }
         if (manyToOne) {
