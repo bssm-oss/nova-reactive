@@ -6,6 +6,7 @@ import io.nova.fetch.AnnotationFetchGroupBuilder;
 import io.nova.fetch.FetchGroup;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.metadata.InheritanceInfo;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
@@ -270,16 +271,43 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@code findById(.., FetchGroup)}처럼 merge된 group을 따로 hydrate할 호출자가 사용한다.
      */
     private <T, ID> Mono<T> findByIdInternal(EntityMetadata<T> metadata, ID id) {
+        EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryOne(
-                dialect.sqlRenderer().selectById(metadata, id), row -> mapRow(metadata, row));
+                dialect.sqlRenderer().selectById(render, id), row -> mapRowDispatching(metadata, render, row));
     }
 
     /**
      * annotation-driven 자동 hydration을 거치지 않고 일반 SELECT만 발행하는 내부 경로.
      */
     private <T> Flux<T> findAllInternal(EntityMetadata<T> metadata, QuerySpec querySpec) {
+        EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryMany(
-                dialect.sqlRenderer().select(metadata, normalize(querySpec)), row -> mapRow(metadata, row));
+                dialect.sqlRenderer().select(render, normalize(querySpec)), row -> mapRowDispatching(metadata, render, row));
+    }
+
+    /**
+     * SINGLE_TABLE 상속 루트를 조회할 때 사용할 렌더링 메타데이터를 고른다. 루트면 모든 서브타입 컬럼을
+     * union한 병합 메타데이터를 써서 한 SELECT가 전 서브타입 컬럼을 담게 하고, 그 외에는 원본을 그대로 쓴다.
+     */
+    private EntityMetadata<?> renderMetadata(EntityMetadata<?> metadata) {
+        return metadata.isInheritanceRoot()
+                ? metadataFactory.mergedHierarchyMetadata(metadata.entityType())
+                : metadata;
+    }
+
+    /**
+     * row를 엔티티로 매핑하되, 조회 대상이 SINGLE_TABLE 상속 루트이면 row의 discriminator 값으로 구체
+     * 서브타입을 판별해 해당 타입으로 인스턴스화한다. 루트가 아니면 선언 타입 그대로 매핑한다.
+     */
+    @SuppressWarnings("unchecked")
+    private <T> T mapRowDispatching(EntityMetadata<T> declared, EntityMetadata<?> render, RowAccessor row) {
+        if (!declared.isInheritanceRoot()) {
+            return mapRow(declared, row);
+        }
+        InheritanceInfo info = render.inheritance();
+        Object discriminator = row.get(info.discriminatorColumn(), wrapPrimitive(info.discriminatorJavaType()));
+        EntityMetadata<?> concrete = metadataFactory.resolveSubtype(render, discriminator);
+        return (T) mapRow(concrete, row);
     }
 
     @Override
@@ -308,7 +336,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
         String idPropertyName = metadata.idProperty().propertyName();
         QuerySpec spec = QuerySpec.empty().where(Criteria.in(idPropertyName, materialized));
-        return sqlExecutor.queryMany(dialect.sqlRenderer().select(metadata, spec), row -> mapRow(metadata, row));
+        EntityMetadata<?> render = renderMetadata(metadata);
+        return sqlExecutor.queryMany(
+                dialect.sqlRenderer().select(render, spec), row -> mapRowDispatching(metadata, render, row));
     }
 
     @Override

@@ -3,6 +3,9 @@ package io.nova.metadata;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
+import jakarta.persistence.DiscriminatorColumn;
+import jakarta.persistence.DiscriminatorType;
+import jakarta.persistence.DiscriminatorValue;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
@@ -13,6 +16,8 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
+import jakarta.persistence.Inheritance;
+import jakarta.persistence.InheritanceType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Lob;
 import io.nova.annotation.Json;
@@ -48,6 +53,7 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -85,6 +91,18 @@ public final class EntityMetadataFactory {
     private final JsonCodec jsonCodec;
     private final Map<Class<?>, EntityMetadata<?>> cache = new ConcurrentHashMap<>();
     private final Map<Class<?>, AttributeConverter<?, ?>> converters = new ConcurrentHashMap<>();
+    /**
+     * SINGLE_TABLE 상속 계층 레지스트리. root 클래스 → (discriminator 값 → 구체 서브타입 클래스).
+     * 각 구체 멤버의 메타데이터가 빌드될 때 자기 자신을 등록한다 — JPA persistence-unit이 모든 엔티티를
+     * 부트스트랩 시 알고 있는 것과 같은 방식으로, root 다형 조회 전에 전 서브타입 메타데이터가 빌드돼 있어야
+     * 한다(Spring starter의 entity-packages eager preload가 이를 보장한다).
+     */
+    private final Map<Class<?>, Map<String, Class<?>>> hierarchies = new ConcurrentHashMap<>();
+    /**
+     * root 클래스 → 전 서브타입 컬럼을 union한 single-table 병합 메타데이터 캐시. select-list/DDL에서
+     * 한 테이블이 모든 서브타입 컬럼을 담도록 만들 때 사용한다.
+     */
+    private final Map<Class<?>, EntityMetadata<?>> mergedHierarchyCache = new ConcurrentHashMap<>();
 
     /**
      * {@link JsonCodec} 없이 factory를 만든다 — {@code @Json} 필드가 없는 엔티티만 다룰 때 사용한다.
@@ -124,15 +142,97 @@ public final class EntityMetadataFactory {
         return created;
     }
 
+    /**
+     * SINGLE_TABLE 상속 루트의 모든 서브타입 컬럼을 union한 병합 메타데이터를 반환한다. 단일 테이블이
+     * 모든 서브타입 컬럼을 담도록 select-list와 CREATE TABLE을 만들 때 사용한다. 서브타입 전용 컬럼은
+     * 다른 서브타입 row에서 비어 있어야 하므로 nullable로 낮춘다. 루트가 아니거나 상속이 아니면 입력
+     * 메타데이터를 그대로 돌려준다.
+     *
+     * <p>레지스트리에 등록된 서브타입만 union에 포함되므로, 다형 조회 전에 전 서브타입 메타데이터가
+     * 빌드돼 있어야 한다(Spring starter의 entity-packages eager preload가 보장).
+     */
+    public EntityMetadata<?> mergedHierarchyMetadata(Class<?> rootClass) {
+        EntityMetadata<?> cached = mergedHierarchyCache.get(rootClass);
+        if (cached != null) {
+            return cached;
+        }
+        EntityMetadata<?> merged = buildMergedHierarchyMetadata(getEntityMetadata(rootClass));
+        mergedHierarchyCache.put(rootClass, merged);
+        return merged;
+    }
+
+    private <T> EntityMetadata<T> buildMergedHierarchyMetadata(EntityMetadata<T> rootMeta) {
+        if (!rootMeta.isInheritanceRoot()) {
+            return rootMeta;
+        }
+        LinkedHashMap<String, PersistentProperty> union = new LinkedHashMap<>();
+        for (PersistentProperty property : rootMeta.columnMappedProperties()) {
+            union.put(property.columnName(), property);
+        }
+        Map<String, Class<?>> members = hierarchies.getOrDefault(rootMeta.entityType(), Map.of());
+        for (Class<?> member : members.values()) {
+            if (member == rootMeta.entityType()) {
+                continue;
+            }
+            for (PersistentProperty property : getEntityMetadata(member).columnMappedProperties()) {
+                // 서브타입 전용 컬럼만 추가하고 nullable로 낮춘다. 루트가 이미 가진 컬럼은 건너뛴다.
+                union.putIfAbsent(property.columnName(), property.withNullable(true));
+            }
+        }
+        return new EntityMetadata<>(
+                rootMeta.entityType(),
+                rootMeta.entityName(),
+                rootMeta.tableName(),
+                rootMeta.schema(),
+                new ArrayList<>(union.values()),
+                rootMeta.idProperty(),
+                rootMeta.prePersistCallbacks(),
+                rootMeta.postPersistCallbacks(),
+                rootMeta.preUpdateCallbacks(),
+                rootMeta.postUpdateCallbacks(),
+                rootMeta.postLoadCallbacks(),
+                rootMeta.preRemoveCallbacks(),
+                rootMeta.postRemoveCallbacks(),
+                rootMeta.indexes(),
+                rootMeta.uniqueConstraints(),
+                rootMeta.inheritance()
+        );
+    }
+
+    /**
+     * 루트 메타데이터와 row에서 읽은 discriminator 값으로 구체 서브타입 메타데이터를 해석한다. 매칭되는
+     * 서브타입이 없으면 명확한 에러를 던진다 — 보통 해당 서브타입 메타데이터가 아직 빌드되지 않은 경우다.
+     */
+    public EntityMetadata<?> resolveSubtype(EntityMetadata<?> rootMetadata, Object rawDiscriminatorValue) {
+        InheritanceInfo info = rootMetadata.inheritance();
+        Map<String, Class<?>> members = hierarchies.getOrDefault(info.root(), Map.of());
+        String key = rawDiscriminatorValue == null ? null : rawDiscriminatorValue.toString().trim();
+        Class<?> concrete = key == null ? null : members.get(key);
+        if (concrete != null) {
+            return getEntityMetadata(concrete);
+        }
+        if (info.discriminatorValue().equals(key)) {
+            return rootMetadata;
+        }
+        throw new IllegalStateException(
+                "No @DiscriminatorValue '" + key + "' is registered for hierarchy "
+                        + info.root().getName() + "; known values: " + members.keySet()
+                        + ". Ensure every subtype's metadata is built before polymorphic queries"
+                        + " (Spring resolves this automatically via entity-packages scanning).");
+    }
+
     private <T> EntityMetadata<T> createMetadata(Class<T> entityType) {
         Entity entity = entityType.getAnnotation(Entity.class);
         if (entity == null) {
             throw new IllegalArgumentException(entityType.getName() + " is not annotated with @Entity");
         }
 
-        Table table = entityType.getAnnotation(Table.class);
         String entityName = entity.name().isBlank() ? entityType.getSimpleName() : entity.name();
-        String tableName = table != null && !table.name().isBlank() ? table.name() : namingStrategy.tableName(entityType);
+        // SINGLE_TABLE 상속: 테이블/스키마/인덱스는 계층 루트(@Inheritance 또는 최상위 @Entity)에서 가져온다.
+        InheritanceInfo inheritance = resolveInheritance(entityType, entityName);
+        Class<?> tableSource = inheritance.present() ? inheritance.root() : entityType;
+        Table table = tableSource.getAnnotation(Table.class);
+        String tableName = table != null && !table.name().isBlank() ? table.name() : namingStrategy.tableName(tableSource);
 
         List<PersistentProperty> properties = new ArrayList<>();
         PersistentProperty idProperty = null;
@@ -225,8 +325,15 @@ public final class EntityMetadataFactory {
         List<Method> postLoadCallbacks = new ArrayList<>();
         List<Method> preRemoveCallbacks = new ArrayList<>();
         List<Method> postRemoveCallbacks = new ArrayList<>();
-        for (Method method : entityType.getDeclaredMethods()) {
+        // 콜백은 @MappedSuperclass와 SINGLE_TABLE 상속 상위 @Entity까지 포함해 수집한다 — 루트/베이스에
+        // 선언된 audit 콜백이 서브타입에서도 발화하도록. 서브클래스가 같은 메서드를 override하면 가장
+        // 하위 정의만 한 번 수집한다(중복 호출 방지).
+        Set<String> seenCallbackSignatures = new LinkedHashSet<>();
+        for (Method method : mappedMethods(entityType)) {
             if (method.isSynthetic()) {
+                continue;
+            }
+            if (!seenCallbackSignatures.add(callbackSignature(method))) {
                 continue;
             }
             collectCallback(entityType, method, PrePersist.class, prePersistCallbacks);
@@ -257,7 +364,7 @@ public final class EntityMetadataFactory {
                 entityType, tableName, columnNames,
                 table == null ? new UniqueConstraint[0] : table.uniqueConstraints());
 
-        return new EntityMetadata<>(
+        EntityMetadata<T> metadata = new EntityMetadata<>(
                 entityType,
                 entityName,
                 tableName,
@@ -272,8 +379,97 @@ public final class EntityMetadataFactory {
                 preRemoveCallbacks,
                 postRemoveCallbacks,
                 indexes,
-                uniqueConstraints
+                uniqueConstraints,
+                inheritance
         );
+        registerHierarchyMember(metadata);
+        return metadata;
+    }
+
+    /**
+     * SINGLE_TABLE 상속 계층에서 이 엔티티의 위치를 해석한다. 상속에 참여하지 않으면
+     * {@link InheritanceInfo#NONE}. 계층은 (a) 이 엔티티가 직접 {@link Inheritance}를 선언했거나
+     * (b) 상위에 {@link Entity} 조상이 존재할 때 성립한다(JPA 기본 전략이 SINGLE_TABLE). 루트의
+     * {@link Inheritance#strategy()}가 SINGLE_TABLE이 아니면 fail-fast로 거부한다.
+     */
+    private InheritanceInfo resolveInheritance(Class<?> entityType, String entityName) {
+        Class<?> root = entityType;
+        Class<?> ancestor = entityType.getSuperclass();
+        while (ancestor != null && ancestor != Object.class) {
+            if (ancestor.isAnnotationPresent(Entity.class)) {
+                root = ancestor;
+            }
+            ancestor = ancestor.getSuperclass();
+        }
+        boolean inHierarchy = root != entityType || entityType.isAnnotationPresent(Inheritance.class);
+        if (!inHierarchy) {
+            return InheritanceInfo.NONE;
+        }
+        Inheritance rootInheritance = root.getAnnotation(Inheritance.class);
+        if (rootInheritance != null && rootInheritance.strategy() != InheritanceType.SINGLE_TABLE) {
+            throw new IllegalArgumentException(
+                    root.getName() + " uses @Inheritance(strategy=" + rootInheritance.strategy()
+                            + ") which Nova does not support; only SINGLE_TABLE is supported");
+        }
+        DiscriminatorColumn discriminatorColumn = root.getAnnotation(DiscriminatorColumn.class);
+        String columnName = discriminatorColumn != null && !discriminatorColumn.name().isBlank()
+                ? discriminatorColumn.name()
+                : "dtype";
+        DiscriminatorType discriminatorType = discriminatorColumn != null
+                ? discriminatorColumn.discriminatorType()
+                : DiscriminatorType.STRING;
+        int discriminatorLength = discriminatorColumn != null ? discriminatorColumn.length() : 31;
+        boolean abstractType = Modifier.isAbstract(entityType.getModifiers());
+        String discriminatorValue = resolveDiscriminatorValue(
+                entityType, entityName, discriminatorType, abstractType);
+        return new InheritanceInfo(
+                root, root == entityType, abstractType,
+                columnName, discriminatorType, discriminatorLength, discriminatorValue);
+    }
+
+    /**
+     * 이 엔티티의 discriminator 값을 해석한다. {@link DiscriminatorValue}가 있으면 그 값을, 없으면
+     * STRING 타입은 JPA 규약대로 entity 이름을 기본값으로 쓴다. CHAR/INTEGER는 기본값이 모호하므로
+     * 구체 타입에서는 명시적 {@link DiscriminatorValue}를 요구한다(abstract 타입은 row로 인스턴스화되지
+     * 않으므로 빈 값 허용).
+     */
+    private static String resolveDiscriminatorValue(
+            Class<?> entityType, String entityName, DiscriminatorType type, boolean abstractType) {
+        DiscriminatorValue annotation = entityType.getAnnotation(DiscriminatorValue.class);
+        if (annotation != null && !annotation.value().isBlank()) {
+            return annotation.value();
+        }
+        if (type == DiscriminatorType.STRING) {
+            return entityName;
+        }
+        if (abstractType) {
+            return "";
+        }
+        throw new IllegalArgumentException(
+                entityType.getName() + " requires an explicit @DiscriminatorValue because its hierarchy uses"
+                        + " DiscriminatorType." + type + " (only STRING has a default value)");
+    }
+
+    /**
+     * 구체(비-abstract) 계층 멤버를 root 레지스트리에 등록한다. 같은 discriminator 값을 서로 다른 두
+     * 타입이 선언하면 fail-fast로 거부한다. 등록 시 해당 root의 병합 메타데이터 캐시를 무효화해, 이후
+     * 새 서브타입이 union DDL/select-list에 반영되도록 한다.
+     */
+    private void registerHierarchyMember(EntityMetadata<?> metadata) {
+        InheritanceInfo info = metadata.inheritance();
+        if (!info.present() || info.abstractType()) {
+            return;
+        }
+        Map<String, Class<?>> members = hierarchies.computeIfAbsent(
+                info.root(), ignored -> new ConcurrentHashMap<>());
+        Class<?> previous = members.putIfAbsent(info.discriminatorValue(), metadata.entityType());
+        if (previous != null && previous != metadata.entityType()) {
+            throw new IllegalArgumentException(
+                    "Duplicate @DiscriminatorValue '" + info.discriminatorValue() + "' in hierarchy "
+                            + info.root().getName() + ": " + previous.getName() + " and "
+                            + metadata.entityType().getName());
+        }
+        mergedHierarchyCache.remove(info.root());
     }
 
     /**
@@ -357,14 +553,17 @@ public final class EntityMetadataFactory {
      * 지원하지 않는다.
      */
     /**
-     * 엔티티 자신의 필드와, 연속된 {@link MappedSuperclass} 조상들의 필드를 함께 반환한다. 상위
-     * {@code @MappedSuperclass}(예: id/audit를 가진 BaseEntity)의 필드가 먼저 오도록 정렬한다.
+     * 엔티티 자신의 필드와, 매핑에 기여하는 조상들의 필드를 함께 반환한다. 조상은 {@link MappedSuperclass}
+     * (id/audit를 가진 BaseEntity)와 SINGLE_TABLE 상속의 상위 {@link Entity}(루트/중간 엔티티)를 포함한다.
+     * 상위 클래스의 필드(루트의 @Id 등)가 먼저 오도록 root-first로 정렬한다.
      */
     private static List<Field> mappedFields(Class<?> entityType) {
         List<Class<?>> chain = new ArrayList<>();
         chain.add(entityType);
         Class<?> ancestor = entityType.getSuperclass();
-        while (ancestor != null && ancestor.isAnnotationPresent(MappedSuperclass.class)) {
+        while (ancestor != null && ancestor != Object.class
+                && (ancestor.isAnnotationPresent(MappedSuperclass.class)
+                || ancestor.isAnnotationPresent(Entity.class))) {
             chain.add(ancestor);
             ancestor = ancestor.getSuperclass();
         }
@@ -373,6 +572,36 @@ public final class EntityMetadataFactory {
             fields.addAll(Arrays.asList(chain.get(i).getDeclaredFields()));
         }
         return fields;
+    }
+
+    /**
+     * 엔티티 자신과 매핑에 기여하는 조상({@link MappedSuperclass} / 상위 {@link Entity})의 선언 메서드를
+     * 서브클래스-우선(most-derived first) 순서로 반환한다. override 판별은 호출부에서 시그니처 dedupe로
+     * 처리하므로, 더 하위에 선언된 override가 먼저 보이도록 entityType부터 위로 올라가며 수집한다.
+     */
+    private static List<Method> mappedMethods(Class<?> entityType) {
+        List<Method> methods = new ArrayList<>();
+        Class<?> current = entityType;
+        while (current != null && current != Object.class
+                && (current == entityType
+                || current.isAnnotationPresent(MappedSuperclass.class)
+                || current.isAnnotationPresent(Entity.class))) {
+            methods.addAll(Arrays.asList(current.getDeclaredMethods()));
+            current = current.getSuperclass();
+        }
+        return methods;
+    }
+
+    /**
+     * override된 콜백을 한 번만 수집하기 위한 메서드 시그니처 키(이름 + 파라미터 타입). 콜백은 no-arg가
+     * 강제되므로 사실상 이름만으로 충분하지만, 일반성을 위해 파라미터 타입까지 포함한다.
+     */
+    private static String callbackSignature(Method method) {
+        StringBuilder builder = new StringBuilder(method.getName()).append('(');
+        for (Class<?> parameterType : method.getParameterTypes()) {
+            builder.append(parameterType.getName()).append(',');
+        }
+        return builder.append(')').toString();
     }
 
     /**

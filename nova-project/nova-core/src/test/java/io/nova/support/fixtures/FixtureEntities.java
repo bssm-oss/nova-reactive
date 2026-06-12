@@ -4,9 +4,14 @@ import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
+import jakarta.persistence.DiscriminatorColumn;
+import jakarta.persistence.DiscriminatorType;
+import jakarta.persistence.DiscriminatorValue;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Inheritance;
+import jakarta.persistence.InheritanceType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Enumerated;
@@ -2135,6 +2140,70 @@ public final class FixtureEntities {
         private String email;
 
         public SchemaQualifiedEntity() {
+        }
+    }
+
+    /**
+     * SINGLE_TABLE 상속 루트 — 기본 discriminator 컬럼(dtype), STRING 타입.
+     */
+    @Entity
+    @Table(name = "vehicles")
+    @Inheritance(strategy = InheritanceType.SINGLE_TABLE)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    public abstract static class Vehicle {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        private String name;
+
+        public Vehicle() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @DiscriminatorValue("CAR")
+    public static class Car extends Vehicle {
+        private int doors;
+
+        public Car() {
+        }
+
+        public int getDoors() {
+            return doors;
+        }
+
+        public void setDoors(int doors) {
+            this.doors = doors;
+        }
+    }
+
+    @Entity
+    @DiscriminatorValue("TRUCK")
+    public static class Truck extends Vehicle {
+        private double payload;
+
+        public Truck() {
+        }
+
+        public double getPayload() {
+            return payload;
+        }
+
+        public void setPayload(double payload) {
+            this.payload = payload;
         }
     }
 }

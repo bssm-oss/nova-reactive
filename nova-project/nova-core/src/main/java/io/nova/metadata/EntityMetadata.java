@@ -38,6 +38,7 @@ public final class EntityMetadata<T> {
     private final List<Method> postRemoveCallbacks;
     private final List<IndexDefinition> indexes;
     private final List<UniqueConstraintDefinition> uniqueConstraints;
+    private final InheritanceInfo inheritance;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -55,6 +56,30 @@ public final class EntityMetadata<T> {
             List<Method> postRemoveCallbacks,
             List<IndexDefinition> indexes,
             List<UniqueConstraintDefinition> uniqueConstraints
+    ) {
+        this(entityType, entityName, tableName, schema, properties, idProperty,
+                prePersistCallbacks, postPersistCallbacks, preUpdateCallbacks, postUpdateCallbacks,
+                postLoadCallbacks, preRemoveCallbacks, postRemoveCallbacks, indexes, uniqueConstraints,
+                InheritanceInfo.NONE);
+    }
+
+    public EntityMetadata(
+            Class<T> entityType,
+            String entityName,
+            String tableName,
+            String schema,
+            List<PersistentProperty> properties,
+            PersistentProperty idProperty,
+            List<Method> prePersistCallbacks,
+            List<Method> postPersistCallbacks,
+            List<Method> preUpdateCallbacks,
+            List<Method> postUpdateCallbacks,
+            List<Method> postLoadCallbacks,
+            List<Method> preRemoveCallbacks,
+            List<Method> postRemoveCallbacks,
+            List<IndexDefinition> indexes,
+            List<UniqueConstraintDefinition> uniqueConstraints,
+            InheritanceInfo inheritance
     ) {
         this.entityType = entityType;
         this.entityName = entityName;
@@ -105,6 +130,7 @@ public final class EntityMetadata<T> {
         this.postRemoveCallbacks = List.copyOf(postRemoveCallbacks);
         this.indexes = List.copyOf(indexes);
         this.uniqueConstraints = List.copyOf(uniqueConstraints);
+        this.inheritance = inheritance == null ? InheritanceInfo.NONE : inheritance;
     }
 
     public Class<T> entityType() {
@@ -286,5 +312,26 @@ public final class EntityMetadata<T> {
      */
     public boolean hasRelationProperties() {
         return !manyToOneProperties().isEmpty() || !oneToManyProperties().isEmpty();
+    }
+
+    /**
+     * SINGLE_TABLE 상속 discriminator 메타데이터. 상속에 참여하지 않으면 {@link InheritanceInfo#NONE}.
+     */
+    public InheritanceInfo inheritance() {
+        return inheritance;
+    }
+
+    /**
+     * 이 엔티티가 SINGLE_TABLE 상속 계층의 멤버이면 {@code true}.
+     */
+    public boolean hasInheritance() {
+        return inheritance.present();
+    }
+
+    /**
+     * 이 엔티티가 계층 루트(서브타입 제약 WHERE 없이 다형 조회되는 타입)이면 {@code true}.
+     */
+    public boolean isInheritanceRoot() {
+        return inheritance.present() && inheritance.isRoot();
     }
 }

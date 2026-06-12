@@ -32,6 +32,8 @@ Activated when both `ConnectionFactory` and `Dialect` beans are present in the c
 
 Add a `SqlExecutionListener` bean (e.g. `MicrometerSqlExecutionListener`) to the context and it is automatically composed into the executor.
 
+The starter also registers `novaEntityPreloadRunner`, which eagerly builds metadata for every `@Entity` in `nova.entity-packages` (or the auto-configuration packages) at startup — regardless of `nova.ddl-auto`. This mirrors a JPA persistence unit knowing all of its entities up front, and is what lets `SINGLE_TABLE` inheritance dispatch a polymorphic `findAll(Vehicle.class)` to the right concrete subtypes. Entity metadata build errors surface at startup (fail-fast) rather than on first query.
+
 ### Schema bootstrap (`nova.ddl-auto`)
 
 The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set binds. A `SchemaBootstrapRunner` runs during context refresh via `InitializingBean#afterPropertiesSet()` (so the schema is ready before any other refresh-time bean queries it) and scans the configured packages for `@jakarta.persistence.Entity` classes.

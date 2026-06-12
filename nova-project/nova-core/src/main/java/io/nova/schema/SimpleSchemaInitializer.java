@@ -69,7 +69,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     public Mono<Void> create(Iterable<Class<?>> entityTypes, SchemaOptions options) {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
-        return Flux.fromIterable(copyOf(entityTypes))
+        return Flux.fromIterable(collapseToRoots(copyOf(entityTypes)))
                 .concatMap(type -> createOne(type, options))
                 .then();
     }
@@ -101,7 +101,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     public Mono<Void> drop(Iterable<Class<?>> entityTypes, SchemaOptions options) {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
-        return Flux.fromIterable(copyOf(entityTypes))
+        return Flux.fromIterable(collapseToRoots(copyOf(entityTypes)))
                 .concatMap(type -> dropOne(type, options))
                 .then();
     }
@@ -127,7 +127,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         // Reverse drop order vs create so child tables are dropped before their parents
         // (FK constraint friendly) and parents are created before children.
-        List<Class<?>> ordered = copyOf(entityTypes);
+        List<Class<?>> ordered = collapseToRoots(copyOf(entityTypes));
         List<Class<?>> reversed = new ArrayList<>(ordered);
         java.util.Collections.reverse(reversed);
         SchemaOptions dropOptions = SchemaOptions.defaults().withIfNotExists(true);
@@ -142,7 +142,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     @Override
     public Mono<Void> validate(Iterable<Class<?>> entityTypes) {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
-        List<Class<?>> ordered = copyOf(entityTypes);
+        List<Class<?>> ordered = collapseToRoots(copyOf(entityTypes));
         return operations.queryNative(
                         NativeQuery.of(dialect.listTablesSql()),
                         row -> row.get(Dialect.TABLE_NAME_COLUMN, String.class))
@@ -164,14 +164,17 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
      * 한 엔티티의 테이블 존재와 컬럼 존재를 검증해 문제 메시지(없으면 빈 문자열)를 발행한다.
      */
     private Mono<String> validateOne(Class<?> type, java.util.Set<String> existingTables) {
-        EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
+        EntityMetadata<?> metadata = schemaMetadata(type);
         String table = metadata.tableName();
         if (!existingTables.contains(table)) {
             return Mono.just("table '" + table + "' is missing");
         }
-        List<String> expectedColumns = metadata.columnMappedProperties().stream()
+        List<String> expectedColumns = new ArrayList<>(metadata.columnMappedProperties().stream()
                 .map(PersistentProperty::columnName)
-                .toList();
+                .toList());
+        if (metadata.hasInheritance()) {
+            expectedColumns.add(metadata.inheritance().discriminatorColumn());
+        }
         return operations.queryNative(
                         NativeQuery.of(dialect.listColumnsSql(table)),
                         row -> row.get(Dialect.COLUMN_NAME_COLUMN, String.class))
@@ -186,7 +189,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     }
 
     private Mono<Void> createOne(Class<?> entityType, SchemaOptions options) {
-        EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(entityType);
+        EntityMetadata<?> metadata = schemaMetadata(entityType);
         SchemaGenerator generator = dialect.schemaGenerator();
         String createDdl = options.ifNotExists()
                 ? generator.createTableIfNotExists(metadata)
@@ -205,12 +208,40 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     }
 
     private Mono<Void> dropOne(Class<?> entityType, SchemaOptions options) {
-        EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(entityType);
+        EntityMetadata<?> metadata = schemaMetadata(entityType);
         SchemaGenerator generator = dialect.schemaGenerator();
         String dropDdl = options.ifNotExists()
                 ? generator.dropTableIfExists(metadata)
                 : generator.dropTable(metadata);
         return operations.executeNative(NativeQuery.of(dropDdl)).then();
+    }
+
+    /**
+     * SINGLE_TABLE 상속 멤버를 자신의 계층 루트로 접고(collapse) 중복을 제거해, 한 물리 테이블이 정확히
+     * 한 번만 생성/삭제/검증되도록 한다. 상속이 아닌 엔티티는 그대로 둔다. 입력 순서는 보존한다.
+     */
+    private List<Class<?>> collapseToRoots(List<Class<?>> entityTypes) {
+        List<Class<?>> result = new ArrayList<>(entityTypes.size());
+        for (Class<?> type : entityTypes) {
+            Class<?> root = schemaRootClass(type);
+            if (!result.contains(root)) {
+                result.add(root);
+            }
+        }
+        return result;
+    }
+
+    private Class<?> schemaRootClass(Class<?> type) {
+        EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
+        return metadata.hasInheritance() ? metadata.inheritance().root() : type;
+    }
+
+    /**
+     * DDL/검증에 쓸 메타데이터를 해석한다. 계층 루트면 전 서브타입 컬럼을 union한 병합 메타데이터를,
+     * 그 외에는 일반 메타데이터를 반환한다.
+     */
+    private EntityMetadata<?> schemaMetadata(Class<?> type) {
+        return metadataFactory.mergedHierarchyMetadata(schemaRootClass(type));
     }
 
     private static List<Class<?>> copyOf(Iterable<Class<?>> entityTypes) {

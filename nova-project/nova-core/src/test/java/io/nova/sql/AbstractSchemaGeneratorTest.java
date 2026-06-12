@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -290,6 +291,24 @@ class AbstractSchemaGeneratorTest {
                 "exception should name the rejected column, got " + exception.getMessage());
         assertTrue(exception.getMessage().contains("email"),
                 "exception should list known columns, got " + exception.getMessage());
+    }
+
+    @Test
+    void mergedHierarchyCreateTableEmitsUnionColumnsAndDiscriminator() {
+        factory.getEntityMetadata(io.nova.support.fixtures.FixtureEntities.Car.class);
+        factory.getEntityMetadata(io.nova.support.fixtures.FixtureEntities.Truck.class);
+        EntityMetadata<?> merged =
+                factory.mergedHierarchyMetadata(io.nova.support.fixtures.FixtureEntities.Vehicle.class);
+
+        String ddl = dialect.schemaGenerator().createTable(merged);
+
+        // 단일 테이블에 루트(id/name) + 모든 서브타입(doors/payload) + discriminator(kind) 컬럼이 들어간다.
+        assertTrue(ddl.startsWith("create table vehicles ("), ddl);
+        assertTrue(ddl.contains("doors integer"), "Dog 서브타입 컬럼이 nullable로 포함, got " + ddl);
+        assertTrue(ddl.contains("payload double precision"), "Truck 서브타입 컬럼 포함, got " + ddl);
+        assertTrue(ddl.contains("kind varchar(31) not null"), "discriminator 컬럼 포함, got " + ddl);
+        // 서브타입 전용 컬럼은 not null이 붙지 않는다(단일 테이블에서 nullable).
+        assertFalse(ddl.contains("doors integer not null"), "서브타입 전용 컬럼은 nullable이어야 한다, got " + ddl);
     }
 
     private static final class TestDialect implements Dialect {
