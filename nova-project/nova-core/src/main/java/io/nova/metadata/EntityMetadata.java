@@ -98,7 +98,7 @@ public final class EntityMetadata<T> {
                 throw new IllegalArgumentException(
                         entityType.getName() + " declares duplicate property name " + property.propertyName());
             }
-            if (!property.oneToMany()) {
+            if (!property.oneToMany() && !property.inverseToOne()) {
                 columnMapped.add(property);
             }
             if (createdAt == null && property.createdAt()) {
@@ -306,12 +306,22 @@ public final class EntityMetadata<T> {
     }
 
     /**
+     * inverse-side {@code @OneToOne}({@code mappedBy}) property들. 캐시하지 않는다(동일 사유).
+     * owning-side {@code @OneToOne}은 {@link #manyToOneProperties()}에 포함된다(@ManyToOne과 동일 모델링).
+     */
+    public List<PersistentProperty> oneToOneInverseProperties() {
+        return properties.stream().filter(PersistentProperty::inverseToOne).toList();
+    }
+
+    /**
      * {@code @ManyToOne} 또는 {@code @OneToMany} 중 하나라도 존재하면 {@code true}. annotation-driven 자동
      * hydration의 진입 가드로 사용된다 — 관계가 없는 entity는 기존 zero-overhead findById/findAll 경로를
      * 그대로 거친다.
      */
     public boolean hasRelationProperties() {
-        return !manyToOneProperties().isEmpty() || !oneToManyProperties().isEmpty();
+        return !manyToOneProperties().isEmpty()
+                || !oneToManyProperties().isEmpty()
+                || !oneToOneInverseProperties().isEmpty();
     }
 
     /**

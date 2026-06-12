@@ -134,6 +134,34 @@ public final class FetchGroup<P> {
             return this;
         }
 
+        /**
+         * inverse-side {@code @OneToOne}({@code mappedBy})의 fetch spec을 추가한다. 소유 측이 FK를 가지므로
+         * {@code @OneToMany}와 같은 by-FK IN-query를 쓰되, parent당 child 한 건만 주입한다(있으면 첫 번째).
+         *
+         * @param childType                 소유 측(반대편) entity 타입
+         * @param childForeignKeyColumn     child 측 FK 컬럼 이름(이 parent의 id를 가리킴)
+         * @param parentIdExtractor         parent 인스턴스에서 id를 꺼내는 함수
+         * @param singleSetter              parent에 단건 child를 주입하는 함수
+         */
+        public <C> Builder<P> withInverseReference(
+                Class<C> childType,
+                String childForeignKeyColumn,
+                Function<P, Object> parentIdExtractor,
+                BiConsumer<P, C> singleSetter
+        ) {
+            Objects.requireNonNull(childType, "childType must not be null");
+            Objects.requireNonNull(childForeignKeyColumn, "childForeignKeyColumn must not be null");
+            if (childForeignKeyColumn.isBlank()) {
+                throw new IllegalArgumentException("childForeignKeyColumn must not be blank");
+            }
+            Objects.requireNonNull(parentIdExtractor, "parentIdExtractor must not be null");
+            Objects.requireNonNull(singleSetter, "singleSetter must not be null");
+            BiConsumer<P, List<C>> listSetter = (parent, children) ->
+                    singleSetter.accept(parent, children == null || children.isEmpty() ? null : children.get(0));
+            specs.add(new FetchSpec<>(childType, childForeignKeyColumn, parentIdExtractor, listSetter, true, null));
+            return this;
+        }
+
         public FetchGroup<P> build() {
             return new FetchGroup<>(parentType, specs);
         }

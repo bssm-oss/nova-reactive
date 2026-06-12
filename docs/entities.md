@@ -41,6 +41,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
+| `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. `fetch = LAZY` / `cascade` are rejected. |
 | `@OrderBy`        | On `@OneToMany`, orders hydrated children. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY` to the child query; an empty `@OrderBy` sorts by the child's `@Id` ascending. |
 | `@AttributeOverride` | On an `@Embedded` field, overrides a sub-property's column name with an absolute name (e.g. `@AttributeOverride(name = "city", column = @Column(name = "ship_city"))`). |
 | `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
@@ -167,6 +168,34 @@ public static class Book {
 - If the FK column seen by `@ManyToOne` clashes with another `@Column(name)` on the same entity, `EntityMetadataFactory` raises an explicit error rather than silently merging them.
 - There is no lazy proxy and no persistence context. For partial collections, drive `FetchGroup` explicitly.
 
+### `@OneToOne`
+
+```java
+@Entity @Table(name = "person")
+public class Person {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+
+    @OneToOne
+    @JoinColumn(name = "passport_id")     // owning side — unique FK column
+    private Passport passport;
+}
+
+@Entity @Table(name = "passport")
+public class Passport {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+
+    @OneToOne(mappedBy = "passport")      // inverse side — no column
+    private Person holder;
+}
+```
+
+- The **owning** side (the one with `@JoinColumn` / no `mappedBy`) carries a unique FK column and
+  is hydrated exactly like `@ManyToOne` — a single IN query, FK bound from the referenced `@Id`.
+- The **inverse** side (`mappedBy`) has no column; `findById` / `findAll` hydrate the single owner
+  by querying the owning table's FK. As with `@OneToMany`, declare `targetEntity` when the type
+  cannot be inferred, and the inverse field is excluded from column mapping automatically.
+- `@OneToOne(fetch = LAZY)` and `cascade` are rejected fail-fast (no lazy proxy / no cascade graph).
+
 ---
 
 ## Inheritance (`SINGLE_TABLE`)
@@ -288,8 +317,8 @@ Nova reuses the JPA annotations but is a non-blocking, persistence-context-free 
 
 | Annotation / attribute | Why rejected |
 |------------------------|--------------|
-| `@ManyToOne(fetch = LAZY)` | No lazy proxy. Relations are fetched eagerly with a single IN-query, or explicitly via `FetchGroup`. The JPA default `EAGER` is honored. |
-| `@ManyToOne(cascade = ...)` / `@OneToMany(cascade = ...)` | No persistence-context graph; persist related entities explicitly with `save` / `saveAll`. |
+| `@ManyToOne(fetch = LAZY)` / `@OneToOne(fetch = LAZY)` | No lazy proxy. Relations are fetched eagerly with a single IN-query, or explicitly via `FetchGroup`. The JPA default `EAGER` is honored. |
+| `@ManyToOne(cascade = ...)` / `@OneToMany(cascade = ...)` / `@OneToOne(cascade = ...)` | No persistence-context graph; persist related entities explicitly with `save` / `saveAll`. |
 | `@OneToMany(orphanRemoval = true)` | No dirty-tracking; delete children explicitly. |
 | `@Column(table = ...)` | Secondary tables are not supported. |
 | `@GeneratedValue(strategy = TABLE)` | Use `IDENTITY`, `SEQUENCE`, `UUID`, or `AUTO`. |
