@@ -9,8 +9,8 @@ Adding `nova-spring-boot-starter` registers every core bean via `NovaAutoConfigu
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-boot-starter:1.0.1")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:1.0.1")
+    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.0.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.0.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -74,7 +74,7 @@ nova:
 
 ## Spring Data-style repositories (`nova-spring-data`)
 
-The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:1.0.1`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
+The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.0.0`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
 
 ```java
 import io.nova.spring.data.ReactiveCrudRepository;
