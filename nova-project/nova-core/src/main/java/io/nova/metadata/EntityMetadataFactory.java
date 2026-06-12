@@ -3,6 +3,7 @@ package io.nova.metadata;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
+import jakarta.persistence.Convert;
 import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.DiscriminatorValue;
@@ -41,6 +42,7 @@ import jakarta.persistence.Version;
 import io.nova.convert.AttributeConverter;
 import io.nova.convert.EnumOrdinalConverter;
 import io.nova.convert.EnumStringConverter;
+import io.nova.convert.JpaAttributeConverterAdapter;
 import io.nova.convert.JsonAttributeConverter;
 import io.nova.json.JsonCodec;
 
@@ -48,6 +50,8 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -1011,6 +1015,42 @@ public final class EntityMetadataFactory {
             converter = new JsonAttributeConverter(jsonCodec, field.getType());
         }
 
+        // @Convert(converter=X.class): JPA 표준 AttributeConverter를 어댑터로 감싸 일반 converter 경로에 태운다.
+        // 저장 표현 타입(Y)을 columnType()/schema 컬럼 타입의 근거로 보관한다.
+        Class<?> converterColumnType = null;
+        Convert convert = field.getAnnotation(Convert.class);
+        if (convert != null && !convert.disableConversion()) {
+            if (isEnumerated || isJson) {
+                throw new IllegalStateException(
+                        declaringType.getName() + "." + field.getName()
+                                + " cannot combine @Convert with @Enumerated/@Json");
+            }
+            if (userConverter != null) {
+                throw new IllegalStateException(
+                        declaringType.getName() + "." + field.getName()
+                                + " cannot combine @Convert with a registered AttributeConverter for "
+                                + field.getType().getName());
+            }
+            Class<?> converterClass = convert.converter();
+            if (converterClass == void.class || converterClass == Void.class) {
+                throw new IllegalArgumentException(
+                        declaringType.getName() + "." + field.getName()
+                                + " @Convert requires a converter class");
+            }
+            Class<?>[] attributeAndColumn = resolveJpaConverterTypeArguments(declaringType, field, converterClass);
+            Class<?> attributeType = attributeAndColumn[0];
+            Class<?> fieldType = wrapPrimitiveType(field.getType());
+            if (!attributeType.isAssignableFrom(fieldType) && !fieldType.isAssignableFrom(attributeType)) {
+                throw new IllegalArgumentException(
+                        declaringType.getName() + "." + field.getName()
+                                + " @Convert converter " + converterClass.getName()
+                                + " expects attribute type " + attributeType.getName()
+                                + " but the field is " + field.getType().getName());
+            }
+            converter = new JpaAttributeConverterAdapter<>(instantiateJpaConverter(converterClass));
+            converterColumnType = attributeAndColumn[1];
+        }
+
         boolean embedded = hostPath != null && !hostPath.isEmpty();
         int length = column != null ? column.length() : 255;
         int precision = column != null ? column.precision() : 0;
@@ -1052,8 +1092,96 @@ public final class EntityMetadataFactory {
                 updatable,
                 unique,
                 columnDefinition,
-                lob
+                lob,
+                converterColumnType
         );
+    }
+
+    /**
+     * {@code @Convert}로 지정된 {@link jakarta.persistence.AttributeConverter} 구현의 type argument
+     * {@code [X(엔티티 속성 타입), Y(컬럼 저장 타입)]}을 reflection으로 해석한다. 구체 타입이 아니거나
+     * (raw/제네릭) AttributeConverter 구현이 발견되지 않으면 fail-fast로 거부한다.
+     */
+    private static Class<?>[] resolveJpaConverterTypeArguments(
+            Class<?> declaringType, Field field, Class<?> converterClass) {
+        for (Type supertype : genericSupertypes(converterClass)) {
+            if (supertype instanceof ParameterizedType parameterized
+                    && parameterized.getRawType() == jakarta.persistence.AttributeConverter.class) {
+                Type[] arguments = parameterized.getActualTypeArguments();
+                Class<?> attributeType = rawClass(arguments[0]);
+                Class<?> columnType = rawClass(arguments[1]);
+                if (attributeType == null || columnType == null) {
+                    break;
+                }
+                return new Class<?>[]{attributeType, columnType};
+            }
+        }
+        throw new IllegalArgumentException(
+                declaringType.getName() + "." + field.getName() + " @Convert converter "
+                        + converterClass.getName()
+                        + " must implement jakarta.persistence.AttributeConverter with concrete type arguments");
+    }
+
+    /**
+     * 클래스의 제네릭 상위 타입(구현 인터페이스 + 슈퍼클래스)을 재귀적으로 평탄화해 반환한다.
+     * {@code AttributeConverter}를 중간 추상 베이스를 통해 구현한 경우까지 탐색한다.
+     */
+    private static List<Type> genericSupertypes(Class<?> type) {
+        List<Type> result = new ArrayList<>();
+        Class<?> current = type;
+        while (current != null && current != Object.class) {
+            result.addAll(Arrays.asList(current.getGenericInterfaces()));
+            Type genericSuperclass = current.getGenericSuperclass();
+            if (genericSuperclass != null) {
+                result.add(genericSuperclass);
+            }
+            current = current.getSuperclass();
+        }
+        return result;
+    }
+
+    private static Class<?> rawClass(Type type) {
+        if (type instanceof Class<?> clazz) {
+            return clazz;
+        }
+        if (type instanceof ParameterizedType parameterized
+                && parameterized.getRawType() instanceof Class<?> raw) {
+            return raw;
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static jakarta.persistence.AttributeConverter<Object, Object> instantiateJpaConverter(
+            Class<?> converterClass) {
+        try {
+            var constructor = converterClass.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return (jakarta.persistence.AttributeConverter<Object, Object>) constructor.newInstance();
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalArgumentException(
+                    "@Convert converter " + converterClass.getName()
+                            + " must have an accessible no-arg constructor", exception);
+        }
+    }
+
+    /**
+     * primitive 타입을 대응하는 boxed wrapper로 바꾼다(@Convert 속성 타입 호환 비교용). primitive가 아니면
+     * 그대로 반환한다.
+     */
+    private static Class<?> wrapPrimitiveType(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == int.class) return Integer.class;
+        if (type == long.class) return Long.class;
+        if (type == boolean.class) return Boolean.class;
+        if (type == double.class) return Double.class;
+        if (type == float.class) return Float.class;
+        if (type == short.class) return Short.class;
+        if (type == byte.class) return Byte.class;
+        if (type == char.class) return Character.class;
+        return type;
     }
 
     /**
@@ -1157,7 +1285,8 @@ public final class EntityMetadataFactory {
                 true,
                 false,
                 "",
-                false
+                false,
+                null
         );
     }
 
@@ -1229,7 +1358,8 @@ public final class EntityMetadataFactory {
                 fkUpdatable,
                 fkUnique,
                 fkColumnDefinition,
-                false
+                false,
+                null
         );
     }
 

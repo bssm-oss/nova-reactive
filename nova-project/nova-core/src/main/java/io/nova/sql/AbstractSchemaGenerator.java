@@ -193,7 +193,8 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             // @Lob: byte[]는 binary LOB(BLOB류), 그 외(String 등)는 character LOB(CLOB류).
             return dialect.lobType(property.javaType() == byte[].class);
         }
-        Class<?> type = property.javaType();
+        // @Convert 변환기가 있으면 도메인 타입(javaType=X)이 아니라 저장 표현 타입(columnType=Y)으로 컬럼을 만든다.
+        Class<?> type = property.columnType();
         if (type == String.class) {
             return "varchar(" + property.length() + ")";
         }
