@@ -147,6 +147,20 @@ public class NovaAutoConfiguration {
     }
 
     /**
+     * Eagerly builds metadata for every scanned {@code @Entity} at startup so the full entity set
+     * (including SINGLE_TABLE inheritance hierarchies) is known up front, JPA-style. Runs regardless
+     * of {@code nova.ddl-auto}.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public NovaEntityPreloadRunner novaEntityPreloadRunner(
+            EntityMetadataFactory metadataFactory,
+            NovaProperties properties,
+            BeanFactory beanFactory) {
+        return new NovaEntityPreloadRunner(metadataFactory, properties, beanFactory);
+    }
+
+    /**
      * Runs the {@link DdlAuto} bootstrap on application startup. Only registered when
      * {@code nova.ddl-auto} is set to anything other than {@code none} so that the
      * runner does not appear in the context for the default (do-nothing) configuration.

@@ -33,6 +33,9 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; columns flatten into the host entity's table. |
 | `@Embedded`       | FIELD-level marker indicating that an entity field is an `@Embeddable` flattened into host columns. |
 | `@MappedSuperclass` | TYPE-level marker on a non-entity base class. Its fields (e.g. an inherited id / audit columns) are mapped into every entity that extends it. |
+| `@Inheritance`    | TYPE-level marker on a hierarchy root. Only `strategy = SINGLE_TABLE` is supported (the JPA default); `JOINED` / `TABLE_PER_CLASS` are rejected fail-fast. Optional — an `@Entity` extending another `@Entity` defaults to SINGLE_TABLE. |
+| `@DiscriminatorColumn` | On the hierarchy root, names the discriminator column (default `dtype`) and its type (`STRING` default, `CHAR`, `INTEGER`). |
+| `@DiscriminatorValue`  | On each concrete subtype, the value stored in the discriminator column. For `STRING` it defaults to the entity name; `CHAR` / `INTEGER` require it explicitly. |
 | `@Transient`      | Excludes a field from mapping entirely (same effect as the Java `transient` keyword). |
 | `@Index`          | Table-level secondary index, declared in `@Table(indexes = ...)` with a comma-separated `columnList`. Without `name`, generated as `ix_{table}_{cols}`. |
 | `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
@@ -132,6 +135,65 @@ public static class Book {
 
 ---
 
+## Inheritance (`SINGLE_TABLE`)
+
+Map an entity hierarchy onto one table with a discriminator column, exactly like JPA's
+`InheritanceType.SINGLE_TABLE` (the only strategy Nova supports — `JOINED` and
+`TABLE_PER_CLASS` are rejected fail-fast).
+
+```java
+@Entity
+@Table(name = "vehicles")
+@Inheritance(strategy = InheritanceType.SINGLE_TABLE)
+@DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+public abstract class Vehicle {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+    private String name;
+}
+
+@Entity
+@DiscriminatorValue("CAR")
+public class Car extends Vehicle {
+    private int doors;
+}
+
+@Entity
+@DiscriminatorValue("TRUCK")
+public class Truck extends Vehicle {
+    private double payload;
+}
+```
+
+- **One table.** All subtype columns flatten into the root's table (`vehicles` gets `id`,
+  `name`, `doors`, `payload`, `kind`). Subtype-only columns are created **nullable** since
+  other subtypes leave them empty. Provision it once via the root —
+  `schemaInitializer.create(Vehicle.class, Car.class, Truck.class)` collapses to a single
+  `create table vehicles (...)`; the discriminator column (`kind varchar(31) not null`) is
+  added automatically.
+- **Polymorphic reads.** `findById(Vehicle.class, id)` / `findAll(Vehicle.class, ...)` read
+  the discriminator on each row and return the concrete subtype instance (`Car` / `Truck`).
+- **Subtype reads are restricted.** `findById(Car.class, id)` / `findAll(Car.class, ...)` /
+  `count` / `exists` add `where kind = 'CAR'`, so they only see that exact type's rows.
+- **Writes record the discriminator.** `save(new Car(...))` inserts `kind = 'CAR'`
+  automatically; the discriminator column is never part of `update`.
+- **Defaults.** Without `@DiscriminatorColumn` the column is `dtype` / `STRING`; without
+  `@DiscriminatorValue` a `STRING` discriminator defaults to the entity name. `@Inheritance`
+  itself is optional — an `@Entity` that simply extends another `@Entity` is treated as a
+  SINGLE_TABLE hierarchy (JPA's default).
+
+Subtype discovery follows JPA's persistence-unit model: every entity's metadata must be
+built before a polymorphic root query can dispatch rows. The Spring starter does this for
+you — it eagerly builds metadata for all `@Entity` classes in `nova.entity-packages` at
+startup (regardless of `nova.ddl-auto`). In standalone use, build each subtype's metadata
+(e.g. via `schemaInitializer.create(...)` or a `findAll`/`save` on it) before querying the
+root polymorphically.
+
+> Single-level leaves are the common case. Querying a non-leaf mid-hierarchy type restricts
+> to that type's own discriminator value (not its descendants); `JOINED`,
+> `TABLE_PER_CLASS`, and `@DiscriminatorFormula` are not supported.
+
+---
+
 ## Indexes and unique constraints
 
 Declare table-level secondary indexes and unique constraints as members of `@Table`
@@ -197,5 +259,6 @@ Nova reuses the JPA annotations but is a non-blocking, persistence-context-free 
 | `@OneToMany(orphanRemoval = true)` | No dirty-tracking; delete children explicitly. |
 | `@Column(table = ...)` | Secondary tables are not supported. |
 | `@GeneratedValue(strategy = TABLE)` | Use `IDENTITY`, `SEQUENCE`, `UUID`, or `AUTO`. |
+| `@Inheritance(strategy = JOINED \| TABLE_PER_CLASS)` | Only `SINGLE_TABLE` is supported. |
 
 `@OneToMany`'s default `fetch = LAZY` is the one exception: it is treated as eager (Nova's only mode) rather than rejected, since rejecting the default would reject every collection.

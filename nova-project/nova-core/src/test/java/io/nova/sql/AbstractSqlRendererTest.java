@@ -1603,6 +1603,49 @@ class AbstractSqlRendererTest {
         assertEquals(java.util.List.of(true), statement.bindings());
     }
 
+    @Test
+    void insertWritesDiscriminatorValueForSingleTableSubtype() {
+        EntityMetadata<io.nova.support.fixtures.FixtureEntities.Car> carMetadata =
+                metadataFactory.getEntityMetadata(io.nova.support.fixtures.FixtureEntities.Car.class);
+        io.nova.support.fixtures.FixtureEntities.Car car = new io.nova.support.fixtures.FixtureEntities.Car();
+        car.setName("ada");
+        car.setDoors(4);
+
+        SqlStatement statement = dialect.sqlRenderer().insert(carMetadata, car);
+
+        assertEquals("insert into vehicles (name, doors, kind) values (?, ?, ?)", statement.sql());
+        assertEquals(java.util.List.of("ada", 4, "CAR"), statement.bindings());
+    }
+
+    @Test
+    void subtypeSelectIsRestrictedByDiscriminator() {
+        EntityMetadata<io.nova.support.fixtures.FixtureEntities.Car> carMetadata =
+                metadataFactory.getEntityMetadata(io.nova.support.fixtures.FixtureEntities.Car.class);
+
+        SqlStatement statement = dialect.sqlRenderer().select(carMetadata, QuerySpec.empty());
+
+        assertEquals(
+                "select id as id, name as name, doors as doors, kind as kind from vehicles where kind = ?",
+                statement.sql());
+        assertEquals(java.util.List.of("CAR"), statement.bindings());
+    }
+
+    @Test
+    void rootMergedSelectUnionsSubtypeColumnsWithoutDiscriminatorRestriction() {
+        // 서브타입을 먼저 빌드해 union 레지스트리를 채운다.
+        metadataFactory.getEntityMetadata(io.nova.support.fixtures.FixtureEntities.Car.class);
+        metadataFactory.getEntityMetadata(io.nova.support.fixtures.FixtureEntities.Truck.class);
+        EntityMetadata<?> merged =
+                metadataFactory.mergedHierarchyMetadata(io.nova.support.fixtures.FixtureEntities.Vehicle.class);
+
+        SqlStatement statement = dialect.sqlRenderer().select(merged, QuerySpec.empty());
+
+        assertEquals(
+                "select id as id, name as name, doors as doors, payload as payload, kind as kind from vehicles",
+                statement.sql());
+        assertTrue(statement.bindings().isEmpty(), "루트 다형 조회는 discriminator 제약이 없어야 한다");
+    }
+
     private static final class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
         private final SqlRenderer renderer = new AbstractSqlRenderer(this) {

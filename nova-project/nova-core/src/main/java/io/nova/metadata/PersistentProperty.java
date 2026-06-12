@@ -121,6 +121,51 @@ public final class PersistentProperty {
     }
 
     /**
+     * 이 property의 nullable 여부만 바꾼 복사본을 만든다. SINGLE_TABLE 상속에서 서브타입 전용 컬럼은
+     * 다른 서브타입 row에서는 비어 있어야 하므로, 단일 테이블 union DDL을 만들 때 강제로 nullable로
+     * 낮추는 용도로 사용한다. 나머지 모든 메타데이터(field/converter/embedded path 등)는 그대로 보존한다.
+     */
+    public PersistentProperty withNullable(boolean newNullable) {
+        if (this.nullable == newNullable) {
+            return this;
+        }
+        return new PersistentProperty(
+                field,
+                propertyName,
+                columnName,
+                javaType,
+                id,
+                version,
+                newNullable,
+                length,
+                precision,
+                scale,
+                generationType,
+                generator,
+                converter,
+                createdAt,
+                updatedAt,
+                softDelete,
+                embedded,
+                embeddedHostPath,
+                enumerated,
+                enumType,
+                json,
+                manyToOne,
+                manyToOneTargetType,
+                manyToOneNullable,
+                oneToMany,
+                oneToManyTargetType,
+                oneToManyMappedBy,
+                insertable,
+                updatable,
+                unique,
+                columnDefinition,
+                lob
+        );
+    }
+
+    /**
      * {@code @Lob} 컬럼 여부. {@code true}이면 schema 생성 시 dialect의 LOB 타입(CLOB/BLOB류)을 쓴다.
      */
     public boolean lob() {

@@ -1,9 +1,11 @@
 package io.nova.sql;
 
+import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.GenerationType;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.IndexDefinition;
+import io.nova.metadata.InheritanceInfo;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.UniqueConstraintDefinition;
 
@@ -55,9 +57,27 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         for (PersistentProperty property : metadata.columnMappedProperties()) {
             columns.add(columnDefinition(property));
         }
+        // SINGLE_TABLE 상속: 단일 테이블에 discriminator 컬럼을 추가한다.
+        if (metadata.hasInheritance()) {
+            columns.add(discriminatorColumnDefinition(metadata));
+        }
         return "create table " + (ifNotExists ? "if not exists " : "")
                 + qualifiedTable(metadata)
                 + " (" + String.join(", ", columns) + ")";
+    }
+
+    /**
+     * SINGLE_TABLE 상속의 discriminator 컬럼 DDL. STRING은 {@code varchar(length)}, CHAR는 {@code char(1)},
+     * INTEGER는 {@code integer}로 매핑하며 항상 not null이다(모든 row가 타입을 가진다).
+     */
+    protected String discriminatorColumnDefinition(EntityMetadata<?> metadata) {
+        InheritanceInfo info = metadata.inheritance();
+        String type = switch (info.discriminatorType()) {
+            case STRING -> "varchar(" + info.discriminatorLength() + ")";
+            case CHAR -> "char(1)";
+            case INTEGER -> "integer";
+        };
+        return dialect.quote(info.discriminatorColumn()) + " " + type + " not null";
     }
 
     @Override

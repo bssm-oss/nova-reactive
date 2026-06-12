@@ -48,6 +48,12 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             markers.add(dialect.bindMarkers().marker(index + 1));
             bindings.add(property.toColumnValue(property.read(entity)));
         }
+        // SINGLE_TABLE 상속: 구체 타입의 discriminator 값을 상수로 기록한다.
+        if (metadata.hasInheritance()) {
+            columns.add(dialect.quote(metadata.inheritance().discriminatorColumn()));
+            markers.add(dialect.bindMarkers().marker(properties.size() + 1));
+            bindings.add(metadata.inheritance().discriminatorBindValue());
+        }
         String sql = "insert into " + table(metadata) +
                 " (" + String.join(", ", columns) + ") values (" + String.join(", ", markers) + ")" +
                 insertSuffix(metadata);
@@ -371,6 +377,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 .append(" where ").append(column(metadata.idProperty())).append(" = ")
                 .append(dialect.bindMarkers().marker(context.nextIndex()));
         context.addBinding(id);
+        if (restrictsToSubtype(metadata)) {
+            sql.append(" and ").append(discriminatorRestriction(context, metadata));
+        }
         appendSoftDeleteAlive(sql, metadata, " and ");
         return new SqlStatement(sql.toString(), context.bindings());
     }
@@ -566,18 +575,39 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             Cursor cursor
     ) {
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
-        if (predicate == null && cursor == null && softDelete.isEmpty()) {
+        boolean restrictSubtype = restrictsToSubtype(metadata);
+        if (predicate == null && cursor == null && softDelete.isEmpty() && !restrictSubtype) {
             return;
         }
-        List<String> clauses = new ArrayList<>(3);
+        List<String> clauses = new ArrayList<>(4);
         if (predicate != null) {
             clauses.add(renderPredicate(context, metadata, predicate));
         }
         if (cursor != null) {
             clauses.add(renderCursorPredicate(context, metadata, cursor));
         }
+        if (restrictSubtype) {
+            clauses.add(discriminatorRestriction(context, metadata));
+        }
         softDelete.ifPresent(property -> clauses.add(column(property) + " is null"));
         sql.append(" where ").append(String.join(" and ", clauses));
+    }
+
+    /**
+     * SINGLE_TABLE 상속에서 구체 서브타입을 조회/집계할 때 {@code discriminator = value}로 제한해야
+     * 하는지 판정한다. 루트(merged 메타데이터 포함)는 다형 조회이므로 제한하지 않는다.
+     */
+    private boolean restrictsToSubtype(EntityMetadata<?> metadata) {
+        return metadata.hasInheritance() && !metadata.isInheritanceRoot();
+    }
+
+    /**
+     * {@code discriminator = value} 제한 절을 만들고 bind 값을 등록한다.
+     */
+    private String discriminatorRestriction(RenderContext context, EntityMetadata<?> metadata) {
+        String marker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(metadata.inheritance().discriminatorBindValue());
+        return dialect.quote(metadata.inheritance().discriminatorColumn()) + " = " + marker;
     }
 
     /**
@@ -828,9 +858,16 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     private String selectList(EntityMetadata<?> metadata) {
-        return metadata.columnMappedProperties().stream()
-                .map(property -> column(property) + " as " + dialect.quote(property.columnName()))
-                .collect(Collectors.joining(", "));
+        List<String> items = new ArrayList<>();
+        for (PersistentProperty property : metadata.columnMappedProperties()) {
+            items.add(column(property) + " as " + dialect.quote(property.columnName()));
+        }
+        // SINGLE_TABLE 상속: row마다 구체 서브타입을 판별할 수 있도록 discriminator 컬럼도 SELECT한다.
+        if (metadata.hasInheritance()) {
+            String discriminator = metadata.inheritance().discriminatorColumn();
+            items.add(dialect.quote(discriminator) + " as " + dialect.quote(discriminator));
+        }
+        return String.join(", ", items);
     }
 
     protected static final class RenderContext {
