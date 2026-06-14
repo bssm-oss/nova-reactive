@@ -183,6 +183,54 @@ public final class PersistentProperty {
     }
 
     /**
+     * 이 property의 {@code id} 플래그만 {@code true}로 올린 복사본을 만든다. {@code @EmbeddedId}로 펼쳐진
+     * 복합키 컴포넌트는 {@code @Embeddable} 안에 {@code @Id}가 없는 평범한 필드로 선언되므로
+     * {@link EntityMetadataFactory}가 컬럼으로 펼친 뒤 이 메서드로 id 컴포넌트임을 표시한다. 나머지 모든
+     * 메타데이터(embedded host path, converter 등)는 그대로 보존한다.
+     */
+    public PersistentProperty withId() {
+        if (this.id) {
+            return this;
+        }
+        return new PersistentProperty(
+                field,
+                propertyName,
+                columnName,
+                javaType,
+                true,
+                version,
+                nullable,
+                length,
+                precision,
+                scale,
+                generationType,
+                generator,
+                converter,
+                createdAt,
+                updatedAt,
+                softDelete,
+                embedded,
+                embeddedHostPath,
+                enumerated,
+                enumType,
+                json,
+                manyToOne,
+                manyToOneTargetType,
+                manyToOneNullable,
+                oneToMany,
+                oneToManyTargetType,
+                oneToManyMappedBy,
+                insertable,
+                updatable,
+                unique,
+                columnDefinition,
+                lob,
+                converterColumnType,
+                inverseToOne
+        );
+    }
+
+    /**
      * {@code @Lob} 컬럼 여부. {@code true}이면 schema 생성 시 dialect의 LOB 타입(CLOB/BLOB류)을 쓴다.
      */
     public boolean lob() {
@@ -479,6 +527,43 @@ public final class PersistentProperty {
         }
         throw new IllegalStateException(
                 "@ManyToOne referenced entity " + type.getName() + " has no @Id field");
+    }
+
+    /**
+     * findById/deleteById 등에 전달된 <em>id 값 객체</em>에서 이 컬럼에 바인딩할 값을 꺼낸다. 단일 키
+     * (embedded host path 없음)는 id 객체 자체가 곧 컬럼 값이므로 그대로 반환한다. {@code @EmbeddedId}
+     * 복합키 컴포넌트는 id 객체가 {@code @Embeddable} 인스턴스이므로 leaf field를 직접 읽는다 — entity가
+     * 아니라 id holder에서 읽으므로 {@link #read(Object)}의 embedded host-path traversal을 거치지 않는다.
+     */
+    public Object readFromIdHolder(Object idHolder) {
+        if (embeddedHostPath.isEmpty()) {
+            return idHolder;
+        }
+        try {
+            return field.get(idHolder);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException("Cannot read @EmbeddedId component " + field.getName(), exception);
+        }
+    }
+
+    /**
+     * entity 인스턴스에서 이 property가 속한 가장 안쪽 embedded host(예: {@code @EmbeddedId} holder 객체)를
+     * 반환한다. embedded가 아니면 entity 자신을 그대로 돌려준다. host 체인 중간이 {@code null}이면 {@code null}.
+     * 복합키 entity에서 id 값 객체(holder)를 통째로 꺼낼 때 사용한다.
+     */
+    public Object readHostHolder(Object instance) {
+        try {
+            Object current = instance;
+            for (Field hostField : embeddedHostPath) {
+                current = hostField.get(current);
+                if (current == null) {
+                    return null;
+                }
+            }
+            return current;
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException("Cannot read embedded host for " + field.getName(), exception);
+        }
     }
 
     public void write(Object instance, Object value) {

@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -77,11 +78,14 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 bindings.add(property.toColumnValue(property.read(entity)));
             }
         }
-        bindings.add(metadata.idProperty().read(entity));
+        List<String> idClauses = new ArrayList<>();
+        for (PersistentProperty idProperty : metadata.idProperties()) {
+            idClauses.add(column(idProperty) + " = " + dialect.bindMarkers().marker(index++));
+            bindings.add(idProperty.toColumnValue(idProperty.read(entity)));
+        }
         StringBuilder sql = new StringBuilder("update ").append(table(metadata))
                 .append(" set ").append(String.join(", ", assignments))
-                .append(" where ").append(column(metadata.idProperty()))
-                .append(" = ").append(dialect.bindMarkers().marker(index++));
+                .append(" where ").append(String.join(" and ", idClauses));
         if (versionProperty != null) {
             sql.append(" and ").append(column(versionProperty))
                     .append(" = ").append(dialect.bindMarkers().marker(index));
@@ -104,13 +108,14 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             throw new IllegalArgumentException("update requires at least one field");
         }
 
-        PersistentProperty idProperty = metadata.idProperty();
-        String idPropertyName = idProperty.propertyName();
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+        Set<String> idPropertyNames = metadata.idProperties().stream()
+                .map(PersistentProperty::propertyName)
+                .collect(Collectors.toSet());
 
         List<PersistentProperty> properties = new ArrayList<>(dedupedFields.size());
         for (String fieldName : dedupedFields) {
-            if (fieldName.equals(idPropertyName)) {
+            if (idPropertyNames.contains(fieldName)) {
                 throw new IllegalArgumentException("Cannot update id property: " + fieldName);
             }
             properties.add(findProperty(metadata, fieldName));
@@ -129,11 +134,14 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 bindings.add(property.toColumnValue(property.read(entity)));
             }
         }
-        bindings.add(idProperty.read(entity));
+        List<String> idClauses = new ArrayList<>();
+        for (PersistentProperty idProperty : metadata.idProperties()) {
+            idClauses.add(column(idProperty) + " = " + dialect.bindMarkers().marker(index++));
+            bindings.add(idProperty.toColumnValue(idProperty.read(entity)));
+        }
         StringBuilder sql = new StringBuilder("update ").append(table(metadata))
                 .append(" set ").append(String.join(", ", assignments))
-                .append(" where ").append(column(idProperty))
-                .append(" = ").append(dialect.bindMarkers().marker(index++));
+                .append(" where ").append(String.join(" and ", idClauses));
         if (versionProperty != null) {
             sql.append(" and ").append(column(versionProperty))
                     .append(" = ").append(dialect.bindMarkers().marker(index));
@@ -144,25 +152,28 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
     @Override
     public SqlStatement deleteById(EntityMetadata<?> metadata, Object id) {
+        RenderContext context = new RenderContext();
+        String where = idPredicateFromIdObject(context, metadata, id);
         return new SqlStatement(
-                "delete from " + table(metadata) + " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(1),
-                List.of(id)
+                "delete from " + table(metadata) + " where " + where,
+                context.bindings()
         );
     }
 
     @Override
     public SqlStatement deleteByEntity(EntityMetadata<?> metadata, Object entity) {
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+        RenderContext context = new RenderContext();
+        String where = idPredicateFromEntity(context, metadata, entity);
         if (versionProperty == null) {
-            return deleteById(metadata, metadata.idProperty().read(entity));
+            return new SqlStatement("delete from " + table(metadata) + " where " + where, context.bindings());
         }
-        List<Object> bindings = new ArrayList<>(2);
-        bindings.add(metadata.idProperty().read(entity));
-        bindings.add(versionProperty.toColumnValue(versionProperty.read(entity)));
+        String versionMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(versionProperty.toColumnValue(versionProperty.read(entity)));
         String sql = "delete from " + table(metadata)
-                + " where " + column(metadata.idProperty()) + " = " + dialect.bindMarkers().marker(1)
-                + " and " + column(versionProperty) + " = " + dialect.bindMarkers().marker(2);
-        return new SqlStatement(sql, bindings);
+                + " where " + where
+                + " and " + column(versionProperty) + " = " + versionMarker;
+        return new SqlStatement(sql, context.bindings());
     }
 
     /**
@@ -191,6 +202,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         if (ids.isEmpty()) {
             throw new IllegalArgumentException("deleteByIds requires at least one id");
         }
+        rejectCompositeId(metadata, "deleteByIds");
         PersistentProperty idProperty = metadata.idProperty();
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("delete from ").append(table(metadata))
@@ -278,6 +290,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     @Override
     public SqlStatement softDeleteByEntity(EntityMetadata<?> metadata, Object entity, Object deletedAt) {
         PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteByEntity");
+        rejectCompositeId(metadata, "softDeleteByEntity");
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
         if (versionProperty == null) {
             return softDeleteById(metadata, metadata.idProperty().read(entity), deletedAt);
@@ -306,6 +319,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     @Override
     public SqlStatement softDeleteById(EntityMetadata<?> metadata, Object id, Object deletedAt) {
         PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteById");
+        rejectCompositeId(metadata, "softDeleteById");
         PersistentProperty idProperty = metadata.idProperty();
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("update ").append(table(metadata))
@@ -347,6 +361,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             throw new IllegalArgumentException("softDeleteByIds requires at least one id");
         }
         PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteByIds");
+        rejectCompositeId(metadata, "softDeleteByIds");
         PersistentProperty idProperty = metadata.idProperty();
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("update ").append(table(metadata))
@@ -374,9 +389,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("select ").append(selectList(metadata))
                 .append(" from ").append(table(metadata))
-                .append(" where ").append(column(metadata.idProperty())).append(" = ")
-                .append(dialect.bindMarkers().marker(context.nextIndex()));
-        context.addBinding(id);
+                .append(" where ").append(idPredicateFromIdObject(context, metadata, id));
         if (restrictsToSubtype(metadata)) {
             sql.append(" and ").append(discriminatorRestriction(context, metadata));
         }
@@ -855,6 +868,48 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
     protected String column(PersistentProperty property) {
         return dialect.quote(property.columnName());
+    }
+
+    /**
+     * id 동등 비교 WHERE 절을 렌더하고 바인딩을 등록한다 — 단일 키는 {@code c = ?}, {@code @EmbeddedId}
+     * 복합키는 {@code c1 = ? and c2 = ?}. 값은 findById/deleteById에 전달된 id 값 객체에서 꺼낸다(단일은
+     * 스칼라, 복합은 {@code @Embeddable} holder).
+     */
+    private String idPredicateFromIdObject(RenderContext context, EntityMetadata<?> metadata, Object idObject) {
+        List<PersistentProperty> idProperties = metadata.idProperties();
+        List<String> parts = new ArrayList<>(idProperties.size());
+        for (PersistentProperty idProperty : idProperties) {
+            String marker = dialect.bindMarkers().marker(context.nextIndex());
+            context.addBinding(idProperty.toColumnValue(idProperty.readFromIdHolder(idObject)));
+            parts.add(column(idProperty) + " = " + marker);
+        }
+        return String.join(" and ", parts);
+    }
+
+    /**
+     * id 동등 비교 WHERE 절을 렌더하되 값은 entity 인스턴스에서 직접 읽는다(복합키는 컴포넌트별로).
+     */
+    private String idPredicateFromEntity(RenderContext context, EntityMetadata<?> metadata, Object entity) {
+        List<PersistentProperty> idProperties = metadata.idProperties();
+        List<String> parts = new ArrayList<>(idProperties.size());
+        for (PersistentProperty idProperty : idProperties) {
+            String marker = dialect.bindMarkers().marker(context.nextIndex());
+            context.addBinding(idProperty.toColumnValue(idProperty.read(entity)));
+            parts.add(column(idProperty) + " = " + marker);
+        }
+        return String.join(" and ", parts);
+    }
+
+    /**
+     * {@code @EmbeddedId} 복합키가 아직 지원되지 않는 연산에서 명확히 거부한다(조용한 잘못된 SQL 방지).
+     * 단일 키 경로는 영향받지 않는다.
+     */
+    private static void rejectCompositeId(EntityMetadata<?> metadata, String operation) {
+        if (metadata.hasCompositeId()) {
+            throw new IllegalArgumentException(
+                    operation + " does not support @EmbeddedId composite keys on "
+                            + metadata.entityType().getName());
+        }
     }
 
     private String selectList(EntityMetadata<?> metadata) {

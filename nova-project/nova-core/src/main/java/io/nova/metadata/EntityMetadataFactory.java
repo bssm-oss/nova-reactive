@@ -9,6 +9,7 @@ import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.DiscriminatorValue;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.EnumType;
@@ -262,6 +263,26 @@ public final class EntityMetadataFactory {
             if (field.isAnnotationPresent(OneToOne.class)) {
                 // owning(@JoinColumn FK)은 컬럼이 있고, inverse(mappedBy)는 컬럼이 없는 마커다.
                 properties.add(createOneToOneProperty(entityType, field));
+                continue;
+            }
+            if (field.isAnnotationPresent(EmbeddedId.class)) {
+                if (field.isAnnotationPresent(Id.class)) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + "." + field.getName()
+                                    + " cannot declare both @Id and @EmbeddedId");
+                }
+                if (idProperty != null) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + " declares multiple @Id/@EmbeddedId properties");
+                }
+                // @EmbeddedId는 @Embeddable holder를 컬럼들로 펼친 뒤 각 컴포넌트를 복합키 id로 표시한다.
+                List<PersistentProperty> components = createEmbeddedIdProperties(entityType, field);
+                for (PersistentProperty idComponent : components) {
+                    properties.add(idComponent);
+                    if (idProperty == null) {
+                        idProperty = idComponent;
+                    }
+                }
                 continue;
             }
             if (field.isAnnotationPresent(Embedded.class)) {
@@ -717,6 +738,58 @@ public final class EntityMetadataFactory {
      * @param parentColumnPrefix 누적된 컬럼 prefix(끝에 {@code _} 포함)
      * @param embeddableStack 현재 재귀 경로에 있는 @Embeddable 타입 집합 (cycle 검출용)
      */
+    /**
+     * {@code @EmbeddedId} 필드를 복합키 컬럼들로 펼친다. {@code @Embedded}와 달리 컬럼 이름에 host 필드
+     * 이름 prefix를 붙이지 않는다 — JPA는 {@code @EmbeddedId} 컴포넌트를 그 자신의 컬럼 이름(또는
+     * host 필드의 {@code @AttributeOverride})으로 직접 매핑한다. 각 컴포넌트는 {@link PersistentProperty#withId()}로
+     * id 표시되며, read/write를 위한 embedded host path는 {@code @EmbeddedId} holder 필드 하나다.
+     * 컴포넌트는 application-assigned이므로 {@code @GeneratedValue}나 중첩 embedded를 가질 수 없다.
+     */
+    private List<PersistentProperty> createEmbeddedIdProperties(Class<?> entityType, Field idField) {
+        Class<?> embeddableType = idField.getType();
+        if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + idField.getName()
+                            + " is annotated with @EmbeddedId but its type " + embeddableType.getName()
+                            + " is not annotated with @Embeddable");
+        }
+        List<Field> hostPath = List.of(idField);
+        // @EmbeddedId host 필드의 @AttributeOverride(name=..., column=@Column(name=...))로 컴포넌트 컬럼명을 재정의한다.
+        Map<String, String> columnOverrides = new java.util.HashMap<>();
+        for (AttributeOverride override : idField.getAnnotationsByType(AttributeOverride.class)) {
+            columnOverrides.put(override.name(), override.column().name());
+        }
+        List<PersistentProperty> result = new ArrayList<>();
+        for (Field subField : embeddableType.getDeclaredFields()) {
+            if (isNotPersistable(subField)) {
+                continue;
+            }
+            if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + idField.getName()
+                                + " @EmbeddedId component " + subField.getName()
+                                + " must be a simple (non-embedded) field");
+            }
+            // columnPrefix=""로 호출해 host 필드 이름 prefix 없이 컴포넌트 컬럼 이름을 그대로 쓴다.
+            PersistentProperty component = createProperty(
+                    embeddableType, subField, hostPath, "", columnOverrides.get(subField.getName()));
+            if (component.generated()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + idField.getName()
+                                + " @EmbeddedId component " + subField.getName()
+                                + " cannot use @GeneratedValue; composite keys are application-assigned");
+            }
+            result.add(component.withId());
+        }
+        if (result.isEmpty()) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + idField.getName()
+                            + " @EmbeddedId type " + embeddableType.getName()
+                            + " has no persistent fields to map as key columns");
+        }
+        return result;
+    }
+
     private List<PersistentProperty> createEmbeddedProperties(
             Class<?> entityType,
             Field hostField,

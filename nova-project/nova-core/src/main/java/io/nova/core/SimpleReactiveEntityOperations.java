@@ -90,21 +90,38 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <T> Mono<T> save(T entity) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
-        boolean isNew = entityStateDetector.isNew(entity, metadata);
-        if (isNew) {
-            // audit applier가 먼저 실행되어 createdAt/updatedAt에 기본값이 채워진 뒤,
-            // 사용자 @PrePersist callback이 호출되어 audit 필드 포함 entity 상태를 마지막에 결정한다.
-            // 콜백이 예외를 던지면 sync error가 Mono.error로 흘러가게 try/catch로 감싼다.
-            try {
-                auditApplier.applyOnInsert(entity, metadata);
-                listenerInvoker.invokePrePersist(entity, metadata);
-                initializeVersionIfAbsent(metadata, entity);
-            } catch (RuntimeException exception) {
-                return Mono.error(exception);
+        if (metadata.hasCompositeId()) {
+            // @EmbeddedId 복합키는 application-assigned이라 id-null "isNew" 휴리스틱을 쓸 수 없다(키가 곧
+            // 데이터라 save 시점에 항상 채워져 있음). JPA merge와 동일하게 존재 여부를 SELECT로 확인해
+            // insert/update를 가른다. 단일 키 경로는 이 분기를 타지 않아 추가 round-trip이 없다.
+            Object id = metadata.readIdValue(entity);
+            if (id == null) {
+                return Mono.error(new IllegalArgumentException(
+                        "@EmbeddedId must not be null on save for " + metadata.entityType().getName()));
             }
-            return insertNew(metadata, entity)
-                    .doOnNext(saved -> listenerInvoker.invokePostPersist(saved, metadata));
+            return findByIdInternal(metadata, id).hasElement()
+                    .flatMap(exists -> exists ? updatePath(metadata, entity) : insertPath(metadata, entity));
         }
+        boolean isNew = entityStateDetector.isNew(entity, metadata);
+        return isNew ? insertPath(metadata, entity) : updatePath(metadata, entity);
+    }
+
+    private <T> Mono<T> insertPath(EntityMetadata<T> metadata, T entity) {
+        // audit applier가 먼저 실행되어 createdAt/updatedAt에 기본값이 채워진 뒤,
+        // 사용자 @PrePersist callback이 호출되어 audit 필드 포함 entity 상태를 마지막에 결정한다.
+        // 콜백이 예외를 던지면 sync error가 Mono.error로 흘러가게 try/catch로 감싼다.
+        try {
+            auditApplier.applyOnInsert(entity, metadata);
+            listenerInvoker.invokePrePersist(entity, metadata);
+            initializeVersionIfAbsent(metadata, entity);
+        } catch (RuntimeException exception) {
+            return Mono.error(exception);
+        }
+        return insertNew(metadata, entity)
+                .doOnNext(saved -> listenerInvoker.invokePostPersist(saved, metadata));
+    }
+
+    private <T> Mono<T> updatePath(EntityMetadata<T> metadata, T entity) {
         try {
             auditApplier.applyOnUpdate(entity, metadata);
             listenerInvoker.invokePreUpdate(entity, metadata);
@@ -116,6 +133,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private <T> Mono<T> insertNew(EntityMetadata<T> metadata, T entity) {
+        if (metadata.hasCompositeId()) {
+            // @EmbeddedId 복합키는 generation 전략이 없는 application-assigned이므로 그대로 INSERT한다.
+            SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+            return sqlExecutor.execute(statement).thenReturn(entity);
+        }
         PersistentProperty idProperty = metadata.idProperty();
         GenerationType strategy = idProperty.generationType();
         if (strategy == GenerationType.SEQUENCE) {
@@ -176,7 +198,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         return Mono.error(new OptimisticLockingFailureException(
                                 "Optimistic locking failure: row not found or version mismatch for "
                                         + metadata.entityType().getName()
-                                        + " id=" + metadata.idProperty().read(entity)
+                                        + " id=" + metadata.readIdValue(entity)
                                         + " version=" + current));
                     }
                     versionProperty.write(entity, next);
@@ -189,7 +211,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         Objects.requireNonNull(entity, "entity must not be null");
         Objects.requireNonNull(fields, "fields must not be null");
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
-        Object id = metadata.idProperty().read(entity);
+        Object id = metadata.readIdValue(entity);
         if (id == null) {
             return Mono.error(new IllegalArgumentException("Entity id must not be null for update"));
         }
@@ -334,6 +356,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Flux.empty();
         }
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        if (metadata.hasCompositeId()) {
+            // 단일 컬럼 IN으로는 복합키를 표현할 수 없다. 개별 findById로 분기한다.
+            return Flux.fromIterable(materialized).concatMap(id -> findById(entityType, id));
+        }
         String idPropertyName = metadata.idProperty().propertyName();
         QuerySpec spec = QuerySpec.empty().where(Criteria.in(idPropertyName, materialized));
         EntityMetadata<?> render = renderMetadata(metadata);
@@ -344,7 +370,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <T> Mono<Long> delete(T entity) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
-        Object id = metadata.idProperty().read(entity);
+        Object id = metadata.readIdValue(entity);
         if (id == null) {
             return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
         }
@@ -557,7 +583,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         for (int i = 0; i < materialized.size(); i++) {
             T entity = materialized.get(i);
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
-            Object id = metadata.idProperty().read(entity);
+            Object id = metadata.readIdValue(entity);
             if (id == null) {
                 int index = i;
                 return Mono.error(new IllegalArgumentException(
