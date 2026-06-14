@@ -25,6 +25,12 @@ public final class EntityMetadata<T> {
     private final List<PersistentProperty> columnMappedProperties;
     private final Map<String, PersistentProperty> propertiesByName;
     private final PersistentProperty idProperty;
+    /**
+     * id로 표시된 property들을 declaration 순서로 보관한다. 단일 {@code @Id}는 1개, {@code @EmbeddedId}로
+     * 펼쳐진 복합키는 컴포넌트 수만큼이다. {@link #properties}에서 {@link PersistentProperty#id()} 필터로
+     * 파생되므로 생성자 시그니처를 바꾸지 않고 자동으로 채워진다.
+     */
+    private final List<PersistentProperty> idProperties;
     private final PersistentProperty createdAtProperty;
     private final PersistentProperty updatedAtProperty;
     private final PersistentProperty softDeleteProperty;
@@ -117,6 +123,7 @@ public final class EntityMetadata<T> {
         this.columnMappedProperties = List.copyOf(columnMapped);
         this.propertiesByName = Collections.unmodifiableMap(index);
         this.idProperty = idProperty;
+        this.idProperties = this.properties.stream().filter(PersistentProperty::id).toList();
         this.createdAtProperty = createdAt;
         this.updatedAtProperty = updatedAt;
         this.softDeleteProperty = softDelete;
@@ -177,8 +184,42 @@ public final class EntityMetadata<T> {
         return Optional.ofNullable(propertiesByName.get(propertyName));
     }
 
+    /**
+     * 대표 id property를 반환한다. 단일 {@code @Id}는 그 property를, {@code @EmbeddedId} 복합키는 첫 번째
+     * 컴포넌트를 반환한다. id <em>전체</em>를 다뤄야 하는 WHERE 절/바인딩 경로에서는 반드시
+     * {@link #idProperties()}를 사용해야 한다 — 복합키에서 이 메서드만 쓰면 첫 컬럼만 보게 된다.
+     * generation 전략 판정({@link PersistentProperty#generationType()})처럼 복합키에서 무의미한(=null)
+     * 경로는 이 대표 값으로 안전하게 no-op 처리된다.
+     */
     public PersistentProperty idProperty() {
         return idProperty;
+    }
+
+    /**
+     * id로 표시된 모든 property. 단일 {@code @Id}는 1개, {@code @EmbeddedId} 복합키는 컴포넌트 전체다.
+     * selectById/deleteById/update의 WHERE 절은 이 리스트를 순회해 {@code c1 = ? and c2 = ?} 형태로 렌더한다.
+     */
+    public List<PersistentProperty> idProperties() {
+        return idProperties;
+    }
+
+    /**
+     * {@code @EmbeddedId}로 펼쳐진 복합키(컴포넌트 2개 이상)이면 {@code true}.
+     */
+    public boolean hasCompositeId() {
+        return idProperties.size() > 1;
+    }
+
+    /**
+     * findById/deleteById에 전달하는 형태의 id 값을 entity에서 읽어 반환한다. 단일 키는 스칼라 id 값을,
+     * {@code @EmbeddedId} 복합키는 {@code @Embeddable} holder 객체 전체를 반환한다. 복합키 entity의
+     * insert/update 분기(존재 확인)와 에러 메시지에서 사용한다.
+     */
+    public Object readIdValue(Object entity) {
+        if (hasCompositeId()) {
+            return idProperties.get(0).readHostHolder(entity);
+        }
+        return idProperty.read(entity);
     }
 
     public Optional<PersistentProperty> softDeleteProperty() {

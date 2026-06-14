@@ -14,7 +14,8 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 |-------------------|------------------------------------------------------------------------------------------|
 | `@Entity`         | Marks a class as persistent. Without `name`, the class-name-based default naming applies. |
 | `@Table`          | Explicit table name (+ optional `schema`; `catalog` is ignored). When omitted, the `NamingStrategy` decides. |
-| `@Id`             | Identifier field. Exactly one is required per entity.                                     |
+| `@Id`             | Single identifier field. Exactly one `@Id` **or** one `@EmbeddedId` is required per entity. |
+| `@EmbeddedId`     | Composite primary key. The field's type is an `@Embeddable` whose fields become the key columns (no host-field prefix; `@AttributeOverride` renames them). The key is application-assigned — `save()` resolves insert vs. update with an existence check. `@GeneratedValue` on a component is rejected. |
 | `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. |
 | `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). |
 | `@Column`         | Column name, `nullable`, `length` / `precision` / `scale`, `insertable` / `updatable` / `unique` / `columnDefinition`. |
@@ -52,8 +53,8 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 Entity metadata is parsed once and cached by `EntityMetadataFactory`. The factory enforces the following invariants:
 
 - `@Entity` is required.
-- Exactly one `@Id` field must be present.
-- A no-arg constructor is required.
+- Exactly one `@Id` field — or one `@EmbeddedId` composite key — must be present.
+- A no-arg constructor is required (also on the `@Embeddable` key type for `@EmbeddedId`).
 - Unsupported types are rejected explicitly and can be extended via `AttributeConverter`.
 - Duplicate `@CreatedAt` / `@UpdatedAt` / `@SoftDelete` / `@Version`, or those markers on unsupported types, fail-fast at metadata build time.
 - A `property name → PersistentProperty` index is built once so every lookup is O(1).
@@ -99,6 +100,35 @@ public static class Customer {
 Column names compose as `{field name (snake_case)}_{sub-property column name}` — the example above flattens to `shipping_city`, `shipping_street`, `shipping_zip`.
 
 An `@Embeddable` type cannot declare its own identifier (`@Id` is rejected). Markers such as `@Version` / `@SoftDelete` on the embedded sub-properties are also rejected at metadata build time.
+
+---
+
+## Composite keys (`@EmbeddedId`)
+
+When the primary key spans several columns, model it as an `@Embeddable` key type and reference it with `@EmbeddedId`:
+
+```java
+@Embeddable
+public class OrderLineId {
+    @Column(name = "order_id") private Long orderId;
+    @Column(name = "line_no")  private Integer lineNo;
+    // no-arg constructor + equals/hashCode
+}
+
+@Entity
+@Table(name = "order_line")
+public class OrderLine {
+    @EmbeddedId
+    private OrderLineId id;
+    private Integer quantity;
+}
+```
+
+- The key columns flatten into the entity table **without** a host-field prefix (`order_id`, `line_no`) — unlike `@Embedded`. Use `@AttributeOverride` on the `@EmbeddedId` field to rename a component column.
+- DDL emits a table-level `primary key (order_id, line_no)` constraint instead of a per-column `primary key`.
+- `findById` / `deleteById` take the key instance: `findById(OrderLine.class, new OrderLineId(100L, 1))`. The `WHERE` clause expands to `order_id = ? and line_no = ?`.
+- Composite keys are **application-assigned** (`@GeneratedValue` on a component is rejected). Because the key is always populated, `save()` cannot use the id-null "is new" heuristic; it performs a JPA-`merge`-style existence check (one `SELECT`) to decide insert vs. update. Single-`@Id` entities keep the zero-overhead path.
+- Not yet supported with composite keys: `@SoftDelete`, batch delete-by-ids, and use as a `@ManyToOne` / `@OneToOne` target — these are rejected fail-fast rather than emitting wrong SQL.
 
 ---
 

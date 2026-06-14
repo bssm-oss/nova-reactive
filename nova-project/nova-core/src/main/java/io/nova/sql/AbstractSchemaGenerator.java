@@ -53,9 +53,18 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     private String createTableInternal(EntityMetadata<?> metadata, boolean ifNotExists) {
         // raw properties()는 @OneToMany inverse side 같은 비-컬럼 마커도 포함하므로
         // SchemaGenerator가 컬럼 DDL을 만들 때 사용하면 List 타입 컬럼 같은 거짓 컬럼이 섞인다.
+        // @EmbeddedId 복합키는 컬럼별 inline PRIMARY KEY 대신 테이블 레벨 제약(primary key (c1, c2))으로 emit한다.
+        boolean compositePk = metadata.hasCompositeId();
         List<String> columns = new ArrayList<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
-            columns.add(columnDefinition(property));
+            columns.add(columnDefinition(property, compositePk));
+        }
+        if (compositePk) {
+            List<String> pkColumns = new ArrayList<>(metadata.idProperties().size());
+            for (PersistentProperty idProperty : metadata.idProperties()) {
+                pkColumns.add(dialect.quote(idProperty.columnName()));
+            }
+            columns.add("primary key (" + String.join(", ", pkColumns) + ")");
         }
         // SINGLE_TABLE 상속: 단일 테이블에 discriminator 컬럼을 추가한다.
         if (metadata.hasInheritance()) {
@@ -147,6 +156,14 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     }
 
     protected String columnDefinition(PersistentProperty property) {
+        return columnDefinition(property, false);
+    }
+
+    /**
+     * {@code suppressInlinePrimaryKey}가 {@code true}이면 단일 컬럼 {@code primary key} 수식을 생략한다 —
+     * {@code @EmbeddedId} 복합키처럼 PK가 여러 컬럼에 걸쳐 테이블 레벨 제약으로 따로 emit될 때 사용한다.
+     */
+    protected String columnDefinition(PersistentProperty property, boolean suppressInlinePrimaryKey) {
         if (property.generated() && property.generationType() == GenerationType.IDENTITY) {
             return identityColumn(property);
         }
@@ -156,7 +173,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                 .append(dialect.quote(property.columnName()))
                 .append(' ')
                 .append(type);
-        if (property.id()) {
+        if (property.id() && !suppressInlinePrimaryKey) {
             builder.append(" primary key");
         }
         if (!property.nullable()) {
