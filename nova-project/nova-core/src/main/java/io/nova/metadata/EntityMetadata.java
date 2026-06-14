@@ -211,15 +211,81 @@ public final class EntityMetadata<T> {
     }
 
     /**
-     * findById/deleteById에 전달하는 형태의 id 값을 entity에서 읽어 반환한다. 단일 키는 스칼라 id 값을,
-     * {@code @EmbeddedId} 복합키는 {@code @Embeddable} holder 객체 전체를 반환한다. 복합키 entity의
-     * insert/update 분기(존재 확인)와 에러 메시지에서 사용한다.
+     * findById/deleteById에 전달하는 형태의 id 값을 entity에서 읽어 반환한다. 단일 키는 스칼라 id 값,
+     * {@code @EmbeddedId}는 {@code @Embeddable} holder 객체, {@code @IdClass}는 entity의 각 {@code @Id}
+     * 값으로 채운 IdClass 인스턴스를 반환한다. 복합키 entity의 insert/update 분기(존재 확인)와 에러
+     * 메시지에서 사용한다.
      */
     public Object readIdValue(Object entity) {
-        if (hasCompositeId()) {
+        if (!hasCompositeId()) {
+            return idProperty.read(entity);
+        }
+        if (idProperties.get(0).embedded()) {
+            // @EmbeddedId: holder 객체를 그대로 반환한다.
             return idProperties.get(0).readHostHolder(entity);
         }
-        return idProperty.read(entity);
+        // @IdClass: 별도 IdClass 인스턴스를 만들어 entity의 @Id 값들을 같은 이름 필드에 채운다.
+        Class<?> idClass = requireIdClass();
+        Object instance = instantiateIdClass(idClass);
+        for (PersistentProperty idProperty : idProperties) {
+            java.lang.reflect.Field target = idClassField(idClass, idProperty.propertyName());
+            try {
+                target.set(instance, idProperty.read(entity));
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException("Cannot write @IdClass field " + target.getName(), exception);
+            }
+        }
+        return instance;
+    }
+
+    /**
+     * id 값 객체에서 주어진 id property가 매핑된 컬럼에 바인딩할 값을 꺼낸다. 단일 키는 객체 자체가 값,
+     * {@code @EmbeddedId}는 holder의 leaf 필드, {@code @IdClass}는 IdClass 인스턴스의 같은 이름 필드다.
+     * selectById/deleteById 렌더링에서 id 객체를 컬럼별 값으로 분해할 때 사용한다.
+     */
+    public Object idColumnValue(PersistentProperty idProperty, Object idObject) {
+        if (!hasCompositeId()) {
+            return idObject;
+        }
+        if (idProperty.embedded()) {
+            return idProperty.readFromIdHolder(idObject);
+        }
+        java.lang.reflect.Field source = idClassField(idObject.getClass(), idProperty.propertyName());
+        try {
+            return source.get(idObject);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException("Cannot read @IdClass field " + source.getName(), exception);
+        }
+    }
+
+    private Class<?> requireIdClass() {
+        jakarta.persistence.IdClass annotation = entityType.getAnnotation(jakarta.persistence.IdClass.class);
+        if (annotation == null) {
+            throw new IllegalStateException(entityType.getName() + " has no @IdClass");
+        }
+        return annotation.value();
+    }
+
+    private static Object instantiateIdClass(Class<?> idClass) {
+        try {
+            java.lang.reflect.Constructor<?> constructor = idClass.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return constructor.newInstance();
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "@IdClass type must expose a no-args constructor: " + idClass.getName(), exception);
+        }
+    }
+
+    private static java.lang.reflect.Field idClassField(Class<?> idClass, String fieldName) {
+        try {
+            java.lang.reflect.Field field = idClass.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            return field;
+        } catch (NoSuchFieldException exception) {
+            throw new IllegalStateException(
+                    "@IdClass " + idClass.getName() + " has no field '" + fieldName + "'", exception);
+        }
     }
 
     public Optional<PersistentProperty> softDeleteProperty() {

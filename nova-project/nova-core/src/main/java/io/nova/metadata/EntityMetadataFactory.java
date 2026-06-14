@@ -242,6 +242,9 @@ public final class EntityMetadataFactory {
 
         List<PersistentProperty> properties = new ArrayList<>();
         PersistentProperty idProperty = null;
+        // @IdClass(SomeId.class): 엔티티가 개별 @Id 필드 여러 개를 선언하고 별도 미러 클래스로 복합키를
+        // 표현하는 방식. 이 경우에만 multiple @Id를 허용한다.
+        boolean hasIdClass = entityType.isAnnotationPresent(jakarta.persistence.IdClass.class);
         PersistentProperty createdAtProperty = null;
         PersistentProperty updatedAtProperty = null;
         PersistentProperty softDeleteProperty = null;
@@ -271,6 +274,10 @@ public final class EntityMetadataFactory {
                             entityType.getName() + "." + field.getName()
                                     + " cannot declare both @Id and @EmbeddedId");
                 }
+                if (hasIdClass) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + " cannot combine @IdClass with @EmbeddedId");
+                }
                 if (idProperty != null) {
                     throw new IllegalArgumentException(
                             entityType.getName() + " declares multiple @Id/@EmbeddedId properties");
@@ -294,10 +301,14 @@ public final class EntityMetadataFactory {
             PersistentProperty property = createProperty(entityType, field, List.of(), "");
             properties.add(property);
             if (property.id()) {
-                if (idProperty != null) {
-                    throw new IllegalArgumentException(entityType.getName() + " declares multiple @Id properties");
+                if (idProperty != null && !hasIdClass) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + " declares multiple @Id properties;"
+                                    + " use @IdClass or @EmbeddedId for composite keys");
                 }
-                idProperty = property;
+                if (idProperty == null) {
+                    idProperty = property;
+                }
             }
             if (property.createdAt()) {
                 if (property.id()) {
@@ -347,6 +358,9 @@ public final class EntityMetadataFactory {
 
         if (idProperty == null) {
             throw new IllegalArgumentException(entityType.getName() + " must declare a field annotated with @Id");
+        }
+        if (hasIdClass) {
+            validateIdClass(entityType, properties);
         }
 
         List<Method> prePersistCallbacks = new ArrayList<>();
@@ -788,6 +802,53 @@ public final class EntityMetadataFactory {
                             + " has no persistent fields to map as key columns");
         }
         return result;
+    }
+
+    /**
+     * {@code @IdClass} 복합키를 검증한다. 엔티티는 개별 {@code @Id} 필드를 2개 이상 선언해야 하고, IdClass는
+     * 각 {@code @Id} 필드와 같은 이름·호환 타입의 필드를 가져야 하며 no-arg 생성자를 노출해야 한다. 매핑은
+     * top-level {@code @Id} 컬럼을 그대로 쓰므로 별도 컬럼 생성 없이 검증만 수행한다(분해/조립은 런타임에
+     * {@link EntityMetadata#idColumnValue}/{@link EntityMetadata#readIdValue}가 처리한다).
+     */
+    private static void validateIdClass(Class<?> entityType, List<PersistentProperty> properties) {
+        List<PersistentProperty> idProperties = properties.stream().filter(PersistentProperty::id).toList();
+        for (PersistentProperty idProperty : idProperties) {
+            if (idProperty.embedded()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " cannot combine @IdClass with @EmbeddedId");
+            }
+        }
+        if (idProperties.size() < 2) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + " uses @IdClass but declares fewer than two @Id fields;"
+                            + " @IdClass models a composite key");
+        }
+        Class<?> idClass = entityType.getAnnotation(jakarta.persistence.IdClass.class).value();
+        try {
+            idClass.getDeclaredConstructor();
+        } catch (NoSuchMethodException exception) {
+            throw new IllegalArgumentException(
+                    "@IdClass " + idClass.getName() + " must expose a no-args constructor", exception);
+        }
+        for (PersistentProperty idProperty : idProperties) {
+            String name = idProperty.propertyName();
+            Field idClassField;
+            try {
+                idClassField = idClass.getDeclaredField(name);
+            } catch (NoSuchFieldException exception) {
+                throw new IllegalArgumentException(
+                        "@IdClass " + idClass.getName() + " is missing field '" + name
+                                + "' declared as @Id on " + entityType.getName(), exception);
+            }
+            Class<?> expected = wrapPrimitiveType(idProperty.javaType());
+            Class<?> actual = wrapPrimitiveType(idClassField.getType());
+            if (!expected.equals(actual)) {
+                throw new IllegalArgumentException(
+                        "@IdClass " + idClass.getName() + " field '" + name + "' type " + actual.getName()
+                                + " does not match @Id type " + expected.getName()
+                                + " on " + entityType.getName());
+            }
+        }
     }
 
     private List<PersistentProperty> createEmbeddedProperties(

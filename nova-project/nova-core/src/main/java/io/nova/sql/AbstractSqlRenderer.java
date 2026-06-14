@@ -880,7 +880,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         List<String> parts = new ArrayList<>(idProperties.size());
         for (PersistentProperty idProperty : idProperties) {
             String marker = dialect.bindMarkers().marker(context.nextIndex());
-            context.addBinding(idProperty.toColumnValue(idProperty.readFromIdHolder(idObject)));
+            context.addBinding(idProperty.toColumnValue(metadata.idColumnValue(idProperty, idObject)));
             parts.add(column(idProperty) + " = " + marker);
         }
         return String.join(" and ", parts);

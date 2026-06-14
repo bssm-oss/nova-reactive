@@ -16,6 +16,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@Table`          | Explicit table name (+ optional `schema`; `catalog` is ignored). When omitted, the `NamingStrategy` decides. |
 | `@Id`             | Single identifier field. Exactly one `@Id` **or** one `@EmbeddedId` is required per entity. |
 | `@EmbeddedId`     | Composite primary key. The field's type is an `@Embeddable` whose fields become the key columns (no host-field prefix; `@AttributeOverride` renames them). The key is application-assigned — `save()` resolves insert vs. update with an existence check. `@GeneratedValue` on a component is rejected. |
+| `@IdClass`        | Composite primary key declared as several top-level `@Id` fields plus a mirror id class. The id class must declare a matching field (name + type) for each `@Id` and a no-arg constructor. Same application-assigned semantics as `@EmbeddedId`; cannot be combined with it. |
 | `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. |
 | `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). |
 | `@Column`         | Column name, `nullable`, `length` / `precision` / `scale`, `insertable` / `updatable` / `unique` / `columnDefinition`. |
@@ -129,6 +130,29 @@ public class OrderLine {
 - `findById` / `deleteById` take the key instance: `findById(OrderLine.class, new OrderLineId(100L, 1))`. The `WHERE` clause expands to `order_id = ? and line_no = ?`.
 - Composite keys are **application-assigned** (`@GeneratedValue` on a component is rejected). Because the key is always populated, `save()` cannot use the id-null "is new" heuristic; it performs a JPA-`merge`-style existence check (one `SELECT`) to decide insert vs. update. Single-`@Id` entities keep the zero-overhead path.
 - Not yet supported with composite keys: `@SoftDelete`, batch delete-by-ids, and use as a `@ManyToOne` / `@OneToOne` target — these are rejected fail-fast rather than emitting wrong SQL.
+
+### `@IdClass` — the alternative form
+
+`@IdClass` models the same composite key as several top-level `@Id` fields plus a separate mirror class, instead of an embedded value type:
+
+```java
+public class BookId {           // mirror class — plain class, no-arg ctor + equals/hashCode
+    private Long publisherId;
+    private String isbn;
+}
+
+@Entity
+@Table(name = "book")
+@IdClass(BookId.class)
+public class Book {
+    @Id @Column(name = "publisher_id") private Long publisherId;
+    @Id private String isbn;
+    private String title;
+}
+```
+
+- The id class must declare a field with the **same name and type** as each `@Id`, plus a no-arg constructor — both are validated fail-fast at metadata build time. `@IdClass` and `@EmbeddedId` cannot be combined.
+- `findById` / `deleteById` take an id-class instance: `findById(Book.class, new BookId(7L, "978-1"))`. Insert/update/DDL and the existence-check `save()` behave exactly as for `@EmbeddedId`.
 
 ---
 
