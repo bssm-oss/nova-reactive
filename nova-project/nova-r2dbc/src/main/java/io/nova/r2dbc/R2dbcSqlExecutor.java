@@ -21,6 +21,12 @@ public final class R2dbcSqlExecutor implements SqlExecutor {
     private final ConnectionFactory connectionFactory;
     private final Dialect dialect;
     private final SqlExecutionListener listener;
+    /**
+     * 리스너가 {@link SqlExecutionListener#NO_OP}이면 false. instrumentation(시작/종료/에러 콜백, 경과시간
+     * 측정, row 카운팅)을 매 쿼리에 붙이는 비용을 피하기 위해, 리스너가 없을 때는 계측 없는 fast-path로 우회한다.
+     * NO_OP 콜백은 어차피 아무 일도 하지 않으므로 관찰 가능한 동작은 동일하다.
+     */
+    private final boolean instrumented;
 
     public R2dbcSqlExecutor(ConnectionFactory connectionFactory, Dialect dialect) {
         this(connectionFactory, dialect, SqlExecutionListener.NO_OP);
@@ -30,18 +36,26 @@ public final class R2dbcSqlExecutor implements SqlExecutor {
         this.connectionFactory = Objects.requireNonNull(connectionFactory, "connectionFactory");
         this.dialect = Objects.requireNonNull(dialect, "dialect");
         this.listener = Objects.requireNonNull(listener, "listener");
+        this.instrumented = listener != SqlExecutionListener.NO_OP;
     }
 
     @Override
     public Mono<Long> execute(SqlStatement statement) {
+        if (!instrumented) {
+            return coreExecute(statement);
+        }
         return Mono.defer(() -> {
             long startNanos = beforeExecution(statement);
-            return withConnectionMono(conn -> Flux.from(bind(conn.createStatement(statement.sql()), statement.bindings()).execute())
-                    .flatMap(result -> Mono.from(result.getRowsUpdated()))
-                    .reduce(0L, Long::sum))
+            return coreExecute(statement)
                     .doOnSuccess(rows -> afterExecution(statement, startNanos, rows == null ? 0L : rows))
                     .doOnError(error -> errored(statement, startNanos, error));
         });
+    }
+
+    private Mono<Long> coreExecute(SqlStatement statement) {
+        return withConnectionMono(conn -> Flux.from(bind(conn.createStatement(statement.sql()), statement.bindings()).execute())
+                .flatMap(result -> Mono.from(result.getRowsUpdated()))
+                .reduce(0L, Long::sum));
     }
 
     @Override
@@ -49,33 +63,42 @@ public final class R2dbcSqlExecutor implements SqlExecutor {
         if (bindingsList.isEmpty()) {
             return Mono.just(0L);
         }
+        if (!instrumented) {
+            return coreExecuteBatch(sql, bindingsList);
+        }
         SqlStatement batchStatement = new SqlStatement(sql, List.of());
         return Mono.defer(() -> {
             long startNanos = beforeExecution(batchStatement);
-            return withConnectionMono(conn -> {
-                Statement stmt = conn.createStatement(sql);
-                for (int i = 0; i < bindingsList.size(); i++) {
-                    bind(stmt, bindingsList.get(i));
-                    if (i < bindingsList.size() - 1) {
-                        stmt.add();
-                    }
-                }
-                return Flux.from(stmt.execute())
-                        .flatMap(result -> Mono.from(result.getRowsUpdated()))
-                        .reduce(0L, Long::sum);
-            })
+            return coreExecuteBatch(sql, bindingsList)
                     .doOnSuccess(rows -> afterExecution(batchStatement, startNanos, rows == null ? 0L : rows))
                     .doOnError(error -> errored(batchStatement, startNanos, error));
         });
     }
 
+    private Mono<Long> coreExecuteBatch(String sql, List<List<Object>> bindingsList) {
+        return withConnectionMono(conn -> {
+            Statement stmt = conn.createStatement(sql);
+            for (int i = 0; i < bindingsList.size(); i++) {
+                bind(stmt, bindingsList.get(i));
+                if (i < bindingsList.size() - 1) {
+                    stmt.add();
+                }
+            }
+            return Flux.from(stmt.execute())
+                    .flatMap(result -> Mono.from(result.getRowsUpdated()))
+                    .reduce(0L, Long::sum);
+        });
+    }
+
     @Override
     public <T> Mono<T> queryOne(SqlStatement statement, Function<RowAccessor, T> mapper) {
+        if (!instrumented) {
+            return coreQuery(statement, mapper).next();
+        }
         return Mono.defer(() -> {
             long startNanos = beforeExecution(statement);
             AtomicLong rowCount = new AtomicLong();
-            return withConnectionFlux(conn -> Flux.from(bind(conn.createStatement(statement.sql()), statement.bindings()).execute())
-                    .flatMap(result -> result.map((row, meta) -> mapper.apply(new R2dbcRowAccessor(row)))))
+            return coreQuery(statement, mapper)
                     .doOnNext(value -> rowCount.incrementAndGet())
                     .next()
                     .doOnSuccess(value -> afterExecution(statement, startNanos, rowCount.get()))
@@ -85,15 +108,22 @@ public final class R2dbcSqlExecutor implements SqlExecutor {
 
     @Override
     public <T> Flux<T> queryMany(SqlStatement statement, Function<RowAccessor, T> mapper) {
+        if (!instrumented) {
+            return coreQuery(statement, mapper);
+        }
         return Flux.defer(() -> {
             long startNanos = beforeExecution(statement);
             AtomicLong rowCount = new AtomicLong();
-            return withConnectionFlux(conn -> Flux.from(bind(conn.createStatement(statement.sql()), statement.bindings()).execute())
-                    .flatMap(result -> result.map((row, meta) -> mapper.apply(new R2dbcRowAccessor(row)))))
+            return coreQuery(statement, mapper)
                     .doOnNext(value -> rowCount.incrementAndGet())
                     .doOnComplete(() -> afterExecution(statement, startNanos, rowCount.get()))
                     .doOnError(error -> errored(statement, startNanos, error));
         });
+    }
+
+    private <T> Flux<T> coreQuery(SqlStatement statement, Function<RowAccessor, T> mapper) {
+        return withConnectionFlux(conn -> Flux.from(bind(conn.createStatement(statement.sql()), statement.bindings()).execute())
+                .flatMap(result -> result.map((row, meta) -> mapper.apply(new R2dbcRowAccessor(row)))));
     }
 
     @Override
@@ -102,50 +132,64 @@ public final class R2dbcSqlExecutor implements SqlExecutor {
         if (bindingsList.isEmpty()) {
             return Flux.empty();
         }
+        if (!instrumented) {
+            return coreBatchKeys(sql, bindingsList, idColumn, idType);
+        }
         SqlStatement batchStatement = new SqlStatement(sql, List.of());
         return Flux.defer(() -> {
             long startNanos = beforeExecution(batchStatement);
             AtomicLong rowCount = new AtomicLong();
-            return withConnectionFlux(conn -> {
-                Statement stmt = conn.createStatement(sql);
-                if (!dialect.usesReturningForGeneratedKeys()) {
-                    stmt.returnGeneratedValues(idColumn);
-                }
-                for (int i = 0; i < bindingsList.size(); i++) {
-                    bind(stmt, bindingsList.get(i));
-                    if (i < bindingsList.size() - 1) {
-                        stmt.add();
-                    }
-                }
-                return Flux.from(stmt.execute())
-                        .flatMap(result -> result.map((row, meta) -> row.get(idColumn, idType)));
-            })
+            return coreBatchKeys(sql, bindingsList, idColumn, idType)
                     .doOnNext(value -> rowCount.incrementAndGet())
                     .doOnComplete(() -> afterExecution(batchStatement, startNanos, rowCount.get()))
                     .doOnError(error -> errored(batchStatement, startNanos, error));
         });
     }
 
+    private <T> Flux<T> coreBatchKeys(String sql, List<List<Object>> bindingsList, String idColumn, Class<T> idType) {
+        return withConnectionFlux(conn -> {
+            Statement stmt = conn.createStatement(sql);
+            if (!dialect.usesReturningForGeneratedKeys()) {
+                stmt.returnGeneratedValues(idColumn);
+            }
+            for (int i = 0; i < bindingsList.size(); i++) {
+                bind(stmt, bindingsList.get(i));
+                if (i < bindingsList.size() - 1) {
+                    stmt.add();
+                }
+            }
+            return Flux.from(stmt.execute())
+                    .flatMap(result -> result.map((row, meta) -> row.get(idColumn, idType)));
+        });
+    }
+
     @Override
     public <T> Mono<T> executeAndReturnGeneratedKey(SqlStatement statement, String idColumn, Class<T> idType) {
+        if (!instrumented) {
+            return coreReturnKey(statement, idColumn, idType).next();
+        }
         return Mono.defer(() -> {
             long startNanos = beforeExecution(statement);
             AtomicLong rowCount = new AtomicLong();
-            return withConnectionFlux(conn -> {
-                Statement bound;
-                if (dialect.usesReturningForGeneratedKeys()) {
-                    bound = bind(conn.createStatement(statement.sql()), statement.bindings());
-                } else {
-                    bound = bind(conn.createStatement(statement.sql()), statement.bindings())
-                            .returnGeneratedValues(idColumn);
-                }
-                return Flux.from(bound.execute())
-                        .flatMap(result -> result.map((row, meta) -> row.get(idColumn, idType)));
-            })
+            return coreReturnKey(statement, idColumn, idType)
                     .doOnNext(value -> rowCount.incrementAndGet())
                     .next()
                     .doOnSuccess(value -> afterExecution(statement, startNanos, rowCount.get()))
                     .doOnError(error -> errored(statement, startNanos, error));
+        });
+    }
+
+    private <T> Flux<T> coreReturnKey(SqlStatement statement, String idColumn, Class<T> idType) {
+        return withConnectionFlux(conn -> {
+            Statement bound;
+            if (dialect.usesReturningForGeneratedKeys()) {
+                bound = bind(conn.createStatement(statement.sql()), statement.bindings());
+            } else {
+                bound = bind(conn.createStatement(statement.sql()), statement.bindings())
+                        .returnGeneratedValues(idColumn);
+            }
+            return Flux.from(bound.execute())
+                    .flatMap(result -> result.map((row, meta) -> row.get(idColumn, idType)));
         });
     }
 
