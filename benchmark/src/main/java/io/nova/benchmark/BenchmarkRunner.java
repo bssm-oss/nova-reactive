@@ -33,13 +33,18 @@ public final class BenchmarkRunner {
     private static final int CONCURRENCY = Integer.getInteger("bench.concurrency", 64);
     private static final int CONC_TOTAL = Integer.getInteger("bench.concTotal", 20_000);
 
+    // -Dbench.reactiveOnly=true → blocking Hibernate ORM과 H2 단계를 빼고, Nova vs Hibernate Reactive만
+    // PostgreSQL에서 비교한다(둘 다 reactive라 진짜 동급 비교; HR은 Vert.x라 PG 전용).
+    private static final boolean REACTIVE_ONLY = Boolean.getBoolean("bench.reactiveOnly");
+
     private static final String[] SCENARIOS = {"INSERT", "FIND_BY_ID", "FIND_ALL", "UPDATE", "DELETE"};
 
     public static void main(String[] args) {
-        runPhase("H2 in-memory — ORM overhead only (no I/O wait)",
-                List.of(NovaOrm.h2(POOL), HibernateOrm.h2()), N_H2);
-
-        System.out.printf(Locale.ROOT, "%n%n");
+        if (!REACTIVE_ONLY) {
+            runPhase("H2 in-memory — ORM overhead only (no I/O wait)",
+                    List.of(NovaOrm.h2(POOL), HibernateOrm.h2()), N_H2);
+            System.out.printf(Locale.ROOT, "%n%n");
+        }
         runPostgresPhase();
     }
 
@@ -54,11 +59,15 @@ public final class BenchmarkRunner {
             String user = System.getProperty("bench.pg.user", "bench");
             String password = System.getProperty("bench.pg.password", "bench");
             String jdbcUrl = "jdbc:postgresql://" + host + ":" + port + "/" + db;
-            runPhase("PostgreSQL (external) — real socket round-trips",
-                    List.of(NovaOrm.postgres(host, port, db, user, password, POOL),
+            List<OrmBenchmark> orms = REACTIVE_ONLY
+                    ? List.of(NovaOrm.postgres(host, port, db, user, password, POOL),
+                            HibernateReactiveOrm.postgres(jdbcUrl, user, password))
+                    : List.of(NovaOrm.postgres(host, port, db, user, password, POOL),
                             HibernateOrm.postgres(jdbcUrl, user, password),
-                            HibernateReactiveOrm.postgres(jdbcUrl, user, password)),
-                    N_PG);
+                            HibernateReactiveOrm.postgres(jdbcUrl, user, password));
+            runPhase(REACTIVE_ONLY
+                    ? "PostgreSQL — reactive vs reactive (Nova vs Hibernate Reactive)"
+                    : "PostgreSQL (external) — real socket round-trips", orms, N_PG);
             return;
         }
         // 2) 아니면 Testcontainers로 시도. Docker 환경이 없으면 스킵(전체 실행을 깨지 않는다).
@@ -66,10 +75,14 @@ public final class BenchmarkRunner {
                 .withDatabaseName("bench").withUsername("bench").withPassword("bench")) {
             System.out.println("Starting PostgreSQL container (Testcontainers)...");
             pg.start();
-            runPhase("PostgreSQL via Testcontainers — real socket round-trips",
-                    List.of(NovaOrm.postgres(pg, POOL), HibernateOrm.postgres(pg),
-                            HibernateReactiveOrm.postgres(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())),
-                    N_PG);
+            List<OrmBenchmark> orms = REACTIVE_ONLY
+                    ? List.of(NovaOrm.postgres(pg, POOL),
+                            HibernateReactiveOrm.postgres(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword()))
+                    : List.of(NovaOrm.postgres(pg, POOL), HibernateOrm.postgres(pg),
+                            HibernateReactiveOrm.postgres(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword()));
+            runPhase(REACTIVE_ONLY
+                    ? "PostgreSQL — reactive vs reactive (Nova vs Hibernate Reactive)"
+                    : "PostgreSQL via Testcontainers — real socket round-trips", orms, N_PG);
         } catch (Throwable docker) {
             System.out.printf(Locale.ROOT,
                     "%n[PostgreSQL phase skipped] Docker/Testcontainers unavailable: %s%n"
