@@ -1,5 +1,6 @@
 package io.nova.sql;
 
+import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.query.AggregateSpec;
@@ -197,5 +198,26 @@ public interface SqlRenderer {
      */
     default SqlStatement selectJoinRows(JoinTableDefinition definition, List<Object> ownerIds) {
         throw new UnsupportedOperationException("selectJoinRows is not supported by this SqlRenderer");
+    }
+
+    /**
+     * {@code @ElementCollection} collection table에서 owner의 값 row를 모두 삭제하는 구문(full-replace 1단계).
+     */
+    default SqlStatement deleteCollectionRows(CollectionTableDefinition definition, Object ownerId) {
+        throw new UnsupportedOperationException("deleteCollectionRows is not supported by this SqlRenderer");
+    }
+
+    /**
+     * collection table에 (owner, value) row 1건을 추가하는 구문.
+     */
+    default SqlStatement insertCollectionRow(CollectionTableDefinition definition, Object ownerId, Object value) {
+        throw new UnsupportedOperationException("insertCollectionRow is not supported by this SqlRenderer");
+    }
+
+    /**
+     * 주어진 owner id들의 (owner FK, value) row를 조회하는 구문(hydration 1단계).
+     */
+    default SqlStatement selectCollectionRows(CollectionTableDefinition definition, List<Object> ownerIds) {
+        throw new UnsupportedOperationException("selectCollectionRows is not supported by this SqlRenderer");
     }
 }

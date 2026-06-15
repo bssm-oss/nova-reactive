@@ -63,6 +63,11 @@ public final class PersistentProperty {
      * 아니면 {@code null}.
      */
     private final ManyToManyInfo manyToManyInfo;
+    /**
+     * {@code @ElementCollection} 값 컬렉션의 collection table 매핑. 이 property는 부모 테이블에 컬럼이 없는
+     * marker이며, 값들은 별도 테이블에 저장되고 hydration 단계에서 주입된다. 값 컬렉션이 아니면 {@code null}.
+     */
+    private final ElementCollectionInfo elementCollectionInfo;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -100,7 +105,8 @@ public final class PersistentProperty {
             boolean lob,
             Class<?> converterColumnType,
             boolean inverseToOne,
-            ManyToManyInfo manyToManyInfo
+            ManyToManyInfo manyToManyInfo,
+            ElementCollectionInfo elementCollectionInfo
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -141,6 +147,7 @@ public final class PersistentProperty {
         this.converterColumnType = converterColumnType;
         this.inverseToOne = inverseToOne;
         this.manyToManyInfo = manyToManyInfo;
+        this.elementCollectionInfo = elementCollectionInfo;
     }
 
     /**
@@ -187,7 +194,8 @@ public final class PersistentProperty {
                 lob,
                 converterColumnType,
                 inverseToOne,
-                manyToManyInfo
+                manyToManyInfo,
+                elementCollectionInfo
         );
     }
 
@@ -236,7 +244,8 @@ public final class PersistentProperty {
                 lob,
                 converterColumnType,
                 inverseToOne,
-                manyToManyInfo
+                manyToManyInfo,
+                elementCollectionInfo
         );
     }
 
@@ -501,6 +510,18 @@ public final class PersistentProperty {
     }
 
     /**
+     * {@code true}이면 이 property는 {@code @ElementCollection} 값 컬렉션이며 {@link #elementCollectionInfo()}가
+     * collection table 매핑을 담는다. 부모 테이블에 컬럼이 없는 marker다.
+     */
+    public boolean elementCollection() {
+        return elementCollectionInfo != null;
+    }
+
+    public ElementCollectionInfo elementCollectionInfo() {
+        return elementCollectionInfo;
+    }
+
+    /**
      * inverse-side {@code @OneToOne}({@code mappedBy})이면 {@code true}. 이 테이블에 컬럼이 없는 마커이며
      * hydration에서 단건 child가 주입된다.
      */
@@ -589,9 +610,9 @@ public final class PersistentProperty {
     }
 
     public void write(Object instance, Object value) {
-        if (oneToMany || inverseToOne || manyToMany()) {
-            // @OneToMany / inverse @OneToOne / @ManyToMany는 부모 테이블 컬럼이 없으므로 row 디코딩 단계에서
-            // 주입할 값이 없다. 실제 관계 값은 hydration 단계에서 별도 setter로 주입된다.
+        if (oneToMany || inverseToOne || manyToMany() || elementCollection()) {
+            // @OneToMany / inverse @OneToOne / @ManyToMany / @ElementCollection은 부모 테이블 컬럼이 없으므로
+            // row 디코딩 단계에서 주입할 값이 없다. 실제 값은 hydration 단계에서 별도 setter로 주입된다.
             return;
         }
         if (manyToOne) {
