@@ -77,6 +77,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final java.util.concurrent.ConcurrentHashMap<EntityMetadata<?>, String> selectByIdSqlCache =
             new java.util.concurrent.ConcurrentHashMap<>();
     /**
+     * row 디코딩 시 entity를 만드는 no-arg 생성자 캐시(type별). row마다 reflective lookup을 반복하지 않는다.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<Class<?>, Constructor<?>> constructorCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /**
      * {@code inTransaction} 안에서 영속성 세션(identity map + dirty checking)을 켤지 여부. 기본 {@code true}.
      * internal kill-switch로, 끄면 트랜잭션 동작이 세션 도입 이전과 byte-for-byte 동일하다(테스트/회귀 가드용).
      */
@@ -1739,13 +1744,24 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
     }
 
+    @SuppressWarnings("unchecked")
     private <T> T instantiate(Class<T> entityType) {
+        // no-arg 생성자를 type별로 1회만 lookup·setAccessible 해 캐시한다 — row마다 getDeclaredConstructor를
+        // 반복하던 reflective lookup 비용을 제거한다(newInstance 할당 자체는 불가피).
+        Constructor<T> constructor = (Constructor<T>) constructorCache.computeIfAbsent(entityType, type -> {
+            try {
+                Constructor<?> resolved = type.getDeclaredConstructor();
+                resolved.setAccessible(true);
+                return resolved;
+            } catch (NoSuchMethodException exception) {
+                throw new IllegalStateException(
+                        "Entity type must expose a no-args constructor: " + type.getName(), exception);
+            }
+        });
         try {
-            Constructor<T> constructor = entityType.getDeclaredConstructor();
-            constructor.setAccessible(true);
             return constructor.newInstance();
         } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException("Entity type must expose a no-args constructor: " + entityType.getName(), exception);
+            throw new IllegalStateException("Cannot instantiate " + entityType.getName(), exception);
         }
     }
 

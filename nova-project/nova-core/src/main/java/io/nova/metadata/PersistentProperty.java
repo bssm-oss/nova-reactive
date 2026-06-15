@@ -4,12 +4,20 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.GenerationType;
 import io.nova.convert.AttributeConverter;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Objects;
 
 public final class PersistentProperty {
     private final Field field;
+    /**
+     * leaf 필드의 {@link VarHandle} — reflective {@code Field.get/set}보다 빠른 접근 경로다. 모듈 제약 등으로
+     * 생성에 실패하면 {@code null}로 두고 {@link #field} 리플렉션으로 fallback한다(동작 동일). 기본(non-exact)
+     * VarHandle 접근이라 primitive 필드의 boxing/unboxing은 자동 처리된다.
+     */
+    private final VarHandle fieldHandle;
     private final String propertyName;
     private final String columnName;
     private final Class<?> javaType;
@@ -110,6 +118,7 @@ public final class PersistentProperty {
     ) {
         this.field = field;
         this.field.setAccessible(true);
+        this.fieldHandle = resolveFieldHandle(field);
         this.propertyName = propertyName;
         this.columnName = columnName;
         this.javaType = javaType;
@@ -529,6 +538,23 @@ public final class PersistentProperty {
         return inverseToOne;
     }
 
+    /**
+     * leaf 필드의 read/write VarHandle을 만든다. {@code private} 패키지 lookup으로 unreflect하며, 모듈
+     * 미개방 등으로 실패하면 {@code null}을 반환해 reflective {@link Field} 경로로 fallback한다. {@code final}
+     * 필드는 VarHandle set이 불가하므로(리플렉션도 동일) 건너뛰어 동작을 일관되게 유지한다.
+     */
+    private static VarHandle resolveFieldHandle(Field field) {
+        if (java.lang.reflect.Modifier.isFinal(field.getModifiers())) {
+            return null;
+        }
+        try {
+            MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(field.getDeclaringClass(), MethodHandles.lookup());
+            return lookup.unreflectVarHandle(field);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     public Object read(Object instance) {
         try {
             Object current = instance;
@@ -538,7 +564,7 @@ public final class PersistentProperty {
                     return null;
                 }
             }
-            Object value = field.get(current);
+            Object value = fieldHandle != null ? fieldHandle.get(current) : field.get(current);
             if (manyToOne && value != null) {
                 // @ManyToOne property는 entity reference를 보관하지만, FK column에 바인딩되는 값은
                 // 참조 대상의 @Id 값이다. binding 시점에 reflection으로 target의 @Id 필드를 찾아 그 값을 반환한다.
@@ -583,7 +609,7 @@ public final class PersistentProperty {
             return idHolder;
         }
         try {
-            return field.get(idHolder);
+            return fieldHandle != null ? fieldHandle.get(idHolder) : field.get(idHolder);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot read @EmbeddedId component " + field.getName(), exception);
         }
@@ -635,7 +661,11 @@ public final class PersistentProperty {
                 }
                 current = next;
             }
-            field.set(current, value);
+            if (fieldHandle != null) {
+                fieldHandle.set(current, value);
+            } else {
+                field.set(current, value);
+            }
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot write field " + field.getName(), exception);
         }
