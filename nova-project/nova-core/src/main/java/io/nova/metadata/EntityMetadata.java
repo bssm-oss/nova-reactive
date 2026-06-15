@@ -31,6 +31,17 @@ public final class EntityMetadata<T> {
      * 파생되므로 생성자 시그니처를 바꾸지 않고 자동으로 채워진다.
      */
     private final List<PersistentProperty> idProperties;
+    /**
+     * 관계/값 컬렉션 property 뷰는 생성 시 한 번 계산해 캐시한다. {@link #properties}는 생성 후 불변이므로
+     * 매 호출 {@code stream().filter().toList()}를 반복할 이유가 없다 — findById/findAll/save 핫패스에서
+     * {@link #hasRelationProperties()}가 호출될 때마다 리스트 5개를 새로 할당하던 오버헤드를 제거한다.
+     */
+    private final List<PersistentProperty> manyToOneProperties;
+    private final List<PersistentProperty> oneToManyProperties;
+    private final List<PersistentProperty> oneToOneInverseProperties;
+    private final List<PersistentProperty> manyToManyProperties;
+    private final List<PersistentProperty> elementCollectionProperties;
+    private final boolean hasRelationProperties;
     private final PersistentProperty createdAtProperty;
     private final PersistentProperty updatedAtProperty;
     private final PersistentProperty softDeleteProperty;
@@ -125,6 +136,16 @@ public final class EntityMetadata<T> {
         this.propertiesByName = Collections.unmodifiableMap(index);
         this.idProperty = idProperty;
         this.idProperties = this.properties.stream().filter(PersistentProperty::id).toList();
+        this.manyToOneProperties = this.properties.stream().filter(PersistentProperty::manyToOne).toList();
+        this.oneToManyProperties = this.properties.stream().filter(PersistentProperty::oneToMany).toList();
+        this.oneToOneInverseProperties = this.properties.stream().filter(PersistentProperty::inverseToOne).toList();
+        this.manyToManyProperties = this.properties.stream().filter(PersistentProperty::manyToMany).toList();
+        this.elementCollectionProperties = this.properties.stream().filter(PersistentProperty::elementCollection).toList();
+        this.hasRelationProperties = !manyToOneProperties.isEmpty()
+                || !oneToManyProperties.isEmpty()
+                || !oneToOneInverseProperties.isEmpty()
+                || !manyToManyProperties.isEmpty()
+                || !elementCollectionProperties.isEmpty();
         this.createdAtProperty = createdAt;
         this.updatedAtProperty = updatedAt;
         this.softDeleteProperty = softDelete;
@@ -399,55 +420,50 @@ public final class EntityMetadata<T> {
     }
 
     /**
-     * {@code @ManyToOne} owning property들. 캐시하지 않고 매 호출마다 properties stream을 흘려 새 리스트를
-     * 만들어 새 marker가 추가될 때 derived getter가 자동으로 따라가게 한다.
+     * {@code @ManyToOne} owning property들. 생성 시 1회 계산된 immutable 캐시를 반환한다({@link #properties}는
+     * 불변이라 매 호출 재계산할 이유가 없다).
      */
     public List<PersistentProperty> manyToOneProperties() {
-        return properties.stream().filter(PersistentProperty::manyToOne).toList();
+        return manyToOneProperties;
     }
 
     /**
-     * {@code @OneToMany} inverse property들. 캐시하지 않는다(동일 사유).
+     * {@code @OneToMany} inverse property들(캐시).
      */
     public List<PersistentProperty> oneToManyProperties() {
-        return properties.stream().filter(PersistentProperty::oneToMany).toList();
+        return oneToManyProperties;
     }
 
     /**
-     * inverse-side {@code @OneToOne}({@code mappedBy}) property들. 캐시하지 않는다(동일 사유).
+     * inverse-side {@code @OneToOne}({@code mappedBy}) property들(캐시).
      * owning-side {@code @OneToOne}은 {@link #manyToOneProperties()}에 포함된다(@ManyToOne과 동일 모델링).
      */
     public List<PersistentProperty> oneToOneInverseProperties() {
-        return properties.stream().filter(PersistentProperty::inverseToOne).toList();
+        return oneToOneInverseProperties;
     }
 
     /**
-     * {@code @ManyToMany} property들(owning + inverse). 캐시하지 않는다(동일 사유). 컬럼이 없는 marker라
-     * link table hydration과 save 시 link 동기화에서만 사용된다.
+     * {@code @ManyToMany} property들(owning + inverse, 캐시). 컬럼이 없는 marker라 link table hydration과
+     * save 시 link 동기화에서만 사용된다.
      */
     public List<PersistentProperty> manyToManyProperties() {
-        return properties.stream().filter(PersistentProperty::manyToMany).toList();
+        return manyToManyProperties;
     }
 
     /**
-     * {@code @ElementCollection} 값 컬렉션 property들. 캐시하지 않는다(동일 사유). collection table hydration과
-     * save 시 값 동기화에서만 사용된다.
+     * {@code @ElementCollection} 값 컬렉션 property들(캐시). collection table hydration과 save 시 값 동기화에서만 사용된다.
      */
     public List<PersistentProperty> elementCollectionProperties() {
-        return properties.stream().filter(PersistentProperty::elementCollection).toList();
+        return elementCollectionProperties;
     }
 
     /**
-     * {@code @ManyToOne} 또는 {@code @OneToMany} 중 하나라도 존재하면 {@code true}. annotation-driven 자동
-     * hydration의 진입 가드로 사용된다 — 관계가 없는 entity는 기존 zero-overhead findById/findAll 경로를
-     * 그대로 거친다.
+     * 관계/값 컬렉션 property가 하나라도 있으면 {@code true}. annotation-driven 자동 hydration의 진입 가드로
+     * 사용된다 — 관계가 없는 entity는 기존 zero-overhead findById/findAll 경로를 그대로 거친다. 생성 시 1회
+     * 계산된 boolean을 반환한다(핫패스에서 매 호출 5종 stream 재계산하던 오버헤드 제거).
      */
     public boolean hasRelationProperties() {
-        return !manyToOneProperties().isEmpty()
-                || !oneToManyProperties().isEmpty()
-                || !oneToOneInverseProperties().isEmpty()
-                || !manyToManyProperties().isEmpty()
-                || !elementCollectionProperties().isEmpty();
+        return hasRelationProperties;
     }
 
     /**

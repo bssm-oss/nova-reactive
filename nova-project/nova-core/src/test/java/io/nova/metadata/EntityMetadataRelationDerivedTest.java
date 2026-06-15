@@ -10,10 +10,11 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link EntityMetadata}의 derived stream getter가 properties 안에 추가된 관계 marker를 별도 캐시 없이
+ * {@link EntityMetadata}의 derived getter가 properties 안에 추가된 관계 marker를 (생성 시 1회 계산·캐시해)
  * 그대로 노출하는지 검증한다 (memory feedback_metadata_stream_pattern.md).
  */
 class EntityMetadataRelationDerivedTest {
@@ -47,13 +48,15 @@ class EntityMetadataRelationDerivedTest {
     }
 
     @Test
-    void streamGettersAreNotCachedSoSubsequentCallsAreIndependentLists() {
+    void derivedGettersAreCachedAndImmutable() {
         EntityMetadata<AuthorWithBooksAnnotated> metadata = factory.getEntityMetadata(AuthorWithBooksAnnotated.class);
-        // 캐시되지 않아 호출마다 새 리스트가 만들어진다 — identity가 같지 않아야 한다.
+        // properties는 생성 후 불변이므로 derived 뷰는 생성 시 1회 계산해 캐시한다(핫패스 오버헤드 제거).
+        // 매 호출 동일 immutable 인스턴스를 반환하며, 외부 변경은 불가능하다.
         List<PersistentProperty> first = metadata.oneToManyProperties();
         List<PersistentProperty> second = metadata.oneToManyProperties();
-        // 내용은 동일하지만 인스턴스는 다르다 (stream().toList()는 매번 새 인스턴스를 만든다).
         assertEquals(first, second);
-        assertFalse(first == second, "stream toList()는 매 호출마다 새 인스턴스를 만들어야 한다");
+        assertSame(first, second, "캐시된 derived 뷰는 매 호출 동일 인스턴스를 반환한다");
+        assertThrows(UnsupportedOperationException.class, () -> first.add(first.get(0)),
+                "캐시 공유가 안전하도록 immutable이어야 한다");
     }
 }
