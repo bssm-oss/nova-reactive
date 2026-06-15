@@ -1,5 +1,17 @@
 plugins {
     application
+    id("me.champeau.jmh") version "0.7.2"
+}
+
+jmh {
+    warmupIterations.set(3)
+    warmup.set("1s")
+    iterations.set(5)
+    timeOnIteration.set("1s")
+    fork.set(1)
+    timeUnit.set("us")
+    // 할당량 핫스팟까지 보려면 아래 주석 해제: -prof gc
+    // profilers.set(listOf("gc"))
 }
 
 java {
