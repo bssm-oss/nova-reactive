@@ -1,6 +1,8 @@
 package io.nova.schema;
 
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.metadata.CollectionTableDefinition;
+import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.JoinTableDefinition;
@@ -73,10 +75,11 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
         List<Class<?>> all = copyOf(entityTypes);
-        // entity 테이블을 먼저 만들고, owning @ManyToMany의 link table을 뒤에 만든다.
+        // entity 테이블을 먼저 만들고, link table(@ManyToMany)과 collection table(@ElementCollection)을 뒤에 만든다.
         return Flux.fromIterable(collapseToRoots(all))
                 .concatMap(type -> createOne(type, options))
-                .then(createJoinTables(all, options));
+                .then(createJoinTables(all, options))
+                .then(createCollectionTables(all, options));
     }
 
     @Override
@@ -106,8 +109,9 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
         List<Class<?>> all = copyOf(entityTypes);
-        // link table을 먼저 드롭하고(참조 관계 친화) entity 테이블을 뒤에 드롭한다.
-        return dropJoinTables(all, options)
+        // link/collection table을 먼저 드롭하고(참조 관계 친화) entity 테이블을 뒤에 드롭한다.
+        return dropCollectionTables(all, options)
+                .then(dropJoinTables(all, options))
                 .then(Flux.fromIterable(collapseToRoots(all))
                         .concatMap(type -> dropOne(type, options))
                         .then());
@@ -136,11 +140,13 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         java.util.Collections.reverse(reversed);
         SchemaOptions dropOptions = SchemaOptions.defaults().withIfNotExists(true);
         SchemaOptions createOptions = SchemaOptions.defaults().withIfNotExists(false);
-        // link table 먼저 드롭 → entity 드롭 → entity 생성 → link table 생성.
-        return dropJoinTables(all, dropOptions)
+        // link/collection table 먼저 드롭 → entity 드롭 → entity 생성 → link/collection table 생성.
+        return dropCollectionTables(all, dropOptions)
+                .then(dropJoinTables(all, dropOptions))
                 .then(Flux.fromIterable(reversed).concatMap(type -> dropOne(type, dropOptions)).then())
                 .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
-                .then(createJoinTables(all, createOptions));
+                .then(createJoinTables(all, createOptions))
+                .then(createCollectionTables(all, createOptions));
     }
 
     @Override
@@ -269,6 +275,60 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                         ownerIdType,
                         info.targetForeignKeyColumn(),
                         targetIdType));
+            }
+        }
+        return new ArrayList<>(byName.values());
+    }
+
+    /**
+     * 주어진 엔티티들의 {@code @ElementCollection} collection table을 생성한다. tableName으로 dedupe하며,
+     * 값 컬렉션이 없으면 no-op이다.
+     */
+    private Mono<Void> createCollectionTables(List<Class<?>> types, SchemaOptions options) {
+        List<CollectionTableDefinition> definitions = collectionTableDefinitions(types);
+        if (definitions.isEmpty()) {
+            return Mono.empty();
+        }
+        SchemaGenerator generator = dialect.schemaGenerator();
+        return Flux.fromIterable(definitions)
+                .concatMap(definition -> {
+                    String ddl = options.ifNotExists()
+                            ? generator.createCollectionTableIfNotExists(definition)
+                            : generator.createCollectionTable(definition);
+                    return operations.executeNative(NativeQuery.of(ddl));
+                })
+                .then();
+    }
+
+    private Mono<Void> dropCollectionTables(List<Class<?>> types, SchemaOptions options) {
+        List<CollectionTableDefinition> definitions = collectionTableDefinitions(types);
+        if (definitions.isEmpty()) {
+            return Mono.empty();
+        }
+        SchemaGenerator generator = dialect.schemaGenerator();
+        return Flux.fromIterable(definitions)
+                .concatMap(definition -> {
+                    String ddl = options.ifNotExists()
+                            ? generator.dropJoinTableIfExists(definition.tableName())
+                            : generator.dropJoinTable(definition.tableName());
+                    return operations.executeNative(NativeQuery.of(ddl));
+                })
+                .then();
+    }
+
+    private List<CollectionTableDefinition> collectionTableDefinitions(List<Class<?>> types) {
+        LinkedHashMap<String, CollectionTableDefinition> byName = new LinkedHashMap<>();
+        for (Class<?> type : types) {
+            EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
+            for (PersistentProperty property : metadata.elementCollectionProperties()) {
+                ElementCollectionInfo info = property.elementCollectionInfo();
+                Class<?> ownerIdType = metadata.idProperty().javaType();
+                byName.putIfAbsent(info.collectionTableName(), new CollectionTableDefinition(
+                        info.collectionTableName(),
+                        info.ownerForeignKeyColumn(),
+                        ownerIdType,
+                        info.valueColumn(),
+                        info.valueType()));
             }
         }
         return new ArrayList<>(byName.values());

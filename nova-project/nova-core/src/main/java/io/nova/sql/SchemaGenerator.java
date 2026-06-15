@@ -1,5 +1,6 @@
 package io.nova.sql;
 
+import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
@@ -37,6 +38,18 @@ public interface SchemaGenerator {
      */
     default String dropJoinTableIfExists(String joinTableName) {
         return "drop table if exists " + joinTableName;
+    }
+
+    /**
+     * {@code @ElementCollection} collection table을 만드는 {@code CREATE TABLE} 구문. (owner FK, value) 컬럼을
+     * 가지며 복합 PK는 없다(같은 owner가 같은 값을 List에서 중복 보유할 수 있으므로). dialect base가 override 한다.
+     */
+    default String createCollectionTable(CollectionTableDefinition definition) {
+        throw new UnsupportedOperationException("createCollectionTable is not supported by this SchemaGenerator");
+    }
+
+    default String createCollectionTableIfNotExists(CollectionTableDefinition definition) {
+        return createCollectionTable(definition).replaceFirst("(?i)^create table\\s+", "create table if not exists ");
     }
 
     /**

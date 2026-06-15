@@ -4,6 +4,8 @@ import jakarta.persistence.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.fetch.AnnotationFetchGroupBuilder;
 import io.nova.fetch.FetchGroup;
+import io.nova.metadata.CollectionTableDefinition;
+import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.InheritanceInfo;
@@ -125,9 +127,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     // 세션 밖(트랜잭션 미사용 등): 현행 stateless 동작 그대로.
                     ? saveStateless(metadata, entity)
                     : saveInSession(session.get(), metadata, entity);
-            // owning @ManyToMany가 있으면 entity row 저장 후 link table을 full-replace로 동기화한다(없으면 무비용).
+            // entity row 저장 후 owning @ManyToMany link table과 @ElementCollection collection table을
+            // full-replace로 동기화한다(둘 다 없으면 무비용).
             return saved.flatMap(persisted ->
-                    reconcileManyToManyLinks(metadata, persisted).thenReturn(persisted));
+                    reconcileManyToManyLinks(metadata, persisted)
+                            .then(reconcileElementCollections(metadata, persisted))
+                            .thenReturn(persisted));
         });
     }
 
@@ -262,6 +267,65 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 wrapPrimitive(ownerMetadata.idProperty().javaType()),
                 info.targetForeignKeyColumn(),
                 wrapPrimitive(targetMetadata.idProperty().javaType()));
+    }
+
+    /**
+     * {@code @ElementCollection} 값 컬렉션을 collection table에 full-replace로 동기화한다 — owner의 값 row를
+     * 모두 삭제하고 현재 컬렉션 원소들을 다시 insert한다. 값 컬렉션이 없으면 무비용. {@link #sqlExecutor}만 호출한다.
+     */
+    private <T> Mono<Void> reconcileElementCollections(EntityMetadata<T> metadata, T owner) {
+        List<PersistentProperty> collections = metadata.elementCollectionProperties();
+        if (collections.isEmpty()) {
+            return Mono.empty();
+        }
+        Object ownerId = metadata.idProperty().read(owner);
+        if (ownerId == null) {
+            return Mono.error(new IllegalStateException(
+                    "owner id must be set before reconciling @ElementCollection on " + metadata.entityType().getName()));
+        }
+        return Flux.fromIterable(collections)
+                .concatMap(property -> reconcileOneElementCollection(metadata, property, owner, ownerId))
+                .then();
+    }
+
+    private Mono<Void> reconcileOneElementCollection(
+            EntityMetadata<?> ownerMetadata, PersistentProperty property, Object owner, Object ownerId) {
+        ElementCollectionInfo info = property.elementCollectionInfo();
+        Object collection;
+        try {
+            collection = property.field().get(owner);
+        } catch (IllegalAccessException exception) {
+            return Mono.error(new IllegalStateException(
+                    "Cannot read @ElementCollection " + property.propertyName(), exception));
+        }
+        if (collection == null) {
+            // null 컬렉션 = 이번 save에서 관리하지 않음 → 삭제하지 않는다(빈 컬렉션만 전체 삭제).
+            return Mono.empty();
+        }
+        CollectionTableDefinition definition = collectionDefinition(ownerMetadata, info);
+        List<Object> values = new ArrayList<>();
+        for (Object value : (Iterable<?>) collection) {
+            if (value != null) {
+                values.add(value);
+            }
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        Mono<Void> delete = sqlExecutor.execute(renderer.deleteCollectionRows(definition, ownerId)).then();
+        if (values.isEmpty()) {
+            return delete;
+        }
+        return delete.thenMany(Flux.fromIterable(values)
+                        .concatMap(value -> sqlExecutor.execute(renderer.insertCollectionRow(definition, ownerId, value))))
+                .then();
+    }
+
+    private CollectionTableDefinition collectionDefinition(EntityMetadata<?> ownerMetadata, ElementCollectionInfo info) {
+        return new CollectionTableDefinition(
+                info.collectionTableName(),
+                info.ownerForeignKeyColumn(),
+                wrapPrimitive(ownerMetadata.idProperty().javaType()),
+                info.valueColumn(),
+                info.valueType());
     }
 
     private <T> Mono<T> insertPath(EntityMetadata<T> metadata, T entity) {
@@ -435,6 +499,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return base.flatMap(parent ->
                     hydrateChildren(List.of(parent), annotationGroup)
                             .then(hydrateManyToMany(List.of(parent), metadata))
+                            .then(hydrateElementCollections(List.of(parent), metadata))
                             .thenReturn(parent));
         });
     }
@@ -454,6 +519,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     .flatMapMany(parents ->
                             hydrateChildren(parents, annotationGroup)
                                     .then(hydrateManyToMany(parents, metadata))
+                                    .then(hydrateElementCollections(parents, metadata))
                                     .thenMany(Flux.fromIterable(parents)));
         });
     }
@@ -1168,8 +1234,64 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         try {
             property.field().set(parent, value);
         } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot inject @ManyToMany collection " + property.propertyName(), exception);
+            throw new IllegalStateException("Cannot inject collection " + property.propertyName(), exception);
         }
+    }
+
+    /**
+     * {@code @ElementCollection} 값 컬렉션을 1-hop으로 hydration한다 — collection table을 owner FK IN으로 조회해
+     * owner별 값 리스트를 모아 주입한다(원소가 엔티티가 아니라 기본 타입이므로 second hop 불필요). property당 IN-query 1회.
+     */
+    private <P> Mono<Void> hydrateElementCollections(List<P> parents, EntityMetadata<P> metadata) {
+        List<PersistentProperty> collections = metadata.elementCollectionProperties();
+        if (parents.isEmpty() || collections.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(collections)
+                .concatMap(property -> hydrateOneElementCollection(parents, metadata, property))
+                .then();
+    }
+
+    private <P> Mono<Void> hydrateOneElementCollection(
+            List<P> parents, EntityMetadata<P> metadata, PersistentProperty property) {
+        ElementCollectionInfo info = property.elementCollectionInfo();
+        CollectionTableDefinition definition = collectionDefinition(metadata, info);
+        PersistentProperty parentIdProperty = metadata.idProperty();
+        Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
+        Class<?> valueType = info.valueType();
+
+        LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
+        for (P parent : parents) {
+            Object id = parentIdProperty.read(parent);
+            if (id != null) {
+                parentsById.computeIfAbsent(id, key -> new ArrayList<>()).add(parent);
+            }
+        }
+        if (parentsById.isEmpty()) {
+            injectEmptyCollections(property, parents, info.usesSet());
+            return Mono.empty();
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
+        return sqlExecutor.queryMany(
+                        renderer.selectCollectionRows(definition, ownerIds),
+                        row -> new Object[]{
+                                row.get(info.ownerForeignKeyColumn(), ownerIdType),
+                                row.get(info.valueColumn(), valueType)})
+                .collectList()
+                .doOnNext(rows -> {
+                    LinkedHashMap<Object, List<Object>> valuesByOwner = new LinkedHashMap<>();
+                    for (Object[] row : rows) {
+                        valuesByOwner.computeIfAbsent(row[0], key -> new ArrayList<>()).add(row[1]);
+                    }
+                    for (Map.Entry<Object, List<P>> entry : parentsById.entrySet()) {
+                        List<Object> values = valuesByOwner.getOrDefault(entry.getKey(), List.of());
+                        for (P parent : entry.getValue()) {
+                            injectCollection(property, parent, values, info.usesSet());
+                        }
+                    }
+                })
+                .then();
     }
 
     private <P, C> Mono<Void> hydrateChildSpec(List<P> parents, FetchGroup.FetchSpec<P, C> spec) {

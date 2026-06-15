@@ -45,6 +45,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
 | `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. `fetch = LAZY` / `cascade` are rejected. |
 | `@ManyToMany` / `@JoinTable` | Many-to-many via a link table. **Owning** side (`@JoinTable`, no `mappedBy`) defines the table + join columns; **inverse** side (`@ManyToMany(mappedBy = "...")`) reuses it. Both `List` and `Set` are supported. The link table is auto-created by the schema initializer. `save(owner)` reconciles the link rows (full-replace); both sides hydrate eagerly via a 2-hop IN-query. `cascade` is rejected; single-keyed owner/target only (v1). |
+| `@ElementCollection` / `@CollectionTable` | A collection of **basic-typed** values (`List`/`Set` of `String`, `Integer`, …) stored in a separate `(owner_fk, value)` table, auto-created by the schema initializer. `@CollectionTable` / `@JoinColumn` / `@Column` override the table, owner-FK, and value column names. `save(owner)` reconciles the rows (full-replace); `findById` / `findAll` hydrate via one IN-query. `@Embeddable` element types are not supported yet (v1). |
 | `@OrderBy`        | On `@OneToMany`, orders hydrated children. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY` to the child query; an empty `@OrderBy` sorts by the child's `@Id` ascending. |
 | `@AttributeOverride` | On an `@Embedded` field, overrides a sub-property's column name with an absolute name (e.g. `@AttributeOverride(name = "city", column = @Column(name = "ship_city"))`). |
 | `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
@@ -282,6 +283,26 @@ class Course {
 - **Write (full-replace)** — `save(owner)` reconciles the owner's link rows: it deletes them and re-inserts the current collection, eagerly within the surrounding transaction. Targets must already be persisted (non-null id) — persist them first, like other relations. A `null` collection is left untouched; an empty collection clears all links. This yields the same end state as JPA for both adds and removes.
 - **Read (2-hop, no N+1)** — `findById` / `findAll` hydrate the collection on **both** owning and inverse sides with two IN-queries per association (the link table, then the targets). Declare `targetEntity` when the element type can't be inferred from a raw collection.
 - `cascade` is rejected fail-fast. v1 supports single-keyed owner/target only (composite-keyed `@ManyToMany` is rejected); `@OrderBy` on `@ManyToMany`, link cleanup on owner delete, and session collection-diff are deferred.
+
+---
+
+### `@ElementCollection`
+
+A collection of basic-typed values mapped to a side table (no separate entity):
+
+```java
+@Entity @Table(name = "person")
+class Person {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) Long id;
+
+    @ElementCollection
+    List<String> tags = new ArrayList<>();   // → person_tags (person_id, tags)
+}
+```
+
+- **Collection table** — auto-created as `(owner_fk, value)`. Defaults follow JPA (`owner_table_attribute`, `entity_id`, `attribute`); override with `@CollectionTable(name=…, joinColumns=@JoinColumn(name=…))` and `@Column(name=…)` for the value column. `List` and `Set` are supported. No composite PK is emitted, so duplicate values in a `List` are allowed.
+- **Write / read** — like `@ManyToMany`, `save(owner)` reconciles the rows by full-replace (delete + re-insert the current values, eagerly within the transaction); `findById` / `findAll` hydrate with a single IN-query (the values are inline — no second hop).
+- v1 supports **basic element types** (`String`, `Integer`, `Long`, `Boolean`, `Double`, …). `@Embeddable` element collections are rejected fail-fast and deferred.
 
 ---
 

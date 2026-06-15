@@ -104,7 +104,8 @@ public final class EntityMetadata<T> {
                 throw new IllegalArgumentException(
                         entityType.getName() + " declares duplicate property name " + property.propertyName());
             }
-            if (!property.oneToMany() && !property.inverseToOne() && !property.manyToMany()) {
+            if (!property.oneToMany() && !property.inverseToOne()
+                    && !property.manyToMany() && !property.elementCollection()) {
                 columnMapped.add(property);
             }
             if (createdAt == null && property.createdAt()) {
@@ -429,6 +430,14 @@ public final class EntityMetadata<T> {
     }
 
     /**
+     * {@code @ElementCollection} 값 컬렉션 property들. 캐시하지 않는다(동일 사유). collection table hydration과
+     * save 시 값 동기화에서만 사용된다.
+     */
+    public List<PersistentProperty> elementCollectionProperties() {
+        return properties.stream().filter(PersistentProperty::elementCollection).toList();
+    }
+
+    /**
      * {@code @ManyToOne} 또는 {@code @OneToMany} 중 하나라도 존재하면 {@code true}. annotation-driven 자동
      * hydration의 진입 가드로 사용된다 — 관계가 없는 entity는 기존 zero-overhead findById/findAll 경로를
      * 그대로 거친다.
@@ -437,7 +446,8 @@ public final class EntityMetadata<T> {
         return !manyToOneProperties().isEmpty()
                 || !oneToManyProperties().isEmpty()
                 || !oneToOneInverseProperties().isEmpty()
-                || !manyToManyProperties().isEmpty();
+                || !manyToManyProperties().isEmpty()
+                || !elementCollectionProperties().isEmpty();
     }
 
     /**

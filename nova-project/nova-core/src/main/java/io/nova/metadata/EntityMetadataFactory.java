@@ -7,6 +7,8 @@ import jakarta.persistence.Convert;
 import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.DiscriminatorValue;
+import jakarta.persistence.CollectionTable;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.EmbeddedId;
@@ -275,6 +277,11 @@ public final class EntityMetadataFactory {
                 properties.add(createManyToManyProperty(entityType, tableName, field));
                 continue;
             }
+            if (field.isAnnotationPresent(ElementCollection.class)) {
+                // 값 컬렉션 — collection table에 별도 저장되는 컬럼 없는 marker.
+                properties.add(createElementCollectionProperty(entityType, tableName, field));
+                continue;
+            }
             if (field.isAnnotationPresent(EmbeddedId.class)) {
                 if (field.isAnnotationPresent(Id.class)) {
                     throw new IllegalArgumentException(
@@ -399,8 +406,10 @@ public final class EntityMetadataFactory {
 
         Set<String> columnNames = new LinkedHashSet<>();
         for (PersistentProperty property : properties) {
-            if (property.oneToMany() || property.inverseToOne()) {
-                // @OneToMany / inverse @OneToOne은 parent 테이블 컬럼이 없는 marker-only이므로 uniqueness 검증 대상이 아니다.
+            if (property.oneToMany() || property.inverseToOne()
+                    || property.manyToMany() || property.elementCollection()) {
+                // 컬럼 없는 marker-only(@OneToMany / inverse @OneToOne / @ManyToMany / @ElementCollection)는
+                // 빈 columnName을 가지므로 uniqueness 검증에서 제외한다(빈 문자열 false collision 방지).
                 continue;
             }
             if (!columnNames.add(property.columnName())) {
@@ -1242,6 +1251,7 @@ public final class EntityMetadataFactory {
                 lob,
                 converterColumnType,
                 false,
+                null,
                 null
         );
     }
@@ -1440,6 +1450,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
+                null,
                 null
         );
     }
@@ -1515,6 +1526,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
+                null,
                 null
         );
     }
@@ -1580,6 +1592,7 @@ public final class EntityMetadataFactory {
                     false,
                     null,
                     true,
+                    null,
                     null
             );
         }
@@ -1632,6 +1645,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
+                null,
                 null
         );
     }
@@ -1696,7 +1710,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info);
+                info, null);
     }
 
     /**
@@ -1822,6 +1836,74 @@ public final class EntityMetadataFactory {
         }
         String name = columns[0].name();
         return name == null || name.isBlank() ? defaultName : name;
+    }
+
+    /**
+     * {@code @ElementCollection} 값 컬렉션 property를 만든다. 기본 타입 원소를 collection table {@code (owner FK,
+     * value)}에 저장하는 컬럼 없는 marker다. {@code @CollectionTable}/{@code @JoinColumn}/{@code @Column}이 있으면
+     * 그 이름을, 없으면 JPA 기본 규약을 따른다. {@code @Embeddable} 원소, 복합키 owner, non-collection 필드는
+     * v1에서 fail-fast로 거부한다.
+     */
+    private PersistentProperty createElementCollectionProperty(Class<?> entityType, String ownerTableName, Field field) {
+        Class<?> fieldType = field.getType();
+        if (!List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ElementCollection must map to a List or Set; got " + fieldType.getName());
+        }
+        boolean usesSet = Set.class.isAssignableFrom(fieldType);
+        Class<?> elementType = resolveElementCollectionElementType(entityType, field);
+        if (elementType.isAnnotationPresent(Embeddable.class)) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ElementCollection of @Embeddable type " + elementType.getName()
+                            + " is not supported yet; use a basic element type");
+        }
+        String location = entityType.getName() + "." + field.getName();
+        String ownerIdColumn = resolveSingleIdColumn(entityType, location);
+        CollectionTable collectionTable = field.getAnnotation(CollectionTable.class);
+        String tableName = collectionTable != null && !collectionTable.name().isBlank()
+                ? collectionTable.name()
+                : namingStrategy.joinTableName(ownerTableName, namingStrategy.columnName(field.getName()));
+        String ownerForeignKeyColumn = resolveSingleJoinColumn(
+                collectionTable == null ? null : collectionTable.joinColumns(),
+                namingStrategy.joinColumnName(entityType.getSimpleName(), ownerIdColumn),
+                location + " @CollectionTable.joinColumns");
+        Column column = field.getAnnotation(Column.class);
+        String valueColumn = column != null && !column.name().isBlank()
+                ? column.name()
+                : namingStrategy.columnName(field.getName());
+        ElementCollectionInfo info = new ElementCollectionInfo(
+                tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet);
+        return new PersistentProperty(
+                field, field.getName(), "", fieldType,
+                false, false, true, 255, 0, 0,
+                null, "", null,
+                false, false, false, false, List.of(),
+                false, null, false,
+                false, null, true,
+                false, null, "",
+                true, true, false, "", false, null,
+                false,
+                null,
+                info);
+    }
+
+    private static Class<?> resolveElementCollectionElementType(Class<?> entityType, Field field) {
+        ElementCollection annotation = field.getAnnotation(ElementCollection.class);
+        if (annotation.targetClass() != void.class) {
+            return annotation.targetClass();
+        }
+        Type generic = field.getGenericType();
+        if (generic instanceof ParameterizedType parameterized) {
+            Type[] arguments = parameterized.getActualTypeArguments();
+            if (arguments.length == 1 && arguments[0] instanceof Class<?> elementType) {
+                return elementType;
+            }
+        }
+        throw new IllegalArgumentException(
+                entityType.getName() + "." + field.getName()
+                        + " @ElementCollection cannot infer the element type from a raw collection; specify targetClass");
     }
 
     private static AttributeConverter<?, ?> createEnumConverter(Class<?> enumClass, EnumType enumType) {

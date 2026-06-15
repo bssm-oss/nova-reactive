@@ -262,6 +262,45 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement deleteCollectionRows(io.nova.metadata.CollectionTableDefinition definition, Object ownerId) {
+        String sql = "delete from " + dialect.quote(definition.tableName())
+                + " where " + dialect.quote(definition.ownerForeignKeyColumn())
+                + " = " + dialect.bindMarkers().marker(1);
+        return new SqlStatement(sql, List.of(ownerId));
+    }
+
+    @Override
+    public SqlStatement insertCollectionRow(io.nova.metadata.CollectionTableDefinition definition, Object ownerId, Object value) {
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + dialect.quote(definition.ownerForeignKeyColumn())
+                + ", " + dialect.quote(definition.valueColumn()) + ")"
+                + " values (" + dialect.bindMarkers().marker(1) + ", " + dialect.bindMarkers().marker(2) + ")";
+        return new SqlStatement(sql, java.util.Arrays.asList(ownerId, value));
+    }
+
+    @Override
+    public SqlStatement selectCollectionRows(io.nova.metadata.CollectionTableDefinition definition, List<Object> ownerIds) {
+        if (ownerIds.isEmpty()) {
+            throw new IllegalArgumentException("selectCollectionRows requires at least one owner id");
+        }
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("select ")
+                .append(dialect.quote(definition.ownerForeignKeyColumn())).append(", ")
+                .append(dialect.quote(definition.valueColumn()))
+                .append(" from ").append(dialect.quote(definition.tableName()))
+                .append(" where ").append(dialect.quote(definition.ownerForeignKeyColumn())).append(" in (");
+        for (int i = 0; i < ownerIds.size(); i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(ownerIds.get(i));
+        }
+        sql.append(")");
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
     public SqlStatement deleteByQuery(EntityMetadata<?> metadata, QuerySpec querySpec) {
         if (querySpec.predicate() == null) {
             throw new IllegalArgumentException("deleteByQuery requires a non-null predicate");

@@ -3,6 +3,7 @@ package io.nova.sql;
 import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.GenerationType;
+import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.IndexDefinition;
 import io.nova.metadata.InheritanceInfo;
@@ -56,6 +57,50 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                 + ", " + dialect.quote(definition.targetForeignKeyColumn()) + ")";
         return "create table " + dialect.quote(definition.tableName())
                 + " (" + ownerColumn + ", " + targetColumn + ", " + primaryKey + ")";
+    }
+
+    @Override
+    public String createCollectionTable(CollectionTableDefinition definition) {
+        // owner FK는 not null, value 컬럼은 nullable(컬렉션 원소 null 허용 가능). 복합 PK는 두지 않는다
+        // (List 중복 원소 허용). owner FK 조회 성능은 후속 인덱스 단계에서 보강.
+        String ownerColumn = dialect.quote(definition.ownerForeignKeyColumn())
+                + " " + fkColumnType(definition.ownerForeignKeyType()) + " not null";
+        String valueColumnDef = dialect.quote(definition.valueColumn())
+                + " " + elementColumnType(definition.valueType());
+        return "create table " + dialect.quote(definition.tableName())
+                + " (" + ownerColumn + ", " + valueColumnDef + ")";
+    }
+
+    /**
+     * {@code @ElementCollection} 값 컬럼의 SQL 타입을 원소 Java 타입으로 결정한다. {@link #sqlType}의 스칼라
+     * 분기를 미러하되 property 없이 타입만으로 매핑한다(기본 타입 원소 지원).
+     */
+    protected String elementColumnType(Class<?> valueType) {
+        if (valueType == String.class) {
+            return "varchar(255)";
+        }
+        if (valueType == Long.class || valueType == long.class) {
+            return "bigint";
+        }
+        if (valueType == Integer.class || valueType == int.class) {
+            return "integer";
+        }
+        if (valueType == Boolean.class || valueType == boolean.class) {
+            return "boolean";
+        }
+        if (valueType == Double.class || valueType == double.class) {
+            return "double precision";
+        }
+        if (valueType == Short.class || valueType == short.class) {
+            return "smallint";
+        }
+        if (valueType == java.math.BigDecimal.class) {
+            return "numeric(19, 2)";
+        }
+        if (valueType == java.util.UUID.class) {
+            return "varchar(36)";
+        }
+        throw new IllegalArgumentException("Unsupported @ElementCollection element type: " + valueType.getName());
     }
 
     @Override
