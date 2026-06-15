@@ -2,6 +2,7 @@ package io.nova.r2dbc;
 
 import io.nova.tx.IsolationLevel;
 import io.nova.tx.Propagation;
+import io.nova.tx.ReactiveConnectionOperations;
 import io.nova.tx.ReactiveTransactionManager;
 import io.nova.tx.TransactionContext;
 import io.nova.tx.TransactionDefinition;
@@ -16,7 +17,7 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
-public final class R2dbcTransactionManager implements ReactiveTransactionManager {
+public final class R2dbcTransactionManager implements ReactiveTransactionManager, ReactiveConnectionOperations {
     static final String CONNECTION_KEY = "io.nova.r2dbc.connection";
 
     private static final AtomicLong SAVEPOINT_COUNTER = new AtomicLong();
@@ -57,6 +58,22 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         Connection conn = ((R2dbcTransactionContext) context).connection();
         return Mono.from(conn.rollbackTransaction())
                 .then(Mono.from(conn.close()));
+    }
+
+    @Override
+    public <T> Mono<T> withConnection(Mono<T> work) {
+        Objects.requireNonNull(work, "work");
+        return Mono.deferContextual(ctxView -> {
+            if (ctxView.hasKey(CONNECTION_KEY)) {
+                // 이미 트랜잭션/바깥 read 스코프 안 → 기존 커넥션을 그대로 재사용한다(double-acquire 방지).
+                return work;
+            }
+            // 스코프당 커넥션 1개를 풀에서 빌려 Context에 바인딩하고, 끝나면 반납한다(BEGIN/COMMIT 없음, autocommit).
+            return Mono.usingWhen(
+                    Mono.from(connectionFactory.create()),
+                    conn -> work.contextWrite(Context.of(CONNECTION_KEY, conn)),
+                    conn -> Mono.from(conn.close()));
+        });
     }
 
     @Override

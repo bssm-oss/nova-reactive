@@ -19,6 +19,7 @@ import io.r2dbc.pool.ConnectionPool;
 import io.r2dbc.pool.ConnectionPoolConfiguration;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
+import reactor.core.publisher.Flux;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Level;
@@ -55,6 +56,7 @@ public class NovaHotPathBenchmark {
     private SqlRenderer renderer;
     private EntityMetadata<BenchUser> metadata;
     private Long oneId;
+    private List<Long> ids;
 
     @Setup(Level.Trial)
     public void setup() {
@@ -77,6 +79,7 @@ public class NovaHotPathBenchmark {
             ids.add(operations.save(new BenchUser("user" + i, "user" + i + "@nova.io", 20 + i)).block().getId());
         }
         this.oneId = ids.get(50);
+        this.ids = ids;
     }
 
     @TearDown(Level.Trial)
@@ -103,5 +106,26 @@ public class NovaHotPathBenchmark {
     @Benchmark
     public BenchUser saveInsert() {
         return operations.save(new BenchUser("x", "x@nova.io", 30)).block();
+    }
+
+    /**
+     * read 세션 측정 게이트: 100 findById를 단일 reactive chain으로 실행하되 <b>read 세션 없이</b> — 매 read가
+     * 풀에서 커넥션을 새로 빌리고 반납한다. block()은 1회뿐이라 {@link #read100InScope}와의 차이는 오직 커넥션
+     * 재사용 여부다.
+     */
+    @Benchmark
+    public Integer read100Separate() {
+        return Flux.fromIterable(ids)
+                .concatMap(id -> operations.findById(BenchUser.class, id))
+                .collectList().map(List::size).block();
+    }
+
+    /** 같은 100 read를 {@code inReadSession}으로 묶어 커넥션 1개를 공유한다(per-op acquire 제거). */
+    @Benchmark
+    public Integer read100InScope() {
+        return operations.inReadSession(ops ->
+                Flux.fromIterable(ids)
+                        .concatMap(id -> ops.findById(BenchUser.class, id))
+                        .collectList().map(List::size)).block();
     }
 }

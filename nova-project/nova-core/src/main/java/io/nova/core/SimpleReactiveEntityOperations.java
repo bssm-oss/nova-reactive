@@ -876,6 +876,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }));
     }
 
+    @Override
+    public <R> Mono<R> inReadSession(Function<ReactiveEntityOperations, Mono<R>> callback) {
+        // 커넥션 스코프를 지원하는 배선이면 단일 커넥션을 묶어 per-op acquire를 제거한다. 아니면(예: 커넥션을
+        // Context에 싣지 않는 배선) 콜백을 그대로 실행해 현행 동작으로 안전 폴백한다. 트랜잭션/세션은 켜지 않는다.
+        if (transactionOperations instanceof io.nova.tx.ReactiveConnectionOperations connectionOperations) {
+            return connectionOperations.withConnection(Mono.defer(() -> callback.apply(this)));
+        }
+        return callback.apply(this);
+    }
+
     /**
      * {@link AggregateSpec}을 dialect의 {@link io.nova.sql.SqlRenderer#aggregate}로 SQL로 변환해
      * 실행하고, 결과 row마다 {@link AggregateRow}를 발행한다.
