@@ -154,6 +154,21 @@ public interface ReactiveEntityOperations {
     <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback);
 
     /**
+     * 트랜잭션 없이 단일 커넥션을 스코프 동안 공유하며 콜백을 실행한다. 스코프 안의 read들은 연산당 커넥션을
+     * 새로 빌리고 반납하는 비용을 피한다(BEGIN/COMMIT 없이 autocommit 유지). 리스트 조회 + 연관 lookup처럼
+     * 한 논리 단위에서 read를 여러 번 할 때 고정비를 1회로 분산하는 용도다.
+     * <p>
+     * 커넥션은 동시성에 안전하지 않으므로 스코프 내 작업은 <b>순차 read</b>를 전제로 한다(동시 read는 별도
+     * 스코프/기본 경로). 쓰기를 섞으면 각 statement가 독립 autocommit이라 스코프 단위 원자성은 없다 — 원자성이
+     * 필요하면 {@link #inTransaction(Function)}을 쓴다.
+     * <p>
+     * 기본 구현은 커넥션 스코프를 지원하지 않는 배선에서 콜백을 그대로 실행한다(현행 per-op 동작으로 안전 폴백).
+     */
+    default <R> Mono<R> inReadSession(Function<ReactiveEntityOperations, Mono<R>> callback) {
+        return callback.apply(this);
+    }
+
+    /**
      * 여러 엔티티를 한 번에 저장한다. 기본 구현은 단건 {@link #save(Object)}로 폴백한다.
      * 같은 SQL 셰이프끼리 묶어 배치로 실행하는 최적화는 구현체에서 override한다.
      * <p>

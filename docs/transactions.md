@@ -53,6 +53,39 @@ operations.inTransaction(tx ->
 
 ---
 
+## Read session (connection-scoped reads)
+
+`inReadSession(...)` shares a **single pooled connection** across the reads in the callback —
+**without** starting a transaction (no `BEGIN`/`COMMIT`, no persistence session). It removes the
+per-operation connection acquire/release that each autocommit read otherwise pays.
+
+```java
+operations.inReadSession(ops ->
+    ops.findAll(Order.class, recent)
+       .collectList()
+       .flatMap(orders -> Flux.fromIterable(orders)
+           .concatMap(o -> ops.findById(Customer.class, o.getCustomerId()))
+           .collectList()));
+```
+
+- **When it helps** — a logical unit that does **several reads** (a list plus related lookups).
+  The connection is acquired once for the whole scope instead of once per read. A single read
+  gains nothing (one acquire either way). Measured: 100 sequential `findById` dropped from
+  ~654 µs to ~269 µs (**~2.4×**; ~3.85 µs/read saved) on H2 — confirming connection-acquire was
+  the dominant per-op cost.
+- **Reads are sequential** — an R2DBC connection is not concurrency-safe, so the scope assumes
+  sequential reads (`concatMap`, not `flatMap`). Run genuinely concurrent reads outside the scope
+  (each gets its own pooled connection) or in separate scopes.
+- **No transaction** — statements stay autocommit on the shared connection, so there's **no
+  scope-level atomicity**. Mixing writes is allowed but each autocommits independently; use
+  `inTransaction(...)` when you need atomicity.
+- **Nesting** — calling `inReadSession` inside an `inTransaction` (or another read session) reuses
+  the already-bound connection; it never opens a second one.
+- Requires a connection-scope-aware wiring (the default `Nova.create` one). Other wirings fall
+  back to per-operation acquire transparently.
+
+---
+
 ## Pessimistic locking
 
 Use `QuerySpec.forUpdate()` / `forShare()` to apply a pessimistic lock on the SELECT result rows. The lock clause is only meaningful **inside a transaction**, so use it within an `inTransaction(...)` callback.
