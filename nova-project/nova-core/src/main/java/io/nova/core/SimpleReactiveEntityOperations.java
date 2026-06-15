@@ -26,6 +26,7 @@ import io.nova.sql.SqlStatement;
 import io.nova.tx.ReactiveTransactionOperations;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.context.ContextView;
 
 import java.lang.reflect.Constructor;
 import java.time.Clock;
@@ -48,6 +49,13 @@ import java.util.function.Function;
  * 엔티티 메타데이터, SQL 렌더러, executor를 기반으로 동작하는 기본 {@link ReactiveEntityOperations} 구현체다.
  */
 public final class SimpleReactiveEntityOperations implements ReactiveEntityOperations {
+    /**
+     * 트랜잭션에 묶인 {@link PersistenceSession}을 Reactor {@code Context}에 보관하는 키. nova-r2dbc의
+     * 커넥션 키와 동일한 메커니즘(deferContextual/contextWrite)으로 전파되며 그 sibling으로 공존한다.
+     * nova-core가 소유하므로 어떤 트랜잭션 배선에서도 세션이 올바르게 얹힌다.
+     */
+    static final String SESSION_KEY = "io.nova.core.session";
+
     private final EntityMetadataFactory metadataFactory;
     private final Dialect dialect;
     private final SqlExecutor sqlExecutor;
@@ -57,6 +65,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final AuditApplier auditApplier;
     private final EntityListenerInvoker listenerInvoker;
     private final AnnotationFetchGroupBuilder annotationFetchGroupBuilder;
+    /**
+     * {@code inTransaction} 안에서 영속성 세션(identity map + dirty checking)을 켤지 여부. 기본 {@code true}.
+     * internal kill-switch로, 끄면 트랜잭션 동작이 세션 도입 이전과 byte-for-byte 동일하다(테스트/회귀 가드용).
+     */
+    private final boolean sessionEnabled;
 
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
@@ -76,6 +89,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             ReactiveTransactionOperations transactionOperations,
             Clock clock
     ) {
+        this(metadataFactory, dialect, sqlExecutor, entityStateDetector, transactionOperations, clock, true);
+    }
+
+    SimpleReactiveEntityOperations(
+            EntityMetadataFactory metadataFactory,
+            Dialect dialect,
+            SqlExecutor sqlExecutor,
+            EntityStateDetector entityStateDetector,
+            ReactiveTransactionOperations transactionOperations,
+            Clock clock,
+            boolean sessionEnabled
+    ) {
         this.metadataFactory = metadataFactory;
         this.dialect = dialect;
         this.sqlExecutor = sqlExecutor;
@@ -85,11 +110,27 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         this.auditApplier = new AuditApplier(this.clock);
         this.listenerInvoker = new EntityListenerInvoker();
         this.annotationFetchGroupBuilder = new AnnotationFetchGroupBuilder(metadataFactory);
+        this.sessionEnabled = sessionEnabled;
     }
 
     @Override
     public <T> Mono<T> save(T entity) {
-        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
+        return Mono.deferContextual(ctx -> {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
+            Optional<PersistenceSession> session = currentSession(ctx);
+            if (session.isEmpty()) {
+                // 세션 밖(트랜잭션 미사용 등): 현행 stateless 동작 그대로.
+                return saveStateless(metadata, entity);
+            }
+            return saveInSession(session.get(), metadata, entity);
+        });
+    }
+
+    /**
+     * 세션이 없을 때의 save — 영속성 세션 도입 이전과 byte-for-byte 동일하다. 복합키는 존재 확인,
+     * 단일키는 id-null isNew 휴리스틱으로 insert/update를 가른다.
+     */
+    private <T> Mono<T> saveStateless(EntityMetadata<T> metadata, T entity) {
         if (metadata.hasCompositeId()) {
             // @EmbeddedId 복합키는 application-assigned이라 id-null "isNew" 휴리스틱을 쓸 수 없다(키가 곧
             // 데이터라 save 시점에 항상 채워져 있음). JPA merge와 동일하게 존재 여부를 SELECT로 확인해
@@ -104,6 +145,50 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         boolean isNew = entityStateDetector.isNew(entity, metadata);
         return isNew ? insertPath(metadata, entity) : updatePath(metadata, entity);
+    }
+
+    /**
+     * 세션 안에서의 save — 신규는 즉시 INSERT(생성 id 확보 + in-tx 가시성) 후 세션에 등록하고, 기존은 SQL
+     * 없이 관리 대상으로 편입만 한다. 실제 UPDATE는 flush 시점의 dirty diff가 발행한다(JPA dirty checking).
+     */
+    private <T> Mono<T> saveInSession(PersistenceSession session, EntityMetadata<T> metadata, T entity) {
+        if (metadata.hasCompositeId()) {
+            Object id = metadata.readIdValue(entity);
+            if (id == null) {
+                return Mono.error(new IllegalArgumentException(
+                        "@EmbeddedId must not be null on save for " + metadata.entityType().getName()));
+            }
+            return findByIdInternal(metadata, id).hasElement()
+                    .flatMap(exists -> exists
+                            ? registerExisting(session, metadata, entity)
+                            : insertAndRegister(session, metadata, entity));
+        }
+        boolean isNew = entityStateDetector.isNew(entity, metadata);
+        return isNew ? insertAndRegister(session, metadata, entity) : registerExisting(session, metadata, entity);
+    }
+
+    /**
+     * 즉시 INSERT 후(audit/version/콜백 적용 완료, id 채워진 상태) 세션에 등록해 baseline 스냅샷을 찍는다.
+     */
+    private <T> Mono<T> insertAndRegister(PersistenceSession session, EntityMetadata<T> metadata, T entity) {
+        return insertPath(metadata, entity)
+                .doOnNext(saved -> session.registerOnPersist(metadata, saved));
+    }
+
+    /**
+     * 기존 엔티티를 SQL 없이 세션에 편입한다. 이미 관리 중이면(예: findById로 로드 후 수정) 로드 스냅샷을
+     * 보존해 flush가 변경분만 UPDATE하게 두고, 미관리(직접 만든 detached 엔티티)면 현재 상태를 baseline으로
+     * 등록한다.
+     */
+    private <T> Mono<T> registerExisting(PersistenceSession session, EntityMetadata<T> metadata, T entity) {
+        if (!session.isManaged(metadata, entity)) {
+            session.registerOnPersist(metadata, entity);
+        }
+        return Mono.just(entity);
+    }
+
+    private Optional<PersistenceSession> currentSession(ContextView ctx) {
+        return ctx.hasKey(SESSION_KEY) ? Optional.of(ctx.get(SESSION_KEY)) : Optional.empty();
     }
 
     private <T> Mono<T> insertPath(EntityMetadata<T> metadata, T entity) {
@@ -264,28 +349,131 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     @Override
     public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
-        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
-        Mono<T> base = findByIdInternal(metadata, id);
-        if (!metadata.hasRelationProperties()) {
-            // 관계 어노테이션이 없는 entity는 기존 zero-overhead 경로를 그대로 거친다.
-            return base;
-        }
-        FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
-        return base.flatMap(parent ->
-                hydrateChildren(List.of(parent), annotationGroup).thenReturn(parent));
+        return Mono.deferContextual(ctx -> {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+            Optional<PersistenceSession> session = currentSession(ctx);
+            // 세션이 있으면 SELECT 전 auto-flush(읽기 일관성)하고, 결과를 identity map에 편입(같은 PK=같은 인스턴스).
+            Mono<T> base = autoFlushIfSession(session)
+                    .then(findByIdInternal(metadata, id).map(entity -> manage(session, entity)));
+            if (!metadata.hasRelationProperties()) {
+                return base;
+            }
+            FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
+            return base.flatMap(parent ->
+                    hydrateChildren(List.of(parent), annotationGroup).thenReturn(parent));
+        });
     }
 
     @Override
     public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
-        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
-        Flux<T> base = findAllInternal(metadata, querySpec);
-        if (!metadata.hasRelationProperties()) {
-            return base;
+        return Flux.deferContextual(ctx -> {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+            Optional<PersistenceSession> session = currentSession(ctx);
+            Flux<T> base = autoFlushIfSession(session)
+                    .thenMany(findAllInternal(metadata, querySpec).map(entity -> manage(session, entity)));
+            if (!metadata.hasRelationProperties()) {
+                return base;
+            }
+            FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
+            return base.collectList()
+                    .flatMapMany(parents ->
+                            hydrateChildren(parents, annotationGroup).thenMany(Flux.fromIterable(parents)));
+        });
+    }
+
+    /**
+     * 세션이 있으면 flush를, 없으면 no-op({@link Mono#empty()})을 반환한다. SELECT 전 auto-flush 진입점.
+     */
+    private Mono<Void> autoFlushIfSession(Optional<PersistenceSession> session) {
+        return session.map(this::flush).orElseGet(Mono::empty);
+    }
+
+    /**
+     * 갓 로드한 엔티티를 세션 identity map에 편입하고 canonical 인스턴스를 반환한다. 세션이 없으면 그대로
+     * 반환한다. inheritance에서 row가 서브타입 인스턴스로 디코딩될 수 있으므로 concrete 클래스의 메타데이터로
+     * 등록해 스냅샷/diff가 올바른 컬럼 집합을 쓰게 한다.
+     */
+    @SuppressWarnings("unchecked")
+    private <T> T manage(Optional<PersistenceSession> session, T entity) {
+        if (session.isEmpty() || entity == null) {
+            return entity;
         }
-        FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
-        return base.collectList()
-                .flatMapMany(parents ->
-                        hydrateChildren(parents, annotationGroup).thenMany(Flux.fromIterable(parents)));
+        EntityMetadata<T> concrete = (EntityMetadata<T>) metadataFactory.getEntityMetadata(entity.getClass());
+        return session.get().registerOnLoad(concrete, entity);
+    }
+
+    /**
+     * 세션의 managed 엔티티들을 dirty diff해 변경분만 부분 UPDATE로 발행한다. 변경이 없으면 SQL을 내지
+     * 않는다. 엔트리들은 단일 tx 커넥션에서 안전하도록 {@code concatMap}으로 순차 실행한다.
+     * <p>
+     * <b>불변식:</b> flush(및 insert 경로)는 {@link #sqlExecutor}만 호출하고 public session-aware
+     * 메서드(findById/findAll/save)를 절대 호출하지 않는다 — auto-flush 재진입을 막기 위함이다.
+     */
+    private Mono<Void> flush(PersistenceSession session) {
+        return Mono.defer(() -> {
+            if (session.isEmpty()) {
+                return Mono.empty();
+            }
+            return Flux.fromIterable(new ArrayList<>(session.managedEntries()))
+                    .concatMap(this::flushEntry)
+                    .then();
+        });
+    }
+
+    /**
+     * managed 엔티티 1건을 flush한다. 스냅샷 대비 변경된 컬럼이 없으면 no-op. 변경이 있으면 기존
+     * {@code update(entity, fields)}와 동일한 audit(@UpdatedAt)/리스너(@PreUpdate·@PostUpdate)/낙관락(@Version)
+     * 코레오그래피로 부분 UPDATE를 발행하고 스냅샷을 갱신한다.
+     */
+    private Mono<Void> flushEntry(PersistenceSession.ManagedEntry entry) {
+        return Mono.defer(() -> {
+            Object entity = entry.entity();
+            EntityMetadata<?> metadata = entry.metadata();
+            if (entry.dirtyPropertyNames().isEmpty()) {
+                return Mono.empty();
+            }
+            try {
+                auditApplier.applyOnUpdate(entity, metadata);
+                listenerInvoker.invokePreUpdate(entity, metadata);
+            } catch (RuntimeException exception) {
+                return Mono.error(exception);
+            }
+            // audit/@PreUpdate 콜백이 추가로 더럽힌 컬럼까지 재diff로 포착(@UpdatedAt 포함).
+            LinkedHashSet<String> fields = new LinkedHashSet<>(entry.dirtyPropertyNames());
+            if (fields.isEmpty()) {
+                return Mono.empty();
+            }
+            PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+            if (versionProperty != null) {
+                fields.add(versionProperty.propertyName());
+            }
+            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
+            if (versionProperty == null) {
+                return sqlExecutor.execute(statement)
+                        .doOnSuccess(ignored -> {
+                            listenerInvoker.invokePostUpdate(entity, metadata);
+                            entry.refreshSnapshot();
+                        })
+                        .then();
+            }
+            Object current = versionProperty.read(entity);
+            Object next = nextVersionValue(versionProperty, current);
+            return sqlExecutor.execute(statement)
+                    .flatMap(affected -> {
+                        if (affected == 0L) {
+                            return Mono.error(new OptimisticLockingFailureException(
+                                    "Optimistic locking failure: row not found or version mismatch for "
+                                            + metadata.entityType().getName()
+                                            + " id=" + metadata.readIdValue(entity)
+                                            + " version=" + current));
+                        }
+                        versionProperty.write(entity, next);
+                        listenerInvoker.invokePostUpdate(entity, metadata);
+                        entry.refreshSnapshot();
+                        return Mono.just(affected);
+                    })
+                    .then();
+        });
     }
 
     /**
@@ -499,7 +687,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     @Override
     public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
-        return transactionOperations.inTransaction(ignored -> callback.apply(this));
+        return transactionOperations.inTransaction(ignored -> Mono.deferContextual(ctx -> {
+            if (!sessionEnabled || ctx.hasKey(SESSION_KEY)) {
+                // 세션 비활성(kill-switch) 또는 중첩 inTransaction/savepoint: 외부 세션을 공유하고
+                // 새 세션·flush를 만들지 않는다(최외곽 스코프만 flush를 소유).
+                return callback.apply(this);
+            }
+            PersistenceSession session = new PersistenceSession();
+            // flush를 콜백의 마지막 단계로 끼워 tx 레이어의 commit이 그 뒤에 붙게 한다 = flush-before-commit.
+            return callback.apply(this)
+                    .flatMap(result -> flush(session).thenReturn(result))
+                    .switchIfEmpty(Mono.defer(() -> flush(session).then(Mono.empty())))
+                    .contextWrite(context -> context.put(SESSION_KEY, session));
+        }));
     }
 
     /**

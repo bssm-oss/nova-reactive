@@ -28,6 +28,31 @@ Supported `Propagation` values: `REQUIRED`, `REQUIRES_NEW`, `NESTED` (SAVEPOINT)
 
 ---
 
+## Persistence session (identity map + dirty checking)
+
+Inside an `inTransaction(...)` callback, Nova activates a **transaction-bound persistence session** — a unit of work that rides the same Reactor `Context` as the transaction (no `ThreadLocal`). It gives you JPA-style identity and automatic change tracking; outside a transaction every operation stays stateless exactly as before.
+
+```java
+operations.inTransaction(tx ->
+    tx.findById(Account.class, id)
+      .flatMap(account -> {
+          account.setEmail("new@example.com");   // just mutate the loaded entity
+          return tx.save(account);               // no SQL issued here
+      })
+);
+// On commit, the session flushes a single partial UPDATE of only the changed column.
+```
+
+- **Identity map** — loading the same primary key twice in one transaction returns the **same instance** (`first == second`).
+- **Snapshot dirty checking** — each loaded entity is snapshotted (in storage form, so `@Convert`/`@Enumerated`/`@Embedded` columns compare correctly). At flush, only changed columns are written, as a partial `UPDATE`. No change → no SQL.
+- **Flush timing** — automatically **before each `findById`/`findAll`** (read-your-writes within the transaction) and **once before commit**. An error rolls the transaction back, discarding pending changes.
+- `save()` of a **new** entity still inserts immediately (to obtain the generated id); subsequent mutations are picked up by dirty checking. `save()` of an already-loaded entity issues no SQL — the change is flushed at commit.
+- `@UpdatedAt`, `@PreUpdate`/`@PostUpdate`, and `@Version` optimistic locking apply to flush UPDATEs identically to an explicit partial update.
+
+**v1 scope / not yet covered:** cascade, `@ManyToMany` join-table management, `merge` of detached entities, a session that outlives a single transaction, and FetchGroup-loaded children are not session-managed. `update(entity, fields)` / the `Updater` API deliberately bypass the session (direct SQL). Reads other than `findById`/`findAll` (e.g. `count`, projections) are not auto-flushed in v1.
+
+---
+
 ## Pessimistic locking
 
 Use `QuerySpec.forUpdate()` / `forShare()` to apply a pessimistic lock on the SELECT result rows. The lock clause is only meaningful **inside a transaction**, so use it within an `inTransaction(...)` callback.
