@@ -4,32 +4,59 @@ import io.nova.benchmark.entity.BenchUser;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.Persistence;
+import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Hibernate ORM(JDBC + blocking) 구현. EntityManager 하나를 시나리오 전체에서 재사용하되, 쓰기 연산마다
- * 트랜잭션을 열고 읽기 후 {@code em.clear()}로 1차 캐시를 비워 매 조회가 실제 DB 왕복을 하도록 강제한다
- * (Nova는 세션 밖에서 1차 캐시가 없으므로 동일 조건을 맞춘다).
+ * Hibernate ORM(JDBC + blocking) 구현. backend별 jdbc 접속 정보를 런타임에 주입해 EMF를 만든다(스키마는
+ * hbm2ddl=create). EntityManager 하나를 시나리오 전체에서 재사용하되 쓰기마다 트랜잭션을 열고 읽기 후
+ * {@code em.clear()}로 1차 캐시를 비워 매 조회가 실제 DB 왕복을 하도록 강제한다.
  */
 final class HibernateOrm implements OrmBenchmark {
 
+    private final String name;
     private final EntityManagerFactory entityManagerFactory;
     private EntityManager em;
 
-    HibernateOrm() {
-        // hbm2ddl.auto=create가 EMF 초기화 시 스키마를 만든다.
-        this.entityManagerFactory = Persistence.createEntityManagerFactory("bench");
+    private HibernateOrm(String name, Map<String, Object> jdbcProperties) {
+        this.name = name;
+        this.entityManagerFactory = Persistence.createEntityManagerFactory("bench", jdbcProperties);
+    }
+
+    static HibernateOrm h2() {
+        return new HibernateOrm("Hibernate ORM (JDBC, blocking)",
+                jdbc("jdbc:h2:mem:hibbench;DB_CLOSE_DELAY=-1", "org.h2.Driver", "sa", ""));
+    }
+
+    static HibernateOrm postgres(String jdbcUrl, String user, String password) {
+        return new HibernateOrm("Hibernate ORM (JDBC, blocking)",
+                jdbc(jdbcUrl, "org.postgresql.Driver", user, password));
+    }
+
+    static HibernateOrm postgres(PostgreSQLContainer<?> container) {
+        return postgres(container.getJdbcUrl(), container.getUsername(), container.getPassword());
+    }
+
+    private static Map<String, Object> jdbc(String url, String driver, String user, String password) {
+        Map<String, Object> properties = new HashMap<>();
+        properties.put("jakarta.persistence.jdbc.url", url);
+        properties.put("jakarta.persistence.jdbc.driver", driver);
+        properties.put("jakarta.persistence.jdbc.user", user);
+        properties.put("jakarta.persistence.jdbc.password", password);
+        return properties;
     }
 
     @Override
     public String name() {
-        return "Hibernate ORM (JDBC, blocking)";
+        return name;
     }
 
     @Override
@@ -63,11 +90,10 @@ final class HibernateOrm implements OrmBenchmark {
     public int findByIds(List<Long> ids) {
         int found = 0;
         for (Long id : ids) {
-            BenchUser user = em.find(BenchUser.class, id);
-            if (user != null) {
+            if (em.find(BenchUser.class, id) != null) {
                 found++;
             }
-            em.clear(); // 매 조회가 DB 왕복하도록 1차 캐시 제거
+            em.clear();
         }
         return found;
     }

@@ -1,5 +1,9 @@
 package io.nova.benchmark;
 
+import org.testcontainers.containers.PostgreSQLContainer;
+
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -7,46 +11,99 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Nova(reactive/R2DBC) vs Hibernate ORM(blocking/JDBC) 단일 스레드 CRUD latency 프로파일러.
+ * Nova(reactive/R2DBC) vs Hibernate ORM(blocking/JDBC) CRUD 프로파일러.
  * <p>
- * 두 ORM 모두 동일한 jakarta.persistence 엔티티({@link io.nova.benchmark.entity.BenchUser})를 H2 in-memory DB에
- * 대고 구동한다. in-memory라 네트워크/디스크 I/O가 제거되므로 측정값은 사실상 <b>ORM 매핑 + 드라이버 오버헤드</b>다.
- * 각 시나리오는 warmup 후 여러 번 측정해 중앙값을 취한다. 먼저 E2E 정확성 검증을 통과해야 측정에 들어간다.
+ * 두 backend로 동일 시나리오를 돌린다:
+ * <ul>
+ *   <li><b>H2 in-memory</b> — 네트워크/디스크 I/O가 없어 측정값이 곧 ORM 매핑+드라이버 오버헤드다.</li>
+ *   <li><b>PostgreSQL(Testcontainers)</b> — 실제 소켓 왕복 지연이 있어, 적은 스레드로 다중 in-flight를
+ *       유지하는 reactive 동시성 거동이 드러난다.</li>
+ * </ul>
+ * 두 ORM 모두 동일한 jakarta.persistence 엔티티({@link io.nova.benchmark.entity.BenchUser})를 사용하고,
+ * 커넥션 풀은 20으로 맞춘다(Nova: r2dbc-pool / Hibernate: HikariCP). 각 시나리오는 warmup 후 median을 취하며,
+ * 측정 전에 E2E 정확성 검증을 통과해야 한다.
  */
 public final class BenchmarkRunner {
 
-    private static final int N = Integer.getInteger("bench.n", 2000);
+    private static final int N_H2 = Integer.getInteger("bench.n", 2000);
+    private static final int N_PG = Integer.getInteger("bench.nPg", 500);
     private static final int WARMUP = Integer.getInteger("bench.warmup", 3);
     private static final int MEASURE = Integer.getInteger("bench.measure", 7);
-    // 두 풀 모두 20이므로 동시성은 ≤20로 둔다(Hibernate 내장 풀은 풀 초과 시 큐잉 대신 예외를 던진다).
-    private static final int CONCURRENCY = Integer.getInteger("bench.concurrency", 16);
+    private static final int POOL = Integer.getInteger("bench.pool", 20);
+    private static final int CONCURRENCY = Integer.getInteger("bench.concurrency", 64);
     private static final int CONC_TOTAL = Integer.getInteger("bench.concTotal", 20_000);
 
     private static final String[] SCENARIOS = {"INSERT", "FIND_BY_ID", "FIND_ALL", "UPDATE", "DELETE"};
 
     public static void main(String[] args) {
-        System.out.printf(Locale.ROOT,
-                "Nova vs Hibernate ORM — single-thread CRUD on H2 in-memory%n"
-                        + "N=%d ops/scenario, warmup=%d, measure=%d (median reported)%n%n",
-                N, WARMUP, MEASURE);
+        runPhase("H2 in-memory — ORM overhead only (no I/O wait)",
+                List.of(NovaOrm.h2(POOL), HibernateOrm.h2()), N_H2);
 
+        System.out.printf(Locale.ROOT, "%n%n");
+        runPostgresPhase();
+    }
+
+    // Postgres 단계: 외부 PG(-Dbench.pg.host) 우선, 없으면 Testcontainers, 둘 다 안되면 스킵.
+
+    private static void runPostgresPhase() {
+        // 1) 외부 PostgreSQL이 -Dbench.pg.host로 지정되면 그것을 쓴다(예: docker CLI로 띄운 컨테이너).
+        String host = System.getProperty("bench.pg.host");
+        if (host != null) {
+            int port = Integer.getInteger("bench.pg.port", 5432);
+            String db = System.getProperty("bench.pg.db", "bench");
+            String user = System.getProperty("bench.pg.user", "bench");
+            String password = System.getProperty("bench.pg.password", "bench");
+            String jdbcUrl = "jdbc:postgresql://" + host + ":" + port + "/" + db;
+            runPhase("PostgreSQL (external) — real socket round-trips",
+                    List.of(NovaOrm.postgres(host, port, db, user, password, POOL),
+                            HibernateOrm.postgres(jdbcUrl, user, password)),
+                    N_PG);
+            return;
+        }
+        // 2) 아니면 Testcontainers로 시도. Docker 환경이 없으면 스킵(전체 실행을 깨지 않는다).
+        try (PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16-alpine")
+                .withDatabaseName("bench").withUsername("bench").withPassword("bench")) {
+            System.out.println("Starting PostgreSQL container (Testcontainers)...");
+            pg.start();
+            runPhase("PostgreSQL via Testcontainers — real socket round-trips",
+                    List.of(NovaOrm.postgres(pg, POOL), HibernateOrm.postgres(pg)), N_PG);
+        } catch (Throwable docker) {
+            System.out.printf(Locale.ROOT,
+                    "%n[PostgreSQL phase skipped] Docker/Testcontainers unavailable: %s%n"
+                            + "Provide an external PG with -Dbench.pg.host=... (port/db/user/password optional).%n",
+                    docker.getMessage());
+        }
+    }
+
+    private static void runPhase(String label, List<OrmBenchmark> orms, int n) {
+        System.out.printf(Locale.ROOT,
+                "%n############################################################%n# %s%n"
+                        + "# pool=%d, N=%d, warmup=%d, measure=%d, concurrency=%d (%d ops)%n"
+                        + "############################################################%n%n",
+                label, POOL, n, WARMUP, MEASURE, CONCURRENCY, CONC_TOTAL);
+
+        ThreadMXBean threads = ManagementFactory.getThreadMXBean();
         Map<String, Map<String, Double>> latency = new LinkedHashMap<>();
-        Map<String, Double> concurrency = new LinkedHashMap<>();
-        for (OrmBenchmark orm : List.of(new NovaOrm(), new HibernateOrm())) {
+        Map<String, ConcResult> concurrency = new LinkedHashMap<>();
+        for (OrmBenchmark orm : orms) {
             try (orm) {
                 orm.setupSchema();
                 verify(orm);
                 System.out.printf(Locale.ROOT, "[%s] E2E correctness OK — benchmarking...%n", orm.name());
-                latency.put(orm.name(), benchmark(orm));
-                // concurrency는 latency 측정(테이블 재생성 포함)이 끝난 뒤 새로 seed해 측정한다.
-                List<Long> seed = reseed(orm);
-                concurrency.put(orm.name(), orm.concurrentFindOpsPerSec(seed, CONCURRENCY, CONC_TOTAL));
+                latency.put(orm.name(), benchmark(orm, n));
+                List<Long> seed = reseed(orm, n);
+                threads.resetPeakThreadCount();
+                double opsPerSec = orm.concurrentFindOpsPerSec(seed, CONCURRENCY, CONC_TOTAL);
+                concurrency.put(orm.name(), new ConcResult(opsPerSec, threads.getPeakThreadCount()));
             } catch (Exception exception) {
                 throw new RuntimeException("Benchmark failed for " + orm.name(), exception);
             }
         }
-        printTable(latency);
+        printTable(latency, n);
         printConcurrency(concurrency);
+    }
+
+    private record ConcResult(double opsPerSec, int peakThreads) {
     }
 
     /**
@@ -71,34 +128,27 @@ public final class BenchmarkRunner {
         }
     }
 
-    private static Map<String, Double> benchmark(OrmBenchmark orm) {
+    private static Map<String, Double> benchmark(OrmBenchmark orm, int n) {
         Map<String, Double> medians = new LinkedHashMap<>();
+        medians.put("INSERT", median(orm::clear, () -> orm.insert(n)));
 
-        // INSERT: 매 반복마다 clear 후 N건 insert를 측정.
-        medians.put("INSERT", median(() -> orm.clear(), () -> orm.insert(N)));
-
-        // 읽기/수정: 한 번 seed 후 같은 행을 반복 조회/수정(read는 idempotent, update는 age 증가).
-        List<Long> seed = reseed(orm);
+        List<Long> seed = reseed(orm, n);
         medians.put("FIND_BY_ID", median(() -> { }, () -> orm.findByIds(seed)));
-        medians.put("FIND_ALL", median(() -> { }, () -> orm.findAll()));
+        medians.put("FIND_ALL", median(() -> { }, orm::findAll));
         medians.put("UPDATE", median(() -> { }, () -> orm.updateByIds(seed)));
 
-        // DELETE: 매 반복마다 reseed(untimed) 후 삭제를 측정.
         Holder<List<Long>> toDelete = new Holder<>();
-        medians.put("DELETE", median(() -> toDelete.value = reseed(orm), () -> orm.deleteByIds(toDelete.value)));
+        medians.put("DELETE", median(() -> toDelete.value = reseed(orm, n), () -> orm.deleteByIds(toDelete.value)));
 
         orm.clear();
         return medians;
     }
 
-    private static List<Long> reseed(OrmBenchmark orm) {
+    private static List<Long> reseed(OrmBenchmark orm, int n) {
         orm.clear();
-        return orm.insert(N);
+        return orm.insert(n);
     }
 
-    /**
-     * setup(untimed) + timed 액션을 warmup 후 MEASURE번 실행해 측정 nanos의 중앙값(ms)을 반환한다.
-     */
     private static double median(Runnable setup, Runnable timed) {
         for (int i = 0; i < WARMUP; i++) {
             setup.run();
@@ -112,28 +162,25 @@ public final class BenchmarkRunner {
             samples.add(System.nanoTime() - start);
         }
         samples.sort(Long::compareTo);
-        long medianNanos = samples.get(samples.size() / 2);
-        return medianNanos / 1_000_000.0;
+        return samples.get(samples.size() / 2) / 1_000_000.0;
     }
 
-    private static void printTable(Map<String, Map<String, Double>> results) {
+    private static void printTable(Map<String, Map<String, Double>> results, int n) {
         List<String> orms = new ArrayList<>(results.keySet());
-        System.out.printf(Locale.ROOT, "%n=== Results (median total ms for %d ops; lower is better) ===%n%n", N);
+        System.out.printf(Locale.ROOT, "%n--- Latency (median total ms for %d ops; lower is better) ---%n%n", n);
         System.out.printf(Locale.ROOT, "%-12s", "Scenario");
         for (String orm : orms) {
-            System.out.printf(Locale.ROOT, " | %-28s", orm);
+            System.out.printf(Locale.ROOT, " | %-30s", orm);
         }
         if (orms.size() == 2) {
-            System.out.printf(Locale.ROOT, " | %-14s", "Nova / Hib");
+            System.out.printf(Locale.ROOT, " | %-12s", "Nova / Hib");
         }
         System.out.println();
-
         for (String scenario : SCENARIOS) {
             System.out.printf(Locale.ROOT, "%-12s", scenario);
             for (String orm : orms) {
                 double ms = results.get(orm).get(scenario);
-                double opsPerSec = N / (ms / 1000.0);
-                System.out.printf(Locale.ROOT, " | %9.2f ms (%8.0f/s)", ms, opsPerSec);
+                System.out.printf(Locale.ROOT, " | %9.2f ms (%8.0f/s)", ms, n / (ms / 1000.0));
             }
             if (orms.size() == 2) {
                 double a = results.get(orms.get(0)).get(scenario);
@@ -142,27 +189,27 @@ public final class BenchmarkRunner {
             }
             System.out.println();
         }
-        System.out.printf(Locale.ROOT,
-                "%n'Nova / Hib' < 1.00 → Nova faster; > 1.00 → Hibernate faster.%n"
-                        + "H2 in-memory isolates ORM+driver overhead (no I/O). Single-thread, autocommit-per-op.%n");
+        System.out.println("\n'Nova / Hib' < 1.00 → Nova faster; > 1.00 → Hibernate faster.");
     }
 
-    private static void printConcurrency(Map<String, Double> concurrency) {
+    private static void printConcurrency(Map<String, ConcResult> concurrency) {
         System.out.printf(Locale.ROOT,
-                "%n=== Concurrent findById throughput (concurrency=%d, %d ops; higher is better) ===%n%n",
-                CONCURRENCY, CONC_TOTAL);
+                "%n--- Concurrent findById (concurrency=%d, %d ops) ---%n%n", CONCURRENCY, CONC_TOTAL);
         List<String> orms = new ArrayList<>(concurrency.keySet());
+        System.out.printf(Locale.ROOT, "%-32s %14s %14s%n", "", "throughput", "peak threads");
         for (String orm : orms) {
-            System.out.printf(Locale.ROOT, "%-32s %12.0f ops/s%n", orm, concurrency.get(orm));
+            ConcResult result = concurrency.get(orm);
+            System.out.printf(Locale.ROOT, "%-32s %10.0f ops/s %14d%n", orm, result.opsPerSec(), result.peakThreads());
         }
         if (orms.size() == 2) {
-            double nova = concurrency.get(orms.get(0));
-            double hib = concurrency.get(orms.get(1));
-            System.out.printf(Locale.ROOT, "%nNova throughput / Hibernate throughput = %.2fx%n", nova / hib);
+            ConcResult nova = concurrency.get(orms.get(0));
+            ConcResult hib = concurrency.get(orms.get(1));
+            System.out.printf(Locale.ROOT,
+                    "%nNova / Hibernate throughput = %.2fx — but Nova sustained %d concurrency on %d threads vs Hibernate's %d.%n"
+                            + "(Throughput is pool-bound at the shared 20-connection cap; reactive's edge is doing the same%n"
+                            + " work with a fraction of the threads/memory, not more raw throughput at a fixed pool.)%n",
+                    nova.opsPerSec() / hib.opsPerSec(), CONCURRENCY, nova.peakThreads(), hib.peakThreads());
         }
-        System.out.printf(Locale.ROOT,
-                "Nova keeps %d requests in-flight on a few event-loop threads; Hibernate uses %d blocking OS threads.%n",
-                CONCURRENCY, CONCURRENCY);
     }
 
     private static final class Holder<T> {
