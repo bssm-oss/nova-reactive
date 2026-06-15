@@ -56,6 +56,11 @@ public final class EntityMetadata<T> {
     private final List<IndexDefinition> indexes;
     private final List<UniqueConstraintDefinition> uniqueConstraints;
     private final InheritanceInfo inheritance;
+    /**
+     * {@code @EntityListeners}로 등록된 외부 리스너 콜백들(phase별). entity 자체 콜백과 별도로 보관하며,
+     * 각 phase에서 리스너 콜백이 entity 콜백보다 먼저 호출된다(JPA 규약).
+     */
+    private final EntityListenerCallbacks listenerCallbacks;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -77,7 +82,7 @@ public final class EntityMetadata<T> {
         this(entityType, entityName, tableName, schema, properties, idProperty,
                 prePersistCallbacks, postPersistCallbacks, preUpdateCallbacks, postUpdateCallbacks,
                 postLoadCallbacks, preRemoveCallbacks, postRemoveCallbacks, indexes, uniqueConstraints,
-                InheritanceInfo.NONE);
+                InheritanceInfo.NONE, EntityListenerCallbacks.EMPTY);
     }
 
     public EntityMetadata(
@@ -96,7 +101,8 @@ public final class EntityMetadata<T> {
             List<Method> postRemoveCallbacks,
             List<IndexDefinition> indexes,
             List<UniqueConstraintDefinition> uniqueConstraints,
-            InheritanceInfo inheritance
+            InheritanceInfo inheritance,
+            EntityListenerCallbacks listenerCallbacks
     ) {
         this.entityType = entityType;
         this.entityName = entityName;
@@ -160,6 +166,14 @@ public final class EntityMetadata<T> {
         this.indexes = List.copyOf(indexes);
         this.uniqueConstraints = List.copyOf(uniqueConstraints);
         this.inheritance = inheritance == null ? InheritanceInfo.NONE : inheritance;
+        this.listenerCallbacks = listenerCallbacks == null ? EntityListenerCallbacks.EMPTY : listenerCallbacks;
+    }
+
+    /**
+     * {@code @EntityListeners}로 등록된 외부 리스너 콜백들. 없으면 {@link EntityListenerCallbacks#EMPTY}.
+     */
+    public EntityListenerCallbacks listenerCallbacks() {
+        return listenerCallbacks;
     }
 
     public Class<T> entityType() {

@@ -32,6 +32,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@PostLoad`       | Invoked right after hydration in `findById` / `findAll`.                                  |
 | `@PreRemove`      | Invoked just before delete (soft or hard).                                                |
 | `@PostRemove`     | Invoked right after a successful delete (soft or hard).                                    |
+| `@EntityListeners` | TYPE-level marker registering external listener classes whose methods carry the same lifecycle annotations. Listener callbacks take the entity as a single argument and fire **before** the entity's own callbacks. See [Entity listeners](#entity-listeners). |
 | `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; columns flatten into the host entity's table. |
 | `@Embedded`       | FIELD-level marker indicating that an entity field is an `@Embeddable` flattened into host columns. |
 | `@MappedSuperclass` | TYPE-level marker on a non-entity base class. Its fields (e.g. an inherited id / audit columns) are mapped into every entity that extends it. |
@@ -362,6 +363,53 @@ root polymorphically.
 > Single-level leaves are the common case. Querying a non-leaf mid-hierarchy type restricts
 > to that type's own discriminator value (not its descendants); `JOINED`,
 > `TABLE_PER_CLASS`, and `@DiscriminatorFormula` are not supported.
+
+---
+
+## Entity listeners
+
+Beyond the in-entity callbacks (`@PrePersist`, `@PostLoad`, …, which are `void`, no-arg
+methods on the entity itself), Nova supports **external listener classes** registered with
+`@EntityListeners`. A listener is a plain class whose methods carry the same lifecycle
+annotations, but each takes the **entity as a single argument**:
+
+```java
+public class AuditListener {
+    @PrePersist
+    public void stamp(Document document) {   // one argument — the entity being persisted
+        document.setCreatedBy(currentUser());
+    }
+}
+
+@Entity
+@Table(name = "document")
+@EntityListeners(AuditListener.class)        // one or more listener classes
+public class Document {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @PrePersist
+    void onPrePersist() { /* the entity's own callback */ }
+}
+```
+
+Rules, matching JPA:
+
+- The listener class needs an **accessible no-arg constructor**; Nova instantiates it **once**
+  when the entity metadata is built and reuses that instance (treat listeners as stateless).
+- A listener callback method takes **exactly one argument** assignable from the entity type
+  (`Document`, a supertype, or `Object`) and returns `void`. Wrong arity, a non-assignable
+  parameter, a non-`void` return, or a `static` method is rejected **fail-fast** at metadata build.
+- **Ordering:** for a given phase, listener callbacks fire **before** the entity's own
+  callback. Multiple classes in `@EntityListeners({A.class, B.class})` fire in declaration order,
+  and listeners declared on a `@MappedSuperclass` / superclass `@Entity` fire before subclass listeners.
+- All seven phases are supported (`@PrePersist`, `@PostPersist`, `@PreUpdate`, `@PostUpdate`,
+  `@PostLoad`, `@PreRemove`, `@PostRemove`). A checked exception thrown from a listener is
+  rewrapped as `IllegalStateException` preserving the original cause, exactly like in-entity callbacks.
+
+> Listener *inheritance* (lifecycle methods inherited by a listener class from its own
+> superclass) and `@ExcludeDefaultListeners` / `@ExcludeSuperclassListeners` are not supported;
+> declare callbacks directly on each registered listener class.
 
 ---
 
