@@ -7,15 +7,17 @@
         <class>io.nova.benchmark.entity.BenchUser</class>
         <exclude-unlisted-classes>true</exclude-unlisted-classes>
         <properties>
-            <property name="jakarta.persistence.jdbc.url" value="jdbc:h2:mem:hibbench;DB_CLOSE_DELAY=-1"/>
-            <property name="jakarta.persistence.jdbc.driver" value="org.h2.Driver"/>
-            <property name="jakarta.persistence.jdbc.user" value="sa"/>
-            <property name="jakarta.persistence.jdbc.password" value=""/>
+            <!-- jdbc.url / driver / user / password 는 실행 시 backend(H2 / PostgreSQL)별로 주입된다. -->
             <property name="hibernate.hbm2ddl.auto" value="create"/>
             <property name="hibernate.show_sql" value="false"/>
             <property name="hibernate.format_sql" value="false"/>
-            <!-- 벤치마크는 단건 연산 위주이므로 batch는 끈다(공정성). -->
+            <!-- 단건 연산 위주이므로 batch는 끈다(공정성). -->
             <property name="hibernate.jdbc.batch_size" value="0"/>
+            <!-- HikariCP: pool 초과 동시성에서 예외 대신 큐잉(Nova r2dbc-pool과 대등). 양 backend 모두 20. -->
+            <property name="hibernate.connection.provider_class"
+                      value="org.hibernate.hikaricp.internal.HikariCPConnectionProvider"/>
+            <property name="hibernate.hikari.maximumPoolSize" value="20"/>
+            <property name="hibernate.hikari.minimumIdle" value="5"/>
         </properties>
     </persistence-unit>
 </persistence>
