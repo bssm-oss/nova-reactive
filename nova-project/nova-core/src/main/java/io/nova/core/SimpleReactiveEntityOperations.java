@@ -71,6 +71,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final EntityListenerInvoker listenerInvoker;
     private final AnnotationFetchGroupBuilder annotationFetchGroupBuilder;
     /**
+     * 단순 엔티티(단일 @Id, 상속·soft-delete 없음)의 findById SELECT SQL 캐시. SQL 텍스트는 엔티티마다
+     * 상수이므로 1회만 렌더해 재사용한다. 키는 factory가 캐시하는 immutable {@link EntityMetadata} 인스턴스다.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<EntityMetadata<?>, String> selectByIdSqlCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /**
      * {@code inTransaction} 안에서 영속성 세션(identity map + dirty checking)을 켤지 여부. 기본 {@code true}.
      * internal kill-switch로, 끄면 트랜잭션 동작이 세션 도입 이전과 byte-for-byte 동일하다(테스트/회귀 가드용).
      */
@@ -631,7 +637,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private <T, ID> Mono<T> findByIdInternal(EntityMetadata<T> metadata, ID id) {
         EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryOne(
-                dialect.sqlRenderer().selectById(render, id), row -> mapRowDispatching(metadata, render, row));
+                selectByIdStatement(render, id), row -> mapRowDispatching(metadata, render, row));
+    }
+
+    /**
+     * findById용 SELECT 문을 만든다. 단순 케이스(단일 {@code @Id}, 상속·soft-delete 없음)는 SQL 텍스트가
+     * 엔티티마다 상수라 1회 렌더해 캐시하고 바인딩(id 값)만 새로 만든다 — 핫패스에서 select-list 문자열과
+     * RenderContext를 매번 다시 만들던 비용을 제거한다. 그 외(복합키/상속 다형 제한/soft-delete-alive 가드)는
+     * id 외 추가 조건이 SQL에 섞이므로 dialect 렌더러로 매번 정확히 렌더한다.
+     */
+    private SqlStatement selectByIdStatement(EntityMetadata<?> render, Object id) {
+        if (render.hasCompositeId() || render.hasInheritance() || render.softDeleteProperty().isPresent()) {
+            return dialect.sqlRenderer().selectById(render, id);
+        }
+        String sql = selectByIdSqlCache.computeIfAbsent(render,
+                metadata -> dialect.sqlRenderer().selectById(metadata, id).sql());
+        return new SqlStatement(sql, java.util.Collections.singletonList(render.idProperty().toColumnValue(id)));
     }
 
     /**
