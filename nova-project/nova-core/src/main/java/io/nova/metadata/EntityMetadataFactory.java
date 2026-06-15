@@ -13,6 +13,7 @@ import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EntityListeners;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -63,6 +64,7 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -205,7 +207,8 @@ public final class EntityMetadataFactory {
                 rootMeta.postRemoveCallbacks(),
                 rootMeta.indexes(),
                 rootMeta.uniqueConstraints(),
-                rootMeta.inheritance()
+                rootMeta.inheritance(),
+                rootMeta.listenerCallbacks()
         );
     }
 
@@ -441,7 +444,8 @@ public final class EntityMetadataFactory {
                 postRemoveCallbacks,
                 indexes,
                 uniqueConstraints,
-                inheritance
+                inheritance,
+                collectEntityListeners(entityType)
         );
         registerHierarchyMember(metadata);
         return metadata;
@@ -1007,6 +1011,117 @@ public final class EntityMetadataFactory {
         }
         method.setAccessible(true);
         target.add(method);
+    }
+
+    /**
+     * {@code @EntityListeners}로 등록된 외부 리스너 클래스들을 읽어 phase별 콜백을 수집한다. JPA 규약을 따라
+     * 슈퍼클래스({@code @MappedSuperclass}/상속 상위 {@code @Entity})에 선언된 리스너가 서브클래스 리스너보다
+     * 먼저, 같은 {@code @EntityListeners} 안에서는 선언 순서대로 invoke되도록 정렬한다. 리스너 인스턴스는
+     * 여기서 1회 생성해 재사용한다(stateless 가정). 리스너 콜백은 entity를 단일 인자로 받는다.
+     */
+    private EntityListenerCallbacks collectEntityListeners(Class<?> entityType) {
+        List<Class<?>> listenerClasses = new ArrayList<>();
+        for (Class<?> host : listenerHostChain(entityType)) {
+            EntityListeners annotation = host.getAnnotation(EntityListeners.class);
+            if (annotation == null) {
+                continue;
+            }
+            for (Class<?> listenerClass : annotation.value()) {
+                if (!listenerClasses.contains(listenerClass)) {
+                    listenerClasses.add(listenerClass);
+                }
+            }
+        }
+        if (listenerClasses.isEmpty()) {
+            return EntityListenerCallbacks.EMPTY;
+        }
+        List<ListenerCallback> prePersist = new ArrayList<>();
+        List<ListenerCallback> postPersist = new ArrayList<>();
+        List<ListenerCallback> preUpdate = new ArrayList<>();
+        List<ListenerCallback> postUpdate = new ArrayList<>();
+        List<ListenerCallback> postLoad = new ArrayList<>();
+        List<ListenerCallback> preRemove = new ArrayList<>();
+        List<ListenerCallback> postRemove = new ArrayList<>();
+        for (Class<?> listenerClass : listenerClasses) {
+            Object listener = instantiateListener(listenerClass);
+            Set<String> seen = new LinkedHashSet<>();
+            for (Method method : listenerClass.getDeclaredMethods()) {
+                if (method.isSynthetic() || !seen.add(callbackSignature(method))) {
+                    continue;
+                }
+                collectListenerCallback(entityType, listenerClass, listener, method, PrePersist.class, prePersist);
+                collectListenerCallback(entityType, listenerClass, listener, method, PostPersist.class, postPersist);
+                collectListenerCallback(entityType, listenerClass, listener, method, PreUpdate.class, preUpdate);
+                collectListenerCallback(entityType, listenerClass, listener, method, PostUpdate.class, postUpdate);
+                collectListenerCallback(entityType, listenerClass, listener, method, PostLoad.class, postLoad);
+                collectListenerCallback(entityType, listenerClass, listener, method, PreRemove.class, preRemove);
+                collectListenerCallback(entityType, listenerClass, listener, method, PostRemove.class, postRemove);
+            }
+        }
+        return new EntityListenerCallbacks(
+                prePersist, postPersist, preUpdate, postUpdate, postLoad, preRemove, postRemove);
+    }
+
+    /**
+     * {@code @EntityListeners}를 선언할 수 있는 호스트 체인(자신 + {@code @MappedSuperclass}/상속 상위
+     * {@code @Entity})을 루트-우선 순서로 반환한다 — 슈퍼클래스 리스너가 먼저 invoke되도록.
+     */
+    private static List<Class<?>> listenerHostChain(Class<?> entityType) {
+        List<Class<?>> chain = new ArrayList<>();
+        Class<?> current = entityType;
+        while (current != null && current != Object.class
+                && (current == entityType
+                || current.isAnnotationPresent(MappedSuperclass.class)
+                || current.isAnnotationPresent(Entity.class))) {
+            chain.add(current);
+            current = current.getSuperclass();
+        }
+        Collections.reverse(chain);
+        return chain;
+    }
+
+    private static Object instantiateListener(Class<?> listenerClass) {
+        try {
+            var constructor = listenerClass.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return constructor.newInstance();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalArgumentException(
+                    "@EntityListeners class " + listenerClass.getName()
+                            + " must have an accessible no-arg constructor", e);
+        }
+    }
+
+    private static <A extends Annotation> void collectListenerCallback(
+            Class<?> entityType,
+            Class<?> listenerClass,
+            Object listener,
+            Method method,
+            Class<A> annotationType,
+            List<ListenerCallback> target
+    ) {
+        if (!method.isAnnotationPresent(annotationType)) {
+            return;
+        }
+        String label = "@" + annotationType.getSimpleName();
+        String where = listenerClass.getName() + "." + method.getName();
+        if (Modifier.isStatic(method.getModifiers())) {
+            throw new IllegalArgumentException(
+                    label + " listener method " + where
+                            + " must be non-static, take a single entity argument, and return void");
+        }
+        if (method.getParameterCount() != 1 || !method.getParameterTypes()[0].isAssignableFrom(entityType)) {
+            throw new IllegalArgumentException(
+                    label + " listener method " + where
+                            + " must take a single argument assignable from " + entityType.getName());
+        }
+        if (method.getReturnType() != void.class) {
+            throw new IllegalArgumentException(
+                    label + " listener method " + where
+                            + " must be non-static, take a single entity argument, and return void");
+        }
+        method.setAccessible(true);
+        target.add(new ListenerCallback(listener, method));
     }
 
     /**

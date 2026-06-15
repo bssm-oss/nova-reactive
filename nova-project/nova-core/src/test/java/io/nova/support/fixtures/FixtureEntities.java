@@ -12,6 +12,7 @@ import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Inheritance;
 import jakarta.persistence.InheritanceType;
+import jakarta.persistence.EntityListeners;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Enumerated;
@@ -2204,6 +2205,131 @@ public final class FixtureEntities {
 
         public void setPayload(double payload) {
             this.payload = payload;
+        }
+    }
+
+    /**
+     * 외부 {@code @EntityListeners} 리스너 클래스. 콜백은 entity를 단일 인자로 받고, 호출 이벤트를 정적
+     * 리스트에 누적한다. {@code @PrePersist}는 entity 자체 콜백보다 먼저 발화하는지(리스너 우선) 검증용으로
+     * audited 엔티티의 필드를 mutate한다. 테스트는 {@link #reset()}으로 이벤트를 비운다.
+     */
+    public static class AuditingListener {
+        public static final java.util.List<String> events = new java.util.ArrayList<>();
+
+        public static void reset() {
+            events.clear();
+        }
+
+        @PrePersist
+        public void onPrePersist(Object entity) {
+            events.add("listener:prePersist");
+            if (entity instanceof AuditedEntity audited) {
+                audited.audit = "listener-was-here";
+            }
+        }
+
+        @PostPersist
+        public void onPostPersist(Object entity) {
+            events.add("listener:postPersist");
+        }
+
+        @PreUpdate
+        public void onPreUpdate(Object entity) {
+            events.add("listener:preUpdate");
+        }
+
+        @PostUpdate
+        public void onPostUpdate(Object entity) {
+            events.add("listener:postUpdate");
+        }
+
+        @PostLoad
+        public void onPostLoad(Object entity) {
+            events.add("listener:postLoad");
+        }
+
+        @PreRemove
+        public void onPreRemove(Object entity) {
+            events.add("listener:preRemove");
+        }
+
+        @PostRemove
+        public void onPostRemove(Object entity) {
+            events.add("listener:postRemove");
+        }
+    }
+
+    /**
+     * 두 번째 리스너. 여러 {@code @EntityListeners}가 선언 순서대로 발화하는지 검증용.
+     */
+    public static class SecondListener {
+        @PrePersist
+        public void onPrePersist(AuditedEntity entity) {
+            AuditingListener.events.add("second:prePersist");
+        }
+    }
+
+    /**
+     * {@code @EntityListeners}로 외부 리스너를 등록한 entity. 자체 {@code @PrePersist} 콜백도 가지며,
+     * 리스너 콜백이 자체 콜백보다 먼저 발화하는지 검증한다.
+     */
+    @Entity
+    @Table(name = "audited_entities")
+    @EntityListeners({AuditingListener.class, SecondListener.class})
+    public static class AuditedEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "name")
+        private String name;
+
+        @Column(name = "audit")
+        String audit;
+
+        public AuditedEntity() {
+        }
+
+        public AuditedEntity(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        @PrePersist
+        void onPrePersist() {
+            AuditingListener.events.add("entity:prePersist");
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getAudit() {
+            return audit;
+        }
+    }
+
+    /**
+     * 잘못된 리스너 콜백(인자 0개) — metadata 빌드 시 fail-fast 검증용.
+     */
+    public static class BadArityListener {
+        @PrePersist
+        public void onPrePersist() {
+        }
+    }
+
+    @Entity
+    @Table(name = "bad_listener_entities")
+    @EntityListeners(BadArityListener.class)
+    public static class EntityWithBadListener {
+        @Id
+        private Long id;
+
+        public EntityWithBadListener() {
         }
     }
 }
