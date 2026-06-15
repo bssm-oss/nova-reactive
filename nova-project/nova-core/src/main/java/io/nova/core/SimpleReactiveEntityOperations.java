@@ -489,9 +489,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
             Optional<PersistenceSession> session = currentSession(ctx);
+            // 세션이 없으면(트랜잭션 밖 등) auto-flush/manage 연산자 없이 곧장 조회한다(핫패스 오버헤드 제거).
             // 세션이 있으면 SELECT 전 auto-flush(읽기 일관성)하고, 결과를 identity map에 편입(같은 PK=같은 인스턴스).
-            Mono<T> base = autoFlushIfSession(session)
-                    .then(findByIdInternal(metadata, id).map(entity -> manage(session, entity)));
+            Mono<T> base = session.isEmpty()
+                    ? findByIdInternal(metadata, id)
+                    : autoFlushIfSession(session)
+                            .then(findByIdInternal(metadata, id).map(entity -> manage(session, entity)));
             if (!metadata.hasRelationProperties()) {
                 return base;
             }
@@ -509,8 +512,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Flux.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
             Optional<PersistenceSession> session = currentSession(ctx);
-            Flux<T> base = autoFlushIfSession(session)
-                    .thenMany(findAllInternal(metadata, querySpec).map(entity -> manage(session, entity)));
+            Flux<T> base = session.isEmpty()
+                    ? findAllInternal(metadata, querySpec)
+                    : autoFlushIfSession(session)
+                            .thenMany(findAllInternal(metadata, querySpec).map(entity -> manage(session, entity)));
             if (!metadata.hasRelationProperties()) {
                 return base;
             }
