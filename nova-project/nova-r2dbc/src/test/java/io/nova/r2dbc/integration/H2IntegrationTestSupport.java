@@ -2,6 +2,7 @@ package io.nova.r2dbc.integration;
 
 import io.nova.core.EntityStateDetector;
 import io.nova.core.SimpleReactiveEntityOperations;
+import io.nova.core.SqlExecutionListener;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.json.JsonCodec;
 import io.nova.metadata.DefaultNamingStrategy;
@@ -111,6 +112,35 @@ final class H2IntegrationTestSupport {
         );
         return new H2IntegrationTestSupport(
                 connectionFactory, dialect, metadataFactory, sqlExecutor, transactionManager, operations);
+    }
+
+    /**
+     * 영속성 세션 통합 테스트용 support — {@link R2dbcTransactionManager}를 operations의 transaction
+     * operations로 <em>직접</em> 주입한다(production {@code Nova.create}와 동일 배선). 이 배선만이
+     * {@code inTransaction} 콜백에 커넥션을 Reactor Context로 전파하므로, 세션 flush UPDATE가 동일 tx
+     * 커넥션에서 commit 직전에 실행되고 롤백도 적용된다. 전달한 {@link SqlExecutionListener}로 실행된
+     * 문장을 관찰할 수 있다.
+     */
+    static H2IntegrationTestSupport createWithManagedTransactions(SqlExecutionListener listener) {
+        String dbName = "novaint_" + UUID.randomUUID().toString().replace("-", "");
+        String url = "r2dbc:h2:mem:///" + dbName + "?DB_CLOSE_DELAY=-1";
+        ConnectionFactory connectionFactory = ConnectionFactories.get(url);
+        Dialect dialect = new H2Dialect();
+        EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        R2dbcSqlExecutor sqlExecutor = new R2dbcSqlExecutor(connectionFactory, dialect, listener);
+        R2dbcTransactionManager transactionManager = new R2dbcTransactionManager(connectionFactory);
+        SimpleReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
+                metadataFactory,
+                dialect,
+                sqlExecutor,
+                new EntityStateDetector(),
+                transactionManager);
+        return new H2IntegrationTestSupport(
+                connectionFactory, dialect, metadataFactory, sqlExecutor, transactionManager, operations);
+    }
+
+    static H2IntegrationTestSupport createWithManagedTransactions() {
+        return createWithManagedTransactions(SqlExecutionListener.NO_OP);
     }
 
     ConnectionFactory connectionFactory() {
