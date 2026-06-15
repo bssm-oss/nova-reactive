@@ -3,6 +3,8 @@ package io.nova.schema;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.metadata.JoinTableDefinition;
+import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.NativeQuery;
 import io.nova.sql.Dialect;
@@ -11,6 +13,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 
@@ -50,8 +53,8 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     @Override
     public Mono<Void> create(Class<?> entityType, SchemaOptions options) {
         Objects.requireNonNull(entityType, "entityType must not be null");
-        Objects.requireNonNull(options, "options must not be null");
-        return Mono.defer(() -> createOne(entityType, options));
+        // Iterable 경로로 위임해 @ManyToMany link table 생성을 동일하게 처리한다.
+        return create(List.of(entityType), options);
     }
 
     @Override
@@ -69,9 +72,11 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     public Mono<Void> create(Iterable<Class<?>> entityTypes, SchemaOptions options) {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
-        return Flux.fromIterable(collapseToRoots(copyOf(entityTypes)))
+        List<Class<?>> all = copyOf(entityTypes);
+        // entity 테이블을 먼저 만들고, owning @ManyToMany의 link table을 뒤에 만든다.
+        return Flux.fromIterable(collapseToRoots(all))
                 .concatMap(type -> createOne(type, options))
-                .then();
+                .then(createJoinTables(all, options));
     }
 
     @Override
@@ -82,8 +87,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     @Override
     public Mono<Void> drop(Class<?> entityType, SchemaOptions options) {
         Objects.requireNonNull(entityType, "entityType must not be null");
-        Objects.requireNonNull(options, "options must not be null");
-        return Mono.defer(() -> dropOne(entityType, options));
+        return drop(List.of(entityType), options);
     }
 
     @Override
@@ -101,19 +105,18 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     public Mono<Void> drop(Iterable<Class<?>> entityTypes, SchemaOptions options) {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
-        return Flux.fromIterable(collapseToRoots(copyOf(entityTypes)))
-                .concatMap(type -> dropOne(type, options))
-                .then();
+        List<Class<?>> all = copyOf(entityTypes);
+        // link table을 먼저 드롭하고(참조 관계 친화) entity 테이블을 뒤에 드롭한다.
+        return dropJoinTables(all, options)
+                .then(Flux.fromIterable(collapseToRoots(all))
+                        .concatMap(type -> dropOne(type, options))
+                        .then());
     }
 
     @Override
     public Mono<Void> recreate(Class<?> entityType) {
         Objects.requireNonNull(entityType, "entityType must not be null");
-        // drop uses IF EXISTS (idempotent), create uses raw CREATE TABLE so a stale
-        // leftover surfaces as a clear error rather than being silently reused.
-        SchemaOptions dropOptions = SchemaOptions.defaults().withIfNotExists(true);
-        SchemaOptions createOptions = SchemaOptions.defaults().withIfNotExists(false);
-        return dropOne(entityType, dropOptions).then(Mono.defer(() -> createOne(entityType, createOptions)));
+        return recreate(List.of(entityType));
     }
 
     @Override
@@ -127,16 +130,17 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         // Reverse drop order vs create so child tables are dropped before their parents
         // (FK constraint friendly) and parents are created before children.
-        List<Class<?>> ordered = collapseToRoots(copyOf(entityTypes));
+        List<Class<?>> all = copyOf(entityTypes);
+        List<Class<?>> ordered = collapseToRoots(all);
         List<Class<?>> reversed = new ArrayList<>(ordered);
         java.util.Collections.reverse(reversed);
         SchemaOptions dropOptions = SchemaOptions.defaults().withIfNotExists(true);
         SchemaOptions createOptions = SchemaOptions.defaults().withIfNotExists(false);
-        return Flux.fromIterable(reversed)
-                .concatMap(type -> dropOne(type, dropOptions))
-                .then(Flux.fromIterable(ordered)
-                        .concatMap(type -> createOne(type, createOptions))
-                        .then());
+        // link table 먼저 드롭 → entity 드롭 → entity 생성 → link table 생성.
+        return dropJoinTables(all, dropOptions)
+                .then(Flux.fromIterable(reversed).concatMap(type -> dropOne(type, dropOptions)).then())
+                .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
+                .then(createJoinTables(all, createOptions));
     }
 
     @Override
@@ -205,6 +209,69 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         return create.thenMany(Flux.fromIterable(indexDdls))
                 .concatMap(ddl -> operations.executeNative(NativeQuery.of(ddl)))
                 .then();
+    }
+
+    /**
+     * 주어진 엔티티들의 owning {@code @ManyToMany} link table을 생성한다. tableName으로 dedupe하며,
+     * owning M2M가 없으면 no-op이다.
+     */
+    private Mono<Void> createJoinTables(List<Class<?>> types, SchemaOptions options) {
+        List<JoinTableDefinition> definitions = joinTableDefinitions(types);
+        if (definitions.isEmpty()) {
+            return Mono.empty();
+        }
+        SchemaGenerator generator = dialect.schemaGenerator();
+        return Flux.fromIterable(definitions)
+                .concatMap(definition -> {
+                    String ddl = options.ifNotExists()
+                            ? generator.createJoinTableIfNotExists(definition)
+                            : generator.createJoinTable(definition);
+                    return operations.executeNative(NativeQuery.of(ddl));
+                })
+                .then();
+    }
+
+    private Mono<Void> dropJoinTables(List<Class<?>> types, SchemaOptions options) {
+        List<JoinTableDefinition> definitions = joinTableDefinitions(types);
+        if (definitions.isEmpty()) {
+            return Mono.empty();
+        }
+        SchemaGenerator generator = dialect.schemaGenerator();
+        return Flux.fromIterable(definitions)
+                .concatMap(definition -> {
+                    String ddl = options.ifNotExists()
+                            ? generator.dropJoinTableIfExists(definition.tableName())
+                            : generator.dropJoinTable(definition.tableName());
+                    return operations.executeNative(NativeQuery.of(ddl));
+                })
+                .then();
+    }
+
+    /**
+     * owning {@code @ManyToMany} property들로부터 {@link JoinTableDefinition}을 만든다. FK 컬럼 타입은
+     * owner/target 엔티티의 {@code @Id} Java 타입에서 온다. tableName으로 dedupe(LinkedHashMap)해 inverse가
+     * 같은 물리 테이블을 중복 생성하지 않게 한다.
+     */
+    private List<JoinTableDefinition> joinTableDefinitions(List<Class<?>> types) {
+        LinkedHashMap<String, JoinTableDefinition> byName = new LinkedHashMap<>();
+        for (Class<?> type : types) {
+            EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
+            for (PersistentProperty property : metadata.manyToManyProperties()) {
+                ManyToManyInfo info = property.manyToManyInfo();
+                if (!info.owning()) {
+                    continue;
+                }
+                Class<?> ownerIdType = metadata.idProperty().javaType();
+                Class<?> targetIdType = metadataFactory.getEntityMetadata(info.targetType()).idProperty().javaType();
+                byName.putIfAbsent(info.joinTableName(), new JoinTableDefinition(
+                        info.joinTableName(),
+                        info.ownerForeignKeyColumn(),
+                        ownerIdType,
+                        info.targetForeignKeyColumn(),
+                        targetIdType));
+            }
+        }
+        return new ArrayList<>(byName.values());
     }
 
     private Mono<Void> dropOne(Class<?> entityType, SchemaOptions options) {

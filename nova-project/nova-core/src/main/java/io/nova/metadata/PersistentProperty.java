@@ -57,6 +57,12 @@ public final class PersistentProperty {
      * {@code @ManyToOne}과 동일하게({@link #manyToOne}) 모델링된다.
      */
     private final boolean inverseToOne;
+    /**
+     * {@code @ManyToMany} link table 매핑 메타데이터. owning/inverse 양측 모두 채워지며, 이 property는
+     * 부모 테이블에 컬럼이 없는 marker다(컬렉션은 hydration 단계에서 주입, link row는 save 시 동기화). M2M가
+     * 아니면 {@code null}.
+     */
+    private final ManyToManyInfo manyToManyInfo;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -93,7 +99,8 @@ public final class PersistentProperty {
             String columnDefinition,
             boolean lob,
             Class<?> converterColumnType,
-            boolean inverseToOne
+            boolean inverseToOne,
+            ManyToManyInfo manyToManyInfo
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -133,6 +140,7 @@ public final class PersistentProperty {
         this.lob = lob;
         this.converterColumnType = converterColumnType;
         this.inverseToOne = inverseToOne;
+        this.manyToManyInfo = manyToManyInfo;
     }
 
     /**
@@ -178,7 +186,8 @@ public final class PersistentProperty {
                 columnDefinition,
                 lob,
                 converterColumnType,
-                inverseToOne
+                inverseToOne,
+                manyToManyInfo
         );
     }
 
@@ -226,7 +235,8 @@ public final class PersistentProperty {
                 columnDefinition,
                 lob,
                 converterColumnType,
-                inverseToOne
+                inverseToOne,
+                manyToManyInfo
         );
     }
 
@@ -475,7 +485,19 @@ public final class PersistentProperty {
      * {@link #manyToOne()} 또는 {@link #oneToMany()} 중 하나라도 {@code true}면 관계 property다.
      */
     public boolean isRelation() {
-        return manyToOne || oneToMany || inverseToOne;
+        return manyToOne || oneToMany || inverseToOne || manyToMany();
+    }
+
+    /**
+     * {@code true}이면 이 property는 {@code @ManyToMany}이며 {@link #manyToManyInfo()}가 link table 매핑을
+     * 담는다. owning/inverse 모두 부모 테이블에 컬럼이 없는 marker다.
+     */
+    public boolean manyToMany() {
+        return manyToManyInfo != null;
+    }
+
+    public ManyToManyInfo manyToManyInfo() {
+        return manyToManyInfo;
     }
 
     /**
@@ -567,9 +589,9 @@ public final class PersistentProperty {
     }
 
     public void write(Object instance, Object value) {
-        if (oneToMany || inverseToOne) {
-            // @OneToMany / inverse @OneToOne은 부모 테이블 컬럼이 없으므로 row 디코딩 단계에서 주입할 값이 없다.
-            // 실제 관계 값은 FetchGroup hydration 단계에서 별도 setter로 주입된다.
+        if (oneToMany || inverseToOne || manyToMany()) {
+            // @OneToMany / inverse @OneToOne / @ManyToMany는 부모 테이블 컬럼이 없으므로 row 디코딩 단계에서
+            // 주입할 값이 없다. 실제 관계 값은 hydration 단계에서 별도 setter로 주입된다.
             return;
         }
         if (manyToOne) {

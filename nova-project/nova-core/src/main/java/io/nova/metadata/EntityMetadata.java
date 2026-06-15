@@ -104,7 +104,7 @@ public final class EntityMetadata<T> {
                 throw new IllegalArgumentException(
                         entityType.getName() + " declares duplicate property name " + property.propertyName());
             }
-            if (!property.oneToMany() && !property.inverseToOne()) {
+            if (!property.oneToMany() && !property.inverseToOne() && !property.manyToMany()) {
                 columnMapped.add(property);
             }
             if (createdAt == null && property.createdAt()) {
@@ -421,6 +421,14 @@ public final class EntityMetadata<T> {
     }
 
     /**
+     * {@code @ManyToMany} property들(owning + inverse). 캐시하지 않는다(동일 사유). 컬럼이 없는 marker라
+     * link table hydration과 save 시 link 동기화에서만 사용된다.
+     */
+    public List<PersistentProperty> manyToManyProperties() {
+        return properties.stream().filter(PersistentProperty::manyToMany).toList();
+    }
+
+    /**
      * {@code @ManyToOne} 또는 {@code @OneToMany} 중 하나라도 존재하면 {@code true}. annotation-driven 자동
      * hydration의 진입 가드로 사용된다 — 관계가 없는 entity는 기존 zero-overhead findById/findAll 경로를
      * 그대로 거친다.
@@ -428,7 +436,8 @@ public final class EntityMetadata<T> {
     public boolean hasRelationProperties() {
         return !manyToOneProperties().isEmpty()
                 || !oneToManyProperties().isEmpty()
-                || !oneToOneInverseProperties().isEmpty();
+                || !oneToOneInverseProperties().isEmpty()
+                || !manyToManyProperties().isEmpty();
     }
 
     /**
