@@ -20,4 +20,17 @@
             <property name="hibernate.hikari.minimumIdle" value="5"/>
         </properties>
     </persistence-unit>
+
+    <!-- Hibernate Reactive(Vert.x, 논블로킹) 전용 PU. jdbc.url/user/password는 런타임 주입. PG 전용. -->
+    <persistence-unit name="bench-reactive" transaction-type="RESOURCE_LOCAL">
+        <provider>org.hibernate.reactive.provider.ReactivePersistenceProvider</provider>
+        <class>io.nova.benchmark.entity.BenchUser</class>
+        <exclude-unlisted-classes>true</exclude-unlisted-classes>
+        <properties>
+            <property name="hibernate.hbm2ddl.auto" value="create"/>
+            <property name="hibernate.show_sql" value="false"/>
+            <!-- Vert.x reactive pool size — Nova r2dbc-pool / Hibernate Hikari와 동일하게 20. -->
+            <property name="hibernate.connection.pool_size" value="20"/>
+        </properties>
+    </persistence-unit>
 </persistence>

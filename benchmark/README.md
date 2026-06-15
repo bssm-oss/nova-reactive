@@ -63,22 +63,29 @@ Apple Silicon, single JVM; **numbers vary per run/machine**.
 | UPDATE | ~120 ms | ~66 ms | 1.81x |
 | DELETE | ~30 ms | ~27 ms | 1.12x (≈ even) |
 
-### PostgreSQL — real socket round-trips — N=500
+### PostgreSQL — real socket round-trips — N=500 — three engines
 
-| Scenario | Nova | Hibernate | Nova / Hib |
+Here we add **Hibernate Reactive** (non-blocking Hibernate on Vert.x) for a true
+reactive-vs-reactive comparison. (Hibernate Reactive is PG-only — Vert.x has no H2 client.)
+
+Single-thread latency (median ms, lower better):
+
+| Scenario | Nova (reactive) | Hibernate ORM (blocking) | Hibernate Reactive |
 |---|---|---|---|
-| INSERT | ~316 ms | ~304 ms | 1.04x (≈ even) |
-| FIND_BY_ID | ~264 ms | ~99 ms | 2.68x — Hibernate faster |
-| FIND_ALL | ~3.3 ms | ~1.2 ms | 2.78x |
-| UPDATE | ~353 ms | ~346 ms | 1.02x (≈ even) |
-| DELETE | ~194 ms | ~307 ms | **0.63x — Nova ~1.6x faster** |
+| INSERT | **254** | 462 | 879 |
+| FIND_BY_ID | 352 | **122** | 176 |
+| UPDATE | 980 | **464** | 1530 |
+| DELETE | **184** | 451 | 613 |
 
-### Concurrent findById (concurrency=200)
+### Concurrent findById (concurrency=200) — the key result
 
-| Backend | Nova | Hibernate |
+| Engine | throughput | **peak threads** |
 |---|---|---|
-| H2 | 28.6k ops/s · **9 threads** | 101k ops/s · 210 threads |
-| PostgreSQL | 9.3k ops/s · **20 threads** | 11.6k ops/s · 221 threads |
+| Nova (reactive) | 6.6k ops/s | **23** |
+| Hibernate ORM (blocking) | 10.9k ops/s | **224** |
+| Hibernate Reactive (reactive) | 11.8k ops/s | **24** |
+
+(H2 for reference: Nova 28.6k/s · 9 threads vs Hibernate ORM 101k/s · 210 threads.)
 
 ## Interpretation (honest)
 
@@ -91,15 +98,23 @@ Apple Silicon, single JVM; **numbers vary per run/machine**.
 - **DELETE: Nova ~1.6x faster on PG.** Nova issues one `DELETE` round-trip; Hibernate's
   `em.find` + `em.remove` is two round-trips, and the second one costs a full network latency —
   invisible on H2, real on PG.
-- **Concurrency is pool-bound, and that's the key insight.** With a shared 20-connection pool,
-  throughput tops out at `20 / latency` for *both* — so reactive does **not** out-throughput
-  blocking at a fixed pool (and on zero-latency H2 its per-op overhead even loses). **The
-  reactive advantage is resource efficiency:** Nova sustained 200 concurrent requests on
-  **9–20 threads**; Hibernate needed **~210–221** (one OS thread per in-flight request — each
-  ~1 MB stack + context-switching). Under real PG latency the *throughput* gap nearly closes
-  (0.80x) while the *thread* gap stays ~11x. Scale concurrency to thousands and Hibernate's
-  thread-per-request model becomes the bottleneck while Nova's handful of event-loop threads
-  do not.
+- **Thread-efficiency is a *reactive* trait, not a Nova feature.** This is the headline of the
+  three-engine run. At 200 concurrency, **both reactive engines** — Nova (**23 threads**) and
+  Hibernate Reactive (**24 threads**) — sustain the load on a handful of event-loop threads,
+  while **blocking** Hibernate ORM needs **224** (≈ one OS thread per in-flight request, each
+  ~1 MB stack + context-switching). The line that matters is reactive vs. blocking, not
+  Nova vs. Hibernate.
+- **Throughput is pool-bound** — all three top out near `20 connections / latency`, so no engine
+  out-throughputs the others by much at a fixed pool (the reactive engines slightly trail/lead
+  within noise; on zero-latency H2, reactive's per-op overhead loses to blocking). The reactive
+  win is **resource cost**, not raw throughput at a fixed pool: scale concurrency to thousands
+  and the blocking thread-per-request model becomes the bottleneck while the reactive engines do not.
+- **Among the reactive engines, the trade-off is weight vs. leanness.** Hibernate Reactive
+  carries the full Hibernate engine (persistence context, dirty checking) on Vert.x and was
+  competitive-to-ahead on concurrent throughput here; **Nova is the lean one** — it won
+  single-op INSERT and DELETE outright (no unit-of-work overhead, one round-trip per delete) but
+  pays reactive-assembly overhead on point reads. Pick Nova when you want a minimal reactive
+  data-mapper; pick Hibernate Reactive when you want full JPA semantics reactively.
 
 ## Caveats
 

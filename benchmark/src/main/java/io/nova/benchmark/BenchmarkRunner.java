@@ -56,7 +56,8 @@ public final class BenchmarkRunner {
             String jdbcUrl = "jdbc:postgresql://" + host + ":" + port + "/" + db;
             runPhase("PostgreSQL (external) — real socket round-trips",
                     List.of(NovaOrm.postgres(host, port, db, user, password, POOL),
-                            HibernateOrm.postgres(jdbcUrl, user, password)),
+                            HibernateOrm.postgres(jdbcUrl, user, password),
+                            HibernateReactiveOrm.postgres(jdbcUrl, user, password)),
                     N_PG);
             return;
         }
@@ -66,7 +67,9 @@ public final class BenchmarkRunner {
             System.out.println("Starting PostgreSQL container (Testcontainers)...");
             pg.start();
             runPhase("PostgreSQL via Testcontainers — real socket round-trips",
-                    List.of(NovaOrm.postgres(pg, POOL), HibernateOrm.postgres(pg)), N_PG);
+                    List.of(NovaOrm.postgres(pg, POOL), HibernateOrm.postgres(pg),
+                            HibernateReactiveOrm.postgres(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())),
+                    N_PG);
         } catch (Throwable docker) {
             System.out.printf(Locale.ROOT,
                     "%n[PostgreSQL phase skipped] Docker/Testcontainers unavailable: %s%n"
@@ -201,15 +204,17 @@ public final class BenchmarkRunner {
             ConcResult result = concurrency.get(orm);
             System.out.printf(Locale.ROOT, "%-32s %10.0f ops/s %14d%n", orm, result.opsPerSec(), result.peakThreads());
         }
-        if (orms.size() == 2) {
-            ConcResult nova = concurrency.get(orms.get(0));
-            ConcResult hib = concurrency.get(orms.get(1));
-            System.out.printf(Locale.ROOT,
-                    "%nNova / Hibernate throughput = %.2fx — but Nova sustained %d concurrency on %d threads vs Hibernate's %d.%n"
-                            + "(Throughput is pool-bound at the shared 20-connection cap; reactive's edge is doing the same%n"
-                            + " work with a fraction of the threads/memory, not more raw throughput at a fixed pool.)%n",
-                    nova.opsPerSec() / hib.opsPerSec(), CONCURRENCY, nova.peakThreads(), hib.peakThreads());
+        ConcResult nova = concurrency.get(orms.get(0));
+        System.out.printf(Locale.ROOT, "%n(vs Nova, sustaining %d concurrency)%n", CONCURRENCY);
+        for (int i = 1; i < orms.size(); i++) {
+            ConcResult other = concurrency.get(orms.get(i));
+            System.out.printf(Locale.ROOT, "  Nova / %-34s throughput = %.2fx   threads: %d vs %d%n",
+                    orms.get(i), nova.opsPerSec() / other.opsPerSec(), nova.peakThreads(), other.peakThreads());
         }
+        System.out.printf(Locale.ROOT,
+                "(Throughput is pool-bound at the shared %d-connection cap. The reactive engines (Nova,%n"
+                        + " Hibernate Reactive) sustain the concurrency on a few event-loop threads; blocking%n"
+                        + " Hibernate ORM needs ~one OS thread per in-flight request.)%n", POOL);
     }
 
     private static final class Holder<T> {
