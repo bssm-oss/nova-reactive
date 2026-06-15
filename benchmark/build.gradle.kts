@@ -28,8 +28,13 @@ dependencies {
     // PostgreSQL backend (Testcontainers) — real socket round-trips so reactive concurrency
     // behaviour is observable, unlike H2 in-memory (zero I/O wait).
     implementation("org.testcontainers:postgresql:1.20.4")
-    implementation("org.postgresql:postgresql:42.7.4")          // JDBC, Hibernate
+    implementation("org.postgresql:postgresql:42.7.4")          // JDBC, Hibernate ORM (blocking)
     implementation("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE") // R2DBC, Nova
+
+    // Hibernate Reactive — non-blocking Hibernate on Vert.x (true reactive-vs-reactive vs Nova).
+    // Pairs with Hibernate ORM 7 (Jakarta 3.2). Vert.x PG client is the reactive driver; PG-only.
+    implementation("org.hibernate.reactive:hibernate-reactive-core:3.0.0.Final")
+    implementation("io.vertx:vertx-pg-client:4.5.11")
 
     // Reactor (transitive via Nova, declared explicitly for clarity in the harness).
     implementation("io.projectreactor:reactor-core:3.7.3")
