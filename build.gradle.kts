@@ -6,10 +6,10 @@ plugins {
 
 allprojects {
     group = "io.github.bssm-oss"
-    // 기본은 2.0.0-SNAPSHOT(다음 dev 사이클). release 워크플로가 git tag(예: v2.0.0)에서 파생한 값을
+    // 기본은 2.1.0-SNAPSHOT(다음 dev 사이클). release 워크플로가 git tag(예: v2.0.0)에서 파생한 값을
     // -Pnova.version=2.0.0로 주입하면 그 값을 우선 사용한다. SNAPSHOT 버전은 Central snapshots
     // 저장소로, release 버전은 Central Portal staging으로 자동 라우팅된다(publishing repositories 참고).
-    version = (findProperty("nova.version") as String?)?.takeIf { it.isNotBlank() } ?: "2.0.0-SNAPSHOT"
+    version = (findProperty("nova.version") as String?)?.takeIf { it.isNotBlank() } ?: "2.1.0-SNAPSHOT"
 }
 
 subprojects {

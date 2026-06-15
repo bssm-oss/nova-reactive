@@ -44,7 +44,7 @@ core module depends only on the R2DBC SPI.
 repositories { mavenCentral() }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.0.0")
+    implementation("io.github.bssm-oss:nova:2.1.0")
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
     // runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
@@ -130,7 +130,7 @@ Nova core depends only on the R2DBC **SPI**. Add the matching R2DBC driver (`r2d
 | `nova-spring-data`           | Spring Data-style `ReactiveCrudRepository<T, ID>` + `@EnableNovaRepositories` |
 | `nova-metrics-micrometer`    | Micrometer adapter (`MicrometerSqlExecutionListener`)                          |
 
-Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.0.0`.
+Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.1.0`.
 
 ---
 
