@@ -7,6 +7,8 @@ import io.nova.fetch.FetchGroup;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.InheritanceInfo;
+import io.nova.metadata.JoinTableDefinition;
+import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
@@ -22,6 +24,7 @@ import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
+import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
 import io.nova.tx.ReactiveTransactionOperations;
 import reactor.core.publisher.Flux;
@@ -118,11 +121,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
             Optional<PersistenceSession> session = currentSession(ctx);
-            if (session.isEmpty()) {
-                // 세션 밖(트랜잭션 미사용 등): 현행 stateless 동작 그대로.
-                return saveStateless(metadata, entity);
-            }
-            return saveInSession(session.get(), metadata, entity);
+            Mono<T> saved = session.isEmpty()
+                    // 세션 밖(트랜잭션 미사용 등): 현행 stateless 동작 그대로.
+                    ? saveStateless(metadata, entity)
+                    : saveInSession(session.get(), metadata, entity);
+            // owning @ManyToMany가 있으면 entity row 저장 후 link table을 full-replace로 동기화한다(없으면 무비용).
+            return saved.flatMap(persisted ->
+                    reconcileManyToManyLinks(metadata, persisted).thenReturn(persisted));
         });
     }
 
@@ -189,6 +194,74 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private Optional<PersistenceSession> currentSession(ContextView ctx) {
         return ctx.hasKey(SESSION_KEY) ? Optional.of(ctx.get(SESSION_KEY)) : Optional.empty();
+    }
+
+    /**
+     * owning {@code @ManyToMany} 컬렉션을 link table에 full-replace로 동기화한다 — owner의 link row를 모두
+     * 삭제하고 현재 컬렉션의 (owner, target) 쌍을 다시 insert한다. owning M2M가 없으면 무비용. {@link #sqlExecutor}만
+     * 호출하므로 세션 auto-flush 재진입이 없다(flush 불변식 유지).
+     */
+    private <T> Mono<Void> reconcileManyToManyLinks(EntityMetadata<T> metadata, T owner) {
+        List<PersistentProperty> owning = metadata.manyToManyProperties().stream()
+                .filter(property -> property.manyToManyInfo().owning())
+                .toList();
+        if (owning.isEmpty()) {
+            return Mono.empty();
+        }
+        Object ownerId = metadata.idProperty().read(owner);
+        if (ownerId == null) {
+            return Mono.error(new IllegalStateException(
+                    "owner id must be set before reconciling @ManyToMany links on " + metadata.entityType().getName()));
+        }
+        return Flux.fromIterable(owning)
+                .concatMap(property -> reconcileOneManyToMany(metadata, property, owner, ownerId))
+                .then();
+    }
+
+    private Mono<Void> reconcileOneManyToMany(
+            EntityMetadata<?> ownerMetadata, PersistentProperty property, Object owner, Object ownerId) {
+        ManyToManyInfo info = property.manyToManyInfo();
+        Object collection;
+        try {
+            collection = property.field().get(owner);
+        } catch (IllegalAccessException exception) {
+            return Mono.error(new IllegalStateException(
+                    "Cannot read @ManyToMany collection " + property.propertyName(), exception));
+        }
+        if (collection == null) {
+            // null 컬렉션 = "이번 save에서 이 관계를 관리하지 않음" → 삭제하지 않는다. (빈 컬렉션만 전체 삭제.)
+            return Mono.empty();
+        }
+        EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
+        JoinTableDefinition definition = joinDefinition(ownerMetadata, info, targetMetadata);
+        List<Object> targetIds = new ArrayList<>();
+        for (Object element : (Iterable<?>) collection) {
+            Object targetId = targetMetadata.idProperty().read(element);
+            if (targetId == null) {
+                return Mono.error(new IllegalStateException(
+                        "@ManyToMany targets must be persisted (non-null id) before saving the owner on "
+                                + ownerMetadata.entityType().getName() + "." + property.propertyName()));
+            }
+            targetIds.add(targetId);
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        Mono<Void> delete = sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
+        if (targetIds.isEmpty()) {
+            return delete;
+        }
+        return delete.thenMany(Flux.fromIterable(targetIds)
+                        .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRow(definition, ownerId, targetId))))
+                .then();
+    }
+
+    private JoinTableDefinition joinDefinition(
+            EntityMetadata<?> ownerMetadata, ManyToManyInfo info, EntityMetadata<?> targetMetadata) {
+        return new JoinTableDefinition(
+                info.joinTableName(),
+                info.ownerForeignKeyColumn(),
+                wrapPrimitive(ownerMetadata.idProperty().javaType()),
+                info.targetForeignKeyColumn(),
+                wrapPrimitive(targetMetadata.idProperty().javaType()));
     }
 
     private <T> Mono<T> insertPath(EntityMetadata<T> metadata, T entity) {
@@ -360,7 +433,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
             FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
             return base.flatMap(parent ->
-                    hydrateChildren(List.of(parent), annotationGroup).thenReturn(parent));
+                    hydrateChildren(List.of(parent), annotationGroup)
+                            .then(hydrateManyToMany(List.of(parent), metadata))
+                            .thenReturn(parent));
         });
     }
 
@@ -377,7 +452,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
             return base.collectList()
                     .flatMapMany(parents ->
-                            hydrateChildren(parents, annotationGroup).thenMany(Flux.fromIterable(parents)));
+                            hydrateChildren(parents, annotationGroup)
+                                    .then(hydrateManyToMany(parents, metadata))
+                                    .thenMany(Flux.fromIterable(parents)));
         });
     }
 
@@ -997,6 +1074,102 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Flux.fromIterable(fetchGroup.specs())
                 .concatMap(spec -> hydrateChildSpec(parents, spec))
                 .then();
+    }
+
+    /**
+     * {@code @ManyToMany} 컬렉션을 2-hop으로 hydration한다 — (1) link table을 owner FK IN으로 조회해
+     * (owner→target id) 매핑을 얻고, (2) target을 id IN 단건 쿼리로 로드한 뒤 parent별로 그룹핑해 주입한다.
+     * M2M property당 IN-query 2회로 N+1을 피한다. owning/inverse 모두 같은 경로다(inverse는 컬럼이 swap돼
+     * ownerForeignKeyColumn이 항상 이 parent를 가리킨다).
+     */
+    private <P> Mono<Void> hydrateManyToMany(List<P> parents, EntityMetadata<P> metadata) {
+        List<PersistentProperty> properties = metadata.manyToManyProperties();
+        if (parents.isEmpty() || properties.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(properties)
+                .concatMap(property -> hydrateOneManyToMany(parents, metadata, property))
+                .then();
+    }
+
+    private <P> Mono<Void> hydrateOneManyToMany(
+            List<P> parents, EntityMetadata<P> metadata, PersistentProperty property) {
+        ManyToManyInfo info = property.manyToManyInfo();
+        EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
+        JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
+        PersistentProperty parentIdProperty = metadata.idProperty();
+        Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
+        Class<?> targetIdType = wrapPrimitive(targetMetadata.idProperty().javaType());
+
+        LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
+        for (P parent : parents) {
+            Object id = parentIdProperty.read(parent);
+            if (id != null) {
+                parentsById.computeIfAbsent(id, key -> new ArrayList<>()).add(parent);
+            }
+        }
+        if (parentsById.isEmpty()) {
+            injectEmptyCollections(property, parents, info.usesSet());
+            return Mono.empty();
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
+        return sqlExecutor.queryMany(
+                        renderer.selectJoinRows(definition, ownerIds),
+                        row -> new Object[]{
+                                row.get(info.ownerForeignKeyColumn(), ownerIdType),
+                                row.get(info.targetForeignKeyColumn(), targetIdType)})
+                .collectList()
+                .flatMap(links -> {
+                    LinkedHashMap<Object, List<Object>> targetIdsByOwner = new LinkedHashMap<>();
+                    LinkedHashSet<Object> allTargetIds = new LinkedHashSet<>();
+                    for (Object[] link : links) {
+                        targetIdsByOwner.computeIfAbsent(link[0], key -> new ArrayList<>()).add(link[1]);
+                        allTargetIds.add(link[1]);
+                    }
+                    if (allTargetIds.isEmpty()) {
+                        injectEmptyCollections(property, parents, info.usesSet());
+                        return Mono.empty();
+                    }
+                    String targetIdName = targetMetadata.idProperty().propertyName();
+                    return findAllInternal(targetMetadata,
+                                    QuerySpec.empty().where(Criteria.in(targetIdName, new ArrayList<>(allTargetIds))))
+                            .collectList()
+                            .doOnNext(targets -> {
+                                Map<Object, Object> targetById = new LinkedHashMap<>();
+                                for (Object target : targets) {
+                                    targetById.put(targetMetadata.idProperty().read(target), target);
+                                }
+                                for (Map.Entry<Object, List<P>> entry : parentsById.entrySet()) {
+                                    List<Object> resolved = new ArrayList<>();
+                                    for (Object targetId : targetIdsByOwner.getOrDefault(entry.getKey(), List.of())) {
+                                        Object target = targetById.get(targetId);
+                                        if (target != null) {
+                                            resolved.add(target);
+                                        }
+                                    }
+                                    for (P parent : entry.getValue()) {
+                                        injectCollection(property, parent, resolved, info.usesSet());
+                                    }
+                                }
+                            })
+                            .then();
+                });
+    }
+
+    private static <P> void injectEmptyCollections(PersistentProperty property, List<P> parents, boolean usesSet) {
+        for (P parent : parents) {
+            injectCollection(property, parent, List.of(), usesSet);
+        }
+    }
+
+    private static void injectCollection(PersistentProperty property, Object parent, List<?> items, boolean usesSet) {
+        Object value = usesSet ? new LinkedHashSet<>(items) : new ArrayList<>(items);
+        try {
+            property.field().set(parent, value);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException("Cannot inject @ManyToMany collection " + property.propertyName(), exception);
+        }
     }
 
     private <P, C> Mono<Void> hydrateChildSpec(List<P> parents, FetchGroup.FetchSpec<P, C> spec) {

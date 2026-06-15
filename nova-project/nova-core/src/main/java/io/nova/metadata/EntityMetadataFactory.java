@@ -23,6 +23,8 @@ import jakarta.persistence.InheritanceType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Lob;
 import io.nova.annotation.Json;
+import jakarta.persistence.JoinTable;
+import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
@@ -266,6 +268,11 @@ public final class EntityMetadataFactory {
             if (field.isAnnotationPresent(OneToOne.class)) {
                 // owning(@JoinColumn FK)은 컬럼이 있고, inverse(mappedBy)는 컬럼이 없는 마커다.
                 properties.add(createOneToOneProperty(entityType, field));
+                continue;
+            }
+            if (field.isAnnotationPresent(ManyToMany.class)) {
+                // owning(@JoinTable) / inverse(mappedBy) 모두 컬럼이 없는 marker. link table은 별도 관리된다.
+                properties.add(createManyToManyProperty(entityType, tableName, field));
                 continue;
             }
             if (field.isAnnotationPresent(EmbeddedId.class)) {
@@ -1234,7 +1241,8 @@ public final class EntityMetadataFactory {
                 columnDefinition,
                 lob,
                 converterColumnType,
-                false
+                false,
+                null
         );
     }
 
@@ -1333,14 +1341,16 @@ public final class EntityMetadataFactory {
         boolean isManyToOne = field.isAnnotationPresent(ManyToOne.class);
         boolean isOneToMany = field.isAnnotationPresent(OneToMany.class);
         boolean isOneToOne = field.isAnnotationPresent(OneToOne.class);
-        int relationCount = (isManyToOne ? 1 : 0) + (isOneToMany ? 1 : 0) + (isOneToOne ? 1 : 0);
+        boolean isManyToMany = field.isAnnotationPresent(ManyToMany.class);
+        int relationCount = (isManyToOne ? 1 : 0) + (isOneToMany ? 1 : 0)
+                + (isOneToOne ? 1 : 0) + (isManyToMany ? 1 : 0);
         if (relationCount == 0) {
             return;
         }
         String location = entityType.getName() + "." + field.getName();
         if (relationCount > 1) {
             throw new IllegalStateException(
-                    location + " cannot declare more than one of @ManyToOne / @OneToMany / @OneToOne");
+                    location + " cannot declare more than one of @ManyToOne / @OneToMany / @OneToOne / @ManyToMany");
         }
         if (field.isAnnotationPresent(Embedded.class)) {
             throw new IllegalStateException(location + " cannot declare @Embedded together with a relation annotation");
@@ -1429,7 +1439,8 @@ public final class EntityMetadataFactory {
                 "",
                 false,
                 null,
-                false
+                false,
+                null
         );
     }
 
@@ -1503,7 +1514,8 @@ public final class EntityMetadataFactory {
                 fkColumnDefinition,
                 false,
                 null,
-                false
+                false,
+                null
         );
     }
 
@@ -1567,7 +1579,8 @@ public final class EntityMetadataFactory {
                     "",
                     false,
                     null,
-                    true
+                    true,
+                    null
             );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
@@ -1618,8 +1631,197 @@ public final class EntityMetadataFactory {
                 fkColumnDefinition,
                 false,
                 null,
-                false
+                false,
+                null
         );
+    }
+
+    /**
+     * {@code @ManyToMany} property를 만든다. owning({@code mappedBy} 없음, {@code @JoinTable})과
+     * inverse({@code mappedBy}) 모두 컬럼 없는 marker이며 link table 매핑을 {@link ManyToManyInfo}에 담는다.
+     * cascade는 거부하고, fetch=LAZY는 허용한다(Nova는 {@code @OneToMany}처럼 eager-hydrate). 복합키 owner/target,
+     * 다중 join 컬럼, 잘못된 {@code mappedBy}, raw/non-collection 필드는 fail-fast로 거부한다.
+     */
+    private PersistentProperty createManyToManyProperty(Class<?> entityType, String ownerTableName, Field field) {
+        ManyToMany annotation = field.getAnnotation(ManyToMany.class);
+        if (annotation.cascade().length > 0) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ManyToMany(cascade=...) is not supported; persist related entities explicitly via save/saveAll");
+        }
+        Class<?> fieldType = field.getType();
+        if (!List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ManyToMany must map to a List or Set; got " + fieldType.getName());
+        }
+        boolean usesSet = Set.class.isAssignableFrom(fieldType);
+        Class<?> target = resolveManyToManyTarget(entityType, field, annotation);
+        String mappedBy = annotation.mappedBy();
+        ManyToManyInfo info = (mappedBy == null || mappedBy.isBlank())
+                ? resolveOwningManyToManyInfo(entityType, ownerTableName, field, target, usesSet)
+                : resolveInverseManyToManyInfo(entityType, field, target, mappedBy, usesSet);
+        return new PersistentProperty(
+                field,
+                field.getName(),
+                "",
+                fieldType,
+                false,
+                false,
+                true,
+                255,
+                0,
+                0,
+                null,
+                "",
+                null,
+                false,
+                false,
+                false,
+                false,
+                List.of(),
+                false,
+                null,
+                false,
+                false,
+                null,
+                true,
+                false,
+                null,
+                "",
+                true,
+                true,
+                false,
+                "",
+                false,
+                null,
+                false,
+                info);
+    }
+
+    /**
+     * {@code @ManyToMany} 컬렉션의 원소(대상 엔티티) 타입을 해석한다. {@code targetEntity}가 명시되면 그것을,
+     * 아니면 제네릭 {@code List<T>}/{@code Set<T>}의 단일 타입 인자를 사용한다. raw 컬렉션이면 fail-fast.
+     */
+    private static Class<?> resolveManyToManyTarget(Class<?> entityType, Field field, ManyToMany annotation) {
+        if (annotation.targetEntity() != void.class) {
+            return annotation.targetEntity();
+        }
+        Type generic = field.getGenericType();
+        if (generic instanceof ParameterizedType parameterized) {
+            Type[] arguments = parameterized.getActualTypeArguments();
+            if (arguments.length == 1 && arguments[0] instanceof Class<?> elementType) {
+                return elementType;
+            }
+        }
+        throw new IllegalArgumentException(
+                entityType.getName() + "." + field.getName()
+                        + " @ManyToMany cannot infer the target entity from a raw collection; specify targetEntity");
+    }
+
+    /**
+     * owning side({@code @JoinTable})의 link table 매핑을 해석한다. 테이블/컬럼 이름은 {@code @JoinTable}/
+     * {@code @JoinColumn}이 있으면 그 값을, 없으면 JPA 기본 규약을 따른다. target id 컬럼은 재진입 메타 빌드를
+     * 피하려 {@link #resolveSingleIdColumn} 경량 reflection으로 해석한다.
+     */
+    private ManyToManyInfo resolveOwningManyToManyInfo(
+            Class<?> ownerType, String ownerTable, Field field, Class<?> target, boolean usesSet) {
+        JoinTable joinTable = field.getAnnotation(JoinTable.class);
+        String location = ownerType.getName() + "." + field.getName();
+        String ownerIdColumn = resolveSingleIdColumn(ownerType, location);
+        String targetIdColumn = resolveSingleIdColumn(target, location);
+        String targetTable = resolveTableName(target);
+        String tableName = joinTable != null && !joinTable.name().isBlank()
+                ? joinTable.name()
+                : namingStrategy.joinTableName(ownerTable, targetTable);
+        String ownerForeignKeyColumn = resolveSingleJoinColumn(
+                joinTable == null ? null : joinTable.joinColumns(),
+                namingStrategy.joinColumnName(ownerType.getSimpleName(), ownerIdColumn),
+                location + " @JoinTable.joinColumns");
+        String targetForeignKeyColumn = resolveSingleJoinColumn(
+                joinTable == null ? null : joinTable.inverseJoinColumns(),
+                namingStrategy.joinColumnName(target.getSimpleName(), targetIdColumn),
+                location + " @JoinTable.inverseJoinColumns");
+        return new ManyToManyInfo(true, target, tableName, ownerForeignKeyColumn, targetForeignKeyColumn, "", usesSet);
+    }
+
+    /**
+     * inverse side({@code mappedBy})의 매핑을 해석한다. 대상 엔티티의 owning 필드를 reflect해 owning 매핑을
+     * 복원한 뒤 owner/target 컬럼을 swap해 "owner = 이 inverse 엔티티" 규약을 맞춘다(물리 테이블은 동일).
+     */
+    private ManyToManyInfo resolveInverseManyToManyInfo(
+            Class<?> entityType, Field field, Class<?> target, String mappedBy, boolean usesSet) {
+        Field owningField;
+        try {
+            owningField = target.getDeclaredField(mappedBy);
+        } catch (NoSuchFieldException exception) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ManyToMany(mappedBy=\"" + mappedBy + "\") references no field on " + target.getName(),
+                    exception);
+        }
+        if (!owningField.isAnnotationPresent(ManyToMany.class)) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ManyToMany(mappedBy=\"" + mappedBy + "\") must point to an owning @ManyToMany on "
+                            + target.getName());
+        }
+        ManyToManyInfo owning = resolveOwningManyToManyInfo(
+                target, resolveTableName(target), owningField, entityType, usesSet);
+        return new ManyToManyInfo(
+                false, target, owning.joinTableName(),
+                owning.targetForeignKeyColumn(), owning.ownerForeignKeyColumn(), mappedBy, usesSet);
+    }
+
+    /**
+     * 엔티티의 단일 {@code @Id} 컬럼 이름을 경량 reflection으로 해석한다(전체 메타데이터 빌드 회피). 복합키
+     * ({@code @EmbeddedId} 또는 {@code @Id} 2개 이상)는 v1에서 {@code @ManyToMany} 대상으로 지원하지 않으므로
+     * fail-fast로 거부한다.
+     */
+    private String resolveSingleIdColumn(Class<?> type, String location) {
+        List<Field> idFields = new ArrayList<>();
+        boolean hasEmbeddedId = false;
+        for (Field candidate : mappedFields(type)) {
+            if (isNotPersistable(candidate)) {
+                continue;
+            }
+            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
+                hasEmbeddedId = true;
+            }
+            if (candidate.isAnnotationPresent(Id.class)) {
+                idFields.add(candidate);
+            }
+        }
+        if (hasEmbeddedId || idFields.size() != 1) {
+            throw new IllegalArgumentException(
+                    location + " @ManyToMany with composite-keyed entity " + type.getName()
+                            + " is not supported");
+        }
+        Field idField = idFields.get(0);
+        Column column = idField.getAnnotation(Column.class);
+        return column != null && !column.name().isBlank()
+                ? column.name()
+                : namingStrategy.columnName(idField.getName());
+    }
+
+    private String resolveTableName(Class<?> type) {
+        Table table = type.getAnnotation(Table.class);
+        return table != null && !table.name().isBlank() ? table.name() : namingStrategy.tableName(type);
+    }
+
+    /**
+     * {@code @JoinTable}의 join/inverseJoin 컬럼 1개를 해석한다. 미지정이면 JPA 기본 이름을, 비어 있으면
+     * 기본 이름을 쓴다. 2개 이상(복합키)이면 v1 미지원으로 fail-fast.
+     */
+    private static String resolveSingleJoinColumn(JoinColumn[] columns, String defaultName, String location) {
+        if (columns == null || columns.length == 0) {
+            return defaultName;
+        }
+        if (columns.length > 1) {
+            throw new IllegalArgumentException(location + " with multiple columns (composite keys) is not supported");
+        }
+        String name = columns[0].name();
+        return name == null || name.isBlank() ? defaultName : name;
     }
 
     private static AttributeConverter<?, ?> createEnumConverter(Class<?> enumClass, EnumType enumType) {

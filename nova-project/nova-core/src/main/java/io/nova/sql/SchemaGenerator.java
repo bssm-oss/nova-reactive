@@ -1,12 +1,43 @@
 package io.nova.sql;
 
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
 
 import java.util.List;
 
 public interface SchemaGenerator {
     String createTable(EntityMetadata<?> metadata);
+
+    /**
+     * {@code @ManyToMany} link table을 만드는 {@code CREATE TABLE} 구문을 반환한다. 두 FK 컬럼(owner/target)과
+     * 그 둘로 구성된 복합 PK를 가진다. dialect-aware 구현({@link AbstractSchemaGenerator})이 컬럼 타입을
+     * 결정하고 식별자를 quote 한다. 기본 구현은 미지원이므로 dialect base가 override 해야 한다.
+     */
+    default String createJoinTable(JoinTableDefinition definition) {
+        throw new UnsupportedOperationException("createJoinTable is not supported by this SchemaGenerator");
+    }
+
+    /**
+     * {@link #createJoinTable(JoinTableDefinition)}의 idempotent 변형. 기본은 prefix를 재작성한다.
+     */
+    default String createJoinTableIfNotExists(JoinTableDefinition definition) {
+        return createJoinTable(definition).replaceFirst("(?i)^create table\\s+", "create table if not exists ");
+    }
+
+    /**
+     * link table을 제거하는 {@code DROP TABLE} 구문. 기본은 raw 이름을 쓰며 dialect base가 quote 한다.
+     */
+    default String dropJoinTable(String joinTableName) {
+        return "drop table " + joinTableName;
+    }
+
+    /**
+     * link table을 제거하는 idempotent {@code DROP TABLE IF EXISTS} 구문.
+     */
+    default String dropJoinTableIfExists(String joinTableName) {
+        return "drop table if exists " + joinTableName;
+    }
 
     /**
      * 테이블 생성과 별개로 발행할 secondary index 및 unique constraint DDL을 반환한다.

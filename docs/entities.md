@@ -44,6 +44,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
 | `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. `fetch = LAZY` / `cascade` are rejected. |
+| `@ManyToMany` / `@JoinTable` | Many-to-many via a link table. **Owning** side (`@JoinTable`, no `mappedBy`) defines the table + join columns; **inverse** side (`@ManyToMany(mappedBy = "...")`) reuses it. Both `List` and `Set` are supported. The link table is auto-created by the schema initializer. `save(owner)` reconciles the link rows (full-replace); both sides hydrate eagerly via a 2-hop IN-query. `cascade` is rejected; single-keyed owner/target only (v1). |
 | `@OrderBy`        | On `@OneToMany`, orders hydrated children. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY` to the child query; an empty `@OrderBy` sorts by the child's `@Id` ascending. |
 | `@AttributeOverride` | On an `@Embedded` field, overrides a sub-property's column name with an absolute name (e.g. `@AttributeOverride(name = "city", column = @Column(name = "ship_city"))`). |
 | `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
@@ -249,6 +250,38 @@ public class Passport {
   by querying the owning table's FK. As with `@OneToMany`, declare `targetEntity` when the type
   cannot be inferred, and the inverse field is excluded from column mapping automatically.
 - `@OneToOne(fetch = LAZY)` and `cascade` are rejected fail-fast (no lazy proxy / no cascade graph).
+
+---
+
+### `@ManyToMany`
+
+Many-to-many associations map through a **link table**. Declare the owning side with `@JoinTable` and the inverse side with `mappedBy`:
+
+```java
+@Entity @Table(name = "student")
+class Student {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) Long id;
+
+    @ManyToMany
+    @JoinTable(name = "student_course",
+            joinColumns = @JoinColumn(name = "student_id"),
+            inverseJoinColumns = @JoinColumn(name = "course_id"))
+    Set<Course> courses = new LinkedHashSet<>();
+}
+
+@Entity @Table(name = "course")
+class Course {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) Long id;
+
+    @ManyToMany(mappedBy = "courses")
+    Set<Student> students = new LinkedHashSet<>();
+}
+```
+
+- **Link table** — auto-created by `SchemaInitializer.create(...)` as `(owner_fk, target_fk)` with a composite primary key. When `@JoinTable` (or its columns) is omitted, JPA default names apply (`owner_table_target_table`, `entity_id`). `List` and `Set` are both supported.
+- **Write (full-replace)** — `save(owner)` reconciles the owner's link rows: it deletes them and re-inserts the current collection, eagerly within the surrounding transaction. Targets must already be persisted (non-null id) — persist them first, like other relations. A `null` collection is left untouched; an empty collection clears all links. This yields the same end state as JPA for both adds and removes.
+- **Read (2-hop, no N+1)** — `findById` / `findAll` hydrate the collection on **both** owning and inverse sides with two IN-queries per association (the link table, then the targets). Declare `targetEntity` when the element type can't be inferred from a raw collection.
+- `cascade` is rejected fail-fast. v1 supports single-keyed owner/target only (composite-keyed `@ManyToMany` is rejected); `@OrderBy` on `@ManyToMany`, link cleanup on owner delete, and session collection-diff are deferred.
 
 ---
 

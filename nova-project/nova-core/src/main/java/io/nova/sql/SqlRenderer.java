@@ -1,6 +1,7 @@
 package io.nova.sql;
 
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.JoinTableDefinition;
 import io.nova.query.AggregateSpec;
 import io.nova.query.QuerySpec;
 
@@ -173,5 +174,28 @@ public interface SqlRenderer {
     ) {
         SqlStatement statement = updateByQuery(metadata, fieldValues, querySpec);
         return new SimpleCompiledQuery(statement.sql(), statement.bindings().size());
+    }
+
+    /**
+     * {@code @ManyToMany} link table에서 owner의 link row를 모두 삭제하는 구문(full-replace 동기화의 1단계).
+     * 기본 구현은 미지원이므로 dialect base({@link AbstractSqlRenderer})가 override 한다.
+     */
+    default SqlStatement deleteJoinRows(JoinTableDefinition definition, Object ownerId) {
+        throw new UnsupportedOperationException("deleteJoinRows is not supported by this SqlRenderer");
+    }
+
+    /**
+     * link table에 (owner, target) link row 1건을 추가하는 구문. 다중 행 VALUES 비호환 dialect(Oracle)
+     * 회피를 위해 target당 단건으로 발행한다.
+     */
+    default SqlStatement insertJoinRow(JoinTableDefinition definition, Object ownerId, Object targetId) {
+        throw new UnsupportedOperationException("insertJoinRow is not supported by this SqlRenderer");
+    }
+
+    /**
+     * 주어진 owner id들에 대한 link row(owner FK, target FK)를 조회하는 구문(2-hop hydration의 1단계).
+     */
+    default SqlStatement selectJoinRows(JoinTableDefinition definition, List<Object> ownerIds) {
+        throw new UnsupportedOperationException("selectJoinRows is not supported by this SqlRenderer");
     }
 }

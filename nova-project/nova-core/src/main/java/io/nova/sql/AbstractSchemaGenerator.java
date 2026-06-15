@@ -6,6 +6,7 @@ import jakarta.persistence.GenerationType;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.IndexDefinition;
 import io.nova.metadata.InheritanceInfo;
+import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.UniqueConstraintDefinition;
 
@@ -43,6 +44,48 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     @Override
     public String dropTable(EntityMetadata<?> metadata) {
         return "drop table " + qualifiedTable(metadata);
+    }
+
+    @Override
+    public String createJoinTable(JoinTableDefinition definition) {
+        String ownerColumn = dialect.quote(definition.ownerForeignKeyColumn())
+                + " " + fkColumnType(definition.ownerForeignKeyType()) + " not null";
+        String targetColumn = dialect.quote(definition.targetForeignKeyColumn())
+                + " " + fkColumnType(definition.targetForeignKeyType()) + " not null";
+        String primaryKey = "primary key (" + dialect.quote(definition.ownerForeignKeyColumn())
+                + ", " + dialect.quote(definition.targetForeignKeyColumn()) + ")";
+        return "create table " + dialect.quote(definition.tableName())
+                + " (" + ownerColumn + ", " + targetColumn + ", " + primaryKey + ")";
+    }
+
+    @Override
+    public String dropJoinTable(String joinTableName) {
+        return "drop table " + dialect.quote(joinTableName);
+    }
+
+    @Override
+    public String dropJoinTableIfExists(String joinTableName) {
+        return "drop table if exists " + dialect.quote(joinTableName);
+    }
+
+    /**
+     * {@code @ManyToMany} link table의 FK 컬럼 SQL 타입을 owner/target {@code @Id}의 Java 타입으로 결정한다.
+     * {@link #sqlType(PersistentProperty)}의 스칼라 분기를 미러하되, property 없이 타입만으로 매핑한다.
+     */
+    protected String fkColumnType(Class<?> idType) {
+        if (idType == Long.class || idType == long.class) {
+            return "bigint";
+        }
+        if (idType == Integer.class || idType == int.class) {
+            return "integer";
+        }
+        if (idType == java.util.UUID.class) {
+            return "varchar(36)";
+        }
+        if (idType == String.class) {
+            return "varchar(255)";
+        }
+        throw new IllegalArgumentException("Unsupported @ManyToMany id type for join column: " + idType.getName());
     }
 
     @Override
