@@ -2150,6 +2150,15 @@ public final class EntityMetadataFactory {
                             + " used as @ElementCollection element on " + location
                             + " must not declare @Id-annotated fields");
         }
+        // 컬럼 펼침은 getDeclaredFields()만 보므로 superclass(@MappedSuperclass 포함)에서 상속한 필드는
+        // 조용히 누락된다. silent 데이터 손실을 막기 위해 상속 구조를 가진 @Embeddable 원소는 fail-fast로 거부한다.
+        Class<?> elementSuperclass = elementType.getSuperclass();
+        if (elementSuperclass != null && elementSuperclass != Object.class) {
+            throw new IllegalArgumentException(
+                    location + " @ElementCollection of @Embeddable " + elementType.getName()
+                            + " must not extend a superclass (" + elementSuperclass.getName()
+                            + "); inherited fields would be silently dropped from the collection table");
+        }
         // 이 @ElementCollection 필드의 @AttributeOverride(name=field, column=@Column(name=...))를 모은다.
         Map<String, String> columnOverrides = new java.util.HashMap<>();
         for (AttributeOverride override : collectionField.getAnnotationsByType(AttributeOverride.class)) {

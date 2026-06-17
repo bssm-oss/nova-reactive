@@ -87,6 +87,32 @@ public interface Dialect {
     }
 
     /**
+     * {@code @GeneratedValue(TABLE)} generator 카운터를 compare-and-set 하는 UPDATE 구문을 반환한다.
+     * {@code expected} 값이 현재 카운터와 일치할 때만 {@code next}로 바꾸며, 영향받은 행 수(1=성공, 0=경합 패배)로
+     * 결과를 알린다. core operations는 {@link #tableGeneratorSelectSql}로 현재 값을 읽은 뒤 이 구문으로 원자적
+     * 발급을 시도하고, 0행이면(다른 saver가 먼저 카운터를 옮김) 다시 읽어 재시도한다 — autocommit/별도 커넥션
+     * 환경에서도 두 saver가 같은 블록을 발급받지 못하도록 보장한다(non-atomic UPDATE-후-SELECT의 read-after-write
+     * 경합 제거).
+     *
+     * <p>식별자/리터럴 직접 concat은 다른 generator 구문과 동일하게 {@link io.nova.metadata.EntityMetadataFactory}의
+     * SQL 식별자 검증으로 injection이 차단된다.
+     *
+     * @param table         generator 테이블 이름
+     * @param valueColumn   카운터 컬럼 이름
+     * @param pkColumn      PK 컬럼 이름
+     * @param pkColumnValue generator 행의 PK 값
+     * @param expected      현재 카운터로 기대하는 값(직전 SELECT로 읽은 값)
+     * @param next          성공 시 기록할 새 카운터 값({@code expected + allocationSize})
+     */
+    default String tableGeneratorCompareAndSetSql(
+            String table, String valueColumn, String pkColumn, String pkColumnValue, long expected, long next) {
+        return "update " + quote(table)
+                + " set " + quote(valueColumn) + " = " + next
+                + " where " + quote(pkColumn) + " = '" + pkColumnValue + "'"
+                + " and " + quote(valueColumn) + " = " + expected;
+    }
+
+    /**
      * {@code @GeneratedValue(TABLE)} generator 테이블 행을 처음 seed 하는 INSERT 구문을 반환한다.
      * SchemaGenerator가 테이블 DDL을 발행한 뒤 1회 실행한다. seed 값은 첫 발급 식별자가 정확히
      * {@code initialValue}가 되도록 호출자가 계산해 전달한다(증가-후-읽기 모델에서 보통 initialValue - 1).

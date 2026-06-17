@@ -98,6 +98,59 @@ class TableGeneratorH2IntegrationTest {
         }).verifyComplete();
     }
 
+    @Test
+    void concurrentSavesNeverHandOutDuplicateIds() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        int total = 60;
+        // allocationSize=1 → 매 save가 generator 테이블 select+compare-and-set을 수행한다. 높은 동시성으로
+        // 발급해도 read-then-CAS 재시도가 서로소 블록을 보장하므로 id가 절대 중복되지 않아야 한다(비원자
+        // UPDATE-후-SELECT였다면 read-after-write 경합으로 중복이 발생했을 경로).
+        java.util.List<Long> ids = schema.create(SingleAllocAccount.class)
+                .thenMany(Flux.range(0, total)
+                        .flatMap(i -> operations.save(new SingleAllocAccount("u" + i + "@example.com")), total)
+                        .map(SingleAllocAccount::getId))
+                .collectList()
+                .block();
+
+        assertNotNull(ids);
+        assertEquals(total, ids.size(), "모든 save가 완료되어야 한다");
+        assertEquals(total, new java.util.HashSet<>(ids).size(),
+                "동시 발급된 TABLE 전략 id는 전부 유일해야 한다(중복 없음)");
+    }
+
+    @Entity
+    @Table(name = "single_alloc_accounts")
+    static class SingleAllocAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.TABLE, generator = "single_gen")
+        @TableGenerator(
+                name = "single_gen",
+                table = "single_id_generators",
+                pkColumnName = "gen_name",
+                valueColumnName = "gen_value",
+                pkColumnValue = "single_account",
+                initialValue = 1,
+                allocationSize = 1)
+        private Long id;
+
+        @Column(name = "email")
+        private String email;
+
+        SingleAllocAccount() {
+        }
+
+        SingleAllocAccount(String email) {
+            this.email = email;
+        }
+
+        Long getId() {
+            return id;
+        }
+    }
+
     @Entity
     @Table(name = "default_table_gen_accounts")
     static class DefaultTableGenAccount {

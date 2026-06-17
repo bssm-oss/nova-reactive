@@ -104,6 +104,14 @@ class EntityMetadataFactoryElementCollectionTest {
         assertThrows(IllegalArgumentException.class, () -> factory.getEntityMetadata(NonCollection.class));
     }
 
+    @Test
+    void rejectsEmbeddableElementWithSuperclassFields() {
+        // 컬럼 펼침은 getDeclaredFields()만 보므로 superclass 상속 필드는 조용히 누락된다 → fail-fast여야 한다.
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(InheritingEmbeddableElement.class));
+        assertTrue(error.getMessage().contains("must not extend a superclass"));
+    }
+
     // --- fixtures -----------------------------------------------------------
 
     @Entity
@@ -204,5 +212,25 @@ class EntityMetadataFactoryElementCollectionTest {
 
         @ElementCollection
         List<Outer> outers;
+    }
+
+    static class BaseColumns {
+        String inheritedField;
+    }
+
+    @Embeddable
+    static class InheritingValue extends BaseColumns {
+        @Column(name = "own_field")
+        String ownField;
+    }
+
+    @Entity
+    @Table(name = "inheriting_embeddable_element")
+    static class InheritingEmbeddableElement {
+        @Id
+        Long id;
+
+        @ElementCollection
+        List<InheritingValue> values;
     }
 }

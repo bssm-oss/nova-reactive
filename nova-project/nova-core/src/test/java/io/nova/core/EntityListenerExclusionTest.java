@@ -39,9 +39,12 @@ class EntityListenerExclusionTest {
         events.clear();
     }
 
-    // (a) @ExcludeDefaultListeners: entity 자체 콜백은 스킵하되 외부 리스너는 계속 호출된다.
+    // (a) @ExcludeDefaultListeners: JPA에서 이 어노테이션은 XML default listener만 제외하며 entity 자체
+    // 콜백에는 영향이 없다. Nova엔 default listener가 없으므로 인식되지만 no-op이어야 한다 — entity 자체
+    // 콜백과 외부 리스너 모두 정상 호출된다(엔티티 자체 콜백을 스킵하면 사용자 audit/validation 로직이
+    // 조용히 사라지는 JPA 비호환 동작).
     @Test
-    void excludeDefaultListenersSkipsEntityCallbacksButKeepsExternalListeners() {
+    void excludeDefaultListenersIsRecognizedButNoOp() {
         EntityMetadata<EntityExcludingDefaults> metadata =
                 factory.getEntityMetadata(EntityExcludingDefaults.class);
 
@@ -50,8 +53,8 @@ class EntityListenerExclusionTest {
 
         invoker.invokePrePersist(new EntityExcludingDefaults(), metadata);
 
-        assertEquals(List.of("recording:prePersist"), events,
-                "external listener fires, entity's own @PrePersist is skipped");
+        assertEquals(List.of("recording:prePersist", "entity:prePersist"), events,
+                "external listener AND entity's own @PrePersist both fire (@ExcludeDefaultListeners is a no-op)");
     }
 
     // 회귀: @ExcludeDefaultListeners가 없으면 entity 콜백도 호출된다.

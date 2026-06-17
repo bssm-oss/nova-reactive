@@ -96,6 +96,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final java.util.concurrent.ConcurrentHashMap<String, TableGeneratorBlock> tableGeneratorBlocks =
             new java.util.concurrent.ConcurrentHashMap<>();
 
+    /**
+     * {@code @GeneratedValue(TABLE)} 블록 할당 시 compare-and-set 재시도 상한. 경합으로 CAS가 연속 실패하면
+     * 이 횟수만큼만 재시도하고 fail-fast 한다(라이브락 방지). 정상 경합에서는 1~2회 안에 성공한다.
+     */
+    private static final int TABLE_GENERATOR_MAX_CAS_ATTEMPTS = 64;
+
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
             Dialect dialect,
@@ -504,6 +510,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + " @OneToMany(mappedBy=\"" + mappedBy + "\") refers to a non-@ManyToOne property on "
                             + childMetadata.entityType().getName());
         }
+        // cascade/orphanRemoval 경로는 child의 단일 @Id(idProperty + 단일 컬럼 Criteria)에 의존한다. 복합키
+        // (@EmbeddedId/@IdClass) child는 orphan 삭제·FK 매칭 의미가 정의되지 않아 silent 오작동 위험이 있으므로
+        // fail-fast로 거부한다(다른 복합키 관계 제약과 대칭).
+        if (childMetadata.hasCompositeId()) {
+            throw new IllegalStateException(
+                    parentMetadata.entityType().getName() + "." + oneToMany.propertyName()
+                            + " @OneToMany(cascade/orphanRemoval) is not supported when the child "
+                            + childMetadata.entityType().getName()
+                            + " has a composite id; persist/remove such children explicitly");
+        }
         return owning;
     }
 
@@ -594,10 +610,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     /**
      * {@code @GeneratedValue(TABLE)} 식별자의 다음 값을 발급한다. 먼저 in-memory 블록에서 발급을 시도하고,
-     * 블록이 비었으면 generator 테이블을 dialect의 increment SQL로 원자 증가시킨 뒤 select로 high-watermark를
-     * 읽어 새 블록을 채운다. increment→select는 동일 커넥션(트랜잭션 컨텍스트) 안에서 순차 실행되며 row-level
-     * lock으로 동시 발급의 atomicity가 보장된다. 발급된 값은 항상 {@code long}이며 호출자가 식별자 타입으로
-     * coerce 한다.
+     * 블록이 비었으면 {@link #allocateTableGeneratorBlock}으로 generator 카운터에서 read-then-compare-and-set
+     * 으로 새 블록을 원자 확보한다. 트랜잭션 없는(autocommit·커넥션 분리) 기본 save 경로에서도 두 saver가 같은
+     * 블록을 발급받지 못한다. 발급된 값은 항상 {@code long}이며 호출자가 식별자 타입으로 coerce 한다.
      */
     private Mono<Long> nextTableGeneratorId(PersistentProperty idProperty) {
         io.nova.metadata.TableGeneratorInfo info = idProperty.tableGeneratorInfo();
@@ -607,20 +622,49 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (ready != null) {
             return Mono.just(ready);
         }
-        // 블록 소진(또는 최초 호출): DB에서 allocationSize만큼 확보한다. increment 후 select한 high-watermark가
-        // 블록의 마지막 식별자다. 블록은 [hw - allocationSize + 1, hw].
+        return allocateTableGeneratorBlock(info, block, TABLE_GENERATOR_MAX_CAS_ATTEMPTS);
+    }
+
+    /**
+     * generator 카운터에서 allocationSize만큼의 식별자 블록을 read-then-compare-and-set으로 확보하고 첫
+     * 식별자를 발급한다. 현재 값을 select한 뒤 그 값을 기대치로 CAS UPDATE를 시도하고, 0행이면(다른 saver가
+     * 먼저 카운터를 옮김) 다시 읽어 재시도한다. CAS 성공 블록은 항상 서로소이므로 in-memory 블록 overwrite
+     * 경합이 있어도 중복 id는 생기지 않는다(최악의 경우 id gap만 발생 — JPA가 허용). 매 시도는 한 번 더
+     * {@link TableGeneratorBlock#next()}를 확인해 다른 subscriber가 방금 refill 한 경우 DB 왕복을 피한다.
+     */
+    private Mono<Long> allocateTableGeneratorBlock(
+            io.nova.metadata.TableGeneratorInfo info, TableGeneratorBlock block, int attemptsLeft) {
+        Long ready = block.next();
+        if (ready != null) {
+            return Mono.just(ready);
+        }
+        if (attemptsLeft <= 0) {
+            return Mono.error(new IllegalStateException(
+                    "@GeneratedValue(TABLE) generator '" + info.pkColumnValue() + "' on " + info.table()
+                            + " could not allocate an id block after repeated compare-and-set contention"));
+        }
         int allocationSize = info.allocationSize();
-        SqlStatement increment = new SqlStatement(
-                dialect.tableGeneratorIncrementSql(
-                        info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue(), allocationSize),
-                List.of());
         SqlStatement select = new SqlStatement(
                 dialect.tableGeneratorSelectSql(
                         info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue()),
                 List.of());
-        return sqlExecutor.execute(increment)
-                .then(sqlExecutor.queryOne(select, row -> row.get(Dialect.TABLE_GENERATOR_VALUE_COLUMN, Long.class)))
-                .map(newValue -> block.refillAndNext(newValue, allocationSize));
+        return sqlExecutor.queryOne(select, row -> row.get(Dialect.TABLE_GENERATOR_VALUE_COLUMN, Long.class))
+                .flatMap(current -> {
+                    long next = current + allocationSize;
+                    SqlStatement cas = new SqlStatement(
+                            dialect.tableGeneratorCompareAndSetSql(
+                                    info.table(), info.valueColumnName(), info.pkColumnName(),
+                                    info.pkColumnValue(), current, next),
+                            List.of());
+                    return sqlExecutor.execute(cas).flatMap(affected -> {
+                        if (affected != null && affected == 1L) {
+                            // CAS 승리: [current, next-1] 블록 확보. refillAndNext가 newValue=next에서 첫 id=current를 역산한다.
+                            return Mono.just(block.refillAndNext(next, allocationSize));
+                        }
+                        // CAS 패배: 새 현재값을 다시 읽어 서로소 블록을 재확보한다.
+                        return allocateTableGeneratorBlock(info, block, attemptsLeft - 1);
+                    });
+                });
     }
 
     /**
