@@ -365,6 +365,19 @@ public final class EntityMetadata<T> {
         return Optional.ofNullable(softDeleteProperty);
     }
 
+    /**
+     * 이 엔티티가 {@code @GeneratedValue(TABLE)} + {@code @TableGenerator}로 식별자를 발급받으면 그
+     * {@link TableGeneratorInfo}를, 아니면 {@link Optional#empty()}를 반환한다. {@code @Id} property에서
+     * 파생되므로 생성자 시그니처를 바꾸지 않고 자동으로 채워진다. generator 테이블 DDL/seed와 다음 값 취득의
+     * 진입점이다.
+     */
+    public Optional<TableGeneratorInfo> tableGenerator() {
+        if (idProperty != null && idProperty.tableGenerated()) {
+            return Optional.of(idProperty.tableGeneratorInfo());
+        }
+        return Optional.empty();
+    }
+
     public Optional<PersistentProperty> versionProperty() {
         return Optional.ofNullable(versionProperty);
     }
@@ -386,8 +399,9 @@ public final class EntityMetadata<T> {
         }
         return switch (property.generationType()) {
             case IDENTITY, AUTO -> true;
-            // SEQUENCE/UUID는 애플리케이션이 INSERT 직전에 id를 채운다. TABLE은 metadata 빌드 단계에서
-            // 이미 거부되므로 여기 도달하지 않지만, switch 포괄성을 위해 app-supplied 쪽으로 분류한다.
+            // SEQUENCE/UUID/TABLE은 애플리케이션이 INSERT 직전에 id를 채운다(SEQUENCE는 nextval, UUID는
+            // randomUUID, TABLE은 generator 테이블 increment 후 그 값을 entity에 write). 따라서 INSERT 절에
+            // id 컬럼을 포함해야 하며 driver-key 회수 경로를 타지 않는다.
             case SEQUENCE, UUID, TABLE -> false;
         };
     }

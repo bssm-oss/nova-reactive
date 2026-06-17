@@ -9,6 +9,7 @@ import io.nova.metadata.IndexDefinition;
 import io.nova.metadata.InheritanceInfo;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.TableGeneratorInfo;
 import io.nova.metadata.UniqueConstraintDefinition;
 
 import java.util.ArrayList;
@@ -144,6 +145,30 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     @Override
     public String dropTableIfExists(EntityMetadata<?> metadata) {
         return "drop table if exists " + qualifiedTable(metadata);
+    }
+
+    @Override
+    public String createTableGenerator(TableGeneratorInfo info) {
+        // (pkColumn varchar primary key, valueColumn bigint not null). 카운터는 항상 bigint로 만들어
+        // Long/Integer 식별자 모두를 안전하게 담는다.
+        String pkColumn = dialect.quote(info.pkColumnName()) + " varchar(255) not null primary key";
+        String valueColumn = dialect.quote(info.valueColumnName()) + " bigint not null";
+        return "create table " + dialect.quote(info.table())
+                + " (" + pkColumn + ", " + valueColumn + ")";
+    }
+
+    @Override
+    public String seedTableGenerator(TableGeneratorInfo info) {
+        // 증가-우선 블록 모델: 카운터는 "다음에 발급할 첫 id"를 보관한다. 첫 발급 id = initialValue가 되도록
+        // 카운터를 initialValue로 seed한다. 발급 시 UPDATE로 allocationSize만큼 증가시킨 뒤 그 새 값에서
+        // 블록 [newValue - allocationSize, newValue - 1]을 역산하므로 첫 블록의 첫 id가 정확히 initialValue다.
+        return dialect.tableGeneratorSeedSql(
+                info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue(), info.initialValue());
+    }
+
+    @Override
+    public String dropTableGeneratorIfExists(String generatorTableName) {
+        return "drop table if exists " + dialect.quote(generatorTableName);
     }
 
     private String createTableInternal(EntityMetadata<?> metadata, boolean ifNotExists) {

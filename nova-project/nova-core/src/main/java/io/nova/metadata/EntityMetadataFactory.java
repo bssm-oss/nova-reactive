@@ -42,6 +42,7 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.SequenceGenerator;
+import jakarta.persistence.TableGenerator;
 import jakarta.persistence.Transient;
 import io.nova.annotation.SoftDelete;
 import jakarta.persistence.Table;
@@ -92,6 +93,22 @@ public final class EntityMetadataFactory {
 
     private static final Set<Class<?>> SUPPORTED_UUID_ID_TYPES =
             Set.of(UUID.class, String.class);
+
+    /**
+     * {@code @GeneratedValue(TABLE)} 식별자가 가질 수 있는 타입. generator 테이블의 카운터는 정수
+     * 시퀀스이므로 Long/Integer만 허용한다(primitive long/int는 wrap 후 비교).
+     */
+    private static final Set<Class<?>> SUPPORTED_TABLE_GENERATOR_ID_TYPES =
+            Set.of(Long.class, Integer.class);
+
+    /**
+     * {@code @TableGenerator}가 지정하지 않았을 때 사용하는 기본 generator 테이블과 컬럼 이름. JPA 기본값과
+     * 동일한 의미를 가지며(논리 sequence 행을 (pkColumn, valueColumn)으로 보관), Nova는 모든 식별자 컬럼을
+     * snake_case로 다루는 관례에 맞춰 소문자 식별자를 쓴다.
+     */
+    private static final String DEFAULT_TABLE_GENERATOR_TABLE = "nova_sequences";
+    private static final String DEFAULT_TABLE_GENERATOR_PK_COLUMN = "sequence_name";
+    private static final String DEFAULT_TABLE_GENERATOR_VALUE_COLUMN = "next_val";
 
     /**
      * SEQUENCE generator 이름이 SQL 식별자 형태를 따르도록 강제하는 정규식이다.
@@ -702,6 +719,68 @@ public final class EntityMetadataFactory {
         return sg.sequenceName().isBlank() ? sg.name() : sg.sequenceName();
     }
 
+    /**
+     * {@code @GeneratedValue(strategy = TABLE, generator = "name")}을 같은 필드/엔티티에 선언된
+     * {@link TableGenerator}(이름이 일치하는 것)로 해석해 {@link TableGeneratorInfo}를 만든다. 일치하는
+     * {@code @TableGenerator}가 없으면 generator 논리 이름을 {@code pkColumnValue}로 쓰고 나머지는 JPA 기본값
+     * (table/pk/value 컬럼)으로 채운다. table/컬럼/pkColumnValue 식별자는 dialect가 quote하지 않고 직접
+     * concat할 가능성에 대비해 SEQUENCE와 동일한 식별자 패턴으로 검증한다.
+     */
+    private static TableGeneratorInfo resolveTableGeneratorInfo(
+            Class<?> declaringType, Field field, String generatorName) {
+        TableGenerator tg = field.getAnnotation(TableGenerator.class);
+        if (tg == null || !tg.name().equals(generatorName)) {
+            TableGenerator onType = declaringType.getAnnotation(TableGenerator.class);
+            tg = onType != null && onType.name().equals(generatorName) ? onType : null;
+        }
+        String table = DEFAULT_TABLE_GENERATOR_TABLE;
+        String pkColumnName = DEFAULT_TABLE_GENERATOR_PK_COLUMN;
+        String valueColumnName = DEFAULT_TABLE_GENERATOR_VALUE_COLUMN;
+        // generator 논리 이름이 비어 있으면 컬럼 이름을 sequence-name fallback으로 쓴다(JPA 관행).
+        String pkColumnValue = (generatorName == null || generatorName.isBlank())
+                ? field.getName()
+                : generatorName;
+        long initialValue = 0L;
+        int allocationSize = 1;
+        if (tg != null) {
+            if (!tg.table().isBlank()) {
+                table = tg.table();
+            }
+            if (!tg.pkColumnName().isBlank()) {
+                pkColumnName = tg.pkColumnName();
+            }
+            if (!tg.valueColumnName().isBlank()) {
+                valueColumnName = tg.valueColumnName();
+            }
+            if (!tg.pkColumnValue().isBlank()) {
+                pkColumnValue = tg.pkColumnValue();
+            }
+            initialValue = tg.initialValue();
+            allocationSize = tg.allocationSize();
+            if (allocationSize < 1) {
+                throw new IllegalArgumentException(
+                        declaringType.getName() + "." + field.getName()
+                                + " @TableGenerator(allocationSize=" + allocationSize + ") must be >= 1");
+            }
+        }
+        validateGeneratorIdentifier(declaringType, field, "table", table);
+        validateGeneratorIdentifier(declaringType, field, "pkColumnName", pkColumnName);
+        validateGeneratorIdentifier(declaringType, field, "valueColumnName", valueColumnName);
+        validateGeneratorIdentifier(declaringType, field, "pkColumnValue", pkColumnValue);
+        return new TableGeneratorInfo(
+                table, pkColumnName, valueColumnName, pkColumnValue, initialValue, allocationSize);
+    }
+
+    private static void validateGeneratorIdentifier(
+            Class<?> declaringType, Field field, String attribute, String value) {
+        if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(value).matches()) {
+            throw new IllegalArgumentException(
+                    "Invalid @TableGenerator " + attribute + " '" + value + "' on "
+                            + declaringType.getName() + "." + field.getName()
+                            + " — must match identifier pattern " + SEQUENCE_GENERATOR_NAME_PATTERN.pattern());
+        }
+    }
+
     private static void rejectUnsupportedColumnAttributes(Class<?> declaringType, Field field, Column column) {
         if (!column.table().isBlank()) {
             throw new IllegalArgumentException(
@@ -1212,12 +1291,21 @@ public final class EntityMetadataFactory {
         }
         GenerationType generationType = generatedValue == null ? null : generatedValue.strategy();
         String generator = generatedValue == null ? "" : generatedValue.generator();
+        TableGeneratorInfo tableGeneratorInfo = null;
         if (generatedValue != null) {
             if (generationType == GenerationType.TABLE) {
-                throw new IllegalArgumentException(
-                        declaringType.getName() + "." + field.getName()
-                                + " uses @GeneratedValue(TABLE) which Nova does not support;"
-                                + " use IDENTITY, SEQUENCE, UUID, or AUTO");
+                if (!isId) {
+                    throw new IllegalArgumentException(
+                            declaringType.getName() + "." + field.getName()
+                                    + " uses @GeneratedValue(TABLE) but is not annotated with @Id");
+                }
+                if (!SUPPORTED_TABLE_GENERATOR_ID_TYPES.contains(wrapPrimitiveType(field.getType()))) {
+                    throw new IllegalArgumentException(
+                            "Unsupported @GeneratedValue(TABLE) id type " + field.getType().getName() + " on "
+                                    + declaringType.getName() + "." + field.getName()
+                                    + "; supported types are Long, Integer");
+                }
+                tableGeneratorInfo = resolveTableGeneratorInfo(declaringType, field, generator);
             }
             if (generationType == GenerationType.SEQUENCE) {
                 if (!isId) {
@@ -1396,7 +1484,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 null,
-                null
+                null,
+                tableGeneratorInfo
         );
     }
 
@@ -1595,7 +1684,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 null,
-                oneToManyInfo
+                oneToManyInfo,
+                null
         );
     }
 
@@ -1672,8 +1762,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 null,
-                null
-        );
+                null,
+                null        );
     }
 
     /**
@@ -1739,8 +1829,8 @@ public final class EntityMetadataFactory {
                     true,
                     null,
                     null,
-                    null
-            );
+                    null,
+                    null            );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
         JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
@@ -1793,8 +1883,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 null,
-                null
-        );
+                null,
+                null        );
     }
 
     /**
@@ -1857,7 +1947,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null);
+                info, null, null, null);
     }
 
     /**
@@ -2037,7 +2127,9 @@ public final class EntityMetadataFactory {
                 true, true, false, "", false, null,
                 false,
                 null,
-                info, null);
+                info,
+                null,
+                null);
     }
 
     /**

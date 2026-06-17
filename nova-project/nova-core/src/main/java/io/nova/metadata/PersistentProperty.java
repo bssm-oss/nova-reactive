@@ -82,6 +82,11 @@ public final class PersistentProperty {
      * save/delete/flush 경로가 이 값을 보고 child 전파 여부를 결정한다.
      */
     private final OneToManyInfo oneToManyInfo;
+    /**
+     * {@code @GeneratedValue(TABLE)} + {@code @TableGenerator} 매핑 메타데이터. {@code @Id} property에만
+     * 설정되며, 그 외에는 {@code null}이다. generator 테이블 DDL/seed와 다음 값 취득에서 사용된다.
+     */
+    private final TableGeneratorInfo tableGeneratorInfo;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -121,7 +126,8 @@ public final class PersistentProperty {
             boolean inverseToOne,
             ManyToManyInfo manyToManyInfo,
             ElementCollectionInfo elementCollectionInfo,
-            OneToManyInfo oneToManyInfo
+            OneToManyInfo oneToManyInfo,
+            TableGeneratorInfo tableGeneratorInfo
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -165,6 +171,7 @@ public final class PersistentProperty {
         this.manyToManyInfo = manyToManyInfo;
         this.elementCollectionInfo = elementCollectionInfo;
         this.oneToManyInfo = oneToManyInfo;
+        this.tableGeneratorInfo = tableGeneratorInfo;
     }
 
     /**
@@ -213,7 +220,8 @@ public final class PersistentProperty {
                 inverseToOne,
                 manyToManyInfo,
                 elementCollectionInfo,
-                oneToManyInfo
+                oneToManyInfo,
+                tableGeneratorInfo
         );
     }
 
@@ -264,7 +272,8 @@ public final class PersistentProperty {
                 inverseToOne,
                 manyToManyInfo,
                 elementCollectionInfo,
-                oneToManyInfo
+                oneToManyInfo,
+                tableGeneratorInfo
         );
     }
 
@@ -567,6 +576,18 @@ public final class PersistentProperty {
 
     public ElementCollectionInfo elementCollectionInfo() {
         return elementCollectionInfo;
+    }
+
+    /**
+     * {@code true}이면 이 property는 {@code @GeneratedValue(TABLE)} + {@code @TableGenerator}로 식별자를
+     * 발급받으며 {@link #tableGeneratorInfo()}가 generator 테이블 매핑을 담는다. {@code @Id}에만 설정된다.
+     */
+    public boolean tableGenerated() {
+        return tableGeneratorInfo != null;
+    }
+
+    public TableGeneratorInfo tableGeneratorInfo() {
+        return tableGeneratorInfo;
     }
 
     /**

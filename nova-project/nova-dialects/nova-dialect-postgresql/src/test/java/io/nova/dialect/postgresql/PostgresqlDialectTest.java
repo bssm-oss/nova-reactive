@@ -112,6 +112,24 @@ class PostgresqlDialectTest {
     }
 
     @Test
+    void rendersTableGeneratorIncrementSqlWithQuotedIdentifiers() {
+        assertEquals(
+                "update \"id_generators\" set \"gen_value\" = \"gen_value\" + 5"
+                        + " where \"gen_name\" = 'account_id'",
+                dialect.tableGeneratorIncrementSql("id_generators", "gen_value", "gen_name", "account_id", 5)
+        );
+    }
+
+    @Test
+    void rendersTableGeneratorSelectSqlWithStableAlias() {
+        assertEquals(
+                "select \"gen_value\" as " + io.nova.sql.Dialect.TABLE_GENERATOR_VALUE_COLUMN
+                        + " from \"id_generators\" where \"gen_name\" = 'account_id'",
+                dialect.tableGeneratorSelectSql("id_generators", "gen_value", "gen_name", "account_id")
+        );
+    }
+
+    @Test
     void lockClauseReturnsEmptyForNone() {
         assertEquals("", dialect.lockClause(LockMode.NONE));
     }

@@ -45,6 +45,24 @@ public final class MySqlDialect implements Dialect {
         return schemaGenerator;
     }
 
+    @Override
+    public String tableGeneratorIncrementSql(
+            String table, String valueColumn, String pkColumn, String pkColumnValue, long increment) {
+        // MySQL은 표준 UPDATE를 그대로 받아들인다. 식별자는 backtick으로 quote 하고, increment→select는
+        // InnoDB row-level lock으로 동시 발급의 atomicity가 보장된다.
+        return "update " + quote(table)
+                + " set " + quote(valueColumn) + " = " + quote(valueColumn) + " + " + increment
+                + " where " + quote(pkColumn) + " = '" + pkColumnValue + "'";
+    }
+
+    @Override
+    public String tableGeneratorSelectSql(
+            String table, String valueColumn, String pkColumn, String pkColumnValue) {
+        return "select " + quote(valueColumn) + " as " + Dialect.TABLE_GENERATOR_VALUE_COLUMN
+                + " from " + quote(table)
+                + " where " + quote(pkColumn) + " = '" + pkColumnValue + "'";
+    }
+
     private static final class MySqlSqlRenderer extends AbstractSqlRenderer {
         private MySqlSqlRenderer(Dialect dialect) {
             super(dialect);

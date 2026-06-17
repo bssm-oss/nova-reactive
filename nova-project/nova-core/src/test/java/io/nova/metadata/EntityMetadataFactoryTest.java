@@ -33,6 +33,8 @@ import io.nova.support.fixtures.FixtureEntities.ColumnUpdatableFalseEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
 import io.nova.support.fixtures.FixtureEntities.GeneratedValueTableEntity;
+import io.nova.support.fixtures.FixtureEntities.ExplicitTableGeneratorEntity;
+import io.nova.support.fixtures.FixtureEntities.InvalidTableGeneratorIdTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.TransientFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.MappedSubEntity;
 import io.nova.support.fixtures.FixtureEntities.JoinColumnAttributesEntity;
@@ -1206,11 +1208,45 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void rejectsGeneratedValueTableStrategy() {
+    void recognizesTableGenerationStrategyWithJpaDefaults() {
+        EntityMetadata<GeneratedValueTableEntity> metadata =
+                factory.getEntityMetadata(GeneratedValueTableEntity.class);
+
+        assertEquals(GenerationType.TABLE, metadata.idProperty().generationType());
+        assertTrue(metadata.idProperty().tableGenerated());
+        assertTrue(metadata.tableGenerator().isPresent());
+        io.nova.metadata.TableGeneratorInfo info = metadata.tableGenerator().orElseThrow();
+        // @TableGenerator 미지정 → Nova 기본 테이블/컬럼, pkColumnValue는 필드 이름.
+        assertEquals("nova_sequences", info.table());
+        assertEquals("sequence_name", info.pkColumnName());
+        assertEquals("next_val", info.valueColumnName());
+        assertEquals("id", info.pkColumnValue());
+        assertEquals(0L, info.initialValue());
+        assertEquals(1, info.allocationSize());
+    }
+
+    @Test
+    void recognizesExplicitTableGeneratorAttributes() {
+        EntityMetadata<ExplicitTableGeneratorEntity> metadata =
+                factory.getEntityMetadata(ExplicitTableGeneratorEntity.class);
+
+        assertEquals(GenerationType.TABLE, metadata.idProperty().generationType());
+        io.nova.metadata.TableGeneratorInfo info = metadata.tableGenerator().orElseThrow();
+        assertEquals("id_generators", info.table());
+        assertEquals("gen_name", info.pkColumnName());
+        assertEquals("gen_value", info.valueColumnName());
+        assertEquals("account_id", info.pkColumnValue());
+        assertEquals(100L, info.initialValue());
+        assertEquals(5, info.allocationSize());
+    }
+
+    @Test
+    void rejectsTableStrategyOnUnsupportedIdType() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(GeneratedValueTableEntity.class)
+                () -> factory.getEntityMetadata(InvalidTableGeneratorIdTypeEntity.class)
         );
-        assertTrue(exception.getMessage().contains("@GeneratedValue(TABLE)"));
+        assertTrue(exception.getMessage().contains("Unsupported @GeneratedValue(TABLE) id type"));
+        assertTrue(exception.getMessage().contains("java.lang.String"));
     }
 }

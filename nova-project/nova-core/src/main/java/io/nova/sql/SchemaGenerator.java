@@ -4,11 +4,45 @@ import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.TableGeneratorInfo;
 
 import java.util.List;
 
 public interface SchemaGenerator {
     String createTable(EntityMetadata<?> metadata);
+
+    /**
+     * {@code @GeneratedValue(TABLE)} generator 테이블을 만드는 {@code CREATE TABLE} 구문을 반환한다.
+     * (pkColumn varchar pk, valueColumn bigint) 두 컬럼을 가지며, 식별자 발급 카운터를 보관한다. 여러 entity가
+     * 같은 generator 테이블을 공유할 수 있으므로 호출자는 tableName으로 dedupe 한다. 기본 구현은 미지원이며
+     * dialect base({@link AbstractSchemaGenerator})가 override 한다.
+     */
+    default String createTableGenerator(TableGeneratorInfo info) {
+        throw new UnsupportedOperationException("createTableGenerator is not supported by this SchemaGenerator");
+    }
+
+    /**
+     * {@link #createTableGenerator(TableGeneratorInfo)}의 idempotent 변형.
+     */
+    default String createTableGeneratorIfNotExists(TableGeneratorInfo info) {
+        return createTableGenerator(info).replaceFirst("(?i)^create table\\s+", "create table if not exists ");
+    }
+
+    /**
+     * generator 테이블에서 특정 generator 행을 {@code initialValue}에 맞춰 seed 하는 INSERT 구문을 반환한다.
+     * 증가-후-읽기 모델에 맞춰 첫 발급 식별자가 정확히 {@code initialValue}가 되도록 seed 값을 계산한다.
+     * 기본 구현은 미지원이며 dialect base가 override 한다.
+     */
+    default String seedTableGenerator(TableGeneratorInfo info) {
+        throw new UnsupportedOperationException("seedTableGenerator is not supported by this SchemaGenerator");
+    }
+
+    /**
+     * generator 테이블을 제거하는 idempotent {@code DROP TABLE IF EXISTS} 구문.
+     */
+    default String dropTableGeneratorIfExists(String generatorTableName) {
+        return "drop table if exists " + generatorTableName;
+    }
 
     /**
      * {@code @ManyToMany} link table을 만드는 {@code CREATE TABLE} 구문을 반환한다. 두 FK 컬럼(owner/target)과

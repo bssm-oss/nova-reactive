@@ -43,6 +43,74 @@ public interface Dialect {
     String SEQUENCE_VALUE_COLUMN = "nova_seq_value";
 
     /**
+     * {@code @GeneratedValue(TABLE)} generator 테이블의 카운터를 {@code increment}만큼 원자적으로 증가시키는
+     * UPDATE 구문을 반환한다. 호출자는 동일 커넥션(트랜잭션 컨텍스트) 안에서 이 UPDATE를 먼저 실행한 뒤
+     * {@link #tableGeneratorSelectSql(String, String, String)}로 증가된 값을 읽는다. row-level lock으로
+     * 동시 발급의 atomicity가 보장된다.
+     *
+     * <p>구문은 bind marker를 쓰지 않고 식별자/리터럴을 직접 concat한다 — table/컬럼/pkColumnValue는
+     * {@link io.nova.metadata.EntityMetadataFactory}가 SQL 식별자 패턴으로 검증하므로 injection이 차단된다.
+     * 기본 구현은 표준 SQL {@code UPDATE ... SET v = v + n WHERE pk = '...'}이며 H2/PostgreSQL/MySQL/MariaDB가
+     * 모두 받아들인다. native 변형이 필요한 dialect는 override 한다.
+     *
+     * @param table           generator 테이블 이름
+     * @param valueColumn      카운터 컬럼 이름
+     * @param pkColumn         generator 행을 식별하는 PK 컬럼 이름
+     * @param pkColumnValue    이 generator 행의 PK 값(논리 sequence 이름)
+     * @param increment        증가량(allocationSize, 일반적으로 1)
+     */
+    default String tableGeneratorIncrementSql(
+            String table, String valueColumn, String pkColumn, String pkColumnValue, long increment) {
+        return "update " + quote(table)
+                + " set " + quote(valueColumn) + " = " + quote(valueColumn) + " + " + increment
+                + " where " + quote(pkColumn) + " = '" + pkColumnValue + "'";
+    }
+
+    /**
+     * {@code @GeneratedValue(TABLE)} generator 테이블에서 현재 카운터 값을 읽는 SELECT 구문을 반환한다.
+     * {@link #tableGeneratorIncrementSql} 직후 동일 커넥션에서 실행되며, 증가 후의 high-watermark 값을
+     * 단일 행/단일 컬럼으로 노출한다. core operations는 이 값에서 할당 블록의 식별자들을 역산한다.
+     *
+     * <p>구문은 반드시 단일 컬럼을 {@link #TABLE_GENERATOR_VALUE_COLUMN} alias로 노출해야 한다 —
+     * driver별 컬럼 라벨 차이 없이 {@code RowAccessor}가 항상 같은 이름으로 읽을 수 있도록.
+     *
+     * @param table         generator 테이블 이름
+     * @param valueColumn   카운터 컬럼 이름
+     * @param pkColumn      PK 컬럼 이름
+     * @param pkColumnValue generator 행의 PK 값
+     */
+    default String tableGeneratorSelectSql(
+            String table, String valueColumn, String pkColumn, String pkColumnValue) {
+        return "select " + quote(valueColumn) + " as " + TABLE_GENERATOR_VALUE_COLUMN
+                + " from " + quote(table)
+                + " where " + quote(pkColumn) + " = '" + pkColumnValue + "'";
+    }
+
+    /**
+     * {@code @GeneratedValue(TABLE)} generator 테이블 행을 처음 seed 하는 INSERT 구문을 반환한다.
+     * SchemaGenerator가 테이블 DDL을 발행한 뒤 1회 실행한다. seed 값은 첫 발급 식별자가 정확히
+     * {@code initialValue}가 되도록 호출자가 계산해 전달한다(증가-후-읽기 모델에서 보통 initialValue - 1).
+     *
+     * @param table          generator 테이블 이름
+     * @param valueColumn    카운터 컬럼 이름
+     * @param pkColumn       PK 컬럼 이름
+     * @param pkColumnValue  generator 행의 PK 값
+     * @param seedValue      seed 카운터 값
+     */
+    default String tableGeneratorSeedSql(
+            String table, String valueColumn, String pkColumn, String pkColumnValue, long seedValue) {
+        return "insert into " + quote(table)
+                + " (" + quote(pkColumn) + ", " + quote(valueColumn) + ")"
+                + " values ('" + pkColumnValue + "', " + seedValue + ")";
+    }
+
+    /**
+     * {@link #tableGeneratorSelectSql} 결과의 단일 컬럼 alias. dialect는 이 이름으로 값을 노출하고
+     * core operations는 이 이름으로 읽는다.
+     */
+    String TABLE_GENERATOR_VALUE_COLUMN = "nova_tablegen_value";
+
+    /**
      * 데이터베이스에 존재하는 모든 테이블 이름을 한 컬럼으로 나열하는 SELECT 구문을 반환한다.
      * {@code nova.ddl-auto=validate}가 엔티티 테이블 존재 여부를 확인할 때 사용한다. 기본 구현은
      * 표준 {@code information_schema.tables}를 조회하며(H2 / PostgreSQL / MySQL / MariaDB), Oracle처럼

@@ -87,6 +87,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * internal kill-switch로, 끄면 트랜잭션 동작이 세션 도입 이전과 byte-for-byte 동일하다(테스트/회귀 가드용).
      */
     private final boolean sessionEnabled;
+    /**
+     * {@code @GeneratedValue(TABLE)} generator별 in-memory 블록 할당 캐시. 키는 generator 테이블+행을
+     * 식별하는 문자열, 값은 현재 블록 커서다. allocationSize만큼 한 번에 DB에서 확보한 뒤 블록을 소진할
+     * 때까지 DB 왕복 없이 식별자를 발급한다(Hibernate pooled 방식). 트랜잭션 전파가 아니라 단순 할당 캐시이므로
+     * ThreadLocal 금지 규약에 저촉되지 않는다.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, TableGeneratorBlock> tableGeneratorBlocks =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
@@ -543,6 +551,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         PersistentProperty idProperty = metadata.idProperty();
         GenerationType strategy = idProperty.generationType();
+        if (strategy == GenerationType.TABLE) {
+            return nextTableGeneratorId(idProperty)
+                    .flatMap(value -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(coerceIdType(idProperty, value)));
+                        SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+                        return sqlExecutor.execute(statement).thenReturn(entity);
+                    });
+        }
         if (strategy == GenerationType.SEQUENCE) {
             Class<?> idColumnType = wrapPrimitive(idProperty.javaType());
             return sqlExecutor.queryOne(
@@ -570,6 +586,79 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
         return sqlExecutor.execute(statement).thenReturn(entity);
+    }
+
+    /**
+     * {@code @GeneratedValue(TABLE)} 식별자의 다음 값을 발급한다. 먼저 in-memory 블록에서 발급을 시도하고,
+     * 블록이 비었으면 generator 테이블을 dialect의 increment SQL로 원자 증가시킨 뒤 select로 high-watermark를
+     * 읽어 새 블록을 채운다. increment→select는 동일 커넥션(트랜잭션 컨텍스트) 안에서 순차 실행되며 row-level
+     * lock으로 동시 발급의 atomicity가 보장된다. 발급된 값은 항상 {@code long}이며 호출자가 식별자 타입으로
+     * coerce 한다.
+     */
+    private Mono<Long> nextTableGeneratorId(PersistentProperty idProperty) {
+        io.nova.metadata.TableGeneratorInfo info = idProperty.tableGeneratorInfo();
+        String key = info.table() + ' ' + info.pkColumnName() + ' ' + info.pkColumnValue();
+        TableGeneratorBlock block = tableGeneratorBlocks.computeIfAbsent(key, k -> new TableGeneratorBlock());
+        Long ready = block.next();
+        if (ready != null) {
+            return Mono.just(ready);
+        }
+        // 블록 소진(또는 최초 호출): DB에서 allocationSize만큼 확보한다. increment 후 select한 high-watermark가
+        // 블록의 마지막 식별자다. 블록은 [hw - allocationSize + 1, hw].
+        int allocationSize = info.allocationSize();
+        SqlStatement increment = new SqlStatement(
+                dialect.tableGeneratorIncrementSql(
+                        info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue(), allocationSize),
+                List.of());
+        SqlStatement select = new SqlStatement(
+                dialect.tableGeneratorSelectSql(
+                        info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue()),
+                List.of());
+        return sqlExecutor.execute(increment)
+                .then(sqlExecutor.queryOne(select, row -> row.get(Dialect.TABLE_GENERATOR_VALUE_COLUMN, Long.class)))
+                .map(newValue -> block.refillAndNext(newValue, allocationSize));
+    }
+
+    /**
+     * generator가 발급한 {@code long} 값을 식별자 property의 선언 타입(Long/Integer)으로 변환한다.
+     */
+    private static Object coerceIdType(PersistentProperty idProperty, long value) {
+        Class<?> type = wrapPrimitive(idProperty.javaType());
+        if (type == Integer.class) {
+            return Math.toIntExact(value);
+        }
+        return value;
+    }
+
+    /**
+     * {@code @GeneratedValue(TABLE)} generator의 in-memory 블록 커서. 한 번의 DB 왕복으로 확보한 식별자
+     * 블록을 소진할 때까지 lock 없는 {@code synchronized} 임계구역에서 순차 발급한다. 발급량이 작고 임계구역이
+     * 짧아 경합 비용은 무시 가능하며, reactive 흐름과 무관하게 정확한 단조 증가 식별자를 보장한다.
+     */
+    private static final class TableGeneratorBlock {
+        private long nextId;
+        private long blockMax;
+        private boolean exhausted = true;
+
+        synchronized Long next() {
+            if (exhausted || nextId > blockMax) {
+                return null;
+            }
+            return nextId++;
+        }
+
+        /**
+         * 증가-우선 모델: 카운터를 allocationSize만큼 증가시킨 결과({@code newValue})로 블록
+         * [newValue - allocationSize, newValue - 1]을 채우고 첫 식별자를 발급한다. seed가 initialValue이므로
+         * 첫 블록의 첫 id는 정확히 initialValue다.
+         */
+        synchronized long refillAndNext(long newValue, int allocationSize) {
+            long first = newValue - allocationSize;
+            this.blockMax = newValue - 1;
+            this.nextId = first + 1;
+            this.exhausted = false;
+            return first;
+        }
     }
 
     private static void assignUuidId(PersistentProperty idProperty, Object entity) {
@@ -1694,6 +1783,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         if (key.isNew() && metadata.idProperty().generationType() == GenerationType.SEQUENCE) {
             // SEQUENCE는 엔티티별 nextval 조회가 필요해 batch로 묶을 수 없다.
+            return Flux.fromIterable(entities).concatMap(this::save);
+        }
+        if (key.isNew() && metadata.idProperty().generationType() == GenerationType.TABLE) {
+            // TABLE은 엔티티별 generator 테이블 increment가 필요해 batch로 묶을 수 없다(SEQUENCE와 동일).
             return Flux.fromIterable(entities).concatMap(this::save);
         }
         if (key.isNew() && metadata.idProperty().generationType() == GenerationType.UUID) {

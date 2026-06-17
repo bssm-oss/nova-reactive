@@ -8,6 +8,7 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.TableGeneratorInfo;
 import io.nova.query.NativeQuery;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
@@ -75,9 +76,11 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
         List<Class<?>> all = copyOf(entityTypes);
-        // entity 테이블을 먼저 만들고, link table(@ManyToMany)과 collection table(@ElementCollection)을 뒤에 만든다.
-        return Flux.fromIterable(collapseToRoots(all))
-                .concatMap(type -> createOne(type, options))
+        // generator 테이블(@TableGenerator)을 먼저 만들고 seed → entity 테이블 → link/collection table 순서로 만든다.
+        return createTableGenerators(all, options)
+                .then(Flux.fromIterable(collapseToRoots(all))
+                        .concatMap(type -> createOne(type, options))
+                        .then())
                 .then(createJoinTables(all, options))
                 .then(createCollectionTables(all, options));
     }
@@ -109,12 +112,13 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
         List<Class<?>> all = copyOf(entityTypes);
-        // link/collection table을 먼저 드롭하고(참조 관계 친화) entity 테이블을 뒤에 드롭한다.
+        // link/collection table을 먼저 드롭하고(참조 관계 친화) entity 테이블, 마지막으로 generator 테이블을 드롭한다.
         return dropCollectionTables(all, options)
                 .then(dropJoinTables(all, options))
                 .then(Flux.fromIterable(collapseToRoots(all))
                         .concatMap(type -> dropOne(type, options))
-                        .then());
+                        .then())
+                .then(dropTableGenerators(all));
     }
 
     @Override
@@ -140,10 +144,13 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         java.util.Collections.reverse(reversed);
         SchemaOptions dropOptions = SchemaOptions.defaults().withIfNotExists(true);
         SchemaOptions createOptions = SchemaOptions.defaults().withIfNotExists(false);
-        // link/collection table 먼저 드롭 → entity 드롭 → entity 생성 → link/collection table 생성.
+        // link/collection 드롭 → entity 드롭 → generator 테이블 드롭 → generator 테이블 생성+seed →
+        // entity 생성 → link/collection 생성.
         return dropCollectionTables(all, dropOptions)
                 .then(dropJoinTables(all, dropOptions))
                 .then(Flux.fromIterable(reversed).concatMap(type -> dropOne(type, dropOptions)).then())
+                .then(dropTableGenerators(all))
+                .then(createTableGenerators(all, createOptions))
                 .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
                 .then(createJoinTables(all, createOptions))
                 .then(createCollectionTables(all, createOptions));
@@ -338,6 +345,66 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
             }
         }
         return new ArrayList<>(byName.values());
+    }
+
+    /**
+     * 주어진 엔티티들의 {@code @TableGenerator} generator 테이블을 만들고 행을 seed 한다. generator 테이블
+     * 이름으로 dedupe(여러 entity가 같은 테이블 공유 가능)하되, seed 행은 generator의 (table, pkColumnValue)
+     * 조합별로 한 번씩 INSERT 한다. {@code @TableGenerator}가 없으면 no-op이다.
+     */
+    private Mono<Void> createTableGenerators(List<Class<?>> types, SchemaOptions options) {
+        List<TableGeneratorInfo> definitions = tableGeneratorDefinitions(types);
+        if (definitions.isEmpty()) {
+            return Mono.empty();
+        }
+        SchemaGenerator generator = dialect.schemaGenerator();
+        // 같은 물리 테이블은 한 번만 CREATE 한다.
+        LinkedHashMap<String, TableGeneratorInfo> tableByName = new LinkedHashMap<>();
+        for (TableGeneratorInfo info : definitions) {
+            tableByName.putIfAbsent(info.table(), info);
+        }
+        Mono<Void> createTables = Flux.fromIterable(tableByName.values())
+                .concatMap(info -> {
+                    String ddl = options.ifNotExists()
+                            ? generator.createTableGeneratorIfNotExists(info)
+                            : generator.createTableGenerator(info);
+                    return operations.executeNative(NativeQuery.of(ddl));
+                })
+                .then();
+        // generator 행은 (table, pkColumnValue)별로 한 번씩 seed 한다.
+        Mono<Void> seedRows = Flux.fromIterable(definitions)
+                .concatMap(info -> operations.executeNative(NativeQuery.of(generator.seedTableGenerator(info))))
+                .then();
+        return createTables.then(seedRows);
+    }
+
+    private Mono<Void> dropTableGenerators(List<Class<?>> types) {
+        List<TableGeneratorInfo> definitions = tableGeneratorDefinitions(types);
+        if (definitions.isEmpty()) {
+            return Mono.empty();
+        }
+        SchemaGenerator generator = dialect.schemaGenerator();
+        LinkedHashMap<String, TableGeneratorInfo> tableByName = new LinkedHashMap<>();
+        for (TableGeneratorInfo info : definitions) {
+            tableByName.putIfAbsent(info.table(), info);
+        }
+        return Flux.fromIterable(tableByName.values())
+                .concatMap(info -> operations.executeNative(
+                        NativeQuery.of(generator.dropTableGeneratorIfExists(info.table()))))
+                .then();
+    }
+
+    /**
+     * 주어진 엔티티들의 {@code @TableGenerator} 정의를 (table, pkColumnValue)별로 dedupe해 모은다.
+     */
+    private List<TableGeneratorInfo> tableGeneratorDefinitions(List<Class<?>> types) {
+        LinkedHashMap<String, TableGeneratorInfo> byRow = new LinkedHashMap<>();
+        for (Class<?> type : types) {
+            EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(schemaRootClass(type));
+            metadata.tableGenerator().ifPresent(info ->
+                    byRow.putIfAbsent(info.table() + ' ' + info.pkColumnValue(), info));
+        }
+        return new ArrayList<>(byRow.values());
     }
 
     private Mono<Void> dropOne(Class<?> entityType, SchemaOptions options) {
