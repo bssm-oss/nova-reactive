@@ -196,6 +196,11 @@ public final class EntityMetadataFactory {
         if (!rootMeta.isInheritanceRoot()) {
             return rootMeta;
         }
+        // 단일 테이블 union은 SINGLE_TABLE에서만 의미가 있다. JOINED/TABLE_PER_CLASS는 멀티테이블이므로
+        // 루트 메타데이터를 그대로 돌려주고, 실제 다형 쿼리/DDL은 inheritanceLayout 경로가 처리한다.
+        if (!rootMeta.inheritance().singleTable()) {
+            return rootMeta;
+        }
         LinkedHashMap<String, PersistentProperty> union = new LinkedHashMap<>();
         for (PersistentProperty property : rootMeta.columnMappedProperties()) {
             union.put(property.columnName(), property);
@@ -254,6 +259,91 @@ public final class EntityMetadataFactory {
                         + " (Spring resolves this automatically via entity-packages scanning).");
     }
 
+    /**
+     * 루트 클래스 → JOINED/TABLE_PER_CLASS 물리 테이블 배치 캐시. 새 서브타입이 등록되면 무효화된다.
+     */
+    private final Map<Class<?>, InheritanceLayout> inheritanceLayoutCache = new ConcurrentHashMap<>();
+
+    /**
+     * JOINED 또는 TABLE_PER_CLASS 계층의 물리 테이블 배치를 빌드/캐시해 반환한다. SINGLE_TABLE이나 비-상속
+     * 루트에 대해서는 {@link IllegalArgumentException}을 던진다(해당 전략은 merged-metadata 경로를 쓴다).
+     *
+     * <p>등록된 구체 서브타입만 포함되므로, 다형 조회 전에 전 서브타입 메타데이터가 빌드돼 있어야 한다
+     * (Spring starter의 entity-packages eager preload가 보장).
+     */
+    public InheritanceLayout inheritanceLayout(Class<?> rootClass) {
+        InheritanceLayout cached = inheritanceLayoutCache.get(rootClass);
+        if (cached != null) {
+            return cached;
+        }
+        InheritanceLayout built = buildInheritanceLayout(rootClass);
+        inheritanceLayoutCache.put(rootClass, built);
+        return built;
+    }
+
+    private InheritanceLayout buildInheritanceLayout(Class<?> rootClass) {
+        EntityMetadata<?> rootMeta = getEntityMetadata(rootClass);
+        InheritanceInfo info = rootMeta.inheritance();
+        if (!info.present() || !info.isRoot() || info.singleTable()) {
+            throw new IllegalArgumentException(
+                    rootClass.getName() + " is not a JOINED/TABLE_PER_CLASS inheritance root");
+        }
+        List<PersistentProperty> rootTableColumns = new ArrayList<>();
+        if (info.joined()) {
+            for (PersistentProperty property : rootMeta.columnMappedProperties()) {
+                if (isRootTableColumn(property, rootClass)) {
+                    rootTableColumns.add(property);
+                }
+            }
+        }
+        // 구체 서브타입을 모은다. hierarchies는 ConcurrentHashMap이라 iteration 순서가 비결정적이므로,
+        // JOIN/UNION SQL 형태를 안정시키기 위해 discriminator 값 기준으로 정렬한다.
+        Map<String, Class<?>> members = hierarchies.getOrDefault(rootClass, Map.of());
+        List<String> orderedKeys = new ArrayList<>(members.keySet());
+        Collections.sort(orderedKeys);
+        List<InheritanceLayout.ConcreteSubtype> subtypes = new ArrayList<>();
+        for (String key : orderedKeys) {
+            EntityMetadata<?> subMeta = getEntityMetadata(members.get(key));
+            List<PersistentProperty> ownColumns = info.joined()
+                    ? joinedOwnTableColumns(subMeta, rootClass)
+                    : subMeta.columnMappedProperties();
+            subtypes.add(new InheritanceLayout.ConcreteSubtype(subMeta, ownColumns, key));
+        }
+        return new InheritanceLayout(info, rootMeta, rootTableColumns, subtypes);
+    }
+
+    /**
+     * JOINED에서 한 서브타입의 자기 테이블 컬럼을 만든다 — 루트 PK 컬럼(FK로 공유, not-null PK)을 맨 앞에 두고,
+     * 그 뒤에 이 서브타입(루트보다 아래 클래스)이 선언한 컬럼들을 잇는다. 루트 테이블에 이미 있는 공통 컬럼은
+     * 서브타입 테이블에 중복하지 않는다.
+     */
+    private List<PersistentProperty> joinedOwnTableColumns(EntityMetadata<?> subMeta, Class<?> rootClass) {
+        List<PersistentProperty> own = new ArrayList<>();
+        own.add(subMeta.idProperty());
+        for (PersistentProperty property : subMeta.columnMappedProperties()) {
+            if (property.id()) {
+                continue;
+            }
+            if (!isRootTableColumn(property, rootClass)) {
+                own.add(property);
+            }
+        }
+        return own;
+    }
+
+    /**
+     * 한 컬럼이 JOINED 루트 테이블에 속하는지 판정한다 — 그 필드를 선언한 클래스가 루트이거나 루트의 상위
+     * (@MappedSuperclass 조상)이면 루트 테이블 컬럼이다. 루트보다 아래(서브타입)에서 선언됐으면 서브타입 테이블 컬럼이다.
+     * id는 루트가 선언하므로 루트 테이블 컬럼으로 분류되며, 서브타입 테이블에는 FK PK로 별도 복제된다.
+     */
+    private static boolean isRootTableColumn(PersistentProperty property, Class<?> rootClass) {
+        Class<?> declaringClass = property.embedded()
+                ? property.embeddedHostPath().get(0).getDeclaringClass()
+                : property.field().getDeclaringClass();
+        // declaringClass가 root이거나 root의 상위면 루트 테이블. (root가 declaringClass의 하위이면)
+        return declaringClass.isAssignableFrom(rootClass);
+    }
+
     private <T> EntityMetadata<T> createMetadata(Class<T> entityType) {
         Entity entity = entityType.getAnnotation(Entity.class);
         if (entity == null) {
@@ -261,9 +351,14 @@ public final class EntityMetadataFactory {
         }
 
         String entityName = entity.name().isBlank() ? entityType.getSimpleName() : entity.name();
-        // SINGLE_TABLE 상속: 테이블/스키마/인덱스는 계층 루트(@Inheritance 또는 최상위 @Entity)에서 가져온다.
+        // 상속 전략별 테이블 소스:
+        //  - SINGLE_TABLE: 모든 멤버가 루트 테이블 하나를 공유 → tableSource = root.
+        //  - JOINED / TABLE_PER_CLASS: 각 엔티티가 자기 테이블을 가진다 → tableSource = entityType.
+        //  - 비-상속: tableSource = entityType.
         InheritanceInfo inheritance = resolveInheritance(entityType, entityName);
-        Class<?> tableSource = inheritance.present() ? inheritance.root() : entityType;
+        Class<?> tableSource = inheritance.singleTable() && inheritance.present()
+                ? inheritance.root()
+                : entityType;
         Table table = tableSource.getAnnotation(Table.class);
         String tableName = table != null && !table.name().isBlank() ? table.name() : namingStrategy.tableName(tableSource);
 
@@ -473,10 +568,9 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * SINGLE_TABLE 상속 계층에서 이 엔티티의 위치를 해석한다. 상속에 참여하지 않으면
-     * {@link InheritanceInfo#NONE}. 계층은 (a) 이 엔티티가 직접 {@link Inheritance}를 선언했거나
-     * (b) 상위에 {@link Entity} 조상이 존재할 때 성립한다(JPA 기본 전략이 SINGLE_TABLE). 루트의
-     * {@link Inheritance#strategy()}가 SINGLE_TABLE이 아니면 fail-fast로 거부한다.
+     * 상속 계층에서 이 엔티티의 위치와 전략을 해석한다. 상속에 참여하지 않으면 {@link InheritanceInfo#NONE}.
+     * 계층은 (a) 이 엔티티가 직접 {@link Inheritance}를 선언했거나 (b) 상위에 {@link Entity} 조상이 존재할 때
+     * 성립한다(JPA 기본 전략이 SINGLE_TABLE). SINGLE_TABLE/JOINED/TABLE_PER_CLASS 세 전략을 모두 지원한다.
      */
     private InheritanceInfo resolveInheritance(Class<?> entityType, String entityName) {
         Class<?> root = entityType;
@@ -492,11 +586,9 @@ public final class EntityMetadataFactory {
             return InheritanceInfo.NONE;
         }
         Inheritance rootInheritance = root.getAnnotation(Inheritance.class);
-        if (rootInheritance != null && rootInheritance.strategy() != InheritanceType.SINGLE_TABLE) {
-            throw new IllegalArgumentException(
-                    root.getName() + " uses @Inheritance(strategy=" + rootInheritance.strategy()
-                            + ") which Nova does not support; only SINGLE_TABLE is supported");
-        }
+        InheritanceType strategy = rootInheritance != null
+                ? rootInheritance.strategy()
+                : InheritanceType.SINGLE_TABLE;
         DiscriminatorColumn discriminatorColumn = root.getAnnotation(DiscriminatorColumn.class);
         String columnName = discriminatorColumn != null && !discriminatorColumn.name().isBlank()
                 ? discriminatorColumn.name()
@@ -506,11 +598,45 @@ public final class EntityMetadataFactory {
                 : DiscriminatorType.STRING;
         int discriminatorLength = discriminatorColumn != null ? discriminatorColumn.length() : 31;
         boolean abstractType = Modifier.isAbstract(entityType.getModifiers());
+        // TABLE_PER_CLASS는 물리 discriminator 컬럼이 없지만, 다형 UNION 쿼리에서 각 브랜치 row가 어떤 구체
+        // 타입인지 판별하려면 합성 discriminator 상수가 필요하다. SINGLE_TABLE/JOINED와 동일한 규칙으로 값을 정한다.
         String discriminatorValue = resolveDiscriminatorValue(
-                entityType, entityName, discriminatorType, abstractType);
+                entityType, entityName, discriminatorType, abstractType, strategy);
+        String rootTableName = "";
+        String rootIdColumn = "";
+        if (strategy == InheritanceType.JOINED) {
+            // JOINED: 루트 물리 테이블과 루트 PK 컬럼은 모든 서브타입이 FK로 공유한다. 루트의 @Table/naming과
+            // 루트의 @Id 컬럼으로 결정한다.
+            Table rootTable = root.getAnnotation(Table.class);
+            rootTableName = rootTable != null && !rootTable.name().isBlank()
+                    ? rootTable.name()
+                    : namingStrategy.tableName(root);
+            rootIdColumn = joinedRootIdColumn(root);
+        }
         return new InheritanceInfo(
-                root, root == entityType, abstractType,
-                columnName, discriminatorType, discriminatorLength, discriminatorValue);
+                root, strategy, root == entityType, abstractType,
+                columnName, discriminatorType, discriminatorLength, discriminatorValue,
+                rootTableName, rootIdColumn);
+    }
+
+    /**
+     * JOINED 루트의 PK 컬럼 이름을 해석한다. 루트(또는 그 @MappedSuperclass 조상)에 선언된 단일 {@link Id}
+     * 필드의 컬럼 이름을 namingStrategy/@Column override 규칙으로 결정한다. JOINED는 복합키를 아직 지원하지
+     * 않으므로 첫 @Id 필드를 쓴다(서브타입 테이블이 같은 FK 컬럼으로 1:1 공유).
+     */
+    private String joinedRootIdColumn(Class<?> root) {
+        for (Field field : mappedFields(root)) {
+            if (isNotPersistable(field) || !field.isAnnotationPresent(Id.class)) {
+                continue;
+            }
+            Column column = field.getAnnotation(Column.class);
+            if (column != null && !column.name().isBlank()) {
+                return column.name();
+            }
+            return namingStrategy.columnName(field.getName());
+        }
+        throw new IllegalArgumentException(
+                root.getName() + " is a @Inheritance(JOINED) root but declares no @Id field");
     }
 
     /**
@@ -520,7 +646,8 @@ public final class EntityMetadataFactory {
      * 않으므로 빈 값 허용).
      */
     private static String resolveDiscriminatorValue(
-            Class<?> entityType, String entityName, DiscriminatorType type, boolean abstractType) {
+            Class<?> entityType, String entityName, DiscriminatorType type,
+            boolean abstractType, InheritanceType strategy) {
         DiscriminatorValue annotation = entityType.getAnnotation(DiscriminatorValue.class);
         if (annotation != null && !annotation.value().isBlank()) {
             return annotation.value();
@@ -556,6 +683,7 @@ public final class EntityMetadataFactory {
                             + metadata.entityType().getName());
         }
         mergedHierarchyCache.remove(info.root());
+        inheritanceLayoutCache.remove(info.root());
     }
 
     /**

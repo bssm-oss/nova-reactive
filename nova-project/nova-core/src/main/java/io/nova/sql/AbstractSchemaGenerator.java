@@ -7,6 +7,7 @@ import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.IndexDefinition;
 import io.nova.metadata.InheritanceInfo;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.TableGeneratorInfo;
@@ -187,8 +188,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             }
             columns.add("primary key (" + String.join(", ", pkColumns) + ")");
         }
-        // SINGLE_TABLE 상속: 단일 테이블에 discriminator 컬럼을 추가한다.
-        if (metadata.hasInheritance()) {
+        // SINGLE_TABLE 상속만 단일 테이블에 물리 discriminator 컬럼을 추가한다. JOINED는 루트 테이블에서만
+        // discriminator를 두고(createJoinedRootTable), TABLE_PER_CLASS는 물리 discriminator 컬럼이 없다.
+        if (metadata.hasInheritance() && metadata.inheritance().singleTable()) {
             columns.add(discriminatorColumnDefinition(metadata));
         }
         return "create table " + (ifNotExists ? "if not exists " : "")
@@ -208,6 +210,38 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             case INTEGER -> "integer";
         };
         return dialect.quote(info.discriminatorColumn()) + " " + type + " not null";
+    }
+
+    @Override
+    public String createJoinedRootTable(InheritanceLayout layout, boolean ifNotExists) {
+        InheritanceInfo info = layout.info();
+        List<String> columns = new ArrayList<>();
+        for (PersistentProperty property : layout.rootTableColumns()) {
+            columns.add(columnDefinition(property, false));
+        }
+        columns.add(discriminatorColumnDefinition(layout.rootMetadata()));
+        return "create table " + (ifNotExists ? "if not exists " : "")
+                + dialect.quote(info.rootTableName())
+                + " (" + String.join(", ", columns) + ")";
+    }
+
+    @Override
+    public String createJoinedSubtypeTable(
+            InheritanceLayout layout, InheritanceLayout.ConcreteSubtype subtype, boolean ifNotExists) {
+        EntityMetadata<?> metadata = subtype.metadata();
+        List<String> columns = new ArrayList<>();
+        for (PersistentProperty property : subtype.ownTableColumns()) {
+            if (property.id()) {
+                // 서브타입 테이블의 id는 루트 PK를 공유하는 FK PK다. 루트가 IDENTITY여도 서브타입 쪽은
+                // 값을 직접 받으므로 IDENTITY/auto-generation을 emit하지 않고 plain typed PK로 만든다.
+                columns.add(dialect.quote(property.columnName()) + " " + sqlType(property) + " not null primary key");
+            } else {
+                columns.add(columnDefinition(property, false));
+            }
+        }
+        return "create table " + (ifNotExists ? "if not exists " : "")
+                + qualifiedTable(metadata)
+                + " (" + String.join(", ", columns) + ")";
     }
 
     @Override

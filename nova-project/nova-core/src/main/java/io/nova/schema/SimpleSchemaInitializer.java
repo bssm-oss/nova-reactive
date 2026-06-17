@@ -206,6 +206,13 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     }
 
     private Mono<Void> createOne(Class<?> entityType, SchemaOptions options) {
+        EntityMetadata<?> rootMetadata = metadataFactory.getEntityMetadata(schemaRootClass(entityType));
+        if (rootMetadata.hasInheritance() && rootMetadata.inheritance().joined()) {
+            return createJoinedHierarchy(entityType, options);
+        }
+        if (rootMetadata.hasInheritance() && rootMetadata.inheritance().tablePerClass()) {
+            return createTablePerClassHierarchy(entityType, options);
+        }
         EntityMetadata<?> metadata = schemaMetadata(entityType);
         SchemaGenerator generator = dialect.schemaGenerator();
         String createDdl = options.ifNotExists()
@@ -221,6 +228,39 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         }
         return create.thenMany(Flux.fromIterable(indexDdls))
                 .concatMap(ddl -> operations.executeNative(NativeQuery.of(ddl)))
+                .then();
+    }
+
+    /**
+     * JOINED 계층: 루트 테이블을 먼저 만들고(공통 컬럼 + discriminator) 각 서브타입 테이블을 만든다
+     * (루트 PK를 FK PK로 공유). FK 의존성상 루트가 서브타입보다 먼저 존재해야 한다.
+     */
+    private Mono<Void> createJoinedHierarchy(Class<?> entityType, SchemaOptions options) {
+        io.nova.metadata.InheritanceLayout layout = metadataFactory.inheritanceLayout(schemaRootClass(entityType));
+        SchemaGenerator generator = dialect.schemaGenerator();
+        String rootDdl = generator.createJoinedRootTable(layout, options.ifNotExists());
+        Mono<Void> create = operations.executeNative(NativeQuery.of(rootDdl)).then();
+        return create.thenMany(Flux.fromIterable(layout.subtypes())
+                        .filter(subtype -> subtype.metadata().entityType() != layout.info().root())
+                        .concatMap(subtype -> operations.executeNative(NativeQuery.of(
+                                generator.createJoinedSubtypeTable(layout, subtype, options.ifNotExists())))))
+                .then();
+    }
+
+    /**
+     * TABLE_PER_CLASS 계층: 각 구체 서브타입의 독립 테이블(모든 상속 컬럼 포함)을 만든다. 공유 테이블 없음.
+     */
+    private Mono<Void> createTablePerClassHierarchy(Class<?> entityType, SchemaOptions options) {
+        io.nova.metadata.InheritanceLayout layout = metadataFactory.inheritanceLayout(schemaRootClass(entityType));
+        SchemaGenerator generator = dialect.schemaGenerator();
+        return Flux.fromIterable(layout.subtypes())
+                .concatMap(subtype -> {
+                    EntityMetadata<?> metadata = subtype.metadata();
+                    String ddl = options.ifNotExists()
+                            ? generator.createTableIfNotExists(metadata)
+                            : generator.createTable(metadata);
+                    return operations.executeNative(NativeQuery.of(ddl));
+                })
                 .then();
     }
 
@@ -408,12 +448,46 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     }
 
     private Mono<Void> dropOne(Class<?> entityType, SchemaOptions options) {
+        EntityMetadata<?> rootMetadata = metadataFactory.getEntityMetadata(schemaRootClass(entityType));
+        if (rootMetadata.hasInheritance()
+                && (rootMetadata.inheritance().joined() || rootMetadata.inheritance().tablePerClass())) {
+            return dropMultiTableHierarchy(entityType, options);
+        }
         EntityMetadata<?> metadata = schemaMetadata(entityType);
         SchemaGenerator generator = dialect.schemaGenerator();
         String dropDdl = options.ifNotExists()
                 ? generator.dropTableIfExists(metadata)
                 : generator.dropTable(metadata);
         return operations.executeNative(NativeQuery.of(dropDdl)).then();
+    }
+
+    /**
+     * JOINED/TABLE_PER_CLASS 계층 테이블을 드롭한다. JOINED는 서브타입 테이블을 먼저(FK 의존성), 마지막으로
+     * 루트 테이블을 드롭한다. TABLE_PER_CLASS는 각 구체 테이블을 드롭한다(공유 테이블 없음).
+     */
+    private Mono<Void> dropMultiTableHierarchy(Class<?> entityType, SchemaOptions options) {
+        io.nova.metadata.InheritanceLayout layout = metadataFactory.inheritanceLayout(schemaRootClass(entityType));
+        SchemaGenerator generator = dialect.schemaGenerator();
+        Mono<Void> dropSubtypes = Flux.fromIterable(layout.subtypes())
+                .filter(subtype -> !(layout.info().joined()
+                        && subtype.metadata().entityType() == layout.info().root()))
+                .concatMap(subtype -> {
+                    EntityMetadata<?> metadata = subtype.metadata();
+                    String ddl = options.ifNotExists()
+                            ? generator.dropTableIfExists(metadata)
+                            : generator.dropTable(metadata);
+                    return operations.executeNative(NativeQuery.of(ddl));
+                })
+                .then();
+        if (!layout.info().joined()) {
+            return dropSubtypes;
+        }
+        // JOINED 루트 테이블은 서브타입 테이블 드롭 이후 마지막에 드롭한다.
+        String rootTable = layout.info().rootTableName();
+        String rootDrop = options.ifNotExists()
+                ? "drop table if exists " + dialect.quote(rootTable)
+                : "drop table " + dialect.quote(rootTable);
+        return dropSubtypes.then(operations.executeNative(NativeQuery.of(rootDrop)).then());
     }
 
     /**

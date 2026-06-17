@@ -2,7 +2,9 @@ package io.nova.sql;
 
 import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
+import io.nova.metadata.PersistentProperty;
 import io.nova.query.AggregateSpec;
 import io.nova.query.QuerySpec;
 
@@ -228,5 +230,109 @@ public interface SqlRenderer {
      */
     default SqlStatement selectCollectionRows(CollectionTableDefinition definition, List<Object> ownerIds) {
         throw new UnsupportedOperationException("selectCollectionRows is not supported by this SqlRenderer");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // @Inheritance(JOINED) — 멀티테이블 INSERT/SELECT/UPDATE/DELETE 렌더링.
+    // 기존 단일-테이블 메서드 시그니처는 그대로 두고, 멀티테이블은 아래 additive default 메서드로 표현한다.
+    // 실제 reactive 순서(root insert → 생성 id 확보 → subtype insert; delete는 subtype → root)는
+    // 엔티티 오퍼레이션 계층이 보장한다. 렌더러는 각 단계의 단일 SQL 문장만 만든다.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * JOINED 루트 테이블 INSERT를 렌더한다 — 루트 테이블 컬럼들 + discriminator 상수. id가 IDENTITY면
+     * id 컬럼은 {@code rootColumns}에서 제외되고 dialect가 생성 키를 회수한다. 호출자는 {@code rootColumns}로
+     * insertable한 루트 컬럼만 전달한다.
+     */
+    default SqlStatement insertJoinedRoot(
+            EntityMetadata<?> concreteMetadata,
+            String rootTableName,
+            List<PersistentProperty> rootColumns,
+            Object entity) {
+        throw new UnsupportedOperationException("insertJoinedRoot is not supported by this SqlRenderer");
+    }
+
+    /**
+     * JOINED 서브타입 테이블 INSERT를 렌더한다 — 루트 PK를 FK로 공유하는 id 컬럼 + 서브타입 자기 컬럼들.
+     * id는 루트 INSERT에서 확정된 값이 entity에 이미 채워져 있어야 한다.
+     */
+    default SqlStatement insertJoinedSubtype(
+            EntityMetadata<?> concreteMetadata,
+            List<PersistentProperty> ownColumns,
+            Object entity) {
+        throw new UnsupportedOperationException("insertJoinedSubtype is not supported by this SqlRenderer");
+    }
+
+    /**
+     * JOINED 다형 SELECT(루트 타입 조회)를 렌더한다 — 루트 ⟕ 각 서브타입 테이블 LEFT JOIN 체인 + discriminator.
+     * predicate/sort/page는 {@code querySpec}을 따른다(루트 테이블 컬럼 기준).
+     */
+    default SqlStatement selectJoinedPolymorphic(InheritanceLayout layout, QuerySpec querySpec) {
+        throw new UnsupportedOperationException("selectJoinedPolymorphic is not supported by this SqlRenderer");
+    }
+
+    /**
+     * JOINED 다형 findById를 렌더한다 — {@link #selectJoinedPolymorphic}과 동일한 JOIN 체인에 루트 PK 등치 WHERE.
+     */
+    default SqlStatement selectJoinedById(InheritanceLayout layout, Object id) {
+        throw new UnsupportedOperationException("selectJoinedById is not supported by this SqlRenderer");
+    }
+
+    /**
+     * JOINED 루트 테이블 UPDATE를 렌더한다(루트 테이블 컬럼만 SET, 루트 PK로 WHERE).
+     */
+    default SqlStatement updateJoinedRoot(
+            EntityMetadata<?> concreteMetadata,
+            String rootTableName,
+            List<PersistentProperty> rootColumns,
+            Object entity) {
+        throw new UnsupportedOperationException("updateJoinedRoot is not supported by this SqlRenderer");
+    }
+
+    /**
+     * JOINED 서브타입 테이블 UPDATE를 렌더한다(서브타입 자기 컬럼만 SET, FK id로 WHERE).
+     * 서브타입 자기 컬럼이 없으면 {@code null}을 반환해 호출자가 이 단계를 건너뛰게 한다.
+     */
+    default SqlStatement updateJoinedSubtype(
+            EntityMetadata<?> concreteMetadata,
+            List<PersistentProperty> ownColumns,
+            Object entity) {
+        throw new UnsupportedOperationException("updateJoinedSubtype is not supported by this SqlRenderer");
+    }
+
+    /**
+     * JOINED 서브타입 테이블에서 id로 DELETE(루트 DELETE보다 먼저 실행해 FK 의존성 보존).
+     */
+    default SqlStatement deleteJoinedSubtypeById(EntityMetadata<?> concreteMetadata, Object id) {
+        throw new UnsupportedOperationException("deleteJoinedSubtypeById is not supported by this SqlRenderer");
+    }
+
+    /**
+     * JOINED 루트 테이블에서 id로 DELETE(서브타입 DELETE 이후 실행).
+     */
+    default SqlStatement deleteJoinedRootById(InheritanceLayout layout, Object id) {
+        throw new UnsupportedOperationException("deleteJoinedRootById is not supported by this SqlRenderer");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // @Inheritance(TABLE_PER_CLASS) — 다형 UNION ALL SELECT 렌더링.
+    // INSERT/UPDATE/DELETE는 구체 타입 단일 테이블 경로(기존 insert/update/deleteById)를 그대로 쓰며,
+    // 구체 테이블에 discriminator 물리 컬럼이 없으므로 insert()는 SINGLE_TABLE에서만 discriminator를 emit한다.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * TABLE_PER_CLASS 다형 SELECT를 렌더한다 — 각 구체 서브타입 테이블을 {@code SELECT <정렬된 컬럼>,
+     * '<disc>' AS dtype FROM subN} 으로 만들어 {@code UNION ALL}로 잇는다. 브랜치마다 없는 컬럼은 NULL로 채워
+     * 컬럼 순서를 정렬한다. predicate/sort/page는 union 결과 바깥에서 적용한다.
+     */
+    default SqlStatement selectTablePerClassPolymorphic(InheritanceLayout layout, QuerySpec querySpec) {
+        throw new UnsupportedOperationException("selectTablePerClassPolymorphic is not supported by this SqlRenderer");
+    }
+
+    /**
+     * TABLE_PER_CLASS 다형 findById를 렌더한다 — UNION ALL 결과에 루트 PK 등치 WHERE.
+     */
+    default SqlStatement selectTablePerClassById(InheritanceLayout layout, Object id) {
+        throw new UnsupportedOperationException("selectTablePerClassById is not supported by this SqlRenderer");
     }
 }

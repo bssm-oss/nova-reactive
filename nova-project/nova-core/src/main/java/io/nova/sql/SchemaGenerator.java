@@ -2,6 +2,7 @@ package io.nova.sql;
 
 import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.TableGeneratorInfo;
@@ -10,6 +11,24 @@ import java.util.List;
 
 public interface SchemaGenerator {
     String createTable(EntityMetadata<?> metadata);
+
+    /**
+     * {@code @Inheritance(JOINED)} 루트 테이블 DDL을 만든다 — 공통(루트 테이블) 컬럼 + discriminator 컬럼.
+     * 서브타입 테이블은 {@link #createJoinedSubtypeTable(InheritanceLayout, InheritanceLayout.ConcreteSubtype, boolean)}이
+     * 만든다. 기본 구현은 미지원이며 dialect base({@link AbstractSchemaGenerator})가 override 한다.
+     */
+    default String createJoinedRootTable(InheritanceLayout layout, boolean ifNotExists) {
+        throw new UnsupportedOperationException("createJoinedRootTable is not supported by this SchemaGenerator");
+    }
+
+    /**
+     * {@code @Inheritance(JOINED)} 서브타입 테이블 DDL을 만든다 — 루트 PK를 FK PK로 공유하는 id 컬럼 +
+     * 서브타입 자기 컬럼. 기본 구현은 미지원이며 dialect base가 override 한다.
+     */
+    default String createJoinedSubtypeTable(
+            InheritanceLayout layout, InheritanceLayout.ConcreteSubtype subtype, boolean ifNotExists) {
+        throw new UnsupportedOperationException("createJoinedSubtypeTable is not supported by this SchemaGenerator");
+    }
 
     /**
      * {@code @GeneratedValue(TABLE)} generator 테이블을 만드는 {@code CREATE TABLE} 구문을 반환한다.

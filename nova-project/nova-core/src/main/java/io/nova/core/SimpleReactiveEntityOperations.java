@@ -9,6 +9,7 @@ import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.InheritanceInfo;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
@@ -564,6 +565,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private <T> Mono<T> insertNew(EntityMetadata<T> metadata, T entity) {
+        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            // JOINED: 루트 INSERT(생성 id 확보) → 서브타입 INSERT(같은 id를 FK로). reactive 순서로 보장한다.
+            return insertJoined(metadata, entity);
+        }
         if (metadata.hasCompositeId()) {
             // @EmbeddedId 복합키는 generation 전략이 없는 application-assigned이므로 그대로 INSERT한다.
             SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
@@ -606,6 +611,79 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
         return sqlExecutor.execute(statement).thenReturn(entity);
+    }
+
+    /**
+     * JOINED 상속 INSERT — 루트 테이블 INSERT를 먼저 발행해 id를 확정한 뒤(IDENTITY는 생성 키 회수,
+     * SEQUENCE/TABLE/UUID는 사전 할당), 서브타입 테이블 INSERT를 같은 id를 FK로 발행한다. 두 INSERT는
+     * {@link Mono#flatMap}으로 순차 보장되며, 동일 트랜잭션/세션 커넥션에서 실행된다(Reactor Context 전파).
+     */
+    private <T> Mono<T> insertJoined(EntityMetadata<T> metadata, T entity) {
+        io.nova.metadata.InheritanceLayout layout =
+                metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        InheritanceLayout.ConcreteSubtype subtype = resolveConcreteSubtype(layout, metadata.entityType());
+        SqlRenderer renderer = dialect.sqlRenderer();
+        PersistentProperty idProperty = metadata.idProperty();
+        GenerationType strategy = idProperty.generationType();
+        String rootTable = metadata.inheritance().rootTableName();
+
+        Mono<T> rootInserted;
+        if (strategy == GenerationType.IDENTITY) {
+            SqlStatement rootInsert = renderer.insertJoinedRoot(
+                    metadata, rootTable, layout.rootTableColumns(), entity);
+            rootInserted = sqlExecutor.executeAndReturnGeneratedKey(
+                            rootInsert, idProperty.columnName(), wrapPrimitive(idProperty.javaType()))
+                    .map(key -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(key));
+                        return entity;
+                    })
+                    .defaultIfEmpty(entity);
+        } else if (strategy == GenerationType.SEQUENCE) {
+            Class<?> idColumnType = wrapPrimitive(idProperty.javaType());
+            rootInserted = sqlExecutor.queryOne(
+                            new SqlStatement(dialect.sequenceNextValueSql(idProperty.generator()), List.of()),
+                            row -> row.get(Dialect.SEQUENCE_VALUE_COLUMN, idColumnType))
+                    .flatMap(value -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(value));
+                        SqlStatement rootInsert = renderer.insertJoinedRoot(
+                                metadata, rootTable, layout.rootTableColumns(), entity);
+                        return sqlExecutor.execute(rootInsert).thenReturn(entity);
+                    });
+        } else if (strategy == GenerationType.TABLE) {
+            rootInserted = nextTableGeneratorId(idProperty)
+                    .flatMap(value -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(coerceIdType(idProperty, value)));
+                        SqlStatement rootInsert = renderer.insertJoinedRoot(
+                                metadata, rootTable, layout.rootTableColumns(), entity);
+                        return sqlExecutor.execute(rootInsert).thenReturn(entity);
+                    });
+        } else {
+            if (strategy == GenerationType.UUID) {
+                assignUuidId(idProperty, entity);
+            }
+            SqlStatement rootInsert = renderer.insertJoinedRoot(
+                    metadata, rootTable, layout.rootTableColumns(), entity);
+            rootInserted = sqlExecutor.execute(rootInsert).thenReturn(entity);
+        }
+        return rootInserted.flatMap(saved -> {
+            SqlStatement subInsert = renderer.insertJoinedSubtype(metadata, subtype.ownTableColumns(), saved);
+            return sqlExecutor.execute(subInsert).thenReturn(saved);
+        });
+    }
+
+    /**
+     * layout에서 주어진 구체 타입의 {@link InheritanceLayout.ConcreteSubtype}을 찾는다.
+     */
+    private static InheritanceLayout.ConcreteSubtype resolveConcreteSubtype(
+            io.nova.metadata.InheritanceLayout layout, Class<?> concreteType) {
+        for (InheritanceLayout.ConcreteSubtype subtype : layout.subtypes()) {
+            if (subtype.metadata().entityType() == concreteType) {
+                return subtype;
+            }
+        }
+        throw new IllegalStateException(
+                concreteType.getName() + " is not a registered concrete subtype of "
+                        + layout.info().root().getName());
     }
 
     /**
@@ -725,6 +803,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private <T> Mono<T> updateExisting(EntityMetadata<T> metadata, T entity) {
+        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            // JOINED: 루트 테이블(공통 컬럼)과 서브타입 테이블(자기 컬럼)을 각각 UPDATE한다. @Version 미지원.
+            return updateJoined(metadata, entity);
+        }
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
         SqlStatement statement = dialect.sqlRenderer().update(metadata, entity);
         if (versionProperty == null) {
@@ -744,6 +826,25 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     versionProperty.write(entity, next);
                     return Mono.just(entity);
                 });
+    }
+
+    /**
+     * JOINED 상속 UPDATE — 루트 테이블(공통 컬럼) UPDATE 후 서브타입 테이블(자기 컬럼) UPDATE를 순차 발행한다.
+     * 서브타입에 자기 컬럼이 없으면 그 단계는 건너뛴다.
+     */
+    private <T> Mono<T> updateJoined(EntityMetadata<T> metadata, T entity) {
+        InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        InheritanceLayout.ConcreteSubtype subtype = resolveConcreteSubtype(layout, metadata.entityType());
+        SqlRenderer renderer = dialect.sqlRenderer();
+        String rootTable = metadata.inheritance().rootTableName();
+        SqlStatement rootUpdate = renderer.updateJoinedRoot(
+                metadata, rootTable, layout.rootTableColumns(), entity);
+        Mono<Long> updateRoot = sqlExecutor.execute(rootUpdate);
+        SqlStatement subUpdate = renderer.updateJoinedSubtype(metadata, subtype.ownTableColumns(), entity);
+        if (subUpdate == null) {
+            return updateRoot.thenReturn(entity);
+        }
+        return updateRoot.then(sqlExecutor.execute(subUpdate)).thenReturn(entity);
     }
 
     @Override
@@ -947,9 +1048,50 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@code findById(.., FetchGroup)}처럼 merge된 group을 따로 hydrate할 호출자가 사용한다.
      */
     private <T, ID> Mono<T> findByIdInternal(EntityMetadata<T> metadata, ID id) {
+        if (isMultiTableInheritance(metadata)) {
+            return findByIdMultiTable(metadata, id);
+        }
         EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryOne(
                 selectByIdStatement(render, id), row -> mapRowDispatching(metadata, render, row));
+    }
+
+    /**
+     * 이 메타데이터가 JOINED 또는 TABLE_PER_CLASS 상속에 속하는지 — 즉 단일-테이블 SELECT 대신 멀티테이블
+     * JOIN/UNION 경로를 타야 하는지 판정한다.
+     */
+    private static boolean isMultiTableInheritance(EntityMetadata<?> metadata) {
+        return metadata.hasInheritance()
+                && (metadata.inheritance().joined() || metadata.inheritance().tablePerClass());
+    }
+
+    /**
+     * JOINED/TABLE_PER_CLASS findById — 루트 다형 SELECT(JOIN/UNION)로 한 row를 조회해 discriminator로 구체
+     * 타입을 판별·인스턴스화한다. 구체 타입으로 조회한 경우(루트가 아닌 경우) 결과 타입이 일치하지 않으면
+     * 빈 결과로 만든다(예: findById(Car, truckId)).
+     */
+    @SuppressWarnings("unchecked")
+    private <T, ID> Mono<T> findByIdMultiTable(EntityMetadata<T> metadata, ID id) {
+        InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        SqlStatement statement = layout.info().joined()
+                ? dialect.sqlRenderer().selectJoinedById(layout, id)
+                : dialect.sqlRenderer().selectTablePerClassById(layout, id);
+        Mono<Object> result = sqlExecutor.queryOne(
+                statement, row -> (Object) mapRowForInheritance(layout, row));
+        if (metadata.isInheritanceRoot()) {
+            return result.map(entity -> (T) entity);
+        }
+        return result.filter(entity -> metadata.entityType().isInstance(entity)).map(entity -> (T) entity);
+    }
+
+    /**
+     * 다형 row(JOIN/UNION 결과)에서 discriminator 값을 읽어 구체 서브타입을 해석하고 그 타입으로 매핑한다.
+     */
+    private Object mapRowForInheritance(InheritanceLayout layout, RowAccessor row) {
+        InheritanceInfo info = layout.info();
+        Object discriminator = row.get(info.discriminatorColumn(), wrapPrimitive(info.discriminatorJavaType()));
+        EntityMetadata<?> concrete = metadataFactory.resolveSubtype(layout.rootMetadata(), discriminator);
+        return mapRow(concrete, row);
     }
 
     /**
@@ -971,9 +1113,31 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * annotation-driven 자동 hydration을 거치지 않고 일반 SELECT만 발행하는 내부 경로.
      */
     private <T> Flux<T> findAllInternal(EntityMetadata<T> metadata, QuerySpec querySpec) {
+        if (isMultiTableInheritance(metadata)) {
+            return findAllMultiTable(metadata, querySpec);
+        }
         EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryMany(
                 dialect.sqlRenderer().select(render, normalize(querySpec)), row -> mapRowDispatching(metadata, render, row));
+    }
+
+    /**
+     * JOINED/TABLE_PER_CLASS findAll — 루트 다형 SELECT(JOIN/UNION)로 전 서브타입 row를 조회해 각 row의
+     * discriminator로 구체 타입을 인스턴스화한다. 구체 타입으로 조회한 경우 그 타입 인스턴스만 남긴다.
+     */
+    @SuppressWarnings("unchecked")
+    private <T> Flux<T> findAllMultiTable(EntityMetadata<T> metadata, QuerySpec querySpec) {
+        InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        QuerySpec spec = normalize(querySpec);
+        SqlStatement statement = layout.info().joined()
+                ? dialect.sqlRenderer().selectJoinedPolymorphic(layout, spec)
+                : dialect.sqlRenderer().selectTablePerClassPolymorphic(layout, spec);
+        Flux<Object> rows = sqlExecutor.queryMany(
+                statement, row -> (Object) mapRowForInheritance(layout, row));
+        if (metadata.isInheritanceRoot()) {
+            return rows.map(entity -> (T) entity);
+        }
+        return rows.filter(entity -> metadata.entityType().isInstance(entity)).map(entity -> (T) entity);
     }
 
     /**
@@ -1031,6 +1195,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         String idPropertyName = metadata.idProperty().propertyName();
         QuerySpec spec = QuerySpec.empty().where(Criteria.in(idPropertyName, materialized));
+        if (isMultiTableInheritance(metadata)) {
+            return findAllMultiTable(metadata, spec);
+        }
         EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryMany(
                 dialect.sqlRenderer().select(render, spec), row -> mapRowDispatching(metadata, render, row));
@@ -1090,6 +1257,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * optimistic locking 실패는 {@code Mono.error}로 끝나므로 {@code @PostRemove}가 호출되지 않는다.
      */
     private <T> Mono<Long> performDelete(EntityMetadata<T> metadata, T entity, Object id) {
+        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            return deleteJoined(metadata, id);
+        }
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         Optional<PersistentProperty> version = metadata.versionProperty();
         if (softDelete.isPresent() && version.isPresent()) {
@@ -1136,10 +1306,31 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id));
     }
 
+    /**
+     * JOINED 상속 DELETE — 서브타입 테이블 row를 먼저 삭제하고(FK 의존성), 그 다음 루트 테이블 row를 삭제한다.
+     * 영향 행 수는 루트 DELETE의 결과를 돌려준다(논리적으로 "엔티티 1건 삭제").
+     */
+    private Mono<Long> deleteJoined(EntityMetadata<?> metadata, Object id) {
+        InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        SqlRenderer renderer = dialect.sqlRenderer();
+        Mono<Long> deleteSubtype = metadata.isInheritanceRoot()
+                // 루트 타입으로 삭제 시 어느 서브타입 테이블에 있는지 모르므로 전 서브타입 테이블에서 시도한다.
+                ? Flux.fromIterable(layout.subtypes())
+                        .filter(subtype -> subtype.metadata().entityType() != layout.info().root())
+                        .concatMap(subtype -> sqlExecutor.execute(
+                                renderer.deleteJoinedSubtypeById(subtype.metadata(), id)))
+                        .reduce(0L, Long::sum)
+                : sqlExecutor.execute(renderer.deleteJoinedSubtypeById(metadata, id));
+        return deleteSubtype.then(sqlExecutor.execute(renderer.deleteJoinedRootById(layout, id)));
+    }
+
     @Override
     public <T, ID> Mono<Long> deleteById(Class<T> entityType, ID id) {
         Objects.requireNonNull(id, "id must not be null");
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            return deleteJoined(metadata, id);
+        }
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         if (softDelete.isPresent()) {
             Object deletedAt = currentTimeFor(softDelete.get());
@@ -1825,6 +2016,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private <T> Flux<T> saveGroup(GroupKey key, List<T> entities) {
         @SuppressWarnings("unchecked")
         EntityMetadata<T> metadata = (EntityMetadata<T>) metadataFactory.getEntityMetadata(key.entityClass());
+        if (metadata.hasInheritance()
+                && (metadata.inheritance().joined() || metadata.inheritance().tablePerClass())) {
+            // JOINED/TABLE_PER_CLASS는 멀티테이블 INSERT/UPDATE 순서가 필요해 단일 batch SQL로 묶을 수 없다.
+            // 단건 save() 경로로 폴백한다(insertJoined/updateJoined가 올바른 멀티테이블 순서를 보장).
+            return Flux.fromIterable(entities).concatMap(this::save);
+        }
         if (!key.isNew() && metadata.versionProperty().isPresent()) {
             // optimistic locking은 entity별 affected rows 검증이 필요해 batch 경로로 묶을 수 없다.
             return Flux.fromIterable(entities).concatMap(this::save);
