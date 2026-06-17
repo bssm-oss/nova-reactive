@@ -457,7 +457,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         // orphanRemoval: child를 모두 저장(=현재 컬렉션 child의 id 확정)한 뒤, 이 parent FK를 가지면서
         // 현재 컬렉션에 남지 않은 child row를 삭제한다. M2M/@ElementCollection의 full-replace reconcile과 동일 철학.
-        return persistChildren.then(removeOrphans(childMetadata, mappedByProperty, parentId, children).then());
+        // removeOrphans가 retainedIds를 동기적으로 읽으므로 반드시 subscription 시점(=persistChildren 완료 후)에
+        // 호출되도록 Mono.defer로 감싼다. 그러지 않으면 assembly 시점에 아직 save 전인 child의 id(null)를 읽어
+        // retainedIds가 비고, 결국 "이 parent의 child 전부 삭제"로 붕괴해 방금 저장한 child까지 지워진다.
+        return persistChildren.then(
+                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parentId, children)).then());
     }
 
     /**

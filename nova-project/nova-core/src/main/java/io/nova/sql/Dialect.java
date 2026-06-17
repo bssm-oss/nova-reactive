@@ -45,7 +45,7 @@ public interface Dialect {
     /**
      * {@code @GeneratedValue(TABLE)} generator 테이블의 카운터를 {@code increment}만큼 원자적으로 증가시키는
      * UPDATE 구문을 반환한다. 호출자는 동일 커넥션(트랜잭션 컨텍스트) 안에서 이 UPDATE를 먼저 실행한 뒤
-     * {@link #tableGeneratorSelectSql(String, String, String)}로 증가된 값을 읽는다. row-level lock으로
+     * {@link #tableGeneratorSelectSql(String, String, String, String)}로 증가된 값을 읽는다. row-level lock으로
      * 동시 발급의 atomicity가 보장된다.
      *
      * <p>구문은 bind marker를 쓰지 않고 식별자/리터럴을 직접 concat한다 — table/컬럼/pkColumnValue는
