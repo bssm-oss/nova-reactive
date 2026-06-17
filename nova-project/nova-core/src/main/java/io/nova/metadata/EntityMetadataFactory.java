@@ -14,6 +14,8 @@ import jakarta.persistence.Embedded;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
+import jakarta.persistence.ExcludeDefaultListeners;
+import jakarta.persistence.ExcludeSuperclassListeners;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -208,7 +210,8 @@ public final class EntityMetadataFactory {
                 rootMeta.indexes(),
                 rootMeta.uniqueConstraints(),
                 rootMeta.inheritance(),
-                rootMeta.listenerCallbacks()
+                rootMeta.listenerCallbacks(),
+                rootMeta.excludeDefaultListeners()
         );
     }
 
@@ -445,7 +448,8 @@ public final class EntityMetadataFactory {
                 indexes,
                 uniqueConstraints,
                 inheritance,
-                collectEntityListeners(entityType)
+                collectEntityListeners(entityType),
+                entityType.isAnnotationPresent(ExcludeDefaultListeners.class)
         );
         registerHierarchyMember(metadata);
         return metadata;
@@ -1045,7 +1049,10 @@ public final class EntityMetadataFactory {
         for (Class<?> listenerClass : listenerClasses) {
             Object listener = instantiateListener(listenerClass);
             Set<String> seen = new LinkedHashSet<>();
-            for (Method method : listenerClass.getDeclaredMethods()) {
+            // JPA 규약: 리스너 콜백 메서드는 상속된다. 리스너 클래스 자신의 superclass 체인을 루트→자식
+            // 순으로 순회하며 콜백을 모은다(superclass 콜백 먼저). 자식이 같은 시그니처를 override하면
+            // 가장 하위 정의만 한 번 수집한다(중복 호출 방지).
+            for (Method method : listenerCallbackMethods(listenerClass)) {
                 if (method.isSynthetic() || !seen.add(callbackSignature(method))) {
                     continue;
                 }
@@ -1063,10 +1070,31 @@ public final class EntityMetadataFactory {
     }
 
     /**
+     * 리스너 클래스의 콜백 후보 메서드를, 클래스 계층을 자식(가장 하위)→루트(최상위 superclass) 순으로
+     * 평탄화해 반환한다. 호출부의 {@code seen} 집합이 시그니처별 첫 등장만 채택하므로, 자식이 superclass
+     * 콜백을 override하면 가장 하위 정의가 한 번만 수집되어 중복 호출이 방지된다(JPA: 콜백 메서드는 상속됨).
+     */
+    private static List<Method> listenerCallbackMethods(Class<?> listenerClass) {
+        List<Method> methods = new ArrayList<>();
+        Class<?> current = listenerClass;
+        while (current != null && current != Object.class) {
+            methods.addAll(Arrays.asList(current.getDeclaredMethods()));
+            current = current.getSuperclass();
+        }
+        return methods;
+    }
+
+    /**
      * {@code @EntityListeners}를 선언할 수 있는 호스트 체인(자신 + {@code @MappedSuperclass}/상속 상위
      * {@code @Entity})을 루트-우선 순서로 반환한다 — 슈퍼클래스 리스너가 먼저 invoke되도록.
+     *
+     * <p>entity에 {@code @ExcludeSuperclassListeners}(jakarta.persistence)가 선언되면 상위 호스트가
+     * 기여하는 리스너를 제외하고 entity 자신만 호스트로 남긴다.
      */
     private static List<Class<?>> listenerHostChain(Class<?> entityType) {
+        if (entityType.isAnnotationPresent(ExcludeSuperclassListeners.class)) {
+            return List.of(entityType);
+        }
         List<Class<?>> chain = new ArrayList<>();
         Class<?> current = entityType;
         while (current != null && current != Object.class

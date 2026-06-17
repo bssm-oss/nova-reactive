@@ -61,6 +61,7 @@ public final class EntityMetadata<T> {
      * 각 phase에서 리스너 콜백이 entity 콜백보다 먼저 호출된다(JPA 규약).
      */
     private final EntityListenerCallbacks listenerCallbacks;
+    private final boolean excludeDefaultListeners;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -82,7 +83,7 @@ public final class EntityMetadata<T> {
         this(entityType, entityName, tableName, schema, properties, idProperty,
                 prePersistCallbacks, postPersistCallbacks, preUpdateCallbacks, postUpdateCallbacks,
                 postLoadCallbacks, preRemoveCallbacks, postRemoveCallbacks, indexes, uniqueConstraints,
-                InheritanceInfo.NONE, EntityListenerCallbacks.EMPTY);
+                InheritanceInfo.NONE, EntityListenerCallbacks.EMPTY, false);
     }
 
     public EntityMetadata(
@@ -103,6 +104,32 @@ public final class EntityMetadata<T> {
             List<UniqueConstraintDefinition> uniqueConstraints,
             InheritanceInfo inheritance,
             EntityListenerCallbacks listenerCallbacks
+    ) {
+        this(entityType, entityName, tableName, schema, properties, idProperty,
+                prePersistCallbacks, postPersistCallbacks, preUpdateCallbacks, postUpdateCallbacks,
+                postLoadCallbacks, preRemoveCallbacks, postRemoveCallbacks, indexes, uniqueConstraints,
+                inheritance, listenerCallbacks, false);
+    }
+
+    public EntityMetadata(
+            Class<T> entityType,
+            String entityName,
+            String tableName,
+            String schema,
+            List<PersistentProperty> properties,
+            PersistentProperty idProperty,
+            List<Method> prePersistCallbacks,
+            List<Method> postPersistCallbacks,
+            List<Method> preUpdateCallbacks,
+            List<Method> postUpdateCallbacks,
+            List<Method> postLoadCallbacks,
+            List<Method> preRemoveCallbacks,
+            List<Method> postRemoveCallbacks,
+            List<IndexDefinition> indexes,
+            List<UniqueConstraintDefinition> uniqueConstraints,
+            InheritanceInfo inheritance,
+            EntityListenerCallbacks listenerCallbacks,
+            boolean excludeDefaultListeners
     ) {
         this.entityType = entityType;
         this.entityName = entityName;
@@ -167,6 +194,7 @@ public final class EntityMetadata<T> {
         this.uniqueConstraints = List.copyOf(uniqueConstraints);
         this.inheritance = inheritance == null ? InheritanceInfo.NONE : inheritance;
         this.listenerCallbacks = listenerCallbacks == null ? EntityListenerCallbacks.EMPTY : listenerCallbacks;
+        this.excludeDefaultListeners = excludeDefaultListeners;
     }
 
     /**
@@ -174,6 +202,15 @@ public final class EntityMetadata<T> {
      */
     public EntityListenerCallbacks listenerCallbacks() {
         return listenerCallbacks;
+    }
+
+    /**
+     * {@code @ExcludeDefaultListeners}(jakarta.persistence)가 entity에 선언되었는지 여부.
+     * {@code true}이면 entity 자체의 lifecycle 콜백(no-arg {@code @PrePersist} 등)을 스킵한다.
+     * 외부 {@code @EntityListeners} 콜백은 영향을 받지 않는다.
+     */
+    public boolean excludeDefaultListeners() {
+        return excludeDefaultListeners;
     }
 
     public Class<T> entityType() {
