@@ -1395,6 +1395,7 @@ public final class EntityMetadataFactory {
                 converterColumnType,
                 false,
                 null,
+                null,
                 null
         );
     }
@@ -1532,20 +1533,19 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * {@link OneToMany} marker-only property를 만든다. parent 테이블 컬럼이 없으므로 column-related
-     * 메타데이터는 비워두고, mappedBy와 target type만 보존한다.
+     * {@link OneToMany} property를 만든다. parent 테이블 컬럼이 없으므로 column-related 메타데이터는 비워두고,
+     * mappedBy와 target type을 보존한다. cascade나 orphanRemoval이 지정되면 {@link OneToManyInfo}로 캡처해
+     * save/delete/flush 시 child 전파를 구동하고, 둘 다 없으면 {@code null}로 두어 기존 marker-only 동작을 보존한다.
      */
     private PersistentProperty createOneToManyProperty(Class<?> entityType, Field field) {
         OneToMany annotation = field.getAnnotation(OneToMany.class);
-        if (annotation.cascade().length > 0) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @OneToMany(cascade=...) is not supported; persist children explicitly via save/saveAll");
-        }
-        if (annotation.orphanRemoval()) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @OneToMany(orphanRemoval=true) is not supported; delete children explicitly");
+        OneToManyInfo oneToManyInfo;
+        if (annotation.cascade().length > 0 || annotation.orphanRemoval()) {
+            oneToManyInfo = new OneToManyInfo(
+                    Set.of(annotation.cascade()),
+                    annotation.orphanRemoval());
+        } else {
+            oneToManyInfo = null;
         }
         String mappedBy = annotation.mappedBy();
         if (mappedBy == null || mappedBy.isBlank()) {
@@ -1594,7 +1594,8 @@ public final class EntityMetadataFactory {
                 null,
                 false,
                 null,
-                null
+                null,
+                oneToManyInfo
         );
     }
 
@@ -1670,6 +1671,7 @@ public final class EntityMetadataFactory {
                 null,
                 false,
                 null,
+                null,
                 null
         );
     }
@@ -1736,6 +1738,7 @@ public final class EntityMetadataFactory {
                     null,
                     true,
                     null,
+                    null,
                     null
             );
         }
@@ -1788,6 +1791,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
+                null,
                 null,
                 null
         );
@@ -1853,7 +1857,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null);
+                info, null, null);
     }
 
     /**
@@ -2033,7 +2037,7 @@ public final class EntityMetadataFactory {
                 true, true, false, "", false, null,
                 false,
                 null,
-                info);
+                info, null);
     }
 
     /**

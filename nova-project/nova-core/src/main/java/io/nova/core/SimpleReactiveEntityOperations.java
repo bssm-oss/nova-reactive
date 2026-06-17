@@ -15,6 +15,7 @@ import io.nova.metadata.PersistentProperty;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
+import io.nova.query.Condition;
 import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
 import io.nova.query.Page;
@@ -139,10 +140,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     ? saveStateless(metadata, entity)
                     : saveInSession(session.get(), metadata, entity);
             // entity row 저장 후 owning @ManyToMany link table과 @ElementCollection collection table을
-            // full-replace로 동기화한다(둘 다 없으면 무비용).
+            // full-replace로 동기화하고(둘 다 없으면 무비용), 마지막으로 @OneToMany(cascade=PERSIST/orphanRemoval)
+            // child 전파를 reactive 순서대로 수행한다 — parent INSERT/UPDATE가 먼저 완료되어야 child FK 바인딩이 성립한다.
             return saved.flatMap(persisted ->
                     reconcileManyToManyLinks(metadata, persisted)
                             .then(reconcileElementCollections(metadata, persisted))
+                            .then(cascadeSaveOneToManyChildren(metadata, persisted))
                             .thenReturn(persisted));
         });
     }
@@ -378,6 +381,132 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 wrapPrimitive(ownerMetadata.idProperty().javaType()),
                 info.valueColumn(),
                 info.valueType());
+    }
+
+    /**
+     * {@code @OneToMany(cascade=PERSIST/ALL/MERGE)} 또는 {@code orphanRemoval=true}가 지정된 컬렉션을 parent
+     * save 직후 전파한다. cascade-persist는 각 child의 mappedBy {@code @ManyToOne} 역참조를 parent로 바인딩한 뒤
+     * {@link #save(Object)}로 재귀 저장하고(현재 Reactor Context=동일 세션/트랜잭션이 그대로 전파된다),
+     * orphanRemoval은 child를 모두 저장한 다음 "이 parent FK를 가지면서 현재 컬렉션에 없는" child를 삭제한다.
+     * cascade도 orphanRemoval도 없는 marker-only {@code @OneToMany}는 무비용으로 건너뛴다.
+     */
+    private <T> Mono<Void> cascadeSaveOneToManyChildren(EntityMetadata<T> metadata, T parent) {
+        List<PersistentProperty> cascading = metadata.oneToManyProperties().stream()
+                .filter(property -> property.cascadePersistChildren() || property.orphanRemoval())
+                .toList();
+        if (cascading.isEmpty()) {
+            return Mono.empty();
+        }
+        Object parentId = metadata.idProperty().read(parent);
+        if (parentId == null) {
+            return Mono.error(new IllegalStateException(
+                    "parent id must be set before cascading @OneToMany children on "
+                            + metadata.entityType().getName()));
+        }
+        return Flux.fromIterable(cascading)
+                .concatMap(property -> cascadeOneToManyProperty(metadata, property, parent, parentId))
+                .then();
+    }
+
+    private <T> Mono<Void> cascadeOneToManyProperty(
+            EntityMetadata<T> metadata, PersistentProperty property, T parent, Object parentId) {
+        if (property.oneToManyTargetType() == null) {
+            return Mono.error(new IllegalStateException(
+                    metadata.entityType().getName() + "." + property.propertyName()
+                            + " @OneToMany(cascade/orphanRemoval) requires targetEntity to be specified"));
+        }
+        EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+        PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
+        Object collection;
+        try {
+            collection = property.field().get(parent);
+        } catch (IllegalAccessException exception) {
+            return Mono.error(new IllegalStateException(
+                    "Cannot read @OneToMany collection " + property.propertyName(), exception));
+        }
+        if (collection == null) {
+            // null 컬렉션 = 이번 save에서 이 관계를 관리하지 않음 → cascade/orphanRemoval 모두 no-op.
+            return Mono.empty();
+        }
+        List<Object> children = new ArrayList<>();
+        for (Object child : (Iterable<?>) collection) {
+            if (child != null) {
+                children.add(child);
+            }
+        }
+        Mono<Void> persistChildren = Mono.empty();
+        if (property.cascadePersistChildren()) {
+            persistChildren = Flux.fromIterable(children)
+                    .concatMap(child -> {
+                        // child의 역방향 @ManyToOne을 parent로 바인딩 → child save 시 FK 컬럼이 parent id로 채워진다.
+                        bindParentReference(mappedByProperty, child, parent);
+                        return save(child);
+                    })
+                    .then();
+        }
+        if (!property.orphanRemoval()) {
+            return persistChildren;
+        }
+        // orphanRemoval: child를 모두 저장(=현재 컬렉션 child의 id 확정)한 뒤, 이 parent FK를 가지면서
+        // 현재 컬렉션에 남지 않은 child row를 삭제한다. M2M/@ElementCollection의 full-replace reconcile과 동일 철학.
+        return persistChildren.then(removeOrphans(childMetadata, mappedByProperty, parentId, children).then());
+    }
+
+    /**
+     * orphanRemoval 삭제를 발행한다. child 측 mappedBy FK 컬럼이 parentId이면서 현재 컬렉션에 남은 child id가
+     * 아닌 row를 모두 삭제한다. 현재 컬렉션이 비었으면 이 parent에 속한 child를 전부 삭제한다.
+     */
+    private Mono<Long> removeOrphans(
+            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId, List<Object> children) {
+        List<Object> retainedIds = new ArrayList<>();
+        for (Object child : children) {
+            Object childId = childMetadata.idProperty().read(child);
+            if (childId != null) {
+                retainedIds.add(childId);
+            }
+        }
+        Condition fkMatches = Criteria.eq(mappedByProperty.propertyName(), parentId);
+        QuerySpec spec = retainedIds.isEmpty()
+                ? QuerySpec.empty().where(fkMatches)
+                : QuerySpec.empty().where(Criteria.and(
+                        fkMatches,
+                        Criteria.notIn(childMetadata.idProperty().propertyName(), retainedIds)));
+        return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec));
+    }
+
+    /**
+     * {@code @OneToMany(mappedBy)}가 가리키는 child 측 owning {@code @ManyToOne} property를 찾는다. 존재하지
+     * 않거나 {@code @ManyToOne}이 아니면 fail-fast로 거부한다({@link AnnotationFetchGroupBuilder}의 FK 해석과 대칭).
+     */
+    private PersistentProperty resolveMappedByProperty(
+            EntityMetadata<?> parentMetadata, PersistentProperty oneToMany, EntityMetadata<?> childMetadata) {
+        String mappedBy = oneToMany.oneToManyMappedBy();
+        PersistentProperty owning = childMetadata.findProperty(mappedBy)
+                .orElseThrow(() -> new IllegalStateException(
+                        parentMetadata.entityType().getName() + "." + oneToMany.propertyName()
+                                + " @OneToMany(mappedBy=\"" + mappedBy + "\") does not exist on "
+                                + childMetadata.entityType().getName()));
+        if (!owning.manyToOne()) {
+            throw new IllegalStateException(
+                    parentMetadata.entityType().getName() + "." + oneToMany.propertyName()
+                            + " @OneToMany(mappedBy=\"" + mappedBy + "\") refers to a non-@ManyToOne property on "
+                            + childMetadata.entityType().getName());
+        }
+        return owning;
+    }
+
+    /**
+     * child의 owning {@code @ManyToOne} 필드에 parent 인스턴스를 직접 set한다. child save 시 그 property의
+     * {@link PersistentProperty#read(Object)}가 parent의 @Id를 추출해 FK 컬럼에 바인딩한다.
+     */
+    private static void bindParentReference(PersistentProperty mappedByProperty, Object child, Object parent) {
+        try {
+            mappedByProperty.field().set(child, parent);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot bind @ManyToOne back-reference " + mappedByProperty.propertyName()
+                            + " on cascaded child", exception);
+        }
     }
 
     private <T> Mono<T> insertPath(EntityMetadata<T> metadata, T entity) {
@@ -783,8 +912,39 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         } catch (RuntimeException exception) {
             return Mono.error(exception);
         }
-        return performDelete(metadata, entity, id)
+        // @OneToMany(cascade=REMOVE/ALL) 또는 orphanRemoval=true child를 parent 삭제 전에 먼저 삭제해 FK 의존성을
+        // 만족시킨다. 전파할 관계가 없으면 무비용. 그 뒤 parent를 삭제한다(reactive 순서 보장).
+        return cascadeRemoveOneToManyChildren(metadata, id)
+                .then(performDelete(metadata, entity, id))
                 .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata));
+    }
+
+    /**
+     * parent 삭제 시 {@code @OneToMany(cascade=REMOVE/ALL)} 또는 {@code orphanRemoval=true} child를 child 측
+     * mappedBy FK 컬럼으로 일괄 삭제한다. cascade-remove 관계가 없으면 무비용. parentId가 null이면 호출자가 이미
+     * 가드했으므로 여기서는 비어 있지 않다고 가정한다.
+     */
+    private <T> Mono<Void> cascadeRemoveOneToManyChildren(EntityMetadata<T> metadata, Object parentId) {
+        List<PersistentProperty> removing = metadata.oneToManyProperties().stream()
+                .filter(property -> property.cascadeRemoveChildren() || property.orphanRemoval())
+                .toList();
+        if (removing.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(removing)
+                .concatMap(property -> {
+                    if (property.oneToManyTargetType() == null) {
+                        return Mono.error(new IllegalStateException(
+                                metadata.entityType().getName() + "." + property.propertyName()
+                                        + " @OneToMany(cascade=REMOVE/orphanRemoval) requires targetEntity to be specified"));
+                    }
+                    EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+                    PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
+                    QuerySpec spec = QuerySpec.empty()
+                            .where(Criteria.eq(mappedByProperty.propertyName(), parentId));
+                    return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec));
+                })
+                .then();
     }
 
     /**

@@ -1977,6 +1977,22 @@ public final class FixtureEntities {
         }
     }
 
+    /**
+     * {@code @OneToMany(cascade = CascadeType.ALL)} metadata 추출 검증용 fixture. ALL은 persist/remove/merge를
+     * 모두 켠다. child 측 {@code @ManyToOne} property 이름은 {@code parent}로 mappedBy와 짝을 이룬다.
+     */
+    @Entity
+    public static class OneToManyCascadeAllEntity {
+        @Id
+        private Long id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = SampleAccount.class, cascade = CascadeType.ALL)
+        private java.util.List<SampleAccount> children;
+
+        public OneToManyCascadeAllEntity() {
+        }
+    }
+
     @Entity
     public static class ColumnInsertableFalseEntity {
         @Id

@@ -40,6 +40,8 @@ import io.nova.support.fixtures.FixtureEntities.NamedSequenceGeneratorEntity;
 import io.nova.support.fixtures.FixtureEntities.OverriddenAddressEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneCascadeEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneLazyEntity;
+import io.nova.support.fixtures.FixtureEntities.AuthorWithBooksAnnotated;
+import io.nova.support.fixtures.FixtureEntities.OneToManyCascadeAllEntity;
 import io.nova.support.fixtures.FixtureEntities.OneToManyOrphanRemovalEntity;
 import io.nova.support.fixtures.FixtureEntities.IndexWithUnknownColumnEntity;
 import io.nova.support.fixtures.FixtureEntities.JsonAccount;
@@ -1082,12 +1084,42 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void rejectsOneToManyOrphanRemoval() {
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(OneToManyOrphanRemovalEntity.class)
-        );
-        assertTrue(exception.getMessage().contains("orphanRemoval=true"));
+    void capturesOneToManyOrphanRemovalMetadata() {
+        EntityMetadata<OneToManyOrphanRemovalEntity> metadata =
+                factory.getEntityMetadata(OneToManyOrphanRemovalEntity.class);
+
+        PersistentProperty children = metadata.findProperty("children").orElseThrow();
+        assertTrue(children.oneToMany());
+        assertNotNull(children.oneToManyInfo(), "orphanRemoval=true이면 OneToManyInfo가 채워져야 한다");
+        assertTrue(children.orphanRemoval());
+        assertFalse(children.cascadePersistChildren(), "cascade 미지정이면 persist 전파는 false");
+        assertFalse(children.cascadeRemoveChildren());
+    }
+
+    @Test
+    void capturesOneToManyCascadeMetadata() {
+        EntityMetadata<OneToManyCascadeAllEntity> metadata =
+                factory.getEntityMetadata(OneToManyCascadeAllEntity.class);
+
+        PersistentProperty children = metadata.findProperty("children").orElseThrow();
+        assertTrue(children.oneToMany());
+        assertNotNull(children.oneToManyInfo());
+        assertTrue(children.cascadePersistChildren(), "CascadeType.ALL은 persist 전파를 켠다");
+        assertTrue(children.cascadeRemoveChildren(), "CascadeType.ALL은 remove 전파를 켠다");
+        assertFalse(children.orphanRemoval(), "orphanRemoval 미지정이면 false");
+    }
+
+    @Test
+    void leavesMarkerOnlyOneToManyWithoutCascadeInfo() {
+        EntityMetadata<AuthorWithBooksAnnotated> metadata =
+                factory.getEntityMetadata(AuthorWithBooksAnnotated.class);
+
+        PersistentProperty books = metadata.findProperty("books").orElseThrow();
+        assertTrue(books.oneToMany());
+        assertNull(books.oneToManyInfo(), "cascade/orphanRemoval 없는 marker-only @OneToMany는 OneToManyInfo가 null");
+        assertFalse(books.cascadePersistChildren());
+        assertFalse(books.cascadeRemoveChildren());
+        assertFalse(books.orphanRemoval());
     }
 
     @Test
