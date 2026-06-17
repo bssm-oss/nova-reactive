@@ -279,14 +279,44 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement insertEmbeddableCollectionRow(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId, List<Object> columnValues) {
+        List<io.nova.metadata.CollectionTableDefinition.ElementColumn> columns = definition.elementColumns();
+        if (columnValues.size() != columns.size()) {
+            throw new IllegalArgumentException(
+                    "insertEmbeddableCollectionRow expects " + columns.size()
+                            + " column values but got " + columnValues.size());
+        }
+        RenderContext context = new RenderContext();
+        StringBuilder names = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
+        StringBuilder markers = new StringBuilder(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(ownerId);
+        for (int i = 0; i < columns.size(); i++) {
+            names.append(", ").append(dialect.quote(columns.get(i).columnName()));
+            markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(columnValues.get(i));
+        }
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + names + ") values (" + markers + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
     public SqlStatement selectCollectionRows(io.nova.metadata.CollectionTableDefinition definition, List<Object> ownerIds) {
         if (ownerIds.isEmpty()) {
             throw new IllegalArgumentException("selectCollectionRows requires at least one owner id");
         }
         RenderContext context = new RenderContext();
+        StringBuilder projection = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
+        if (definition.embeddable()) {
+            for (io.nova.metadata.CollectionTableDefinition.ElementColumn column : definition.elementColumns()) {
+                projection.append(", ").append(dialect.quote(column.columnName()));
+            }
+        } else {
+            projection.append(", ").append(dialect.quote(definition.valueColumn()));
+        }
         StringBuilder sql = new StringBuilder("select ")
-                .append(dialect.quote(definition.ownerForeignKeyColumn())).append(", ")
-                .append(dialect.quote(definition.valueColumn()))
+                .append(projection)
                 .append(" from ").append(dialect.quote(definition.tableName()))
                 .append(" where ").append(dialect.quote(definition.ownerForeignKeyColumn())).append(" in (");
         for (int i = 0; i < ownerIds.size(); i++) {

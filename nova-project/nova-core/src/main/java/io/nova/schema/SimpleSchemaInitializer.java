@@ -323,12 +323,18 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
             for (PersistentProperty property : metadata.elementCollectionProperties()) {
                 ElementCollectionInfo info = property.elementCollectionInfo();
                 Class<?> ownerIdType = metadata.idProperty().javaType();
+                List<CollectionTableDefinition.ElementColumn> elementColumns = new ArrayList<>();
+                for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
+                    elementColumns.add(new CollectionTableDefinition.ElementColumn(
+                            column.columnName(), column.columnType()));
+                }
                 byName.putIfAbsent(info.collectionTableName(), new CollectionTableDefinition(
                         info.collectionTableName(),
                         info.ownerForeignKeyColumn(),
                         ownerIdType,
                         info.valueColumn(),
-                        info.valueType()));
+                        info.valueType(),
+                        elementColumns));
             }
         }
         return new ArrayList<>(byName.values());

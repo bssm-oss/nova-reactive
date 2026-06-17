@@ -1,9 +1,11 @@
 package io.nova.metadata;
 
+import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
@@ -56,10 +58,45 @@ class EntityMetadataFactoryElementCollectionTest {
     }
 
     @Test
-    void rejectsEmbeddableElement() {
+    void expandsEmbeddableElementIntoMultipleColumns() {
+        EntityMetadata<EmbeddableElements> metadata = factory.getEntityMetadata(EmbeddableElements.class);
+        PersistentProperty points = metadata.findProperty("points").orElseThrow();
+
+        assertTrue(points.elementCollection());
+        ElementCollectionInfo info = points.elementCollectionInfo();
+        assertTrue(info.embeddable());
+        assertEquals(Point.class, info.valueType());
+        // 펼친 컬럼: x, y (선언 순서 보존, naming strategy 적용).
+        assertEquals(2, info.embeddableColumns().size());
+        assertEquals(List.of(naming.columnName("x"), naming.columnName("y")),
+                info.embeddableColumns().stream().map(ElementCollectionInfo.EmbeddableColumn::columnName).toList());
+        assertEquals(Integer.class, info.embeddableColumns().get(0).columnType());
+        // 여전히 컬럼 없는 marker라 owner 테이블 컬럼에 섞이지 않는다.
+        assertFalse(metadata.columnMappedProperties().stream().anyMatch(p -> p.propertyName().equals("points")));
+    }
+
+    @Test
+    void honorsAttributeOverrideAndColumnOnEmbeddableElement() {
+        EntityMetadata<Trip> metadata = factory.getEntityMetadata(Trip.class);
+        ElementCollectionInfo info = metadata.findProperty("legs").orElseThrow().elementCollectionInfo();
+        assertTrue(info.embeddable());
+        // @Column(name="from_city") on the component, @AttributeOverride(name="to", column="dest") on the field.
+        assertEquals(List.of("from_city", "dest"),
+                info.embeddableColumns().stream().map(ElementCollectionInfo.EmbeddableColumn::columnName).toList());
+    }
+
+    @Test
+    void rejectsEmbeddableElementWithDuplicateColumnNames() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(EmbeddableElements.class));
-        assertTrue(error.getMessage().contains("Embeddable"));
+                () -> factory.getEntityMetadata(DuplicateColumns.class));
+        assertTrue(error.getMessage().contains("duplicate column"));
+    }
+
+    @Test
+    void rejectsNestedEmbeddedInEmbeddableElement() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(NestedEmbeddedElement.class));
+        assertTrue(error.getMessage().contains("nested @Embedded"));
     }
 
     @Test
@@ -115,5 +152,57 @@ class EntityMetadataFactoryElementCollectionTest {
 
         @ElementCollection
         String single;
+    }
+
+    @Embeddable
+    static class Leg {
+        @Column(name = "from_city")
+        String from;
+        String to;
+    }
+
+    @Entity
+    @Table(name = "trip")
+    static class Trip {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @AttributeOverride(name = "to", column = @Column(name = "dest"))
+        List<Leg> legs;
+    }
+
+    @Embeddable
+    static class Clashing {
+        @Column(name = "same")
+        String a;
+        @Column(name = "same")
+        String b;
+    }
+
+    @Entity
+    @Table(name = "duplicate_columns")
+    static class DuplicateColumns {
+        @Id
+        Long id;
+
+        @ElementCollection
+        List<Clashing> values;
+    }
+
+    @Embeddable
+    static class Outer {
+        @Embedded
+        Point inner;
+    }
+
+    @Entity
+    @Table(name = "nested_embedded_element")
+    static class NestedEmbeddedElement {
+        @Id
+        Long id;
+
+        @ElementCollection
+        List<Outer> outers;
     }
 }

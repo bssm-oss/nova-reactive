@@ -208,10 +208,19 @@ public interface SqlRenderer {
     }
 
     /**
-     * collection table에 (owner, value) row 1건을 추가하는 구문.
+     * collection table에 (owner, value) row 1건을 추가하는 구문(기본 타입 원소).
      */
     default SqlStatement insertCollectionRow(CollectionTableDefinition definition, Object ownerId, Object value) {
         throw new UnsupportedOperationException("insertCollectionRow is not supported by this SqlRenderer");
+    }
+
+    /**
+     * {@code @Embeddable} 원소 collection table에 (owner, col1, col2, ...) row 1건을 추가하는 구문.
+     * {@code columnValues}는 {@link CollectionTableDefinition#elementColumns()} 순서와 정렬되어야 한다.
+     */
+    default SqlStatement insertEmbeddableCollectionRow(
+            CollectionTableDefinition definition, Object ownerId, java.util.List<Object> columnValues) {
+        throw new UnsupportedOperationException("insertEmbeddableCollectionRow is not supported by this SqlRenderer");
     }
 
     /**

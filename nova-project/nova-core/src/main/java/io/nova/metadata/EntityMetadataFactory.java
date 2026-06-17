@@ -1996,12 +1996,6 @@ public final class EntityMetadataFactory {
         }
         boolean usesSet = Set.class.isAssignableFrom(fieldType);
         Class<?> elementType = resolveElementCollectionElementType(entityType, field);
-        if (elementType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @ElementCollection of @Embeddable type " + elementType.getName()
-                            + " is not supported yet; use a basic element type");
-        }
         String location = entityType.getName() + "." + field.getName();
         String ownerIdColumn = resolveSingleIdColumn(entityType, location);
         CollectionTable collectionTable = field.getAnnotation(CollectionTable.class);
@@ -2012,12 +2006,22 @@ public final class EntityMetadataFactory {
                 collectionTable == null ? null : collectionTable.joinColumns(),
                 namingStrategy.joinColumnName(entityType.getSimpleName(), ownerIdColumn),
                 location + " @CollectionTable.joinColumns");
-        Column column = field.getAnnotation(Column.class);
-        String valueColumn = column != null && !column.name().isBlank()
-                ? column.name()
-                : namingStrategy.columnName(field.getName());
-        ElementCollectionInfo info = new ElementCollectionInfo(
-                tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet);
+        ElementCollectionInfo info;
+        if (elementType.isAnnotationPresent(Embeddable.class)) {
+            // @Embeddable 원소: 원소 타입의 영속 필드들을 collection table 다중 컬럼으로 펼친다. owner FK는 단일
+            // 컬럼으로 유지하고, value 컬럼은 의미가 없으므로 빈 문자열을 둔다.
+            List<ElementCollectionInfo.EmbeddableColumn> embeddableColumns =
+                    expandEmbeddableElementColumns(elementType, field, location, ownerForeignKeyColumn);
+            info = new ElementCollectionInfo(
+                    tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns);
+        } else {
+            Column column = field.getAnnotation(Column.class);
+            String valueColumn = column != null && !column.name().isBlank()
+                    ? column.name()
+                    : namingStrategy.columnName(field.getName());
+            info = new ElementCollectionInfo(
+                    tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet);
+        }
         return new PersistentProperty(
                 field, field.getName(), "", fieldType,
                 false, false, true, 255, 0, 0,
@@ -2030,6 +2034,81 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 info);
+    }
+
+    /**
+     * {@code @ElementCollection}의 {@code @Embeddable} 원소 타입을 collection table 컬럼들로 펼친다. 각 영속
+     * 필드 1개당 컬럼 1개를 만들며, 컬럼 이름은 {@code @Column(name=...)} → {@code @AttributeOverride}(이
+     * {@code @ElementCollection} 필드에 선언된 것) → naming strategy 순으로 결정한다. v1은 평평한 {@code @Embeddable}만
+     * 지원하므로 중첩 {@code @Embedded}/{@code @EmbeddedId}, {@code @Id}, 관계 어노테이션, {@code @ElementCollection}을
+     * 가진 컴포넌트는 fail-fast로 거부한다.
+     * <p>
+     * column uniqueness: 펼친 컬럼들 사이의 중복과 owner FK 컬럼과의 충돌을 한 자리에서 검증해 silent dedupe로
+     * 인한 데이터 손상을 막는다.
+     */
+    private List<ElementCollectionInfo.EmbeddableColumn> expandEmbeddableElementColumns(
+            Class<?> elementType, Field collectionField, String location, String ownerForeignKeyColumn) {
+        if (hasIdAnnotatedField(elementType)) {
+            throw new IllegalArgumentException(
+                    "@Embeddable type " + elementType.getName()
+                            + " used as @ElementCollection element on " + location
+                            + " must not declare @Id-annotated fields");
+        }
+        // 이 @ElementCollection 필드의 @AttributeOverride(name=field, column=@Column(name=...))를 모은다.
+        Map<String, String> columnOverrides = new java.util.HashMap<>();
+        for (AttributeOverride override : collectionField.getAnnotationsByType(AttributeOverride.class)) {
+            columnOverrides.put(override.name(), override.column().name());
+        }
+        List<ElementCollectionInfo.EmbeddableColumn> columns = new ArrayList<>();
+        java.util.Set<String> seenColumnNames = new java.util.HashSet<>();
+        seenColumnNames.add(ownerForeignKeyColumn);
+        for (Field subField : elementType.getDeclaredFields()) {
+            if (isNotPersistable(subField)) {
+                continue;
+            }
+            if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
+                throw new IllegalArgumentException(
+                        location + " @ElementCollection of @Embeddable " + elementType.getName()
+                                + " component " + subField.getName()
+                                + " must be a simple field; nested @Embedded is not supported");
+            }
+            if (subField.isAnnotationPresent(Id.class)
+                    || subField.isAnnotationPresent(OneToMany.class)
+                    || subField.isAnnotationPresent(ManyToOne.class)
+                    || subField.isAnnotationPresent(OneToOne.class)
+                    || subField.isAnnotationPresent(ManyToMany.class)
+                    || subField.isAnnotationPresent(ElementCollection.class)) {
+                throw new IllegalArgumentException(
+                        location + " @ElementCollection of @Embeddable " + elementType.getName()
+                                + " component " + subField.getName()
+                                + " must be a simple value field (no @Id/relationship/@ElementCollection)");
+            }
+            String overridden = columnOverrides.get(subField.getName());
+            Column column = subField.getAnnotation(Column.class);
+            String columnName;
+            if (overridden != null && !overridden.isBlank()) {
+                columnName = overridden;
+            } else if (column != null && !column.name().isBlank()) {
+                columnName = column.name();
+            } else {
+                columnName = namingStrategy.columnName(subField.getName());
+            }
+            if (!seenColumnNames.add(columnName)) {
+                throw new IllegalArgumentException(
+                        location + " @ElementCollection of @Embeddable " + elementType.getName()
+                                + " produces duplicate column '" + columnName
+                                + "'; use @AttributeOverride or @Column to disambiguate");
+            }
+            subField.setAccessible(true);
+            columns.add(new ElementCollectionInfo.EmbeddableColumn(
+                    subField, columnName, wrapPrimitiveType(subField.getType())));
+        }
+        if (columns.isEmpty()) {
+            throw new IllegalArgumentException(
+                    location + " @ElementCollection of @Embeddable " + elementType.getName()
+                            + " has no persistent fields to map as collection columns");
+        }
+        return columns;
     }
 
     private static Class<?> resolveElementCollectionElementType(Class<?> entityType, Field field) {

@@ -61,14 +61,22 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String createCollectionTable(CollectionTableDefinition definition) {
-        // owner FK는 not null, value 컬럼은 nullable(컬렉션 원소 null 허용 가능). 복합 PK는 두지 않는다
+        // owner FK는 not null, value 컬럼(들)은 nullable(컬렉션 원소 null 허용 가능). 복합 PK는 두지 않는다
         // (List 중복 원소 허용). owner FK 조회 성능은 후속 인덱스 단계에서 보강.
         String ownerColumn = dialect.quote(definition.ownerForeignKeyColumn())
                 + " " + fkColumnType(definition.ownerForeignKeyType()) + " not null";
-        String valueColumnDef = dialect.quote(definition.valueColumn())
-                + " " + elementColumnType(definition.valueType());
+        List<String> columns = new ArrayList<>();
+        columns.add(ownerColumn);
+        if (definition.embeddable()) {
+            // @Embeddable 원소: 펼친 필드마다 컬럼 1개를 emit한다(owner FK, field1, field2, ...).
+            for (CollectionTableDefinition.ElementColumn column : definition.elementColumns()) {
+                columns.add(dialect.quote(column.columnName()) + " " + elementColumnType(column.columnType()));
+            }
+        } else {
+            columns.add(dialect.quote(definition.valueColumn()) + " " + elementColumnType(definition.valueType()));
+        }
         return "create table " + dialect.quote(definition.tableName())
-                + " (" + ownerColumn + ", " + valueColumnDef + ")";
+                + " (" + String.join(", ", columns) + ")";
     }
 
     /**

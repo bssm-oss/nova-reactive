@@ -314,23 +314,64 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.empty();
         }
         CollectionTableDefinition definition = collectionDefinition(ownerMetadata, info);
-        List<Object> values = new ArrayList<>();
-        for (Object value : (Iterable<?>) collection) {
-            if (value != null) {
-                values.add(value);
-            }
-        }
         SqlRenderer renderer = dialect.sqlRenderer();
         Mono<Void> delete = sqlExecutor.execute(renderer.deleteCollectionRows(definition, ownerId)).then();
-        if (values.isEmpty()) {
+        List<Object> elements = new ArrayList<>();
+        for (Object value : (Iterable<?>) collection) {
+            if (value != null) {
+                elements.add(value);
+            }
+        }
+        if (elements.isEmpty()) {
             return delete;
         }
-        return delete.thenMany(Flux.fromIterable(values)
+        if (info.embeddable()) {
+            // @Embeddable 원소: 각 원소의 펼친 필드 값들을 한 row의 다중 컬럼으로 insert한다.
+            return delete.thenMany(Flux.fromIterable(elements)
+                            .concatMap(element -> {
+                                List<Object> columnValues = readEmbeddableColumnValues(info, element);
+                                return sqlExecutor.execute(
+                                        renderer.insertEmbeddableCollectionRow(definition, ownerId, columnValues));
+                            }))
+                    .then();
+        }
+        return delete.thenMany(Flux.fromIterable(elements)
                         .concatMap(value -> sqlExecutor.execute(renderer.insertCollectionRow(definition, ownerId, value))))
                 .then();
     }
 
+    /**
+     * {@code @Embeddable} 원소 인스턴스에서 펼친 컬럼 순서대로 필드 값을 읽어 리스트로 만든다.
+     * {@link ElementCollectionInfo#embeddableColumns()} 순서와 정렬된다.
+     */
+    private static List<Object> readEmbeddableColumnValues(ElementCollectionInfo info, Object element) {
+        List<Object> values = new ArrayList<>(info.embeddableColumns().size());
+        for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
+            try {
+                values.add(column.field().get(element));
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException(
+                        "Cannot read @Embeddable @ElementCollection field " + column.field().getName(), exception);
+            }
+        }
+        return values;
+    }
+
     private CollectionTableDefinition collectionDefinition(EntityMetadata<?> ownerMetadata, ElementCollectionInfo info) {
+        if (info.embeddable()) {
+            List<CollectionTableDefinition.ElementColumn> elementColumns = new ArrayList<>();
+            for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
+                elementColumns.add(new CollectionTableDefinition.ElementColumn(
+                        column.columnName(), column.columnType()));
+            }
+            return new CollectionTableDefinition(
+                    info.collectionTableName(),
+                    info.ownerForeignKeyColumn(),
+                    wrapPrimitive(ownerMetadata.idProperty().javaType()),
+                    info.valueColumn(),
+                    info.valueType(),
+                    elementColumns);
+        }
         return new CollectionTableDefinition(
                 info.collectionTableName(),
                 info.ownerForeignKeyColumn(),
@@ -1314,11 +1355,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         SqlRenderer renderer = dialect.sqlRenderer();
         List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
+        boolean embeddable = info.embeddable();
         return sqlExecutor.queryMany(
                         renderer.selectCollectionRows(definition, ownerIds),
-                        row -> new Object[]{
-                                row.get(info.ownerForeignKeyColumn(), ownerIdType),
-                                row.get(info.valueColumn(), valueType)})
+                        row -> {
+                            Object ownerKey = row.get(info.ownerForeignKeyColumn(), ownerIdType);
+                            Object element = embeddable
+                                    ? instantiateEmbeddableElement(info, row)
+                                    : row.get(info.valueColumn(), valueType);
+                            return new Object[]{ownerKey, element};
+                        })
                 .collectList()
                 .doOnNext(rows -> {
                     LinkedHashMap<Object, List<Object>> valuesByOwner = new LinkedHashMap<>();
@@ -1333,6 +1379,33 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     }
                 })
                 .then();
+    }
+
+    /**
+     * {@code @Embeddable} 원소 타입의 인스턴스를 collection table row에서 만든다 — no-arg 생성자로 인스턴스화한 뒤
+     * 펼친 각 컬럼 값을 해당 필드에 바인딩한다. {@link ElementCollectionInfo#valueType()}이 원소 타입이다.
+     */
+    private static Object instantiateEmbeddableElement(ElementCollectionInfo info, RowAccessor row) {
+        Object element;
+        try {
+            java.lang.reflect.Constructor<?> constructor = info.valueType().getDeclaredConstructor();
+            constructor.setAccessible(true);
+            element = constructor.newInstance();
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "@Embeddable @ElementCollection element type " + info.valueType().getName()
+                            + " must expose a no-args constructor", exception);
+        }
+        for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
+            Object value = row.get(column.columnName(), column.columnType());
+            try {
+                column.field().set(element, value);
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException(
+                        "Cannot set @Embeddable @ElementCollection field " + column.field().getName(), exception);
+            }
+        }
+        return element;
     }
 
     private <P, C> Mono<Void> hydrateChildSpec(List<P> parents, FetchGroup.FetchSpec<P, C> spec) {
