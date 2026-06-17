@@ -163,7 +163,8 @@ class AbstractSqlRendererInheritanceTest {
                 .filter(s -> s.metadata().entityType() == JCar.class).findFirst().orElseThrow();
         String ddl = dialect.schemaGenerator().createJoinedSubtypeTable(layout, car, false);
         // FK PK는 IDENTITY가 아니라 plain bigint primary key여야 한다(값을 루트에서 받는다).
-        assertEquals("create table j_car (id bigint not null primary key, doors integer not null)", ddl);
+        // primitive int(doors)는 @Column(nullable=false)이 없으면 Nova 관례상 nullable이다(not null 아님).
+        assertEquals("create table j_car (id bigint not null primary key, doors integer)", ddl);
     }
 
     @Test
@@ -171,7 +172,7 @@ class AbstractSqlRendererInheritanceTest {
         EntityMetadata<TCar> car = factory.getEntityMetadata(TCar.class);
         String ddl = dialect.schemaGenerator().createTable(car);
         assertEquals(
-                "create table t_car (id bigint primary key, name varchar(255), doors integer not null)",
+                "create table t_car (id bigint primary key, name varchar(255), doors integer)",
                 ddl);
     }
 

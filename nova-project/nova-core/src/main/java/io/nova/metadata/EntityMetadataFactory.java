@@ -858,8 +858,10 @@ public final class EntityMetadataFactory {
             Class<?> declaringType, Field field, String generatorName) {
         TableGenerator tg = field.getAnnotation(TableGenerator.class);
         if (tg == null || !tg.name().equals(generatorName)) {
-            TableGenerator onType = declaringType.getAnnotation(TableGenerator.class);
-            tg = onType != null && onType.name().equals(generatorName) ? onType : null;
+            // @TableGenerator는 @Inherited가 아니므로 getAnnotation은 superclass를 보지 않는다. 상속 매핑
+            // (JOINED/TABLE_PER_CLASS)에서 @TableGenerator를 abstract root에 두고 @Id를 subtype이 상속하는
+            // 경우를 위해, 엔티티 클래스 계층을 직접 거슬러 올라가며 이름이 일치하는 정의를 찾는다.
+            tg = findTableGeneratorInHierarchy(declaringType, generatorName);
         }
         String table = DEFAULT_TABLE_GENERATOR_TABLE;
         String pkColumnName = DEFAULT_TABLE_GENERATOR_PK_COLUMN;
@@ -897,6 +899,21 @@ public final class EntityMetadataFactory {
         validateGeneratorIdentifier(declaringType, field, "pkColumnValue", pkColumnValue);
         return new TableGeneratorInfo(
                 table, pkColumnName, valueColumnName, pkColumnValue, initialValue, allocationSize);
+    }
+
+    /**
+     * 엔티티 클래스 계층(자신 → superclass …)을 거슬러 올라가며 {@code name}이 일치하는 {@code @TableGenerator}를
+     * 찾는다. {@code @MappedSuperclass}/상속 root에 선언된 generator를 subtype에서 해석하기 위함이다.
+     * 일치가 없으면 {@code null}(JPA 기본값으로 fallback).
+     */
+    private static TableGenerator findTableGeneratorInHierarchy(Class<?> type, String generatorName) {
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            TableGenerator candidate = current.getAnnotation(TableGenerator.class);
+            if (candidate != null && candidate.name().equals(generatorName)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private static void validateGeneratorIdentifier(
