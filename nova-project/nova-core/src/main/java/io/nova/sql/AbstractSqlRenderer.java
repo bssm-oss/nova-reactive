@@ -1097,8 +1097,13 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     @Override
     public SqlStatement selectJoinedPolymorphic(InheritanceLayout layout, QuerySpec querySpec) {
         RenderContext context = new RenderContext();
-        StringBuilder sql = new StringBuilder("select ").append(joinedSelectList(layout))
-                .append(" from ").append(joinedFromClause(layout));
+        // JOIN을 파생 테이블(derived table)로 감싼다. 루트 ⟕ 서브타입 JOIN을 그대로 두면 루트 PK 컬럼(id)이
+        // 모든 서브타입 FK PK로도 존재해 WHERE/ORDER BY의 비한정 컬럼이 ambiguous-column 에러를 낸다. select
+        // list가 컬럼을 평탄한 단일 alias 집합(중복 제거, 서브타입 id 제외)으로 투영하므로, 그 결과를 감싼
+        // 파생 테이블에 대해 predicate/sort를 걸면 모호성이 사라진다(TABLE_PER_CLASS 다형 SELECT와 동일 방식).
+        String inner = "select " + joinedSelectList(layout) + " from " + joinedFromClause(layout);
+        StringBuilder sql = new StringBuilder("select * from (").append(inner).append(") as ")
+                .append(dialect.quote("nova_joined"));
         appendWhereClause(sql, context, layout.rootMetadata(), querySpec.predicate(), querySpec.cursor());
         appendOrderBy(sql, layout.rootMetadata(), querySpec.sort());
         appendPage(sql, context, querySpec);

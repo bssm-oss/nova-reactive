@@ -83,6 +83,23 @@ class InheritanceJoinedIntegrationTest {
     }
 
     @Test
+    void polymorphicFindAllWithPredicateOnRootColumnFiltersWithoutAmbiguousColumn() {
+        // C1 회귀: 루트 타입 다형 findAll에 WHERE/정렬을 걸면 과거엔 id가 모든 서브타입 테이블에 존재해
+        // ambiguous-column DB 에러가 났다. 파생 테이블 wrapping으로 정상 동작해야 한다.
+        Long carId = support.operations().save(new JCar("ada", 4)).map(JVehicle::getId).block();
+        support.operations().save(new JTruck("ben", 12.5)).block();
+
+        List<JVehicle> result = new ArrayList<>();
+        StepVerifier.create(support.operations().findAll(
+                        JVehicle.class, QuerySpec.empty().where(io.nova.query.Criteria.eq("id", carId))))
+                .recordWith(() -> result)
+                .expectNextCount(1)
+                .verifyComplete();
+        assertEquals(carId, result.get(0).getId());
+        assertEquals(JCar.class, result.get(0).getClass());
+    }
+
+    @Test
     void concreteTypeFindAllReturnsOnlyThatSubtype() {
         support.operations().save(new JCar("ada", 4))
                 .then(support.operations().save(new JTruck("ben", 12.5)))

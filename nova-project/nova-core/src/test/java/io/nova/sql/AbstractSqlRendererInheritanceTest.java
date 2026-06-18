@@ -73,13 +73,24 @@ class AbstractSqlRendererInheritanceTest {
     void joinedPolymorphicSelectJoinsAllSubtypeTables() {
         InheritanceLayout layout = joinedLayout();
         SqlStatement statement = dialect.sqlRenderer().selectJoinedPolymorphic(layout, QuerySpec.empty());
+        // JOIN을 파생 테이블로 감싸 평탄한 컬럼 집합을 노출한다(WHERE/ORDER BY의 ambiguous-column 방지).
         assertEquals(
-                "select j_vehicle.id as id, j_vehicle.name as name, j_car.doors as doors,"
+                "select * from (select j_vehicle.id as id, j_vehicle.name as name, j_car.doors as doors,"
                         + " j_truck.payload as payload, j_vehicle.kind as kind"
                         + " from j_vehicle left join j_car on j_vehicle.id = j_car.id"
-                        + " left join j_truck on j_vehicle.id = j_truck.id",
+                        + " left join j_truck on j_vehicle.id = j_truck.id) as nova_joined",
                 statement.sql());
         assertTrue(statement.bindings().isEmpty());
+    }
+
+    @Test
+    void joinedPolymorphicSelectFiltersAgainstDerivedTableWithoutAmbiguousColumn() {
+        InheritanceLayout layout = joinedLayout();
+        SqlStatement statement = dialect.sqlRenderer().selectJoinedPolymorphic(
+                layout, QuerySpec.empty().where(io.nova.query.Criteria.eq("id", 7L)));
+        // id가 파생 테이블(nova_joined)의 단일 컬럼이라 비한정으로 써도 모호하지 않다(C1 회귀 가드).
+        assertTrue(statement.sql().endsWith(") as nova_joined where id = ?"), statement.sql());
+        assertEquals(java.util.List.of(7L), statement.bindings());
     }
 
     @Test
