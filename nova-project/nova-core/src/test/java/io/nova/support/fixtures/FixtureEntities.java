@@ -28,6 +28,7 @@ import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.PostLoad;
 import jakarta.persistence.SequenceGenerator;
+import jakarta.persistence.TableGenerator;
 import jakarta.persistence.PostPersist;
 import jakarta.persistence.PostRemove;
 import jakarta.persistence.PostUpdate;
@@ -1977,6 +1978,22 @@ public final class FixtureEntities {
         }
     }
 
+    /**
+     * {@code @OneToMany(cascade = CascadeType.ALL)} metadata 추출 검증용 fixture. ALL은 persist/remove/merge를
+     * 모두 켠다. child 측 {@code @ManyToOne} property 이름은 {@code parent}로 mappedBy와 짝을 이룬다.
+     */
+    @Entity
+    public static class OneToManyCascadeAllEntity {
+        @Id
+        private Long id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = SampleAccount.class, cascade = CascadeType.ALL)
+        private java.util.List<SampleAccount> children;
+
+        public OneToManyCascadeAllEntity() {
+        }
+    }
+
     @Entity
     public static class ColumnInsertableFalseEntity {
         @Id
@@ -2025,13 +2042,85 @@ public final class FixtureEntities {
         }
     }
 
+    /**
+     * {@code @GeneratedValue(TABLE)}만 선언하고 {@code @TableGenerator}는 생략한 엔티티. generator 테이블/컬럼은
+     * Nova 기본값(nova_sequences / sequence_name / next_val)을, pkColumnValue는 필드 이름("id")을 쓴다.
+     */
     @Entity
+    @Table(name = "table_gen_default_accounts")
     public static class GeneratedValueTableEntity {
         @Id
         @GeneratedValue(strategy = GenerationType.TABLE)
         private Long id;
 
+        @Column(name = "email")
+        private String email;
+
         public GeneratedValueTableEntity() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public void setEmail(String email) {
+            this.email = email;
+        }
+    }
+
+    /**
+     * {@code @GeneratedValue(TABLE, generator="acct_gen")}이 같은 필드의 {@code @TableGenerator}를 가리키는
+     * 엔티티. 모든 속성(table, pkColumnName, valueColumnName, pkColumnValue, initialValue, allocationSize)을
+     * 명시적으로 지정한다.
+     */
+    @Entity
+    @Table(name = "table_gen_explicit_accounts")
+    public static class ExplicitTableGeneratorEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.TABLE, generator = "acct_gen")
+        @TableGenerator(
+                name = "acct_gen",
+                table = "id_generators",
+                pkColumnName = "gen_name",
+                valueColumnName = "gen_value",
+                pkColumnValue = "account_id",
+                initialValue = 100,
+                allocationSize = 5)
+        private Long id;
+
+        @Column(name = "email")
+        private String email;
+
+        public ExplicitTableGeneratorEntity() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public void setEmail(String email) {
+            this.email = email;
+        }
+    }
+
+    /**
+     * {@code @GeneratedValue(TABLE)}을 지원하지 않는 식별자 타입(String)에 단 엔티티. fail-fast 검증용.
+     */
+    @Entity
+    public static class InvalidTableGeneratorIdTypeEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.TABLE)
+        private String id;
+
+        public InvalidTableGeneratorIdTypeEntity() {
         }
     }
 

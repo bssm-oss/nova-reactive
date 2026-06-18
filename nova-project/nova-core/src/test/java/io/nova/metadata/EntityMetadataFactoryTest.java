@@ -33,6 +33,8 @@ import io.nova.support.fixtures.FixtureEntities.ColumnUpdatableFalseEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
 import io.nova.support.fixtures.FixtureEntities.GeneratedValueTableEntity;
+import io.nova.support.fixtures.FixtureEntities.ExplicitTableGeneratorEntity;
+import io.nova.support.fixtures.FixtureEntities.InvalidTableGeneratorIdTypeEntity;
 import io.nova.support.fixtures.FixtureEntities.TransientFieldEntity;
 import io.nova.support.fixtures.FixtureEntities.MappedSubEntity;
 import io.nova.support.fixtures.FixtureEntities.JoinColumnAttributesEntity;
@@ -40,6 +42,8 @@ import io.nova.support.fixtures.FixtureEntities.NamedSequenceGeneratorEntity;
 import io.nova.support.fixtures.FixtureEntities.OverriddenAddressEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneCascadeEntity;
 import io.nova.support.fixtures.FixtureEntities.ManyToOneLazyEntity;
+import io.nova.support.fixtures.FixtureEntities.AuthorWithBooksAnnotated;
+import io.nova.support.fixtures.FixtureEntities.OneToManyCascadeAllEntity;
 import io.nova.support.fixtures.FixtureEntities.OneToManyOrphanRemovalEntity;
 import io.nova.support.fixtures.FixtureEntities.IndexWithUnknownColumnEntity;
 import io.nova.support.fixtures.FixtureEntities.JsonAccount;
@@ -1082,12 +1086,42 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void rejectsOneToManyOrphanRemoval() {
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(OneToManyOrphanRemovalEntity.class)
-        );
-        assertTrue(exception.getMessage().contains("orphanRemoval=true"));
+    void capturesOneToManyOrphanRemovalMetadata() {
+        EntityMetadata<OneToManyOrphanRemovalEntity> metadata =
+                factory.getEntityMetadata(OneToManyOrphanRemovalEntity.class);
+
+        PersistentProperty children = metadata.findProperty("children").orElseThrow();
+        assertTrue(children.oneToMany());
+        assertNotNull(children.oneToManyInfo(), "orphanRemoval=true이면 OneToManyInfo가 채워져야 한다");
+        assertTrue(children.orphanRemoval());
+        assertFalse(children.cascadePersistChildren(), "cascade 미지정이면 persist 전파는 false");
+        assertFalse(children.cascadeRemoveChildren());
+    }
+
+    @Test
+    void capturesOneToManyCascadeMetadata() {
+        EntityMetadata<OneToManyCascadeAllEntity> metadata =
+                factory.getEntityMetadata(OneToManyCascadeAllEntity.class);
+
+        PersistentProperty children = metadata.findProperty("children").orElseThrow();
+        assertTrue(children.oneToMany());
+        assertNotNull(children.oneToManyInfo());
+        assertTrue(children.cascadePersistChildren(), "CascadeType.ALL은 persist 전파를 켠다");
+        assertTrue(children.cascadeRemoveChildren(), "CascadeType.ALL은 remove 전파를 켠다");
+        assertFalse(children.orphanRemoval(), "orphanRemoval 미지정이면 false");
+    }
+
+    @Test
+    void leavesMarkerOnlyOneToManyWithoutCascadeInfo() {
+        EntityMetadata<AuthorWithBooksAnnotated> metadata =
+                factory.getEntityMetadata(AuthorWithBooksAnnotated.class);
+
+        PersistentProperty books = metadata.findProperty("books").orElseThrow();
+        assertTrue(books.oneToMany());
+        assertNull(books.oneToManyInfo(), "cascade/orphanRemoval 없는 marker-only @OneToMany는 OneToManyInfo가 null");
+        assertFalse(books.cascadePersistChildren());
+        assertFalse(books.cascadeRemoveChildren());
+        assertFalse(books.orphanRemoval());
     }
 
     @Test
@@ -1174,11 +1208,45 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void rejectsGeneratedValueTableStrategy() {
+    void recognizesTableGenerationStrategyWithJpaDefaults() {
+        EntityMetadata<GeneratedValueTableEntity> metadata =
+                factory.getEntityMetadata(GeneratedValueTableEntity.class);
+
+        assertEquals(GenerationType.TABLE, metadata.idProperty().generationType());
+        assertTrue(metadata.idProperty().tableGenerated());
+        assertTrue(metadata.tableGenerator().isPresent());
+        io.nova.metadata.TableGeneratorInfo info = metadata.tableGenerator().orElseThrow();
+        // @TableGenerator 미지정 → Nova 기본 테이블/컬럼, pkColumnValue는 필드 이름.
+        assertEquals("nova_sequences", info.table());
+        assertEquals("sequence_name", info.pkColumnName());
+        assertEquals("next_val", info.valueColumnName());
+        assertEquals("id", info.pkColumnValue());
+        assertEquals(0L, info.initialValue());
+        assertEquals(1, info.allocationSize());
+    }
+
+    @Test
+    void recognizesExplicitTableGeneratorAttributes() {
+        EntityMetadata<ExplicitTableGeneratorEntity> metadata =
+                factory.getEntityMetadata(ExplicitTableGeneratorEntity.class);
+
+        assertEquals(GenerationType.TABLE, metadata.idProperty().generationType());
+        io.nova.metadata.TableGeneratorInfo info = metadata.tableGenerator().orElseThrow();
+        assertEquals("id_generators", info.table());
+        assertEquals("gen_name", info.pkColumnName());
+        assertEquals("gen_value", info.valueColumnName());
+        assertEquals("account_id", info.pkColumnValue());
+        assertEquals(100L, info.initialValue());
+        assertEquals(5, info.allocationSize());
+    }
+
+    @Test
+    void rejectsTableStrategyOnUnsupportedIdType() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(GeneratedValueTableEntity.class)
+                () -> factory.getEntityMetadata(InvalidTableGeneratorIdTypeEntity.class)
         );
-        assertTrue(exception.getMessage().contains("@GeneratedValue(TABLE)"));
+        assertTrue(exception.getMessage().contains("Unsupported @GeneratedValue(TABLE) id type"));
+        assertTrue(exception.getMessage().contains("java.lang.String"));
     }
 }

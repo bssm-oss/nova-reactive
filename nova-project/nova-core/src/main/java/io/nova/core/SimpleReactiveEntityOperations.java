@@ -9,12 +9,14 @@ import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.InheritanceInfo;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
+import io.nova.query.Condition;
 import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
 import io.nova.query.Page;
@@ -86,6 +88,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * internal kill-switch로, 끄면 트랜잭션 동작이 세션 도입 이전과 byte-for-byte 동일하다(테스트/회귀 가드용).
      */
     private final boolean sessionEnabled;
+    /**
+     * {@code @GeneratedValue(TABLE)} generator별 in-memory 블록 할당 캐시. 키는 generator 테이블+행을
+     * 식별하는 문자열, 값은 현재 블록 커서다. allocationSize만큼 한 번에 DB에서 확보한 뒤 블록을 소진할
+     * 때까지 DB 왕복 없이 식별자를 발급한다(Hibernate pooled 방식). 트랜잭션 전파가 아니라 단순 할당 캐시이므로
+     * ThreadLocal 금지 규약에 저촉되지 않는다.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, TableGeneratorBlock> tableGeneratorBlocks =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * {@code @GeneratedValue(TABLE)} 블록 할당 시 compare-and-set 재시도 상한. 경합으로 CAS가 연속 실패하면
+     * 이 횟수만큼만 재시도하고 fail-fast 한다(라이브락 방지). 정상 경합에서는 1~2회 안에 성공한다.
+     */
+    private static final int TABLE_GENERATOR_MAX_CAS_ATTEMPTS = 64;
 
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
@@ -139,10 +155,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     ? saveStateless(metadata, entity)
                     : saveInSession(session.get(), metadata, entity);
             // entity row 저장 후 owning @ManyToMany link table과 @ElementCollection collection table을
-            // full-replace로 동기화한다(둘 다 없으면 무비용).
+            // full-replace로 동기화하고(둘 다 없으면 무비용), 마지막으로 @OneToMany(cascade=PERSIST/orphanRemoval)
+            // child 전파를 reactive 순서대로 수행한다 — parent INSERT/UPDATE가 먼저 완료되어야 child FK 바인딩이 성립한다.
             return saved.flatMap(persisted ->
                     reconcileManyToManyLinks(metadata, persisted)
                             .then(reconcileElementCollections(metadata, persisted))
+                            .then(cascadeSaveOneToManyChildren(metadata, persisted))
                             .thenReturn(persisted));
         });
     }
@@ -314,29 +332,210 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.empty();
         }
         CollectionTableDefinition definition = collectionDefinition(ownerMetadata, info);
-        List<Object> values = new ArrayList<>();
-        for (Object value : (Iterable<?>) collection) {
-            if (value != null) {
-                values.add(value);
-            }
-        }
         SqlRenderer renderer = dialect.sqlRenderer();
         Mono<Void> delete = sqlExecutor.execute(renderer.deleteCollectionRows(definition, ownerId)).then();
-        if (values.isEmpty()) {
+        List<Object> elements = new ArrayList<>();
+        for (Object value : (Iterable<?>) collection) {
+            if (value != null) {
+                elements.add(value);
+            }
+        }
+        if (elements.isEmpty()) {
             return delete;
         }
-        return delete.thenMany(Flux.fromIterable(values)
+        if (info.embeddable()) {
+            // @Embeddable 원소: 각 원소의 펼친 필드 값들을 한 row의 다중 컬럼으로 insert한다.
+            return delete.thenMany(Flux.fromIterable(elements)
+                            .concatMap(element -> {
+                                List<Object> columnValues = readEmbeddableColumnValues(info, element);
+                                return sqlExecutor.execute(
+                                        renderer.insertEmbeddableCollectionRow(definition, ownerId, columnValues));
+                            }))
+                    .then();
+        }
+        return delete.thenMany(Flux.fromIterable(elements)
                         .concatMap(value -> sqlExecutor.execute(renderer.insertCollectionRow(definition, ownerId, value))))
                 .then();
     }
 
+    /**
+     * {@code @Embeddable} 원소 인스턴스에서 펼친 컬럼 순서대로 필드 값을 읽어 리스트로 만든다.
+     * {@link ElementCollectionInfo#embeddableColumns()} 순서와 정렬된다.
+     */
+    private static List<Object> readEmbeddableColumnValues(ElementCollectionInfo info, Object element) {
+        List<Object> values = new ArrayList<>(info.embeddableColumns().size());
+        for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
+            try {
+                values.add(column.field().get(element));
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException(
+                        "Cannot read @Embeddable @ElementCollection field " + column.field().getName(), exception);
+            }
+        }
+        return values;
+    }
+
     private CollectionTableDefinition collectionDefinition(EntityMetadata<?> ownerMetadata, ElementCollectionInfo info) {
+        if (info.embeddable()) {
+            List<CollectionTableDefinition.ElementColumn> elementColumns = new ArrayList<>();
+            for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
+                elementColumns.add(new CollectionTableDefinition.ElementColumn(
+                        column.columnName(), column.columnType()));
+            }
+            return new CollectionTableDefinition(
+                    info.collectionTableName(),
+                    info.ownerForeignKeyColumn(),
+                    wrapPrimitive(ownerMetadata.idProperty().javaType()),
+                    info.valueColumn(),
+                    info.valueType(),
+                    elementColumns);
+        }
         return new CollectionTableDefinition(
                 info.collectionTableName(),
                 info.ownerForeignKeyColumn(),
                 wrapPrimitive(ownerMetadata.idProperty().javaType()),
                 info.valueColumn(),
                 info.valueType());
+    }
+
+    /**
+     * {@code @OneToMany(cascade=PERSIST/ALL/MERGE)} 또는 {@code orphanRemoval=true}가 지정된 컬렉션을 parent
+     * save 직후 전파한다. cascade-persist는 각 child의 mappedBy {@code @ManyToOne} 역참조를 parent로 바인딩한 뒤
+     * {@link #save(Object)}로 재귀 저장하고(현재 Reactor Context=동일 세션/트랜잭션이 그대로 전파된다),
+     * orphanRemoval은 child를 모두 저장한 다음 "이 parent FK를 가지면서 현재 컬렉션에 없는" child를 삭제한다.
+     * cascade도 orphanRemoval도 없는 marker-only {@code @OneToMany}는 무비용으로 건너뛴다.
+     */
+    private <T> Mono<Void> cascadeSaveOneToManyChildren(EntityMetadata<T> metadata, T parent) {
+        List<PersistentProperty> cascading = metadata.oneToManyProperties().stream()
+                .filter(property -> property.cascadePersistChildren() || property.orphanRemoval())
+                .toList();
+        if (cascading.isEmpty()) {
+            return Mono.empty();
+        }
+        Object parentId = metadata.idProperty().read(parent);
+        if (parentId == null) {
+            return Mono.error(new IllegalStateException(
+                    "parent id must be set before cascading @OneToMany children on "
+                            + metadata.entityType().getName()));
+        }
+        return Flux.fromIterable(cascading)
+                .concatMap(property -> cascadeOneToManyProperty(metadata, property, parent, parentId))
+                .then();
+    }
+
+    private <T> Mono<Void> cascadeOneToManyProperty(
+            EntityMetadata<T> metadata, PersistentProperty property, T parent, Object parentId) {
+        if (property.oneToManyTargetType() == null) {
+            return Mono.error(new IllegalStateException(
+                    metadata.entityType().getName() + "." + property.propertyName()
+                            + " @OneToMany(cascade/orphanRemoval) requires targetEntity to be specified"));
+        }
+        EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+        PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
+        Object collection;
+        try {
+            collection = property.field().get(parent);
+        } catch (IllegalAccessException exception) {
+            return Mono.error(new IllegalStateException(
+                    "Cannot read @OneToMany collection " + property.propertyName(), exception));
+        }
+        if (collection == null) {
+            // null 컬렉션 = 이번 save에서 이 관계를 관리하지 않음 → cascade/orphanRemoval 모두 no-op.
+            return Mono.empty();
+        }
+        List<Object> children = new ArrayList<>();
+        for (Object child : (Iterable<?>) collection) {
+            if (child != null) {
+                children.add(child);
+            }
+        }
+        Mono<Void> persistChildren = Mono.empty();
+        if (property.cascadePersistChildren()) {
+            persistChildren = Flux.fromIterable(children)
+                    .concatMap(child -> {
+                        // child의 역방향 @ManyToOne을 parent로 바인딩 → child save 시 FK 컬럼이 parent id로 채워진다.
+                        bindParentReference(mappedByProperty, child, parent);
+                        return save(child);
+                    })
+                    .then();
+        }
+        if (!property.orphanRemoval()) {
+            return persistChildren;
+        }
+        // orphanRemoval: child를 모두 저장(=현재 컬렉션 child의 id 확정)한 뒤, 이 parent FK를 가지면서
+        // 현재 컬렉션에 남지 않은 child row를 삭제한다. M2M/@ElementCollection의 full-replace reconcile과 동일 철학.
+        // removeOrphans가 retainedIds를 동기적으로 읽으므로 반드시 subscription 시점(=persistChildren 완료 후)에
+        // 호출되도록 Mono.defer로 감싼다. 그러지 않으면 assembly 시점에 아직 save 전인 child의 id(null)를 읽어
+        // retainedIds가 비고, 결국 "이 parent의 child 전부 삭제"로 붕괴해 방금 저장한 child까지 지워진다.
+        return persistChildren.then(
+                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parentId, children)).then());
+    }
+
+    /**
+     * orphanRemoval 삭제를 발행한다. child 측 mappedBy FK 컬럼이 parentId이면서 현재 컬렉션에 남은 child id가
+     * 아닌 row를 모두 삭제한다. 현재 컬렉션이 비었으면 이 parent에 속한 child를 전부 삭제한다.
+     */
+    private Mono<Long> removeOrphans(
+            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId, List<Object> children) {
+        List<Object> retainedIds = new ArrayList<>();
+        for (Object child : children) {
+            Object childId = childMetadata.idProperty().read(child);
+            if (childId != null) {
+                retainedIds.add(childId);
+            }
+        }
+        Condition fkMatches = Criteria.eq(mappedByProperty.propertyName(), parentId);
+        QuerySpec spec = retainedIds.isEmpty()
+                ? QuerySpec.empty().where(fkMatches)
+                : QuerySpec.empty().where(Criteria.and(
+                        fkMatches,
+                        Criteria.notIn(childMetadata.idProperty().propertyName(), retainedIds)));
+        return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec));
+    }
+
+    /**
+     * {@code @OneToMany(mappedBy)}가 가리키는 child 측 owning {@code @ManyToOne} property를 찾는다. 존재하지
+     * 않거나 {@code @ManyToOne}이 아니면 fail-fast로 거부한다({@link AnnotationFetchGroupBuilder}의 FK 해석과 대칭).
+     */
+    private PersistentProperty resolveMappedByProperty(
+            EntityMetadata<?> parentMetadata, PersistentProperty oneToMany, EntityMetadata<?> childMetadata) {
+        String mappedBy = oneToMany.oneToManyMappedBy();
+        PersistentProperty owning = childMetadata.findProperty(mappedBy)
+                .orElseThrow(() -> new IllegalStateException(
+                        parentMetadata.entityType().getName() + "." + oneToMany.propertyName()
+                                + " @OneToMany(mappedBy=\"" + mappedBy + "\") does not exist on "
+                                + childMetadata.entityType().getName()));
+        if (!owning.manyToOne()) {
+            throw new IllegalStateException(
+                    parentMetadata.entityType().getName() + "." + oneToMany.propertyName()
+                            + " @OneToMany(mappedBy=\"" + mappedBy + "\") refers to a non-@ManyToOne property on "
+                            + childMetadata.entityType().getName());
+        }
+        // cascade/orphanRemoval 경로는 child의 단일 @Id(idProperty + 단일 컬럼 Criteria)에 의존한다. 복합키
+        // (@EmbeddedId/@IdClass) child는 orphan 삭제·FK 매칭 의미가 정의되지 않아 silent 오작동 위험이 있으므로
+        // fail-fast로 거부한다(다른 복합키 관계 제약과 대칭).
+        if (childMetadata.hasCompositeId()) {
+            throw new IllegalStateException(
+                    parentMetadata.entityType().getName() + "." + oneToMany.propertyName()
+                            + " @OneToMany(cascade/orphanRemoval) is not supported when the child "
+                            + childMetadata.entityType().getName()
+                            + " has a composite id; persist/remove such children explicitly");
+        }
+        return owning;
+    }
+
+    /**
+     * child의 owning {@code @ManyToOne} 필드에 parent 인스턴스를 직접 set한다. child save 시 그 property의
+     * {@link PersistentProperty#read(Object)}가 parent의 @Id를 추출해 FK 컬럼에 바인딩한다.
+     */
+    private static void bindParentReference(PersistentProperty mappedByProperty, Object child, Object parent) {
+        try {
+            mappedByProperty.field().set(child, parent);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot bind @ManyToOne back-reference " + mappedByProperty.propertyName()
+                            + " on cascaded child", exception);
+        }
     }
 
     private <T> Mono<T> insertPath(EntityMetadata<T> metadata, T entity) {
@@ -366,6 +565,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private <T> Mono<T> insertNew(EntityMetadata<T> metadata, T entity) {
+        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            // JOINED: 루트 INSERT(생성 id 확보) → 서브타입 INSERT(같은 id를 FK로). reactive 순서로 보장한다.
+            return insertJoined(metadata, entity);
+        }
         if (metadata.hasCompositeId()) {
             // @EmbeddedId 복합키는 generation 전략이 없는 application-assigned이므로 그대로 INSERT한다.
             SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
@@ -373,6 +576,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         PersistentProperty idProperty = metadata.idProperty();
         GenerationType strategy = idProperty.generationType();
+        if (strategy == GenerationType.TABLE) {
+            return nextTableGeneratorId(idProperty)
+                    .flatMap(value -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(coerceIdType(idProperty, value)));
+                        SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
+                        return sqlExecutor.execute(statement).thenReturn(entity);
+                    });
+        }
         if (strategy == GenerationType.SEQUENCE) {
             Class<?> idColumnType = wrapPrimitive(idProperty.javaType());
             return sqlExecutor.queryOne(
@@ -402,6 +613,180 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return sqlExecutor.execute(statement).thenReturn(entity);
     }
 
+    /**
+     * JOINED 상속 INSERT — 루트 테이블 INSERT를 먼저 발행해 id를 확정한 뒤(IDENTITY는 생성 키 회수,
+     * SEQUENCE/TABLE/UUID는 사전 할당), 서브타입 테이블 INSERT를 같은 id를 FK로 발행한다. 두 INSERT는
+     * {@link Mono#flatMap}으로 순차 보장되며, 동일 트랜잭션/세션 커넥션에서 실행된다(Reactor Context 전파).
+     */
+    private <T> Mono<T> insertJoined(EntityMetadata<T> metadata, T entity) {
+        io.nova.metadata.InheritanceLayout layout =
+                metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        InheritanceLayout.ConcreteSubtype subtype = resolveConcreteSubtype(layout, metadata.entityType());
+        SqlRenderer renderer = dialect.sqlRenderer();
+        PersistentProperty idProperty = metadata.idProperty();
+        GenerationType strategy = idProperty.generationType();
+        String rootTable = metadata.inheritance().rootTableName();
+
+        Mono<T> rootInserted;
+        if (strategy == GenerationType.IDENTITY) {
+            SqlStatement rootInsert = renderer.insertJoinedRoot(
+                    metadata, rootTable, layout.rootTableColumns(), entity);
+            rootInserted = sqlExecutor.executeAndReturnGeneratedKey(
+                            rootInsert, idProperty.columnName(), wrapPrimitive(idProperty.javaType()))
+                    .map(key -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(key));
+                        return entity;
+                    })
+                    .defaultIfEmpty(entity);
+        } else if (strategy == GenerationType.SEQUENCE) {
+            Class<?> idColumnType = wrapPrimitive(idProperty.javaType());
+            rootInserted = sqlExecutor.queryOne(
+                            new SqlStatement(dialect.sequenceNextValueSql(idProperty.generator()), List.of()),
+                            row -> row.get(Dialect.SEQUENCE_VALUE_COLUMN, idColumnType))
+                    .flatMap(value -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(value));
+                        SqlStatement rootInsert = renderer.insertJoinedRoot(
+                                metadata, rootTable, layout.rootTableColumns(), entity);
+                        return sqlExecutor.execute(rootInsert).thenReturn(entity);
+                    });
+        } else if (strategy == GenerationType.TABLE) {
+            rootInserted = nextTableGeneratorId(idProperty)
+                    .flatMap(value -> {
+                        idProperty.write(entity, idProperty.toPropertyValue(coerceIdType(idProperty, value)));
+                        SqlStatement rootInsert = renderer.insertJoinedRoot(
+                                metadata, rootTable, layout.rootTableColumns(), entity);
+                        return sqlExecutor.execute(rootInsert).thenReturn(entity);
+                    });
+        } else {
+            if (strategy == GenerationType.UUID) {
+                assignUuidId(idProperty, entity);
+            }
+            SqlStatement rootInsert = renderer.insertJoinedRoot(
+                    metadata, rootTable, layout.rootTableColumns(), entity);
+            rootInserted = sqlExecutor.execute(rootInsert).thenReturn(entity);
+        }
+        return rootInserted.flatMap(saved -> {
+            SqlStatement subInsert = renderer.insertJoinedSubtype(metadata, subtype.ownTableColumns(), saved);
+            return sqlExecutor.execute(subInsert).thenReturn(saved);
+        });
+    }
+
+    /**
+     * layout에서 주어진 구체 타입의 {@link InheritanceLayout.ConcreteSubtype}을 찾는다.
+     */
+    private static InheritanceLayout.ConcreteSubtype resolveConcreteSubtype(
+            io.nova.metadata.InheritanceLayout layout, Class<?> concreteType) {
+        for (InheritanceLayout.ConcreteSubtype subtype : layout.subtypes()) {
+            if (subtype.metadata().entityType() == concreteType) {
+                return subtype;
+            }
+        }
+        throw new IllegalStateException(
+                concreteType.getName() + " is not a registered concrete subtype of "
+                        + layout.info().root().getName());
+    }
+
+    /**
+     * {@code @GeneratedValue(TABLE)} 식별자의 다음 값을 발급한다. 먼저 in-memory 블록에서 발급을 시도하고,
+     * 블록이 비었으면 {@link #allocateTableGeneratorBlock}으로 generator 카운터에서 read-then-compare-and-set
+     * 으로 새 블록을 원자 확보한다. 트랜잭션 없는(autocommit·커넥션 분리) 기본 save 경로에서도 두 saver가 같은
+     * 블록을 발급받지 못한다. 발급된 값은 항상 {@code long}이며 호출자가 식별자 타입으로 coerce 한다.
+     */
+    private Mono<Long> nextTableGeneratorId(PersistentProperty idProperty) {
+        io.nova.metadata.TableGeneratorInfo info = idProperty.tableGeneratorInfo();
+        String key = info.table() + ' ' + info.pkColumnName() + ' ' + info.pkColumnValue();
+        TableGeneratorBlock block = tableGeneratorBlocks.computeIfAbsent(key, k -> new TableGeneratorBlock());
+        Long ready = block.next();
+        if (ready != null) {
+            return Mono.just(ready);
+        }
+        return allocateTableGeneratorBlock(info, block, TABLE_GENERATOR_MAX_CAS_ATTEMPTS);
+    }
+
+    /**
+     * generator 카운터에서 allocationSize만큼의 식별자 블록을 read-then-compare-and-set으로 확보하고 첫
+     * 식별자를 발급한다. 현재 값을 select한 뒤 그 값을 기대치로 CAS UPDATE를 시도하고, 0행이면(다른 saver가
+     * 먼저 카운터를 옮김) 다시 읽어 재시도한다. CAS 성공 블록은 항상 서로소이므로 in-memory 블록 overwrite
+     * 경합이 있어도 중복 id는 생기지 않는다(최악의 경우 id gap만 발생 — JPA가 허용). 매 시도는 한 번 더
+     * {@link TableGeneratorBlock#next()}를 확인해 다른 subscriber가 방금 refill 한 경우 DB 왕복을 피한다.
+     */
+    private Mono<Long> allocateTableGeneratorBlock(
+            io.nova.metadata.TableGeneratorInfo info, TableGeneratorBlock block, int attemptsLeft) {
+        Long ready = block.next();
+        if (ready != null) {
+            return Mono.just(ready);
+        }
+        if (attemptsLeft <= 0) {
+            return Mono.error(new IllegalStateException(
+                    "@GeneratedValue(TABLE) generator '" + info.pkColumnValue() + "' on " + info.table()
+                            + " could not allocate an id block after repeated compare-and-set contention"));
+        }
+        int allocationSize = info.allocationSize();
+        SqlStatement select = new SqlStatement(
+                dialect.tableGeneratorSelectSql(
+                        info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue()),
+                List.of());
+        return sqlExecutor.queryOne(select, row -> row.get(Dialect.TABLE_GENERATOR_VALUE_COLUMN, Long.class))
+                .flatMap(current -> {
+                    long next = current + allocationSize;
+                    SqlStatement cas = new SqlStatement(
+                            dialect.tableGeneratorCompareAndSetSql(
+                                    info.table(), info.valueColumnName(), info.pkColumnName(),
+                                    info.pkColumnValue(), current, next),
+                            List.of());
+                    return sqlExecutor.execute(cas).flatMap(affected -> {
+                        if (affected != null && affected == 1L) {
+                            // CAS 승리: [current, next-1] 블록 확보. refillAndNext가 newValue=next에서 첫 id=current를 역산한다.
+                            return Mono.just(block.refillAndNext(next, allocationSize));
+                        }
+                        // CAS 패배: 새 현재값을 다시 읽어 서로소 블록을 재확보한다.
+                        return allocateTableGeneratorBlock(info, block, attemptsLeft - 1);
+                    });
+                });
+    }
+
+    /**
+     * generator가 발급한 {@code long} 값을 식별자 property의 선언 타입(Long/Integer)으로 변환한다.
+     */
+    private static Object coerceIdType(PersistentProperty idProperty, long value) {
+        Class<?> type = wrapPrimitive(idProperty.javaType());
+        if (type == Integer.class) {
+            return Math.toIntExact(value);
+        }
+        return value;
+    }
+
+    /**
+     * {@code @GeneratedValue(TABLE)} generator의 in-memory 블록 커서. 한 번의 DB 왕복으로 확보한 식별자
+     * 블록을 소진할 때까지 lock 없는 {@code synchronized} 임계구역에서 순차 발급한다. 발급량이 작고 임계구역이
+     * 짧아 경합 비용은 무시 가능하며, reactive 흐름과 무관하게 정확한 단조 증가 식별자를 보장한다.
+     */
+    private static final class TableGeneratorBlock {
+        private long nextId;
+        private long blockMax;
+        private boolean exhausted = true;
+
+        synchronized Long next() {
+            if (exhausted || nextId > blockMax) {
+                return null;
+            }
+            return nextId++;
+        }
+
+        /**
+         * 증가-우선 모델: 카운터를 allocationSize만큼 증가시킨 결과({@code newValue})로 블록
+         * [newValue - allocationSize, newValue - 1]을 채우고 첫 식별자를 발급한다. seed가 initialValue이므로
+         * 첫 블록의 첫 id는 정확히 initialValue다.
+         */
+        synchronized long refillAndNext(long newValue, int allocationSize) {
+            long first = newValue - allocationSize;
+            this.blockMax = newValue - 1;
+            this.nextId = first + 1;
+            this.exhausted = false;
+            return first;
+        }
+    }
+
     private static void assignUuidId(PersistentProperty idProperty, Object entity) {
         if (idProperty.read(entity) != null) {
             return;
@@ -418,6 +803,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private <T> Mono<T> updateExisting(EntityMetadata<T> metadata, T entity) {
+        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            // JOINED: 루트 테이블(공통 컬럼)과 서브타입 테이블(자기 컬럼)을 각각 UPDATE한다. @Version 미지원.
+            return updateJoined(metadata, entity);
+        }
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
         SqlStatement statement = dialect.sqlRenderer().update(metadata, entity);
         if (versionProperty == null) {
@@ -437,6 +826,25 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     versionProperty.write(entity, next);
                     return Mono.just(entity);
                 });
+    }
+
+    /**
+     * JOINED 상속 UPDATE — 루트 테이블(공통 컬럼) UPDATE 후 서브타입 테이블(자기 컬럼) UPDATE를 순차 발행한다.
+     * 서브타입에 자기 컬럼이 없으면 그 단계는 건너뛴다.
+     */
+    private <T> Mono<T> updateJoined(EntityMetadata<T> metadata, T entity) {
+        InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        InheritanceLayout.ConcreteSubtype subtype = resolveConcreteSubtype(layout, metadata.entityType());
+        SqlRenderer renderer = dialect.sqlRenderer();
+        String rootTable = metadata.inheritance().rootTableName();
+        SqlStatement rootUpdate = renderer.updateJoinedRoot(
+                metadata, rootTable, layout.rootTableColumns(), entity);
+        Mono<Long> updateRoot = sqlExecutor.execute(rootUpdate);
+        SqlStatement subUpdate = renderer.updateJoinedSubtype(metadata, subtype.ownTableColumns(), entity);
+        if (subUpdate == null) {
+            return updateRoot.thenReturn(entity);
+        }
+        return updateRoot.then(sqlExecutor.execute(subUpdate)).thenReturn(entity);
     }
 
     @Override
@@ -640,9 +1048,50 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@code findById(.., FetchGroup)}처럼 merge된 group을 따로 hydrate할 호출자가 사용한다.
      */
     private <T, ID> Mono<T> findByIdInternal(EntityMetadata<T> metadata, ID id) {
+        if (isMultiTableInheritance(metadata)) {
+            return findByIdMultiTable(metadata, id);
+        }
         EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryOne(
                 selectByIdStatement(render, id), row -> mapRowDispatching(metadata, render, row));
+    }
+
+    /**
+     * 이 메타데이터가 JOINED 또는 TABLE_PER_CLASS 상속에 속하는지 — 즉 단일-테이블 SELECT 대신 멀티테이블
+     * JOIN/UNION 경로를 타야 하는지 판정한다.
+     */
+    private static boolean isMultiTableInheritance(EntityMetadata<?> metadata) {
+        return metadata.hasInheritance()
+                && (metadata.inheritance().joined() || metadata.inheritance().tablePerClass());
+    }
+
+    /**
+     * JOINED/TABLE_PER_CLASS findById — 루트 다형 SELECT(JOIN/UNION)로 한 row를 조회해 discriminator로 구체
+     * 타입을 판별·인스턴스화한다. 구체 타입으로 조회한 경우(루트가 아닌 경우) 결과 타입이 일치하지 않으면
+     * 빈 결과로 만든다(예: findById(Car, truckId)).
+     */
+    @SuppressWarnings("unchecked")
+    private <T, ID> Mono<T> findByIdMultiTable(EntityMetadata<T> metadata, ID id) {
+        InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        SqlStatement statement = layout.info().joined()
+                ? dialect.sqlRenderer().selectJoinedById(layout, id)
+                : dialect.sqlRenderer().selectTablePerClassById(layout, id);
+        Mono<Object> result = sqlExecutor.queryOne(
+                statement, row -> (Object) mapRowForInheritance(layout, row));
+        if (metadata.isInheritanceRoot()) {
+            return result.map(entity -> (T) entity);
+        }
+        return result.filter(entity -> metadata.entityType().isInstance(entity)).map(entity -> (T) entity);
+    }
+
+    /**
+     * 다형 row(JOIN/UNION 결과)에서 discriminator 값을 읽어 구체 서브타입을 해석하고 그 타입으로 매핑한다.
+     */
+    private Object mapRowForInheritance(InheritanceLayout layout, RowAccessor row) {
+        InheritanceInfo info = layout.info();
+        Object discriminator = row.get(info.discriminatorColumn(), wrapPrimitive(info.discriminatorJavaType()));
+        EntityMetadata<?> concrete = metadataFactory.resolveSubtype(layout.rootMetadata(), discriminator);
+        return mapRow(concrete, row);
     }
 
     /**
@@ -664,9 +1113,31 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * annotation-driven 자동 hydration을 거치지 않고 일반 SELECT만 발행하는 내부 경로.
      */
     private <T> Flux<T> findAllInternal(EntityMetadata<T> metadata, QuerySpec querySpec) {
+        if (isMultiTableInheritance(metadata)) {
+            return findAllMultiTable(metadata, querySpec);
+        }
         EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryMany(
                 dialect.sqlRenderer().select(render, normalize(querySpec)), row -> mapRowDispatching(metadata, render, row));
+    }
+
+    /**
+     * JOINED/TABLE_PER_CLASS findAll — 루트 다형 SELECT(JOIN/UNION)로 전 서브타입 row를 조회해 각 row의
+     * discriminator로 구체 타입을 인스턴스화한다. 구체 타입으로 조회한 경우 그 타입 인스턴스만 남긴다.
+     */
+    @SuppressWarnings("unchecked")
+    private <T> Flux<T> findAllMultiTable(EntityMetadata<T> metadata, QuerySpec querySpec) {
+        InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        QuerySpec spec = normalize(querySpec);
+        SqlStatement statement = layout.info().joined()
+                ? dialect.sqlRenderer().selectJoinedPolymorphic(layout, spec)
+                : dialect.sqlRenderer().selectTablePerClassPolymorphic(layout, spec);
+        Flux<Object> rows = sqlExecutor.queryMany(
+                statement, row -> (Object) mapRowForInheritance(layout, row));
+        if (metadata.isInheritanceRoot()) {
+            return rows.map(entity -> (T) entity);
+        }
+        return rows.filter(entity -> metadata.entityType().isInstance(entity)).map(entity -> (T) entity);
     }
 
     /**
@@ -724,6 +1195,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         String idPropertyName = metadata.idProperty().propertyName();
         QuerySpec spec = QuerySpec.empty().where(Criteria.in(idPropertyName, materialized));
+        if (isMultiTableInheritance(metadata)) {
+            return findAllMultiTable(metadata, spec);
+        }
         EntityMetadata<?> render = renderMetadata(metadata);
         return sqlExecutor.queryMany(
                 dialect.sqlRenderer().select(render, spec), row -> mapRowDispatching(metadata, render, row));
@@ -742,8 +1216,39 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         } catch (RuntimeException exception) {
             return Mono.error(exception);
         }
-        return performDelete(metadata, entity, id)
+        // @OneToMany(cascade=REMOVE/ALL) 또는 orphanRemoval=true child를 parent 삭제 전에 먼저 삭제해 FK 의존성을
+        // 만족시킨다. 전파할 관계가 없으면 무비용. 그 뒤 parent를 삭제한다(reactive 순서 보장).
+        return cascadeRemoveOneToManyChildren(metadata, id)
+                .then(performDelete(metadata, entity, id))
                 .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata));
+    }
+
+    /**
+     * parent 삭제 시 {@code @OneToMany(cascade=REMOVE/ALL)} 또는 {@code orphanRemoval=true} child를 child 측
+     * mappedBy FK 컬럼으로 일괄 삭제한다. cascade-remove 관계가 없으면 무비용. parentId가 null이면 호출자가 이미
+     * 가드했으므로 여기서는 비어 있지 않다고 가정한다.
+     */
+    private <T> Mono<Void> cascadeRemoveOneToManyChildren(EntityMetadata<T> metadata, Object parentId) {
+        List<PersistentProperty> removing = metadata.oneToManyProperties().stream()
+                .filter(property -> property.cascadeRemoveChildren() || property.orphanRemoval())
+                .toList();
+        if (removing.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(removing)
+                .concatMap(property -> {
+                    if (property.oneToManyTargetType() == null) {
+                        return Mono.error(new IllegalStateException(
+                                metadata.entityType().getName() + "." + property.propertyName()
+                                        + " @OneToMany(cascade=REMOVE/orphanRemoval) requires targetEntity to be specified"));
+                    }
+                    EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+                    PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
+                    QuerySpec spec = QuerySpec.empty()
+                            .where(Criteria.eq(mappedByProperty.propertyName(), parentId));
+                    return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec));
+                })
+                .then();
     }
 
     /**
@@ -752,6 +1257,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * optimistic locking 실패는 {@code Mono.error}로 끝나므로 {@code @PostRemove}가 호출되지 않는다.
      */
     private <T> Mono<Long> performDelete(EntityMetadata<T> metadata, T entity, Object id) {
+        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            return deleteJoined(metadata, id);
+        }
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         Optional<PersistentProperty> version = metadata.versionProperty();
         if (softDelete.isPresent() && version.isPresent()) {
@@ -798,10 +1306,31 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id));
     }
 
+    /**
+     * JOINED 상속 DELETE — 서브타입 테이블 row를 먼저 삭제하고(FK 의존성), 그 다음 루트 테이블 row를 삭제한다.
+     * 영향 행 수는 루트 DELETE의 결과를 돌려준다(논리적으로 "엔티티 1건 삭제").
+     */
+    private Mono<Long> deleteJoined(EntityMetadata<?> metadata, Object id) {
+        InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+        SqlRenderer renderer = dialect.sqlRenderer();
+        Mono<Long> deleteSubtype = metadata.isInheritanceRoot()
+                // 루트 타입으로 삭제 시 어느 서브타입 테이블에 있는지 모르므로 전 서브타입 테이블에서 시도한다.
+                ? Flux.fromIterable(layout.subtypes())
+                        .filter(subtype -> subtype.metadata().entityType() != layout.info().root())
+                        .concatMap(subtype -> sqlExecutor.execute(
+                                renderer.deleteJoinedSubtypeById(subtype.metadata(), id)))
+                        .reduce(0L, Long::sum)
+                : sqlExecutor.execute(renderer.deleteJoinedSubtypeById(metadata, id));
+        return deleteSubtype.then(sqlExecutor.execute(renderer.deleteJoinedRootById(layout, id)));
+    }
+
     @Override
     public <T, ID> Mono<Long> deleteById(Class<T> entityType, ID id) {
         Objects.requireNonNull(id, "id must not be null");
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            return deleteJoined(metadata, id);
+        }
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         if (softDelete.isPresent()) {
             Object deletedAt = currentTimeFor(softDelete.get());
@@ -1314,11 +1843,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         SqlRenderer renderer = dialect.sqlRenderer();
         List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
+        boolean embeddable = info.embeddable();
         return sqlExecutor.queryMany(
                         renderer.selectCollectionRows(definition, ownerIds),
-                        row -> new Object[]{
-                                row.get(info.ownerForeignKeyColumn(), ownerIdType),
-                                row.get(info.valueColumn(), valueType)})
+                        row -> {
+                            Object ownerKey = row.get(info.ownerForeignKeyColumn(), ownerIdType);
+                            Object element = embeddable
+                                    ? instantiateEmbeddableElement(info, row)
+                                    : row.get(info.valueColumn(), valueType);
+                            return new Object[]{ownerKey, element};
+                        })
                 .collectList()
                 .doOnNext(rows -> {
                     LinkedHashMap<Object, List<Object>> valuesByOwner = new LinkedHashMap<>();
@@ -1333,6 +1867,33 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     }
                 })
                 .then();
+    }
+
+    /**
+     * {@code @Embeddable} 원소 타입의 인스턴스를 collection table row에서 만든다 — no-arg 생성자로 인스턴스화한 뒤
+     * 펼친 각 컬럼 값을 해당 필드에 바인딩한다. {@link ElementCollectionInfo#valueType()}이 원소 타입이다.
+     */
+    private static Object instantiateEmbeddableElement(ElementCollectionInfo info, RowAccessor row) {
+        Object element;
+        try {
+            java.lang.reflect.Constructor<?> constructor = info.valueType().getDeclaredConstructor();
+            constructor.setAccessible(true);
+            element = constructor.newInstance();
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "@Embeddable @ElementCollection element type " + info.valueType().getName()
+                            + " must expose a no-args constructor", exception);
+        }
+        for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
+            Object value = row.get(column.columnName(), column.columnType());
+            try {
+                column.field().set(element, value);
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException(
+                        "Cannot set @Embeddable @ElementCollection field " + column.field().getName(), exception);
+            }
+        }
+        return element;
     }
 
     private <P, C> Mono<Void> hydrateChildSpec(List<P> parents, FetchGroup.FetchSpec<P, C> spec) {
@@ -1455,12 +2016,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private <T> Flux<T> saveGroup(GroupKey key, List<T> entities) {
         @SuppressWarnings("unchecked")
         EntityMetadata<T> metadata = (EntityMetadata<T>) metadataFactory.getEntityMetadata(key.entityClass());
+        if (metadata.hasInheritance()
+                && (metadata.inheritance().joined() || metadata.inheritance().tablePerClass())) {
+            // JOINED/TABLE_PER_CLASS는 멀티테이블 INSERT/UPDATE 순서가 필요해 단일 batch SQL로 묶을 수 없다.
+            // 단건 save() 경로로 폴백한다(insertJoined/updateJoined가 올바른 멀티테이블 순서를 보장).
+            return Flux.fromIterable(entities).concatMap(this::save);
+        }
         if (!key.isNew() && metadata.versionProperty().isPresent()) {
             // optimistic locking은 entity별 affected rows 검증이 필요해 batch 경로로 묶을 수 없다.
             return Flux.fromIterable(entities).concatMap(this::save);
         }
         if (key.isNew() && metadata.idProperty().generationType() == GenerationType.SEQUENCE) {
             // SEQUENCE는 엔티티별 nextval 조회가 필요해 batch로 묶을 수 없다.
+            return Flux.fromIterable(entities).concatMap(this::save);
+        }
+        if (key.isNew() && metadata.idProperty().generationType() == GenerationType.TABLE) {
+            // TABLE은 엔티티별 generator 테이블 increment가 필요해 batch로 묶을 수 없다(SEQUENCE와 동일).
             return Flux.fromIterable(entities).concatMap(this::save);
         }
         if (key.isNew() && metadata.idProperty().generationType() == GenerationType.UUID) {

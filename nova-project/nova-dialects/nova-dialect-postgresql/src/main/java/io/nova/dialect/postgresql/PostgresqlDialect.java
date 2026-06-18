@@ -79,6 +79,24 @@ public final class PostgresqlDialect implements Dialect {
         return "select nextval('" + sequenceName + "') as " + Dialect.SEQUENCE_VALUE_COLUMN;
     }
 
+    @Override
+    public String tableGeneratorIncrementSql(
+            String table, String valueColumn, String pkColumn, String pkColumnValue, long increment) {
+        // PostgreSQL은 표준 UPDATE ... SET v = v + n WHERE pk = '...'을 그대로 받아들인다. 식별자는 dialect
+        // quoting("...")으로 감싸고, pkColumnValue는 EntityMetadataFactory가 식별자 패턴으로 검증한다.
+        return "update " + quote(table)
+                + " set " + quote(valueColumn) + " = " + quote(valueColumn) + " + " + increment
+                + " where " + quote(pkColumn) + " = '" + pkColumnValue + "'";
+    }
+
+    @Override
+    public String tableGeneratorSelectSql(
+            String table, String valueColumn, String pkColumn, String pkColumnValue) {
+        return "select " + quote(valueColumn) + " as " + Dialect.TABLE_GENERATOR_VALUE_COLUMN
+                + " from " + quote(table)
+                + " where " + quote(pkColumn) + " = '" + pkColumnValue + "'";
+    }
+
     private static final class PostgresqlSqlRenderer extends AbstractSqlRenderer {
         private PostgresqlSqlRenderer(Dialect dialect) {
             super(dialect);

@@ -76,6 +76,17 @@ public final class PersistentProperty {
      * marker이며, 값들은 별도 테이블에 저장되고 hydration 단계에서 주입된다. 값 컬렉션이 아니면 {@code null}.
      */
     private final ElementCollectionInfo elementCollectionInfo;
+    /**
+     * {@code @OneToMany}의 cascade / orphanRemoval 메타데이터. cascade도 orphanRemoval도 없는 marker-only
+     * {@code @OneToMany}와 다른 모든 property는 {@code null}이다. {@link io.nova.core.SimpleReactiveEntityOperations}의
+     * save/delete/flush 경로가 이 값을 보고 child 전파 여부를 결정한다.
+     */
+    private final OneToManyInfo oneToManyInfo;
+    /**
+     * {@code @GeneratedValue(TABLE)} + {@code @TableGenerator} 매핑 메타데이터. {@code @Id} property에만
+     * 설정되며, 그 외에는 {@code null}이다. generator 테이블 DDL/seed와 다음 값 취득에서 사용된다.
+     */
+    private final TableGeneratorInfo tableGeneratorInfo;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -114,7 +125,9 @@ public final class PersistentProperty {
             Class<?> converterColumnType,
             boolean inverseToOne,
             ManyToManyInfo manyToManyInfo,
-            ElementCollectionInfo elementCollectionInfo
+            ElementCollectionInfo elementCollectionInfo,
+            OneToManyInfo oneToManyInfo,
+            TableGeneratorInfo tableGeneratorInfo
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -157,6 +170,8 @@ public final class PersistentProperty {
         this.inverseToOne = inverseToOne;
         this.manyToManyInfo = manyToManyInfo;
         this.elementCollectionInfo = elementCollectionInfo;
+        this.oneToManyInfo = oneToManyInfo;
+        this.tableGeneratorInfo = tableGeneratorInfo;
     }
 
     /**
@@ -204,7 +219,9 @@ public final class PersistentProperty {
                 converterColumnType,
                 inverseToOne,
                 manyToManyInfo,
-                elementCollectionInfo
+                elementCollectionInfo,
+                oneToManyInfo,
+                tableGeneratorInfo
         );
     }
 
@@ -254,7 +271,9 @@ public final class PersistentProperty {
                 converterColumnType,
                 inverseToOne,
                 manyToManyInfo,
-                elementCollectionInfo
+                elementCollectionInfo,
+                oneToManyInfo,
+                tableGeneratorInfo
         );
     }
 
@@ -500,6 +519,35 @@ public final class PersistentProperty {
     }
 
     /**
+     * {@code @OneToMany}의 cascade / orphanRemoval 메타데이터. cascade도 orphanRemoval도 지정되지 않은
+     * marker-only {@code @OneToMany}와 관계가 아닌 property는 {@code null}을 반환한다.
+     */
+    public OneToManyInfo oneToManyInfo() {
+        return oneToManyInfo;
+    }
+
+    /**
+     * 이 {@code @OneToMany}가 parent save() 시 child를 자동 저장(cascade PERSIST/ALL)해야 하는지.
+     */
+    public boolean cascadePersistChildren() {
+        return oneToManyInfo != null && (oneToManyInfo.cascadePersist() || oneToManyInfo.cascadeMerge());
+    }
+
+    /**
+     * 이 {@code @OneToMany}가 parent delete() 시 child를 자동 삭제(cascade REMOVE/ALL)해야 하는지.
+     */
+    public boolean cascadeRemoveChildren() {
+        return oneToManyInfo != null && oneToManyInfo.cascadeRemove();
+    }
+
+    /**
+     * 이 {@code @OneToMany}가 orphanRemoval=true인지. flush 시 스냅샷 대비 컬렉션에서 빠진 child를 삭제한다.
+     */
+    public boolean orphanRemoval() {
+        return oneToManyInfo != null && oneToManyInfo.orphanRemoval();
+    }
+
+    /**
      * {@link #manyToOne()} 또는 {@link #oneToMany()} 중 하나라도 {@code true}면 관계 property다.
      */
     public boolean isRelation() {
@@ -528,6 +576,18 @@ public final class PersistentProperty {
 
     public ElementCollectionInfo elementCollectionInfo() {
         return elementCollectionInfo;
+    }
+
+    /**
+     * {@code true}이면 이 property는 {@code @GeneratedValue(TABLE)} + {@code @TableGenerator}로 식별자를
+     * 발급받으며 {@link #tableGeneratorInfo()}가 generator 테이블 매핑을 담는다. {@code @Id}에만 설정된다.
+     */
+    public boolean tableGenerated() {
+        return tableGeneratorInfo != null;
+    }
+
+    public TableGeneratorInfo tableGeneratorInfo() {
+        return tableGeneratorInfo;
     }
 
     /**

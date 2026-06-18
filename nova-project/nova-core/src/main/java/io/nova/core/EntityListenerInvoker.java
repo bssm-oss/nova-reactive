@@ -17,6 +17,12 @@ import java.util.List;
  * entity 자체 콜백을(declaration 순서대로) 호출한다 — JPA 규약(리스너 우선). 콜백이 checked exception을
  * 던지면 {@link InvocationTargetException}으로 감싸여 도착하므로, 원본 cause를 보존한 채
  * {@link IllegalStateException}으로 다시 던진다.
+ *
+ * <p>JPA의 {@code @ExcludeDefaultListeners}는 XML(orm.xml)로 선언된 <em>default entity listener</em>만
+ * 제외하며 entity 자체 콜백에는 영향이 없다. Nova는 default listener 메커니즘 자체가 없으므로 이 어노테이션은
+ * <strong>인식되지만 no-op</strong>이다 — entity 자체 콜백을 스킵하지 않는다(스킵하면 사용자의
+ * audit/validation 로직이 조용히 사라지는 JPA 비호환 동작이 된다). superclass 리스너 제외는 별도
+ * 어노테이션 {@code @ExcludeSuperclassListeners}가 담당한다.
  */
 final class EntityListenerInvoker {
 

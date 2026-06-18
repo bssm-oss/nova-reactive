@@ -1,6 +1,8 @@
 package io.nova.sql;
 
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.InheritanceInfo;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.AggregateFunction;
 import io.nova.query.AggregateSpec;
@@ -49,8 +51,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             markers.add(dialect.bindMarkers().marker(index + 1));
             bindings.add(property.toColumnValue(property.read(entity)));
         }
-        // SINGLE_TABLE 상속: 구체 타입의 discriminator 값을 상수로 기록한다.
-        if (metadata.hasInheritance()) {
+        // SINGLE_TABLE 상속만 단일 테이블에 물리 discriminator 컬럼을 가진다. JOINED는 루트 테이블에서 별도로
+        // 기록하고(insertJoinedRoot), TABLE_PER_CLASS는 물리 discriminator 컬럼이 없으므로 여기서 emit하지 않는다.
+        if (metadata.hasInheritance() && metadata.inheritance().singleTable()) {
             columns.add(dialect.quote(metadata.inheritance().discriminatorColumn()));
             markers.add(dialect.bindMarkers().marker(properties.size() + 1));
             bindings.add(metadata.inheritance().discriminatorBindValue());
@@ -279,14 +282,44 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement insertEmbeddableCollectionRow(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId, List<Object> columnValues) {
+        List<io.nova.metadata.CollectionTableDefinition.ElementColumn> columns = definition.elementColumns();
+        if (columnValues.size() != columns.size()) {
+            throw new IllegalArgumentException(
+                    "insertEmbeddableCollectionRow expects " + columns.size()
+                            + " column values but got " + columnValues.size());
+        }
+        RenderContext context = new RenderContext();
+        StringBuilder names = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
+        StringBuilder markers = new StringBuilder(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(ownerId);
+        for (int i = 0; i < columns.size(); i++) {
+            names.append(", ").append(dialect.quote(columns.get(i).columnName()));
+            markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(columnValues.get(i));
+        }
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + names + ") values (" + markers + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
     public SqlStatement selectCollectionRows(io.nova.metadata.CollectionTableDefinition definition, List<Object> ownerIds) {
         if (ownerIds.isEmpty()) {
             throw new IllegalArgumentException("selectCollectionRows requires at least one owner id");
         }
         RenderContext context = new RenderContext();
+        StringBuilder projection = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
+        if (definition.embeddable()) {
+            for (io.nova.metadata.CollectionTableDefinition.ElementColumn column : definition.elementColumns()) {
+                projection.append(", ").append(dialect.quote(column.columnName()));
+            }
+        } else {
+            projection.append(", ").append(dialect.quote(definition.valueColumn()));
+        }
         StringBuilder sql = new StringBuilder("select ")
-                .append(dialect.quote(definition.ownerForeignKeyColumn())).append(", ")
-                .append(dialect.quote(definition.valueColumn()))
+                .append(projection)
                 .append(" from ").append(dialect.quote(definition.tableName()))
                 .append(" where ").append(dialect.quote(definition.ownerForeignKeyColumn())).append(" in (");
         for (int i = 0; i < ownerIds.size(); i++) {
@@ -689,7 +722,11 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
      * 하는지 판정한다. 루트(merged 메타데이터 포함)는 다형 조회이므로 제한하지 않는다.
      */
     private boolean restrictsToSubtype(EntityMetadata<?> metadata) {
-        return metadata.hasInheritance() && !metadata.isInheritanceRoot();
+        // SINGLE_TABLE만 한 테이블을 공유하므로 구체 서브타입 조회 시 discriminator 제한이 필요하다.
+        // JOINED 구체 조회는 별도 JOIN 경로(selectJoinedById)로 처리되고, TABLE_PER_CLASS 구체 테이블은
+        // 그 자체로 타입 전용이라 제한이 불필요하다.
+        return metadata.hasInheritance() && metadata.inheritance().singleTable()
+                && !metadata.isInheritanceRoot();
     }
 
     /**
@@ -995,12 +1032,300 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         for (PersistentProperty property : metadata.columnMappedProperties()) {
             items.add(column(property) + " as " + dialect.quote(property.columnName()));
         }
-        // SINGLE_TABLE 상속: row마다 구체 서브타입을 판별할 수 있도록 discriminator 컬럼도 SELECT한다.
-        if (metadata.hasInheritance()) {
+        // SINGLE_TABLE 상속만 단일 테이블에 물리 discriminator 컬럼을 가진다 — row마다 구체 서브타입을
+        // 판별하도록 SELECT한다. JOINED/TABLE_PER_CLASS의 다형 조회는 별도 경로(selectJoined*/selectTablePerClass*)가
+        // discriminator를 합성/SELECT하므로 단일-테이블 selectList에서는 emit하지 않는다.
+        if (metadata.hasInheritance() && metadata.inheritance().singleTable()) {
             String discriminator = metadata.inheritance().discriminatorColumn();
             items.add(dialect.quote(discriminator) + " as " + dialect.quote(discriminator));
         }
         return String.join(", ", items);
+    }
+
+    // =============================================================================================
+    // @Inheritance(JOINED)
+    // =============================================================================================
+
+    @Override
+    public SqlStatement insertJoinedRoot(
+            EntityMetadata<?> concreteMetadata,
+            String rootTableName,
+            List<PersistentProperty> rootColumns,
+            Object entity) {
+        InheritanceInfo info = concreteMetadata.inheritance();
+        List<String> columns = new ArrayList<>();
+        List<String> markers = new ArrayList<>();
+        List<Object> bindings = new ArrayList<>();
+        RenderContext context = new RenderContext();
+        for (PersistentProperty property : rootColumns) {
+            // 루트 테이블 INSERT에서는 DB가 생성하는 id 컬럼(IDENTITY)을 제외한다.
+            if (property.id() && EntityMetadata.isDatabaseGeneratedId(property)) {
+                continue;
+            }
+            columns.add(column(property));
+            markers.add(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(property.toColumnValue(property.read(entity)));
+        }
+        columns.add(dialect.quote(info.discriminatorColumn()));
+        markers.add(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(info.discriminatorBindValue());
+        String sql = "insert into " + qualifiedRootTable(info, rootTableName)
+                + " (" + String.join(", ", columns) + ") values (" + String.join(", ", markers) + ")"
+                + insertSuffix(concreteMetadata);
+        bindings.addAll(context.bindings());
+        return new SqlStatement(sql, bindings);
+    }
+
+    @Override
+    public SqlStatement insertJoinedSubtype(
+            EntityMetadata<?> concreteMetadata,
+            List<PersistentProperty> ownColumns,
+            Object entity) {
+        List<String> columns = new ArrayList<>();
+        List<String> markers = new ArrayList<>();
+        RenderContext context = new RenderContext();
+        for (PersistentProperty property : ownColumns) {
+            columns.add(column(property));
+            markers.add(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(property.toColumnValue(property.read(entity)));
+        }
+        String sql = "insert into " + table(concreteMetadata)
+                + " (" + String.join(", ", columns) + ") values (" + String.join(", ", markers) + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement selectJoinedPolymorphic(InheritanceLayout layout, QuerySpec querySpec) {
+        RenderContext context = new RenderContext();
+        // JOIN을 파생 테이블(derived table)로 감싼다. 루트 ⟕ 서브타입 JOIN을 그대로 두면 루트 PK 컬럼(id)이
+        // 모든 서브타입 FK PK로도 존재해 WHERE/ORDER BY의 비한정 컬럼이 ambiguous-column 에러를 낸다. select
+        // list가 컬럼을 평탄한 단일 alias 집합(중복 제거, 서브타입 id 제외)으로 투영하므로, 그 결과를 감싼
+        // 파생 테이블에 대해 predicate/sort를 걸면 모호성이 사라진다(TABLE_PER_CLASS 다형 SELECT와 동일 방식).
+        String inner = "select " + joinedSelectList(layout) + " from " + joinedFromClause(layout);
+        StringBuilder sql = new StringBuilder("select * from (").append(inner).append(") as ")
+                .append(dialect.quote("nova_joined"));
+        appendWhereClause(sql, context, layout.rootMetadata(), querySpec.predicate(), querySpec.cursor());
+        appendOrderBy(sql, layout.rootMetadata(), querySpec.sort());
+        appendPage(sql, context, querySpec);
+        appendLockClause(sql, querySpec);
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
+    public SqlStatement selectJoinedById(InheritanceLayout layout, Object id) {
+        RenderContext context = new RenderContext();
+        InheritanceInfo info = layout.info();
+        PersistentProperty idProperty = layout.rootMetadata().idProperty();
+        String marker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(idProperty.toColumnValue(id));
+        String sql = "select " + joinedSelectList(layout)
+                + " from " + joinedFromClause(layout)
+                + " where " + qualifiedRootTable(info, info.rootTableName()) + "."
+                + dialect.quote(idProperty.columnName()) + " = " + marker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement updateJoinedRoot(
+            EntityMetadata<?> concreteMetadata,
+            String rootTableName,
+            List<PersistentProperty> rootColumns,
+            Object entity) {
+        InheritanceInfo info = concreteMetadata.inheritance();
+        PersistentProperty idProperty = concreteMetadata.idProperty();
+        RenderContext context = new RenderContext();
+        List<String> assignments = new ArrayList<>();
+        for (PersistentProperty property : rootColumns) {
+            if (property.id()) {
+                continue;
+            }
+            assignments.add(column(property) + " = " + dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(property.toColumnValue(property.read(entity)));
+        }
+        String idMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(idProperty.toColumnValue(idProperty.read(entity)));
+        String sql = "update " + qualifiedRootTable(info, rootTableName)
+                + " set " + String.join(", ", assignments)
+                + " where " + dialect.quote(idProperty.columnName()) + " = " + idMarker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement updateJoinedSubtype(
+            EntityMetadata<?> concreteMetadata,
+            List<PersistentProperty> ownColumns,
+            Object entity) {
+        PersistentProperty idProperty = concreteMetadata.idProperty();
+        RenderContext context = new RenderContext();
+        List<String> assignments = new ArrayList<>();
+        for (PersistentProperty property : ownColumns) {
+            // ownColumns 맨 앞 id(FK)는 SET 대상이 아니라 WHERE 대상이다.
+            if (property.id()) {
+                continue;
+            }
+            assignments.add(column(property) + " = " + dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(property.toColumnValue(property.read(entity)));
+        }
+        if (assignments.isEmpty()) {
+            // 서브타입 자기 컬럼이 없으면 갱신할 것이 없다 — 호출자가 이 단계를 건너뛴다.
+            return null;
+        }
+        String idMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(idProperty.toColumnValue(idProperty.read(entity)));
+        String sql = "update " + table(concreteMetadata)
+                + " set " + String.join(", ", assignments)
+                + " where " + dialect.quote(idProperty.columnName()) + " = " + idMarker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement deleteJoinedSubtypeById(EntityMetadata<?> concreteMetadata, Object id) {
+        PersistentProperty idProperty = concreteMetadata.idProperty();
+        RenderContext context = new RenderContext();
+        String marker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(idProperty.toColumnValue(id));
+        String sql = "delete from " + table(concreteMetadata)
+                + " where " + dialect.quote(idProperty.columnName()) + " = " + marker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement deleteJoinedRootById(InheritanceLayout layout, Object id) {
+        InheritanceInfo info = layout.info();
+        PersistentProperty idProperty = layout.rootMetadata().idProperty();
+        RenderContext context = new RenderContext();
+        String marker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(idProperty.toColumnValue(id));
+        String sql = "delete from " + qualifiedRootTable(info, info.rootTableName())
+                + " where " + dialect.quote(idProperty.columnName()) + " = " + marker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    /**
+     * JOINED 다형 SELECT의 select-list를 만든다 — 루트 PK + 루트 테이블 컬럼 + 각 서브타입 테이블 컬럼 +
+     * discriminator. 같은 컬럼 이름은 한 번만 emit하고, 각 컬럼을 {@code table.col as col}로 qualify 한다.
+     */
+    private String joinedSelectList(InheritanceLayout layout) {
+        InheritanceInfo info = layout.info();
+        String rootTable = qualifiedRootTable(info, info.rootTableName());
+        List<String> items = new ArrayList<>();
+        LinkedHashSet<String> emitted = new LinkedHashSet<>();
+        for (PersistentProperty property : layout.rootTableColumns()) {
+            if (emitted.add(property.columnName())) {
+                items.add(rootTable + "." + dialect.quote(property.columnName())
+                        + " as " + dialect.quote(property.columnName()));
+            }
+        }
+        for (InheritanceLayout.ConcreteSubtype subtype : layout.subtypes()) {
+            String subTable = table(subtype.metadata());
+            for (PersistentProperty property : subtype.ownTableColumns()) {
+                if (property.id()) {
+                    continue;
+                }
+                if (emitted.add(property.columnName())) {
+                    items.add(subTable + "." + dialect.quote(property.columnName())
+                            + " as " + dialect.quote(property.columnName()));
+                }
+            }
+        }
+        items.add(rootTable + "." + dialect.quote(info.discriminatorColumn())
+                + " as " + dialect.quote(info.discriminatorColumn()));
+        return String.join(", ", items);
+    }
+
+    /**
+     * JOINED FROM 절을 만든다 — 루트 테이블에 각 서브타입 테이블을 루트 PK = 서브타입 FK로 LEFT JOIN 한다.
+     */
+    private String joinedFromClause(InheritanceLayout layout) {
+        InheritanceInfo info = layout.info();
+        String rootTable = qualifiedRootTable(info, info.rootTableName());
+        String rootId = dialect.quote(layout.rootMetadata().idProperty().columnName());
+        StringBuilder from = new StringBuilder(rootTable);
+        for (InheritanceLayout.ConcreteSubtype subtype : layout.subtypes()) {
+            if (subtype.metadata().entityType() == info.root()) {
+                continue;
+            }
+            String subTable = table(subtype.metadata());
+            String subId = dialect.quote(subtype.metadata().idProperty().columnName());
+            from.append(" left join ").append(subTable)
+                    .append(" on ").append(rootTable).append(".").append(rootId)
+                    .append(" = ").append(subTable).append(".").append(subId);
+        }
+        return from.toString();
+    }
+
+    /**
+     * JOINED 루트 물리 테이블을 schema-aware로 quote 한다. 루트 metadata의 schema를 따른다.
+     */
+    private String qualifiedRootTable(InheritanceInfo info, String rootTableName) {
+        return dialect.quote(rootTableName);
+    }
+
+    // =============================================================================================
+    // @Inheritance(TABLE_PER_CLASS)
+    // =============================================================================================
+
+    @Override
+    public SqlStatement selectTablePerClassPolymorphic(InheritanceLayout layout, QuerySpec querySpec) {
+        RenderContext context = new RenderContext();
+        String union = tablePerClassUnion(layout);
+        StringBuilder sql = new StringBuilder("select * from (").append(union).append(") as ")
+                .append(dialect.quote("nova_tpc"));
+        appendWhereClause(sql, context, layout.rootMetadata(), querySpec.predicate(), querySpec.cursor());
+        appendOrderBy(sql, layout.rootMetadata(), querySpec.sort());
+        appendPage(sql, context, querySpec);
+        appendLockClause(sql, querySpec);
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
+    public SqlStatement selectTablePerClassById(InheritanceLayout layout, Object id) {
+        RenderContext context = new RenderContext();
+        PersistentProperty idProperty = layout.rootMetadata().idProperty();
+        String union = tablePerClassUnion(layout);
+        String marker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(idProperty.toColumnValue(id));
+        String sql = "select * from (" + union + ") as " + dialect.quote("nova_tpc")
+                + " where " + dialect.quote(idProperty.columnName()) + " = " + marker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    /**
+     * TABLE_PER_CLASS 다형 SELECT의 UNION ALL 본문을 만든다. 모든 서브타입 컬럼 이름을 합집합(union)으로
+     * 모아 컬럼 순서를 고정하고, 각 브랜치는 자기 테이블에 존재하는 컬럼은 그대로, 없는 컬럼은 NULL로 정렬한다.
+     * 끝에 discriminator 상수({@code '<value>' as dtype})를 합성한다.
+     */
+    private String tablePerClassUnion(InheritanceLayout layout) {
+        InheritanceInfo info = layout.info();
+        // 1) 전 서브타입 컬럼 이름 합집합(등장 순서 보존).
+        LinkedHashSet<String> allColumns = new LinkedHashSet<>();
+        for (InheritanceLayout.ConcreteSubtype subtype : layout.subtypes()) {
+            for (PersistentProperty property : subtype.ownTableColumns()) {
+                allColumns.add(property.columnName());
+            }
+        }
+        List<String> branches = new ArrayList<>();
+        for (InheritanceLayout.ConcreteSubtype subtype : layout.subtypes()) {
+            Set<String> present = new LinkedHashSet<>();
+            for (PersistentProperty property : subtype.ownTableColumns()) {
+                present.add(property.columnName());
+            }
+            List<String> items = new ArrayList<>();
+            for (String columnName : allColumns) {
+                if (present.contains(columnName)) {
+                    items.add(dialect.quote(columnName) + " as " + dialect.quote(columnName));
+                } else {
+                    items.add("null as " + dialect.quote(columnName));
+                }
+            }
+            // discriminator 상수는 STRING/CHAR는 따옴표로, INTEGER는 정수 리터럴로 emit한다.
+            String discriminatorLiteral = info.discriminatorJavaType() == Integer.class
+                    ? subtype.discriminatorValue()
+                    : "'" + subtype.discriminatorValue().replace("'", "''") + "'";
+            items.add(discriminatorLiteral + " as " + dialect.quote(info.discriminatorColumn()));
+            branches.add("select " + String.join(", ", items) + " from " + table(subtype.metadata()));
+        }
+        return String.join(" union all ", branches);
     }
 
     protected static final class RenderContext {

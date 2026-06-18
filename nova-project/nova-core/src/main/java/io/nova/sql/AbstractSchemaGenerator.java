@@ -7,8 +7,10 @@ import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.IndexDefinition;
 import io.nova.metadata.InheritanceInfo;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.TableGeneratorInfo;
 import io.nova.metadata.UniqueConstraintDefinition;
 
 import java.util.ArrayList;
@@ -61,14 +63,22 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String createCollectionTable(CollectionTableDefinition definition) {
-        // owner FK는 not null, value 컬럼은 nullable(컬렉션 원소 null 허용 가능). 복합 PK는 두지 않는다
+        // owner FK는 not null, value 컬럼(들)은 nullable(컬렉션 원소 null 허용 가능). 복합 PK는 두지 않는다
         // (List 중복 원소 허용). owner FK 조회 성능은 후속 인덱스 단계에서 보강.
         String ownerColumn = dialect.quote(definition.ownerForeignKeyColumn())
                 + " " + fkColumnType(definition.ownerForeignKeyType()) + " not null";
-        String valueColumnDef = dialect.quote(definition.valueColumn())
-                + " " + elementColumnType(definition.valueType());
+        List<String> columns = new ArrayList<>();
+        columns.add(ownerColumn);
+        if (definition.embeddable()) {
+            // @Embeddable 원소: 펼친 필드마다 컬럼 1개를 emit한다(owner FK, field1, field2, ...).
+            for (CollectionTableDefinition.ElementColumn column : definition.elementColumns()) {
+                columns.add(dialect.quote(column.columnName()) + " " + elementColumnType(column.columnType()));
+            }
+        } else {
+            columns.add(dialect.quote(definition.valueColumn()) + " " + elementColumnType(definition.valueType()));
+        }
         return "create table " + dialect.quote(definition.tableName())
-                + " (" + ownerColumn + ", " + valueColumnDef + ")";
+                + " (" + String.join(", ", columns) + ")";
     }
 
     /**
@@ -138,6 +148,30 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         return "drop table if exists " + qualifiedTable(metadata);
     }
 
+    @Override
+    public String createTableGenerator(TableGeneratorInfo info) {
+        // (pkColumn varchar primary key, valueColumn bigint not null). 카운터는 항상 bigint로 만들어
+        // Long/Integer 식별자 모두를 안전하게 담는다.
+        String pkColumn = dialect.quote(info.pkColumnName()) + " varchar(255) not null primary key";
+        String valueColumn = dialect.quote(info.valueColumnName()) + " bigint not null";
+        return "create table " + dialect.quote(info.table())
+                + " (" + pkColumn + ", " + valueColumn + ")";
+    }
+
+    @Override
+    public String seedTableGenerator(TableGeneratorInfo info) {
+        // 증가-우선 블록 모델: 카운터는 "다음에 발급할 첫 id"를 보관한다. 첫 발급 id = initialValue가 되도록
+        // 카운터를 initialValue로 seed한다. 발급 시 UPDATE로 allocationSize만큼 증가시킨 뒤 그 새 값에서
+        // 블록 [newValue - allocationSize, newValue - 1]을 역산하므로 첫 블록의 첫 id가 정확히 initialValue다.
+        return dialect.tableGeneratorSeedSql(
+                info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue(), info.initialValue());
+    }
+
+    @Override
+    public String dropTableGeneratorIfExists(String generatorTableName) {
+        return "drop table if exists " + dialect.quote(generatorTableName);
+    }
+
     private String createTableInternal(EntityMetadata<?> metadata, boolean ifNotExists) {
         // raw properties()는 @OneToMany inverse side 같은 비-컬럼 마커도 포함하므로
         // SchemaGenerator가 컬럼 DDL을 만들 때 사용하면 List 타입 컬럼 같은 거짓 컬럼이 섞인다.
@@ -154,8 +188,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             }
             columns.add("primary key (" + String.join(", ", pkColumns) + ")");
         }
-        // SINGLE_TABLE 상속: 단일 테이블에 discriminator 컬럼을 추가한다.
-        if (metadata.hasInheritance()) {
+        // SINGLE_TABLE 상속만 단일 테이블에 물리 discriminator 컬럼을 추가한다. JOINED는 루트 테이블에서만
+        // discriminator를 두고(createJoinedRootTable), TABLE_PER_CLASS는 물리 discriminator 컬럼이 없다.
+        if (metadata.hasInheritance() && metadata.inheritance().singleTable()) {
             columns.add(discriminatorColumnDefinition(metadata));
         }
         return "create table " + (ifNotExists ? "if not exists " : "")
@@ -175,6 +210,38 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             case INTEGER -> "integer";
         };
         return dialect.quote(info.discriminatorColumn()) + " " + type + " not null";
+    }
+
+    @Override
+    public String createJoinedRootTable(InheritanceLayout layout, boolean ifNotExists) {
+        InheritanceInfo info = layout.info();
+        List<String> columns = new ArrayList<>();
+        for (PersistentProperty property : layout.rootTableColumns()) {
+            columns.add(columnDefinition(property, false));
+        }
+        columns.add(discriminatorColumnDefinition(layout.rootMetadata()));
+        return "create table " + (ifNotExists ? "if not exists " : "")
+                + dialect.quote(info.rootTableName())
+                + " (" + String.join(", ", columns) + ")";
+    }
+
+    @Override
+    public String createJoinedSubtypeTable(
+            InheritanceLayout layout, InheritanceLayout.ConcreteSubtype subtype, boolean ifNotExists) {
+        EntityMetadata<?> metadata = subtype.metadata();
+        List<String> columns = new ArrayList<>();
+        for (PersistentProperty property : subtype.ownTableColumns()) {
+            if (property.id()) {
+                // 서브타입 테이블의 id는 루트 PK를 공유하는 FK PK다. 루트가 IDENTITY여도 서브타입 쪽은
+                // 값을 직접 받으므로 IDENTITY/auto-generation을 emit하지 않고 plain typed PK로 만든다.
+                columns.add(dialect.quote(property.columnName()) + " " + sqlType(property) + " not null primary key");
+            } else {
+                columns.add(columnDefinition(property, false));
+            }
+        }
+        return "create table " + (ifNotExists ? "if not exists " : "")
+                + qualifiedTable(metadata)
+                + " (" + String.join(", ", columns) + ")";
     }
 
     @Override

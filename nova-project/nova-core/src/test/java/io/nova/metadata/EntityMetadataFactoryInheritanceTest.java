@@ -81,16 +81,51 @@ class EntityMetadataFactoryInheritanceTest {
     }
 
     @Test
-    void rejectsJoinedStrategy() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(JoinedRoot.class));
-        assertTrue(error.getMessage().contains("SINGLE_TABLE"));
+    void acceptsJoinedStrategyAndCarriesRootTableInfo() {
+        EntityMetadata<JoinedVehicle> root = factory.getEntityMetadata(JoinedVehicle.class);
+        assertTrue(root.hasInheritance());
+        assertTrue(root.inheritance().joined());
+        assertEquals("joined_vehicle", root.inheritance().rootTableName());
+        assertEquals("id", root.inheritance().rootIdColumn());
+        EntityMetadata<JoinedCar> car = factory.getEntityMetadata(JoinedCar.class);
+        assertEquals("joined_car", car.tableName());
+        assertTrue(car.inheritance().joined());
     }
 
     @Test
-    void rejectsTablePerClassStrategy() {
-        assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(TablePerClassRoot.class));
+    void joinedLayoutSplitsRootAndSubtypeColumns() {
+        factory.getEntityMetadata(JoinedCar.class);
+        factory.getEntityMetadata(JoinedTruck.class);
+        InheritanceLayout layout = factory.inheritanceLayout(JoinedVehicle.class);
+        List<String> rootColumns = layout.rootTableColumns().stream()
+                .map(PersistentProperty::columnName).toList();
+        assertTrue(rootColumns.contains("id"), "루트 테이블은 id를 가진다");
+        assertTrue(rootColumns.contains("name"), "루트 테이블은 공통 컬럼 name을 가진다");
+        assertFalse(rootColumns.contains("doors"), "서브타입 전용 컬럼은 루트 테이블에 없다");
+        InheritanceLayout.ConcreteSubtype car = layout.subtypes().stream()
+                .filter(s -> s.metadata().entityType() == JoinedCar.class).findFirst().orElseThrow();
+        List<String> carOwn = car.ownTableColumns().stream()
+                .map(PersistentProperty::columnName).toList();
+        assertEquals("id", carOwn.get(0), "서브타입 테이블 첫 컬럼은 FK PK(id)");
+        assertTrue(carOwn.contains("doors"), "서브타입 테이블은 자기 컬럼 doors를 가진다");
+        assertFalse(carOwn.contains("name"), "공통 컬럼은 서브타입 테이블에 중복되지 않는다");
+    }
+
+    @Test
+    void acceptsTablePerClassStrategyWithFullColumnTables() {
+        factory.getEntityMetadata(TpcCar.class);
+        factory.getEntityMetadata(TpcTruck.class);
+        EntityMetadata<TpcCar> car = factory.getEntityMetadata(TpcCar.class);
+        assertTrue(car.inheritance().tablePerClass());
+        assertEquals("tpc_car", car.tableName());
+        List<String> columns = car.columnMappedProperties().stream()
+                .map(PersistentProperty::columnName).toList();
+        assertTrue(columns.contains("id"), "TPC 테이블은 상속한 id를 가진다");
+        assertTrue(columns.contains("name"), "TPC 테이블은 상속한 name을 가진다");
+        assertTrue(columns.contains("doors"), "TPC 테이블은 자기 컬럼 doors를 가진다");
+        InheritanceLayout layout = factory.inheritanceLayout(TpcVehicle.class);
+        assertTrue(layout.rootTableColumns().isEmpty(), "TPC는 공유 루트 테이블 컬럼이 없다");
+        assertEquals(2, layout.subtypes().size(), "두 구체 서브타입이 등록된다");
     }
 
     @Test
@@ -136,17 +171,51 @@ class EntityMetadataFactoryInheritanceTest {
     }
 
     @Entity
+    @Table(name = "joined_vehicle")
     @Inheritance(strategy = InheritanceType.JOINED)
-    static class JoinedRoot {
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    abstract static class JoinedVehicle {
         @Id
         Long id;
+        String name;
     }
 
     @Entity
+    @Table(name = "joined_car")
+    @DiscriminatorValue("CAR")
+    static class JoinedCar extends JoinedVehicle {
+        int doors;
+    }
+
+    @Entity
+    @Table(name = "joined_truck")
+    @DiscriminatorValue("TRUCK")
+    static class JoinedTruck extends JoinedVehicle {
+        double payload;
+    }
+
+    @Entity
+    @Table(name = "tpc_vehicle")
     @Inheritance(strategy = InheritanceType.TABLE_PER_CLASS)
-    static class TablePerClassRoot {
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    abstract static class TpcVehicle {
         @Id
         Long id;
+        String name;
+    }
+
+    @Entity
+    @Table(name = "tpc_car")
+    @DiscriminatorValue("CAR")
+    static class TpcCar extends TpcVehicle {
+        int doors;
+    }
+
+    @Entity
+    @Table(name = "tpc_truck")
+    @DiscriminatorValue("TRUCK")
+    static class TpcTruck extends TpcVehicle {
+        double payload;
     }
 
     @Entity

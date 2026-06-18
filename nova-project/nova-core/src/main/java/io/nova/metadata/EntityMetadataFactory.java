@@ -14,6 +14,8 @@ import jakarta.persistence.Embedded;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
+import jakarta.persistence.ExcludeDefaultListeners;
+import jakarta.persistence.ExcludeSuperclassListeners;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -40,6 +42,7 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.SequenceGenerator;
+import jakarta.persistence.TableGenerator;
 import jakarta.persistence.Transient;
 import io.nova.annotation.SoftDelete;
 import jakarta.persistence.Table;
@@ -90,6 +93,22 @@ public final class EntityMetadataFactory {
 
     private static final Set<Class<?>> SUPPORTED_UUID_ID_TYPES =
             Set.of(UUID.class, String.class);
+
+    /**
+     * {@code @GeneratedValue(TABLE)} 식별자가 가질 수 있는 타입. generator 테이블의 카운터는 정수
+     * 시퀀스이므로 Long/Integer만 허용한다(primitive long/int는 wrap 후 비교).
+     */
+    private static final Set<Class<?>> SUPPORTED_TABLE_GENERATOR_ID_TYPES =
+            Set.of(Long.class, Integer.class);
+
+    /**
+     * {@code @TableGenerator}가 지정하지 않았을 때 사용하는 기본 generator 테이블과 컬럼 이름. JPA 기본값과
+     * 동일한 의미를 가지며(논리 sequence 행을 (pkColumn, valueColumn)으로 보관), Nova는 모든 식별자 컬럼을
+     * snake_case로 다루는 관례에 맞춰 소문자 식별자를 쓴다.
+     */
+    private static final String DEFAULT_TABLE_GENERATOR_TABLE = "nova_sequences";
+    private static final String DEFAULT_TABLE_GENERATOR_PK_COLUMN = "sequence_name";
+    private static final String DEFAULT_TABLE_GENERATOR_VALUE_COLUMN = "next_val";
 
     /**
      * SEQUENCE generator 이름이 SQL 식별자 형태를 따르도록 강제하는 정규식이다.
@@ -177,6 +196,11 @@ public final class EntityMetadataFactory {
         if (!rootMeta.isInheritanceRoot()) {
             return rootMeta;
         }
+        // 단일 테이블 union은 SINGLE_TABLE에서만 의미가 있다. JOINED/TABLE_PER_CLASS는 멀티테이블이므로
+        // 루트 메타데이터를 그대로 돌려주고, 실제 다형 쿼리/DDL은 inheritanceLayout 경로가 처리한다.
+        if (!rootMeta.inheritance().singleTable()) {
+            return rootMeta;
+        }
         LinkedHashMap<String, PersistentProperty> union = new LinkedHashMap<>();
         for (PersistentProperty property : rootMeta.columnMappedProperties()) {
             union.put(property.columnName(), property);
@@ -208,7 +232,8 @@ public final class EntityMetadataFactory {
                 rootMeta.indexes(),
                 rootMeta.uniqueConstraints(),
                 rootMeta.inheritance(),
-                rootMeta.listenerCallbacks()
+                rootMeta.listenerCallbacks(),
+                rootMeta.excludeDefaultListeners()
         );
     }
 
@@ -234,6 +259,91 @@ public final class EntityMetadataFactory {
                         + " (Spring resolves this automatically via entity-packages scanning).");
     }
 
+    /**
+     * 루트 클래스 → JOINED/TABLE_PER_CLASS 물리 테이블 배치 캐시. 새 서브타입이 등록되면 무효화된다.
+     */
+    private final Map<Class<?>, InheritanceLayout> inheritanceLayoutCache = new ConcurrentHashMap<>();
+
+    /**
+     * JOINED 또는 TABLE_PER_CLASS 계층의 물리 테이블 배치를 빌드/캐시해 반환한다. SINGLE_TABLE이나 비-상속
+     * 루트에 대해서는 {@link IllegalArgumentException}을 던진다(해당 전략은 merged-metadata 경로를 쓴다).
+     *
+     * <p>등록된 구체 서브타입만 포함되므로, 다형 조회 전에 전 서브타입 메타데이터가 빌드돼 있어야 한다
+     * (Spring starter의 entity-packages eager preload가 보장).
+     */
+    public InheritanceLayout inheritanceLayout(Class<?> rootClass) {
+        InheritanceLayout cached = inheritanceLayoutCache.get(rootClass);
+        if (cached != null) {
+            return cached;
+        }
+        InheritanceLayout built = buildInheritanceLayout(rootClass);
+        inheritanceLayoutCache.put(rootClass, built);
+        return built;
+    }
+
+    private InheritanceLayout buildInheritanceLayout(Class<?> rootClass) {
+        EntityMetadata<?> rootMeta = getEntityMetadata(rootClass);
+        InheritanceInfo info = rootMeta.inheritance();
+        if (!info.present() || !info.isRoot() || info.singleTable()) {
+            throw new IllegalArgumentException(
+                    rootClass.getName() + " is not a JOINED/TABLE_PER_CLASS inheritance root");
+        }
+        List<PersistentProperty> rootTableColumns = new ArrayList<>();
+        if (info.joined()) {
+            for (PersistentProperty property : rootMeta.columnMappedProperties()) {
+                if (isRootTableColumn(property, rootClass)) {
+                    rootTableColumns.add(property);
+                }
+            }
+        }
+        // 구체 서브타입을 모은다. hierarchies는 ConcurrentHashMap이라 iteration 순서가 비결정적이므로,
+        // JOIN/UNION SQL 형태를 안정시키기 위해 discriminator 값 기준으로 정렬한다.
+        Map<String, Class<?>> members = hierarchies.getOrDefault(rootClass, Map.of());
+        List<String> orderedKeys = new ArrayList<>(members.keySet());
+        Collections.sort(orderedKeys);
+        List<InheritanceLayout.ConcreteSubtype> subtypes = new ArrayList<>();
+        for (String key : orderedKeys) {
+            EntityMetadata<?> subMeta = getEntityMetadata(members.get(key));
+            List<PersistentProperty> ownColumns = info.joined()
+                    ? joinedOwnTableColumns(subMeta, rootClass)
+                    : subMeta.columnMappedProperties();
+            subtypes.add(new InheritanceLayout.ConcreteSubtype(subMeta, ownColumns, key));
+        }
+        return new InheritanceLayout(info, rootMeta, rootTableColumns, subtypes);
+    }
+
+    /**
+     * JOINED에서 한 서브타입의 자기 테이블 컬럼을 만든다 — 루트 PK 컬럼(FK로 공유, not-null PK)을 맨 앞에 두고,
+     * 그 뒤에 이 서브타입(루트보다 아래 클래스)이 선언한 컬럼들을 잇는다. 루트 테이블에 이미 있는 공통 컬럼은
+     * 서브타입 테이블에 중복하지 않는다.
+     */
+    private List<PersistentProperty> joinedOwnTableColumns(EntityMetadata<?> subMeta, Class<?> rootClass) {
+        List<PersistentProperty> own = new ArrayList<>();
+        own.add(subMeta.idProperty());
+        for (PersistentProperty property : subMeta.columnMappedProperties()) {
+            if (property.id()) {
+                continue;
+            }
+            if (!isRootTableColumn(property, rootClass)) {
+                own.add(property);
+            }
+        }
+        return own;
+    }
+
+    /**
+     * 한 컬럼이 JOINED 루트 테이블에 속하는지 판정한다 — 그 필드를 선언한 클래스가 루트이거나 루트의 상위
+     * (@MappedSuperclass 조상)이면 루트 테이블 컬럼이다. 루트보다 아래(서브타입)에서 선언됐으면 서브타입 테이블 컬럼이다.
+     * id는 루트가 선언하므로 루트 테이블 컬럼으로 분류되며, 서브타입 테이블에는 FK PK로 별도 복제된다.
+     */
+    private static boolean isRootTableColumn(PersistentProperty property, Class<?> rootClass) {
+        Class<?> declaringClass = property.embedded()
+                ? property.embeddedHostPath().get(0).getDeclaringClass()
+                : property.field().getDeclaringClass();
+        // declaringClass가 root이거나 root의 상위면 루트 테이블. (root가 declaringClass의 하위이면)
+        return declaringClass.isAssignableFrom(rootClass);
+    }
+
     private <T> EntityMetadata<T> createMetadata(Class<T> entityType) {
         Entity entity = entityType.getAnnotation(Entity.class);
         if (entity == null) {
@@ -241,9 +351,14 @@ public final class EntityMetadataFactory {
         }
 
         String entityName = entity.name().isBlank() ? entityType.getSimpleName() : entity.name();
-        // SINGLE_TABLE 상속: 테이블/스키마/인덱스는 계층 루트(@Inheritance 또는 최상위 @Entity)에서 가져온다.
+        // 상속 전략별 테이블 소스:
+        //  - SINGLE_TABLE: 모든 멤버가 루트 테이블 하나를 공유 → tableSource = root.
+        //  - JOINED / TABLE_PER_CLASS: 각 엔티티가 자기 테이블을 가진다 → tableSource = entityType.
+        //  - 비-상속: tableSource = entityType.
         InheritanceInfo inheritance = resolveInheritance(entityType, entityName);
-        Class<?> tableSource = inheritance.present() ? inheritance.root() : entityType;
+        Class<?> tableSource = inheritance.singleTable() && inheritance.present()
+                ? inheritance.root()
+                : entityType;
         Table table = tableSource.getAnnotation(Table.class);
         String tableName = table != null && !table.name().isBlank() ? table.name() : namingStrategy.tableName(tableSource);
 
@@ -445,17 +560,17 @@ public final class EntityMetadataFactory {
                 indexes,
                 uniqueConstraints,
                 inheritance,
-                collectEntityListeners(entityType)
+                collectEntityListeners(entityType),
+                entityType.isAnnotationPresent(ExcludeDefaultListeners.class)
         );
         registerHierarchyMember(metadata);
         return metadata;
     }
 
     /**
-     * SINGLE_TABLE 상속 계층에서 이 엔티티의 위치를 해석한다. 상속에 참여하지 않으면
-     * {@link InheritanceInfo#NONE}. 계층은 (a) 이 엔티티가 직접 {@link Inheritance}를 선언했거나
-     * (b) 상위에 {@link Entity} 조상이 존재할 때 성립한다(JPA 기본 전략이 SINGLE_TABLE). 루트의
-     * {@link Inheritance#strategy()}가 SINGLE_TABLE이 아니면 fail-fast로 거부한다.
+     * 상속 계층에서 이 엔티티의 위치와 전략을 해석한다. 상속에 참여하지 않으면 {@link InheritanceInfo#NONE}.
+     * 계층은 (a) 이 엔티티가 직접 {@link Inheritance}를 선언했거나 (b) 상위에 {@link Entity} 조상이 존재할 때
+     * 성립한다(JPA 기본 전략이 SINGLE_TABLE). SINGLE_TABLE/JOINED/TABLE_PER_CLASS 세 전략을 모두 지원한다.
      */
     private InheritanceInfo resolveInheritance(Class<?> entityType, String entityName) {
         Class<?> root = entityType;
@@ -471,11 +586,9 @@ public final class EntityMetadataFactory {
             return InheritanceInfo.NONE;
         }
         Inheritance rootInheritance = root.getAnnotation(Inheritance.class);
-        if (rootInheritance != null && rootInheritance.strategy() != InheritanceType.SINGLE_TABLE) {
-            throw new IllegalArgumentException(
-                    root.getName() + " uses @Inheritance(strategy=" + rootInheritance.strategy()
-                            + ") which Nova does not support; only SINGLE_TABLE is supported");
-        }
+        InheritanceType strategy = rootInheritance != null
+                ? rootInheritance.strategy()
+                : InheritanceType.SINGLE_TABLE;
         DiscriminatorColumn discriminatorColumn = root.getAnnotation(DiscriminatorColumn.class);
         String columnName = discriminatorColumn != null && !discriminatorColumn.name().isBlank()
                 ? discriminatorColumn.name()
@@ -485,11 +598,45 @@ public final class EntityMetadataFactory {
                 : DiscriminatorType.STRING;
         int discriminatorLength = discriminatorColumn != null ? discriminatorColumn.length() : 31;
         boolean abstractType = Modifier.isAbstract(entityType.getModifiers());
+        // TABLE_PER_CLASS는 물리 discriminator 컬럼이 없지만, 다형 UNION 쿼리에서 각 브랜치 row가 어떤 구체
+        // 타입인지 판별하려면 합성 discriminator 상수가 필요하다. SINGLE_TABLE/JOINED와 동일한 규칙으로 값을 정한다.
         String discriminatorValue = resolveDiscriminatorValue(
-                entityType, entityName, discriminatorType, abstractType);
+                entityType, entityName, discriminatorType, abstractType, strategy);
+        String rootTableName = "";
+        String rootIdColumn = "";
+        if (strategy == InheritanceType.JOINED) {
+            // JOINED: 루트 물리 테이블과 루트 PK 컬럼은 모든 서브타입이 FK로 공유한다. 루트의 @Table/naming과
+            // 루트의 @Id 컬럼으로 결정한다.
+            Table rootTable = root.getAnnotation(Table.class);
+            rootTableName = rootTable != null && !rootTable.name().isBlank()
+                    ? rootTable.name()
+                    : namingStrategy.tableName(root);
+            rootIdColumn = joinedRootIdColumn(root);
+        }
         return new InheritanceInfo(
-                root, root == entityType, abstractType,
-                columnName, discriminatorType, discriminatorLength, discriminatorValue);
+                root, strategy, root == entityType, abstractType,
+                columnName, discriminatorType, discriminatorLength, discriminatorValue,
+                rootTableName, rootIdColumn);
+    }
+
+    /**
+     * JOINED 루트의 PK 컬럼 이름을 해석한다. 루트(또는 그 @MappedSuperclass 조상)에 선언된 단일 {@link Id}
+     * 필드의 컬럼 이름을 namingStrategy/@Column override 규칙으로 결정한다. JOINED는 복합키를 아직 지원하지
+     * 않으므로 첫 @Id 필드를 쓴다(서브타입 테이블이 같은 FK 컬럼으로 1:1 공유).
+     */
+    private String joinedRootIdColumn(Class<?> root) {
+        for (Field field : mappedFields(root)) {
+            if (isNotPersistable(field) || !field.isAnnotationPresent(Id.class)) {
+                continue;
+            }
+            Column column = field.getAnnotation(Column.class);
+            if (column != null && !column.name().isBlank()) {
+                return column.name();
+            }
+            return namingStrategy.columnName(field.getName());
+        }
+        throw new IllegalArgumentException(
+                root.getName() + " is a @Inheritance(JOINED) root but declares no @Id field");
     }
 
     /**
@@ -499,7 +646,8 @@ public final class EntityMetadataFactory {
      * 않으므로 빈 값 허용).
      */
     private static String resolveDiscriminatorValue(
-            Class<?> entityType, String entityName, DiscriminatorType type, boolean abstractType) {
+            Class<?> entityType, String entityName, DiscriminatorType type,
+            boolean abstractType, InheritanceType strategy) {
         DiscriminatorValue annotation = entityType.getAnnotation(DiscriminatorValue.class);
         if (annotation != null && !annotation.value().isBlank()) {
             return annotation.value();
@@ -535,6 +683,7 @@ public final class EntityMetadataFactory {
                             + metadata.entityType().getName());
         }
         mergedHierarchyCache.remove(info.root());
+        inheritanceLayoutCache.remove(info.root());
     }
 
     /**
@@ -696,6 +845,85 @@ public final class EntityMetadataFactory {
             return generatorName;
         }
         return sg.sequenceName().isBlank() ? sg.name() : sg.sequenceName();
+    }
+
+    /**
+     * {@code @GeneratedValue(strategy = TABLE, generator = "name")}을 같은 필드/엔티티에 선언된
+     * {@link TableGenerator}(이름이 일치하는 것)로 해석해 {@link TableGeneratorInfo}를 만든다. 일치하는
+     * {@code @TableGenerator}가 없으면 generator 논리 이름을 {@code pkColumnValue}로 쓰고 나머지는 JPA 기본값
+     * (table/pk/value 컬럼)으로 채운다. table/컬럼/pkColumnValue 식별자는 dialect가 quote하지 않고 직접
+     * concat할 가능성에 대비해 SEQUENCE와 동일한 식별자 패턴으로 검증한다.
+     */
+    private static TableGeneratorInfo resolveTableGeneratorInfo(
+            Class<?> declaringType, Field field, String generatorName) {
+        TableGenerator tg = field.getAnnotation(TableGenerator.class);
+        if (tg == null || !tg.name().equals(generatorName)) {
+            // @TableGenerator는 @Inherited가 아니므로 getAnnotation은 superclass를 보지 않는다. 상속 매핑
+            // (JOINED/TABLE_PER_CLASS)에서 @TableGenerator를 abstract root에 두고 @Id를 subtype이 상속하는
+            // 경우를 위해, 엔티티 클래스 계층을 직접 거슬러 올라가며 이름이 일치하는 정의를 찾는다.
+            tg = findTableGeneratorInHierarchy(declaringType, generatorName);
+        }
+        String table = DEFAULT_TABLE_GENERATOR_TABLE;
+        String pkColumnName = DEFAULT_TABLE_GENERATOR_PK_COLUMN;
+        String valueColumnName = DEFAULT_TABLE_GENERATOR_VALUE_COLUMN;
+        // generator 논리 이름이 비어 있으면 컬럼 이름을 sequence-name fallback으로 쓴다(JPA 관행).
+        String pkColumnValue = (generatorName == null || generatorName.isBlank())
+                ? field.getName()
+                : generatorName;
+        long initialValue = 0L;
+        int allocationSize = 1;
+        if (tg != null) {
+            if (!tg.table().isBlank()) {
+                table = tg.table();
+            }
+            if (!tg.pkColumnName().isBlank()) {
+                pkColumnName = tg.pkColumnName();
+            }
+            if (!tg.valueColumnName().isBlank()) {
+                valueColumnName = tg.valueColumnName();
+            }
+            if (!tg.pkColumnValue().isBlank()) {
+                pkColumnValue = tg.pkColumnValue();
+            }
+            initialValue = tg.initialValue();
+            allocationSize = tg.allocationSize();
+            if (allocationSize < 1) {
+                throw new IllegalArgumentException(
+                        declaringType.getName() + "." + field.getName()
+                                + " @TableGenerator(allocationSize=" + allocationSize + ") must be >= 1");
+            }
+        }
+        validateGeneratorIdentifier(declaringType, field, "table", table);
+        validateGeneratorIdentifier(declaringType, field, "pkColumnName", pkColumnName);
+        validateGeneratorIdentifier(declaringType, field, "valueColumnName", valueColumnName);
+        validateGeneratorIdentifier(declaringType, field, "pkColumnValue", pkColumnValue);
+        return new TableGeneratorInfo(
+                table, pkColumnName, valueColumnName, pkColumnValue, initialValue, allocationSize);
+    }
+
+    /**
+     * 엔티티 클래스 계층(자신 → superclass …)을 거슬러 올라가며 {@code name}이 일치하는 {@code @TableGenerator}를
+     * 찾는다. {@code @MappedSuperclass}/상속 root에 선언된 generator를 subtype에서 해석하기 위함이다.
+     * 일치가 없으면 {@code null}(JPA 기본값으로 fallback).
+     */
+    private static TableGenerator findTableGeneratorInHierarchy(Class<?> type, String generatorName) {
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            TableGenerator candidate = current.getAnnotation(TableGenerator.class);
+            if (candidate != null && candidate.name().equals(generatorName)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static void validateGeneratorIdentifier(
+            Class<?> declaringType, Field field, String attribute, String value) {
+        if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(value).matches()) {
+            throw new IllegalArgumentException(
+                    "Invalid @TableGenerator " + attribute + " '" + value + "' on "
+                            + declaringType.getName() + "." + field.getName()
+                            + " — must match identifier pattern " + SEQUENCE_GENERATOR_NAME_PATTERN.pattern());
+        }
     }
 
     private static void rejectUnsupportedColumnAttributes(Class<?> declaringType, Field field, Column column) {
@@ -1045,7 +1273,10 @@ public final class EntityMetadataFactory {
         for (Class<?> listenerClass : listenerClasses) {
             Object listener = instantiateListener(listenerClass);
             Set<String> seen = new LinkedHashSet<>();
-            for (Method method : listenerClass.getDeclaredMethods()) {
+            // JPA 규약: 리스너 콜백 메서드는 상속된다. 리스너 클래스 자신의 superclass 체인을 루트→자식
+            // 순으로 순회하며 콜백을 모은다(superclass 콜백 먼저). 자식이 같은 시그니처를 override하면
+            // 가장 하위 정의만 한 번 수집한다(중복 호출 방지).
+            for (Method method : listenerCallbackMethods(listenerClass)) {
                 if (method.isSynthetic() || !seen.add(callbackSignature(method))) {
                     continue;
                 }
@@ -1063,10 +1294,31 @@ public final class EntityMetadataFactory {
     }
 
     /**
+     * 리스너 클래스의 콜백 후보 메서드를, 클래스 계층을 자식(가장 하위)→루트(최상위 superclass) 순으로
+     * 평탄화해 반환한다. 호출부의 {@code seen} 집합이 시그니처별 첫 등장만 채택하므로, 자식이 superclass
+     * 콜백을 override하면 가장 하위 정의가 한 번만 수집되어 중복 호출이 방지된다(JPA: 콜백 메서드는 상속됨).
+     */
+    private static List<Method> listenerCallbackMethods(Class<?> listenerClass) {
+        List<Method> methods = new ArrayList<>();
+        Class<?> current = listenerClass;
+        while (current != null && current != Object.class) {
+            methods.addAll(Arrays.asList(current.getDeclaredMethods()));
+            current = current.getSuperclass();
+        }
+        return methods;
+    }
+
+    /**
      * {@code @EntityListeners}를 선언할 수 있는 호스트 체인(자신 + {@code @MappedSuperclass}/상속 상위
      * {@code @Entity})을 루트-우선 순서로 반환한다 — 슈퍼클래스 리스너가 먼저 invoke되도록.
+     *
+     * <p>entity에 {@code @ExcludeSuperclassListeners}(jakarta.persistence)가 선언되면 상위 호스트가
+     * 기여하는 리스너를 제외하고 entity 자신만 호스트로 남긴다.
      */
     private static List<Class<?>> listenerHostChain(Class<?> entityType) {
+        if (entityType.isAnnotationPresent(ExcludeSuperclassListeners.class)) {
+            return List.of(entityType);
+        }
         List<Class<?>> chain = new ArrayList<>();
         Class<?> current = entityType;
         while (current != null && current != Object.class
@@ -1184,12 +1436,21 @@ public final class EntityMetadataFactory {
         }
         GenerationType generationType = generatedValue == null ? null : generatedValue.strategy();
         String generator = generatedValue == null ? "" : generatedValue.generator();
+        TableGeneratorInfo tableGeneratorInfo = null;
         if (generatedValue != null) {
             if (generationType == GenerationType.TABLE) {
-                throw new IllegalArgumentException(
-                        declaringType.getName() + "." + field.getName()
-                                + " uses @GeneratedValue(TABLE) which Nova does not support;"
-                                + " use IDENTITY, SEQUENCE, UUID, or AUTO");
+                if (!isId) {
+                    throw new IllegalArgumentException(
+                            declaringType.getName() + "." + field.getName()
+                                    + " uses @GeneratedValue(TABLE) but is not annotated with @Id");
+                }
+                if (!SUPPORTED_TABLE_GENERATOR_ID_TYPES.contains(wrapPrimitiveType(field.getType()))) {
+                    throw new IllegalArgumentException(
+                            "Unsupported @GeneratedValue(TABLE) id type " + field.getType().getName() + " on "
+                                    + declaringType.getName() + "." + field.getName()
+                                    + "; supported types are Long, Integer");
+                }
+                tableGeneratorInfo = resolveTableGeneratorInfo(declaringType, field, generator);
             }
             if (generationType == GenerationType.SEQUENCE) {
                 if (!isId) {
@@ -1367,7 +1628,9 @@ public final class EntityMetadataFactory {
                 converterColumnType,
                 false,
                 null,
-                null
+                null,
+                null,
+                tableGeneratorInfo
         );
     }
 
@@ -1504,20 +1767,19 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * {@link OneToMany} marker-only property를 만든다. parent 테이블 컬럼이 없으므로 column-related
-     * 메타데이터는 비워두고, mappedBy와 target type만 보존한다.
+     * {@link OneToMany} property를 만든다. parent 테이블 컬럼이 없으므로 column-related 메타데이터는 비워두고,
+     * mappedBy와 target type을 보존한다. cascade나 orphanRemoval이 지정되면 {@link OneToManyInfo}로 캡처해
+     * save/delete/flush 시 child 전파를 구동하고, 둘 다 없으면 {@code null}로 두어 기존 marker-only 동작을 보존한다.
      */
     private PersistentProperty createOneToManyProperty(Class<?> entityType, Field field) {
         OneToMany annotation = field.getAnnotation(OneToMany.class);
-        if (annotation.cascade().length > 0) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @OneToMany(cascade=...) is not supported; persist children explicitly via save/saveAll");
-        }
-        if (annotation.orphanRemoval()) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @OneToMany(orphanRemoval=true) is not supported; delete children explicitly");
+        OneToManyInfo oneToManyInfo;
+        if (annotation.cascade().length > 0 || annotation.orphanRemoval()) {
+            oneToManyInfo = new OneToManyInfo(
+                    Set.of(annotation.cascade()),
+                    annotation.orphanRemoval());
+        } else {
+            oneToManyInfo = null;
         }
         String mappedBy = annotation.mappedBy();
         if (mappedBy == null || mappedBy.isBlank()) {
@@ -1566,6 +1828,8 @@ public final class EntityMetadataFactory {
                 null,
                 false,
                 null,
+                null,
+                oneToManyInfo,
                 null
         );
     }
@@ -1642,8 +1906,9 @@ public final class EntityMetadataFactory {
                 null,
                 false,
                 null,
-                null
-        );
+                null,
+                null,
+                null        );
     }
 
     /**
@@ -1708,8 +1973,9 @@ public final class EntityMetadataFactory {
                     null,
                     true,
                     null,
-                    null
-            );
+                    null,
+                    null,
+                    null            );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
         JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
@@ -1761,8 +2027,9 @@ public final class EntityMetadataFactory {
                 null,
                 false,
                 null,
-                null
-        );
+                null,
+                null,
+                null        );
     }
 
     /**
@@ -1825,7 +2092,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null);
+                info, null, null, null);
     }
 
     /**
@@ -1968,12 +2235,6 @@ public final class EntityMetadataFactory {
         }
         boolean usesSet = Set.class.isAssignableFrom(fieldType);
         Class<?> elementType = resolveElementCollectionElementType(entityType, field);
-        if (elementType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @ElementCollection of @Embeddable type " + elementType.getName()
-                            + " is not supported yet; use a basic element type");
-        }
         String location = entityType.getName() + "." + field.getName();
         String ownerIdColumn = resolveSingleIdColumn(entityType, location);
         CollectionTable collectionTable = field.getAnnotation(CollectionTable.class);
@@ -1984,12 +2245,22 @@ public final class EntityMetadataFactory {
                 collectionTable == null ? null : collectionTable.joinColumns(),
                 namingStrategy.joinColumnName(entityType.getSimpleName(), ownerIdColumn),
                 location + " @CollectionTable.joinColumns");
-        Column column = field.getAnnotation(Column.class);
-        String valueColumn = column != null && !column.name().isBlank()
-                ? column.name()
-                : namingStrategy.columnName(field.getName());
-        ElementCollectionInfo info = new ElementCollectionInfo(
-                tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet);
+        ElementCollectionInfo info;
+        if (elementType.isAnnotationPresent(Embeddable.class)) {
+            // @Embeddable 원소: 원소 타입의 영속 필드들을 collection table 다중 컬럼으로 펼친다. owner FK는 단일
+            // 컬럼으로 유지하고, value 컬럼은 의미가 없으므로 빈 문자열을 둔다.
+            List<ElementCollectionInfo.EmbeddableColumn> embeddableColumns =
+                    expandEmbeddableElementColumns(elementType, field, location, ownerForeignKeyColumn);
+            info = new ElementCollectionInfo(
+                    tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns);
+        } else {
+            Column column = field.getAnnotation(Column.class);
+            String valueColumn = column != null && !column.name().isBlank()
+                    ? column.name()
+                    : namingStrategy.columnName(field.getName());
+            info = new ElementCollectionInfo(
+                    tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet);
+        }
         return new PersistentProperty(
                 field, field.getName(), "", fieldType,
                 false, false, true, 255, 0, 0,
@@ -2001,7 +2272,93 @@ public final class EntityMetadataFactory {
                 true, true, false, "", false, null,
                 false,
                 null,
-                info);
+                info,
+                null,
+                null);
+    }
+
+    /**
+     * {@code @ElementCollection}의 {@code @Embeddable} 원소 타입을 collection table 컬럼들로 펼친다. 각 영속
+     * 필드 1개당 컬럼 1개를 만들며, 컬럼 이름은 {@code @Column(name=...)} → {@code @AttributeOverride}(이
+     * {@code @ElementCollection} 필드에 선언된 것) → naming strategy 순으로 결정한다. v1은 평평한 {@code @Embeddable}만
+     * 지원하므로 중첩 {@code @Embedded}/{@code @EmbeddedId}, {@code @Id}, 관계 어노테이션, {@code @ElementCollection}을
+     * 가진 컴포넌트는 fail-fast로 거부한다.
+     * <p>
+     * column uniqueness: 펼친 컬럼들 사이의 중복과 owner FK 컬럼과의 충돌을 한 자리에서 검증해 silent dedupe로
+     * 인한 데이터 손상을 막는다.
+     */
+    private List<ElementCollectionInfo.EmbeddableColumn> expandEmbeddableElementColumns(
+            Class<?> elementType, Field collectionField, String location, String ownerForeignKeyColumn) {
+        if (hasIdAnnotatedField(elementType)) {
+            throw new IllegalArgumentException(
+                    "@Embeddable type " + elementType.getName()
+                            + " used as @ElementCollection element on " + location
+                            + " must not declare @Id-annotated fields");
+        }
+        // 컬럼 펼침은 getDeclaredFields()만 보므로 superclass(@MappedSuperclass 포함)에서 상속한 필드는
+        // 조용히 누락된다. silent 데이터 손실을 막기 위해 상속 구조를 가진 @Embeddable 원소는 fail-fast로 거부한다.
+        Class<?> elementSuperclass = elementType.getSuperclass();
+        if (elementSuperclass != null && elementSuperclass != Object.class) {
+            throw new IllegalArgumentException(
+                    location + " @ElementCollection of @Embeddable " + elementType.getName()
+                            + " must not extend a superclass (" + elementSuperclass.getName()
+                            + "); inherited fields would be silently dropped from the collection table");
+        }
+        // 이 @ElementCollection 필드의 @AttributeOverride(name=field, column=@Column(name=...))를 모은다.
+        Map<String, String> columnOverrides = new java.util.HashMap<>();
+        for (AttributeOverride override : collectionField.getAnnotationsByType(AttributeOverride.class)) {
+            columnOverrides.put(override.name(), override.column().name());
+        }
+        List<ElementCollectionInfo.EmbeddableColumn> columns = new ArrayList<>();
+        java.util.Set<String> seenColumnNames = new java.util.HashSet<>();
+        seenColumnNames.add(ownerForeignKeyColumn);
+        for (Field subField : elementType.getDeclaredFields()) {
+            if (isNotPersistable(subField)) {
+                continue;
+            }
+            if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
+                throw new IllegalArgumentException(
+                        location + " @ElementCollection of @Embeddable " + elementType.getName()
+                                + " component " + subField.getName()
+                                + " must be a simple field; nested @Embedded is not supported");
+            }
+            if (subField.isAnnotationPresent(Id.class)
+                    || subField.isAnnotationPresent(OneToMany.class)
+                    || subField.isAnnotationPresent(ManyToOne.class)
+                    || subField.isAnnotationPresent(OneToOne.class)
+                    || subField.isAnnotationPresent(ManyToMany.class)
+                    || subField.isAnnotationPresent(ElementCollection.class)) {
+                throw new IllegalArgumentException(
+                        location + " @ElementCollection of @Embeddable " + elementType.getName()
+                                + " component " + subField.getName()
+                                + " must be a simple value field (no @Id/relationship/@ElementCollection)");
+            }
+            String overridden = columnOverrides.get(subField.getName());
+            Column column = subField.getAnnotation(Column.class);
+            String columnName;
+            if (overridden != null && !overridden.isBlank()) {
+                columnName = overridden;
+            } else if (column != null && !column.name().isBlank()) {
+                columnName = column.name();
+            } else {
+                columnName = namingStrategy.columnName(subField.getName());
+            }
+            if (!seenColumnNames.add(columnName)) {
+                throw new IllegalArgumentException(
+                        location + " @ElementCollection of @Embeddable " + elementType.getName()
+                                + " produces duplicate column '" + columnName
+                                + "'; use @AttributeOverride or @Column to disambiguate");
+            }
+            subField.setAccessible(true);
+            columns.add(new ElementCollectionInfo.EmbeddableColumn(
+                    subField, columnName, wrapPrimitiveType(subField.getType())));
+        }
+        if (columns.isEmpty()) {
+            throw new IllegalArgumentException(
+                    location + " @ElementCollection of @Embeddable " + elementType.getName()
+                            + " has no persistent fields to map as collection columns");
+        }
+        return columns;
     }
 
     private static Class<?> resolveElementCollectionElementType(Class<?> entityType, Field field) {
