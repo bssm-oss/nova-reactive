@@ -87,6 +87,21 @@ public final class PersistentProperty {
      * 설정되며, 그 외에는 {@code null}이다. generator 테이블 DDL/seed와 다음 값 취득에서 사용된다.
      */
     private final TableGeneratorInfo tableGeneratorInfo;
+    /**
+     * {@code @MapsId} 파생 식별자(shared primary key) 마커. owning {@code @OneToOne}/{@code @ManyToOne}
+     * 관계 property에만 {@code true}로 설정되며, 이 관계가 가리키는 연관 엔티티의 PK가 호스트 엔티티의
+     * {@code @Id}로 파생됨을 나타낸다. {@link io.nova.core.SimpleReactiveEntityOperations}의 save 경로가
+     * 이 마커를 보고 INSERT 전 연관 엔티티 PK를 owner의 {@code @Id}에 복사하고, app-assigned 파생키와
+     * id-null isNew 휴리스틱이 충돌하지 않도록 존재확인 SELECT로 insert/update를 가른다. {@code @MapsId}가
+     * 아니면 {@code false}.
+     */
+    private final boolean mapsId;
+    /**
+     * {@code @MapsId("attr")}로 지정된, 복합키 안에서 파생될 컴포넌트 속성 이름. 단순(전체 키 파생)
+     * {@code @MapsId}는 빈 문자열이다. v1은 단일 {@code @Id} 전체 파생만 지원하므로 비어있지 않은 값은
+     * {@link EntityMetadataFactory}가 fail-fast로 거부한다(예약 메타데이터).
+     */
+    private final String mapsIdValue;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -127,7 +142,9 @@ public final class PersistentProperty {
             ManyToManyInfo manyToManyInfo,
             ElementCollectionInfo elementCollectionInfo,
             OneToManyInfo oneToManyInfo,
-            TableGeneratorInfo tableGeneratorInfo
+            TableGeneratorInfo tableGeneratorInfo,
+            boolean mapsId,
+            String mapsIdValue
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -172,6 +189,8 @@ public final class PersistentProperty {
         this.elementCollectionInfo = elementCollectionInfo;
         this.oneToManyInfo = oneToManyInfo;
         this.tableGeneratorInfo = tableGeneratorInfo;
+        this.mapsId = mapsId;
+        this.mapsIdValue = mapsIdValue == null ? "" : mapsIdValue;
     }
 
     /**
@@ -221,7 +240,9 @@ public final class PersistentProperty {
                 manyToManyInfo,
                 elementCollectionInfo,
                 oneToManyInfo,
-                tableGeneratorInfo
+                tableGeneratorInfo,
+                mapsId,
+                mapsIdValue
         );
     }
 
@@ -273,7 +294,9 @@ public final class PersistentProperty {
                 manyToManyInfo,
                 elementCollectionInfo,
                 oneToManyInfo,
-                tableGeneratorInfo
+                tableGeneratorInfo,
+                mapsId,
+                mapsIdValue
         );
     }
 
@@ -588,6 +611,23 @@ public final class PersistentProperty {
 
     public TableGeneratorInfo tableGeneratorInfo() {
         return tableGeneratorInfo;
+    }
+
+    /**
+     * {@code true}이면 이 owning to-one 관계 property는 {@code @MapsId}로 마킹되어 호스트 엔티티의
+     * {@code @Id}가 연관 엔티티의 PK로부터 파생된다(shared primary key). save 경로가 INSERT 전 연관
+     * 엔티티 PK를 owner의 {@code @Id}에 복사한다.
+     */
+    public boolean mapsId() {
+        return mapsId;
+    }
+
+    /**
+     * {@code @MapsId("attr")}로 지정된, 복합키 안에서 파생될 컴포넌트 속성 이름. 단순(전체 키 파생)
+     * {@code @MapsId}는 빈 문자열을 반환한다.
+     */
+    public String mapsIdValue() {
+        return mapsIdValue;
     }
 
     /**

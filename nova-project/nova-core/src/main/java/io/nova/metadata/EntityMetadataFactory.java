@@ -31,6 +31,7 @@ import io.nova.annotation.Json;
 import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MapsId;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OneToOne;
@@ -1630,7 +1631,9 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 null,
-                tableGeneratorInfo
+                tableGeneratorInfo,
+                false,
+                ""
         );
     }
 
@@ -1764,6 +1767,11 @@ public final class EntityMetadataFactory {
         if (field.isAnnotationPresent(Json.class)) {
             throw new IllegalStateException(location + " cannot declare @Json together with a relation annotation");
         }
+        if (field.isAnnotationPresent(MapsId.class) && (isOneToMany || isManyToMany)) {
+            throw new IllegalStateException(
+                    location + " @MapsId is only valid on a to-one relationship (@OneToOne/@ManyToOne),"
+                            + " not on @OneToMany/@ManyToMany");
+        }
     }
 
     /**
@@ -1830,7 +1838,9 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 oneToManyInfo,
-                null
+                null,
+                false,
+                ""
         );
     }
 
@@ -1841,8 +1851,65 @@ public final class EntityMetadataFactory {
      * mapRow는 이 property를 직접 read/write하지 않으므로(관계는 FetchGroup이 채워준다) javaType 정확도가
      * row decoding에 영향을 주지 않는다.
      */
+    /**
+     * owning to-one 관계 필드({@code @ManyToOne}/owning {@code @OneToOne})의 {@code @MapsId} 마커를 해석한다.
+     * {@code @MapsId}가 없으면 {@code null}(비파생). v1은 단일 {@code @Id} 전체 파생(shared primary key)만
+     * 지원하므로, 다음은 fail-fast로 거부한다(조용한 무시 금지):
+     * <ul>
+     *   <li>{@code @MapsId("attr")}처럼 복합키 부분 컴포넌트를 가리키는 비어있지 않은 value</li>
+     *   <li>{@code @MapsId}를 선언한 엔티티가 복합키({@code @EmbeddedId}/{@code @IdClass})인 경우 — 파생
+     *       대상 단일 {@code @Id}가 정의되지 않는다</li>
+     *   <li>{@code @GeneratedValue}로 생성되는 {@code @Id} — 파생 식별자는 application/연관-PK가 채우므로 양립 불가</li>
+     * </ul>
+     */
+    private static String resolveMapsIdMarker(Class<?> entityType, Field field) {
+        MapsId mapsId = field.getAnnotation(MapsId.class);
+        if (mapsId == null) {
+            return null;
+        }
+        String value = mapsId.value();
+        if (value != null && !value.isBlank()) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @MapsId(\"" + value + "\") (deriving a composite-key component) is not supported;"
+                            + " only a simple @MapsId deriving the entire single @Id is supported");
+        }
+        // 파생 대상 @Id 검증: 정확히 하나의 단일 @Id 필드여야 하고 @GeneratedValue가 없어야 한다.
+        List<Field> idFields = new ArrayList<>();
+        boolean hasEmbeddedId = false;
+        boolean idGenerated = false;
+        for (Field candidate : mappedFields(entityType)) {
+            if (isNotPersistable(candidate)) {
+                continue;
+            }
+            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
+                hasEmbeddedId = true;
+            }
+            if (candidate.isAnnotationPresent(Id.class)) {
+                idFields.add(candidate);
+                if (candidate.isAnnotationPresent(GeneratedValue.class)) {
+                    idGenerated = true;
+                }
+            }
+        }
+        if (hasEmbeddedId || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class) || idFields.size() != 1) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @MapsId requires the owning entity to declare exactly one single @Id"
+                            + " (composite keys are not supported)");
+        }
+        if (idGenerated) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @MapsId cannot be combined with @GeneratedValue on the @Id;"
+                            + " a derived identifier is supplied by the associated entity's primary key");
+        }
+        return "";
+    }
+
     private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {
         ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
+        String mapsIdMarker = resolveMapsIdMarker(entityType, field);
         if (manyToOne.fetch() == FetchType.LAZY) {
             throw new IllegalArgumentException(
                     entityType.getName() + "." + field.getName()
@@ -1908,7 +1975,9 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 null,
-                null        );
+                null,
+                mapsIdMarker != null,
+                mapsIdMarker == null ? "" : mapsIdMarker);
     }
 
     /**
@@ -1936,6 +2005,14 @@ public final class EntityMetadataFactory {
         }
         String mappedBy = oneToOne.mappedBy();
         if (mappedBy != null && !mappedBy.isBlank()) {
+            // @MapsId는 FK를 소유한 owning side에서만 식별자를 파생할 수 있다. inverse(mappedBy) side에
+            // @MapsId가 붙으면 조용히 무시되지 않도록 fail-fast로 거부한다.
+            if (field.isAnnotationPresent(MapsId.class)) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + field.getName()
+                                + " @MapsId is only valid on the owning side of a to-one relationship;"
+                                + " it cannot be placed on an inverse @OneToOne(mappedBy)");
+            }
             // inverse side — 컬럼 없는 마커. target/mappedBy는 oneToMany 필드 자리에 보관하고 inverseToOne로 구분한다.
             return new PersistentProperty(
                     field,
@@ -1975,7 +2052,10 @@ public final class EntityMetadataFactory {
                     null,
                     null,
                     null,
-                    null            );
+                    null,
+                    false,
+                    ""
+            );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
         JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
@@ -1991,6 +2071,7 @@ public final class EntityMetadataFactory {
         // @OneToOne의 FK는 일대일을 강제하기 위해 unique로 emit한다(@JoinColumn(unique=false)는 무시).
         boolean fkUnique = true;
         String fkColumnDefinition = joinColumn == null ? "" : joinColumn.columnDefinition();
+        String mapsIdMarker = resolveMapsIdMarker(entityType, field);
         return new PersistentProperty(
                 field,
                 field.getName(),
@@ -2029,7 +2110,9 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 null,
-                null        );
+                null,
+                mapsIdMarker != null,
+                mapsIdMarker == null ? "" : mapsIdMarker);
     }
 
     /**
@@ -2092,7 +2175,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null, null);
+                info, null, null, null, false, "");
     }
 
     /**
@@ -2274,7 +2357,9 @@ public final class EntityMetadataFactory {
                 null,
                 info,
                 null,
-                null);
+                null,
+                false,
+                "");
     }
 
     /**

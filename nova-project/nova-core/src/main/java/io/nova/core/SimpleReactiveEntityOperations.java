@@ -150,7 +150,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
             Optional<PersistenceSession> session = currentSession(ctx);
-            Mono<T> saved = session.isEmpty()
+            // @MapsId 파생 식별자: INSERT/UPDATE 결정 전에 연관 엔티티의 PK를 owner의 @Id로 복사한다.
+            // 동기 작업이지만 누락된 연관 엔티티 등은 Mono.error로 흐르게 try/catch로 감싼다.
+            try {
+                applyMapsIdDerivedIdentifier(metadata, entity);
+            } catch (RuntimeException exception) {
+                return Mono.error(exception);
+            }
+            Mono<T> saved = metadata.mapsIdProperty().isPresent()
+                    // @MapsId는 app-assigned 파생키이므로 id-null isNew 휴리스틱과 충돌한다. 복합키와 동일하게
+                    // 존재확인 SELECT로 insert/update를 가른다(세션 유무에 맞춰 stateless/session 동작 보존).
+                    ? saveWithDerivedIdentifier(session, metadata, entity)
+                    : session.isEmpty()
                     // 세션 밖(트랜잭션 미사용 등): 현행 stateless 동작 그대로.
                     ? saveStateless(metadata, entity)
                     : saveInSession(session.get(), metadata, entity);
@@ -204,6 +215,67 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         boolean isNew = entityStateDetector.isNew(entity, metadata);
         return isNew ? insertAndRegister(session, metadata, entity) : registerExisting(session, metadata, entity);
+    }
+
+    /**
+     * {@code @MapsId} 파생 식별자(shared primary key) 엔티티의 save. 파생키는 application/연관-PK가 채우므로
+     * 항상 채워져 있어(id-null isNew 휴리스틱 사용 불가) 복합키와 동일하게 존재확인 SELECT로 insert/update를
+     * 가른다. 세션이 있으면 기존은 등록만(dirty flush가 UPDATE 발행), 신규는 즉시 INSERT 후 등록한다.
+     */
+    private <T> Mono<T> saveWithDerivedIdentifier(
+            Optional<PersistenceSession> session, EntityMetadata<T> metadata, T entity) {
+        Object id = metadata.idProperty().read(entity);
+        if (id == null) {
+            // applyMapsIdDerivedIdentifier가 채웠어야 한다. 여기 도달하면 연관 PK가 null이라는 뜻이다.
+            return Mono.error(new IllegalStateException(
+                    "@MapsId derived identifier was not resolved for " + metadata.entityType().getName()
+                            + "; the associated entity must be persisted (non-null primary key) before saving"));
+        }
+        if (session.isEmpty()) {
+            return findByIdInternal(metadata, id).hasElement()
+                    .flatMap(exists -> exists ? updatePath(metadata, entity) : insertPath(metadata, entity));
+        }
+        PersistenceSession active = session.get();
+        return findByIdInternal(metadata, id).hasElement()
+                .flatMap(exists -> exists
+                        ? registerExisting(active, metadata, entity)
+                        : insertAndRegister(active, metadata, entity));
+    }
+
+    /**
+     * {@code @MapsId} 관계가 있으면 연관 엔티티의 PK를 읽어 owner의 {@code @Id}에 복사한다. 관계 참조가
+     * {@code null}이거나 연관 엔티티의 PK가 아직 {@code null}이면(미영속) fail-fast로 거부한다(조용한 무시
+     * 금지). {@code @MapsId}가 없으면 무비용 no-op.
+     */
+    private <T> void applyMapsIdDerivedIdentifier(EntityMetadata<T> metadata, T entity) {
+        PersistentProperty mapsIdProperty = metadata.mapsIdProperty().orElse(null);
+        if (mapsIdProperty == null) {
+            return;
+        }
+        Object associated;
+        try {
+            associated = mapsIdProperty.field().get(entity);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot read @MapsId relation " + mapsIdProperty.propertyName()
+                            + " on " + metadata.entityType().getName(), exception);
+        }
+        if (associated == null) {
+            throw new IllegalArgumentException(
+                    metadata.entityType().getName() + "." + mapsIdProperty.propertyName()
+                            + " @MapsId association must not be null on save;"
+                            + " set the associated entity so its primary key can derive the identifier");
+        }
+        EntityMetadata<?> associatedMetadata =
+                metadataFactory.getEntityMetadata(mapsIdProperty.manyToOneTargetType());
+        Object associatedId = associatedMetadata.idProperty().read(associated);
+        if (associatedId == null) {
+            throw new IllegalArgumentException(
+                    metadata.entityType().getName() + "." + mapsIdProperty.propertyName()
+                            + " @MapsId association " + associatedMetadata.entityType().getName()
+                            + " must be persisted (non-null primary key) before saving the owner");
+        }
+        metadata.idProperty().write(entity, metadata.idProperty().toPropertyValue(associatedId));
     }
 
     /**

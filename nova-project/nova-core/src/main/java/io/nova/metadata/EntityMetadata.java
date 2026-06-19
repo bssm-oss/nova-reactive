@@ -41,6 +41,11 @@ public final class EntityMetadata<T> {
     private final List<PersistentProperty> oneToOneInverseProperties;
     private final List<PersistentProperty> manyToManyProperties;
     private final List<PersistentProperty> elementCollectionProperties;
+    /**
+     * {@code @MapsId} 파생 식별자(shared primary key)를 가진 owning to-one 관계 property. v1은 엔티티당
+     * 하나의 {@code @MapsId}만 의미가 있으므로(단일 {@code @Id} 전체 파생) 첫 번째만 보관한다. 없으면 {@code null}.
+     */
+    private final PersistentProperty mapsIdProperty;
     private final boolean hasRelationProperties;
     private final PersistentProperty createdAtProperty;
     private final PersistentProperty updatedAtProperty;
@@ -174,6 +179,7 @@ public final class EntityMetadata<T> {
         this.oneToOneInverseProperties = this.properties.stream().filter(PersistentProperty::inverseToOne).toList();
         this.manyToManyProperties = this.properties.stream().filter(PersistentProperty::manyToMany).toList();
         this.elementCollectionProperties = this.properties.stream().filter(PersistentProperty::elementCollection).toList();
+        this.mapsIdProperty = this.properties.stream().filter(PersistentProperty::mapsId).findFirst().orElse(null);
         this.hasRelationProperties = !manyToOneProperties.isEmpty()
                 || !oneToManyProperties.isEmpty()
                 || !oneToOneInverseProperties.isEmpty()
@@ -520,6 +526,15 @@ public final class EntityMetadata<T> {
      */
     public List<PersistentProperty> elementCollectionProperties() {
         return elementCollectionProperties;
+    }
+
+    /**
+     * {@code @MapsId} 파생 식별자(shared primary key)를 가진 owning to-one 관계 property. 없으면
+     * {@link Optional#empty()}. save 경로가 INSERT 전 연관 엔티티의 PK를 owner의 {@code @Id}로 복사하고
+     * 존재확인으로 insert/update를 가르는 데 사용한다.
+     */
+    public Optional<PersistentProperty> mapsIdProperty() {
+        return Optional.ofNullable(mapsIdProperty);
     }
 
     /**
