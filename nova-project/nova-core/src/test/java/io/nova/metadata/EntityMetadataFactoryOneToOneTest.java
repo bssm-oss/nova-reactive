@@ -52,10 +52,17 @@ class EntityMetadataFactoryOneToOneTest {
     }
 
     @Test
-    void rejectsLazyFetch() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(LazyOneToOne.class));
-        assertTrue(error.getMessage().contains("LAZY"));
+    void acceptsLazyFetchAsNoOp() {
+        // Nova는 lazy proxy가 없어 EAGER/LAZY가 런타임 동일(관계는 FetchGroup으로만 populate).
+        // 따라서 @OneToOne(fetch=LAZY)는 예외 없이 빌드되고 FK 컬럼은 EAGER와 동일해야 한다.
+        EntityMetadata<LazyOneToOne> lazy = factory.getEntityMetadata(LazyOneToOne.class);
+        PersistentProperty passport = lazy.findProperty("passport").orElseThrow();
+        assertTrue(passport.manyToOne());
+        assertFalse(passport.inverseToOne());
+        assertEquals("passport_id", passport.columnName());
+        assertTrue(passport.unique(), "@OneToOne FK는 unique로 emit돼야 한다");
+        assertEquals(Passport.class, passport.manyToOneTargetType());
+        assertTrue(lazy.columnMappedProperties().stream().anyMatch(p -> p.columnName().equals("passport_id")));
     }
 
     @Test

@@ -1940,7 +1940,8 @@ public final class FixtureEntities {
         }
     }
 
-    // --- JPA 속성 중 Nova가 honor하지 않아 fail-fast 거부되는 invalid 엔티티들 ---
+    // --- fetch=LAZY는 no-op으로 수용되는 valid 엔티티 ---
+    // Nova는 lazy proxy가 없어 EAGER/LAZY가 런타임 동일(관계는 FetchGroup으로만 populate, FK는 정상 persist).
 
     @Entity
     public static class ManyToOneLazyEntity {
@@ -1953,6 +1954,8 @@ public final class FixtureEntities {
         public ManyToOneLazyEntity() {
         }
     }
+
+    // --- JPA 속성 중 Nova가 honor하지 않아 fail-fast 거부되는 invalid 엔티티들 ---
 
     @Entity
     public static class ManyToOneCascadeEntity {

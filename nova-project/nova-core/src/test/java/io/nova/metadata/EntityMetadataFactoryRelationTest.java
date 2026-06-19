@@ -5,6 +5,7 @@ import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
@@ -139,6 +140,25 @@ class EntityMetadataFactoryRelationTest {
     }
 
     @Test
+    void manyToOneLazyFetchBuildsIdenticalFkColumnAsEager() {
+        // Nova는 lazy proxy가 없어 EAGER/LAZY가 런타임 동일(관계는 FetchGroup으로만 populate).
+        // fetch=LAZY는 예외 없이 빌드되고, FK 컬럼 매핑은 EAGER와 byte-for-byte 동일해야 한다.
+        PersistentProperty eager =
+                factory.getEntityMetadata(EagerManyToOneEntity.class).manyToOneProperties().get(0);
+        PersistentProperty lazy =
+                factory.getEntityMetadata(LazyManyToOneEntity.class).manyToOneProperties().get(0);
+
+        assertEquals("owner_id", eager.columnName());
+        assertEquals(eager.columnName(), lazy.columnName());
+        assertEquals(eager.manyToOne(), lazy.manyToOne());
+        assertEquals(eager.nullable(), lazy.nullable());
+        assertEquals(eager.manyToOneNullable(), lazy.manyToOneNullable());
+        assertSame(eager.manyToOneTargetType(), lazy.manyToOneTargetType());
+        assertTrue(lazy.manyToOne());
+        assertFalse(lazy.oneToMany());
+    }
+
+    @Test
     void hasRelationPropertiesReflectsAnnotationsPresent() {
         assertTrue(factory.getEntityMetadata(AuthorWithBooksAnnotated.class).hasRelationProperties());
         assertTrue(factory.getEntityMetadata(BookWithAuthorAnnotated.class).hasRelationProperties());
@@ -153,6 +173,32 @@ class EntityMetadataFactoryRelationTest {
         private AuthorWithBooksAnnotated owner;
 
         BookWithDefaultFkName() {
+        }
+    }
+
+    @Entity
+    static class EagerManyToOneEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = AuthorWithBooksAnnotated.class)
+        @JoinColumn(name = "owner_id")
+        private AuthorWithBooksAnnotated owner;
+
+        EagerManyToOneEntity() {
+        }
+    }
+
+    @Entity
+    static class LazyManyToOneEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = AuthorWithBooksAnnotated.class, fetch = FetchType.LAZY)
+        @JoinColumn(name = "owner_id")
+        private AuthorWithBooksAnnotated owner;
+
+        LazyManyToOneEntity() {
         }
     }
 

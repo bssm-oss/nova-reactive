@@ -16,7 +16,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
 import jakarta.persistence.ExcludeDefaultListeners;
 import jakarta.persistence.ExcludeSuperclassListeners;
-import jakarta.persistence.FetchType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
@@ -1910,12 +1909,9 @@ public final class EntityMetadataFactory {
     private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {
         ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
         String mapsIdMarker = resolveMapsIdMarker(entityType, field);
-        if (manyToOne.fetch() == FetchType.LAZY) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @ManyToOne(fetch=LAZY) is not supported; Nova has no lazy proxy."
-                            + " Use the default eager fetch or drive a FetchGroup explicitly");
-        }
+        // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 관계는 findById에서
+        // 자동 fetch되지 않고 FetchGroup을 명시 구동할 때만 hydration된다. 따라서 EAGER와 LAZY는
+        // 런타임에서 동일하게 동작한다(둘 다 구동 전엔 null, FK 컬럼은 정상 persist).
         if (manyToOne.cascade().length > 0) {
             throw new IllegalArgumentException(
                     entityType.getName() + "." + field.getName()
@@ -1984,16 +1980,13 @@ public final class EntityMetadataFactory {
      * {@link OneToOne} property를 만든다. {@code mappedBy}가 없으면 owning side로 FK 컬럼을 가지며
      * {@code @ManyToOne}과 동일한 단건 참조 메커니즘({@code manyToOne=true})으로 모델링한다(FK는 unique 기본).
      * {@code mappedBy}가 있으면 inverse side로 컬럼 없는 {@code inverseToOne} 마커가 되고, 소유 측 FK로
-     * 단건 child가 hydration된다. fetch=LAZY와 cascade는 거부한다.
+     * 단건 child가 hydration된다. fetch=LAZY는 no-op으로 수용하고(Nova는 lazy proxy가 없어
+     * 관계는 FetchGroup으로만 populate되므로 EAGER와 LAZY가 런타임 동일), cascade는 거부한다.
      */
     private PersistentProperty createOneToOneProperty(Class<?> entityType, Field field) {
         OneToOne oneToOne = field.getAnnotation(OneToOne.class);
-        if (oneToOne.fetch() == FetchType.LAZY) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @OneToOne(fetch=LAZY) is not supported; Nova has no lazy proxy."
-                            + " Use the default eager fetch or drive a FetchGroup explicitly");
-        }
+        // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 EAGER/LAZY가 런타임에서
+        // 동일하게 동작하며 관계는 FetchGroup을 명시 구동할 때만 populate된다. FK 컬럼은 정상 persist.
         if (oneToOne.cascade().length > 0) {
             throw new IllegalArgumentException(
                     entityType.getName() + "." + field.getName()

@@ -1068,12 +1068,17 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void rejectsManyToOneLazyFetch() {
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(ManyToOneLazyEntity.class)
-        );
-        assertTrue(exception.getMessage().contains("@ManyToOne(fetch=LAZY)"));
+    void acceptsManyToOneLazyFetchAsNoOp() {
+        // Nova는 lazy proxy가 없어 EAGER/LAZY가 런타임 동일(관계는 FetchGroup으로만 populate).
+        // 따라서 @ManyToOne(fetch=LAZY)는 예외 없이 빌드되고 FK 컬럼은 EAGER와 동일해야 한다.
+        EntityMetadata<ManyToOneLazyEntity> metadata = factory.getEntityMetadata(ManyToOneLazyEntity.class);
+        PersistentProperty account = metadata.findProperty("account").orElseThrow();
+        assertTrue(account.manyToOne());
+        assertFalse(account.inverseToOne());
+        assertEquals("account_id", account.columnName());
+        assertSame(SampleAccount.class, account.manyToOneTargetType());
+        assertTrue(metadata.columnMappedProperties().stream()
+                .anyMatch(p -> p.columnName().equals("account_id")));
     }
 
     @Test
