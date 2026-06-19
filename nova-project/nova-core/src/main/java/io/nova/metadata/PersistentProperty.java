@@ -7,6 +7,7 @@ import io.nova.convert.AttributeConverter;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Objects;
 
@@ -102,6 +103,23 @@ public final class PersistentProperty {
      * {@link EntityMetadataFactory}가 fail-fast로 거부한다(예약 메타데이터).
      */
     private final String mapsIdValue;
+    /**
+     * {@code @Access(AccessType.PROPERTY)} 마커. {@code true}이면 이 property의 상태를 leaf field가 아니라
+     * JavaBean getter/setter({@link #propertyAccessGetter}/{@link #propertyAccessSetter})로 read/write한다.
+     * {@code false}(기본, FIELD access)이면 field 접근({@link #fieldHandle}/{@link #field})을 쓴다. 호출당
+     * reflection 추론 없이 분기하도록 생성자 시점에 access 전략을 확정해 둔다.
+     */
+    private final boolean propertyAccess;
+    /**
+     * PROPERTY access일 때 상태를 읽는 JavaBean getter({@code getX}/{@code isX}). {@link #propertyAccess}가
+     * {@code true}일 때만 non-null이며, embedded host-path를 따라 도달한 leaf holder 인스턴스에서 호출된다.
+     */
+    private final Method propertyAccessGetter;
+    /**
+     * PROPERTY access일 때 상태를 쓰는 JavaBean setter({@code setX}). {@link #propertyAccess}가 {@code true}일
+     * 때만 non-null이며, embedded host-path를 따라 도달한 leaf holder 인스턴스에서 호출된다.
+     */
+    private final Method propertyAccessSetter;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -144,7 +162,10 @@ public final class PersistentProperty {
             OneToManyInfo oneToManyInfo,
             TableGeneratorInfo tableGeneratorInfo,
             boolean mapsId,
-            String mapsIdValue
+            String mapsIdValue,
+            boolean propertyAccess,
+            Method propertyAccessGetter,
+            Method propertyAccessSetter
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -191,6 +212,18 @@ public final class PersistentProperty {
         this.tableGeneratorInfo = tableGeneratorInfo;
         this.mapsId = mapsId;
         this.mapsIdValue = mapsIdValue == null ? "" : mapsIdValue;
+        this.propertyAccess = propertyAccess;
+        this.propertyAccessGetter = propertyAccessGetter;
+        this.propertyAccessSetter = propertyAccessSetter;
+        if (propertyAccess) {
+            if (propertyAccessGetter == null || propertyAccessSetter == null) {
+                throw new IllegalStateException(
+                        "PROPERTY access property " + propertyName
+                                + " requires both a getter and a setter");
+            }
+            propertyAccessGetter.setAccessible(true);
+            propertyAccessSetter.setAccessible(true);
+        }
     }
 
     /**
@@ -242,7 +275,10 @@ public final class PersistentProperty {
                 oneToManyInfo,
                 tableGeneratorInfo,
                 mapsId,
-                mapsIdValue
+                mapsIdValue,
+                propertyAccess,
+                propertyAccessGetter,
+                propertyAccessSetter
         );
     }
 
@@ -296,7 +332,10 @@ public final class PersistentProperty {
                 oneToManyInfo,
                 tableGeneratorInfo,
                 mapsId,
-                mapsIdValue
+                mapsIdValue,
+                propertyAccess,
+                propertyAccessGetter,
+                propertyAccessSetter
         );
     }
 
@@ -631,6 +670,28 @@ public final class PersistentProperty {
     }
 
     /**
+     * {@code true}이면 이 property는 {@code @Access(AccessType.PROPERTY)}로 매핑되어 상태를 JavaBean
+     * getter/setter로 read/write한다. {@code false}(기본)이면 field 접근을 쓴다.
+     */
+    public boolean propertyAccess() {
+        return propertyAccess;
+    }
+
+    /**
+     * PROPERTY access getter. {@link #propertyAccess()}가 {@code false}이면 {@code null}.
+     */
+    public Method propertyAccessGetter() {
+        return propertyAccessGetter;
+    }
+
+    /**
+     * PROPERTY access setter. {@link #propertyAccess()}가 {@code false}이면 {@code null}.
+     */
+    public Method propertyAccessSetter() {
+        return propertyAccessSetter;
+    }
+
+    /**
      * inverse-side {@code @OneToOne}({@code mappedBy})이면 {@code true}. 이 테이블에 컬럼이 없는 마커이며
      * hydration에서 단건 child가 주입된다.
      */
@@ -664,7 +725,10 @@ public final class PersistentProperty {
                     return null;
                 }
             }
-            Object value = fieldHandle != null ? fieldHandle.get(current) : field.get(current);
+            // @Access(PROPERTY)이면 leaf field 대신 JavaBean getter로 상태를 읽는다(access 전략은 생성자에서 확정).
+            Object value = propertyAccess
+                    ? invokeGetter(current)
+                    : (fieldHandle != null ? fieldHandle.get(current) : field.get(current));
             if (manyToOne && value != null) {
                 // @ManyToOne property는 entity reference를 보관하지만, FK column에 바인딩되는 값은
                 // 참조 대상의 @Id 값이다. binding 시점에 reflection으로 target의 @Id 필드를 찾아 그 값을 반환한다.
@@ -673,6 +737,34 @@ public final class PersistentProperty {
             return value;
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot read field " + field.getName(), exception);
+        }
+    }
+
+    /**
+     * PROPERTY access getter를 holder 인스턴스에 대해 호출한다. 호출 대상 메서드가 던진 예외는
+     * {@link IllegalStateException}으로 감싸 전파한다.
+     */
+    private Object invokeGetter(Object holder) {
+        try {
+            return propertyAccessGetter.invoke(holder);
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "Cannot read PROPERTY-access property " + propertyName
+                            + " via " + propertyAccessGetter.getName(), exception);
+        }
+    }
+
+    /**
+     * PROPERTY access setter를 holder 인스턴스에 대해 호출한다. 호출 대상 메서드가 던진 예외는
+     * {@link IllegalStateException}으로 감싸 전파한다.
+     */
+    private void invokeSetter(Object holder, Object value) {
+        try {
+            propertyAccessSetter.invoke(holder, value);
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "Cannot write PROPERTY-access property " + propertyName
+                            + " via " + propertyAccessSetter.getName(), exception);
         }
     }
 
@@ -707,6 +799,9 @@ public final class PersistentProperty {
     public Object readFromIdHolder(Object idHolder) {
         if (embeddedHostPath.isEmpty()) {
             return idHolder;
+        }
+        if (propertyAccess) {
+            return invokeGetter(idHolder);
         }
         try {
             return fieldHandle != null ? fieldHandle.get(idHolder) : field.get(idHolder);
@@ -761,7 +856,10 @@ public final class PersistentProperty {
                 }
                 current = next;
             }
-            if (fieldHandle != null) {
+            // @Access(PROPERTY)이면 leaf field 대신 JavaBean setter로 상태를 쓴다(access 전략은 생성자에서 확정).
+            if (propertyAccess) {
+                invokeSetter(current, value);
+            } else if (fieldHandle != null) {
                 fieldHandle.set(current, value);
             } else {
                 field.set(current, value);

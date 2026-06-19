@@ -1,5 +1,7 @@
 package io.nova.metadata;
 
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
@@ -1592,6 +1594,15 @@ public final class EntityMetadataFactory {
         boolean unique = column != null && column.unique();
         String columnDefinition = column == null ? "" : column.columnDefinition();
         boolean lob = field.isAnnotationPresent(Lob.class);
+        // @Access(AccessType.PROPERTY): 클래스 레벨 기본 access type + 멤버 레벨 override를 해석하고,
+        // PROPERTY access이면 JavaBean getter/setter를 resolve해 PP에 캐시한다(resolve 실패 시 fail-fast).
+        boolean propertyAccess = resolvePropertyAccess(field);
+        Method propertyAccessGetter = null;
+        Method propertyAccessSetter = null;
+        if (propertyAccess) {
+            propertyAccessGetter = resolvePropertyGetter(field);
+            propertyAccessSetter = resolvePropertySetter(field);
+        }
         return new PersistentProperty(
                 field,
                 propertyName,
@@ -1632,8 +1643,106 @@ public final class EntityMetadataFactory {
                 null,
                 tableGeneratorInfo,
                 false,
-                ""
+                "",
+                propertyAccess,
+                propertyAccessGetter,
+                propertyAccessSetter
         );
+    }
+
+    /**
+     * 이 field의 effective access type이 {@link AccessType#PROPERTY}인지 해석한다. 우선순위는
+     * 멤버 레벨 {@code @Access}(field에 직접) → 클래스 레벨 기본 {@code @Access}(field 선언 클래스 계층) →
+     * JPA 기본값 FIELD 순이다. PROPERTY이면 {@code true}.
+     */
+    private static boolean resolvePropertyAccess(Field field) {
+        Access memberAccess = field.getAnnotation(Access.class);
+        if (memberAccess != null) {
+            return memberAccess.value() == AccessType.PROPERTY;
+        }
+        for (Class<?> type = field.getDeclaringClass(); type != null && type != Object.class;
+                type = type.getSuperclass()) {
+            Access classAccess = type.getAnnotation(Access.class);
+            if (classAccess != null) {
+                return classAccess.value() == AccessType.PROPERTY;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * PROPERTY access property의 JavaBean getter를 해석한다. boolean/Boolean 타입은 {@code isX}를 먼저,
+     * 그 외에는 {@code getX}를 찾는다. 시그니처가 맞는 getter가 없으면 fail-fast로 거부한다(조용한 무시 금지).
+     */
+    private static Method resolvePropertyGetter(Field field) {
+        Class<?> owner = field.getDeclaringClass();
+        String capitalized = capitalize(field.getName());
+        Class<?> type = field.getType();
+        if (type == boolean.class || type == Boolean.class) {
+            Method isGetter = findZeroArgMethod(owner, "is" + capitalized);
+            if (isGetter != null && (isGetter.getReturnType() == boolean.class
+                    || isGetter.getReturnType() == Boolean.class)) {
+                return isGetter;
+            }
+        }
+        Method getter = findZeroArgMethod(owner, "get" + capitalized);
+        if (getter != null && getter.getReturnType() != void.class) {
+            return getter;
+        }
+        throw new IllegalStateException(
+                owner.getName() + "." + field.getName()
+                        + " uses @Access(PROPERTY) but has no JavaBean getter"
+                        + " (expected get" + capitalized
+                        + ((type == boolean.class || type == Boolean.class) ? " or is" + capitalized : "") + ")");
+    }
+
+    /**
+     * PROPERTY access property의 JavaBean setter({@code setX(type)})를 해석한다. 매칭되는 setter가 없으면
+     * fail-fast로 거부한다(조용한 무시 금지).
+     */
+    private static Method resolvePropertySetter(Field field) {
+        Class<?> owner = field.getDeclaringClass();
+        String setterName = "set" + capitalize(field.getName());
+        for (Class<?> type = owner; type != null && type != Object.class; type = type.getSuperclass()) {
+            for (Method method : type.getDeclaredMethods()) {
+                if (!method.getName().equals(setterName)) {
+                    continue;
+                }
+                if (method.getParameterCount() != 1) {
+                    continue;
+                }
+                Class<?> param = method.getParameterTypes()[0];
+                if (param.isAssignableFrom(field.getType()) || param == field.getType()
+                        || wrapPrimitiveType(param) == wrapPrimitiveType(field.getType())) {
+                    return method;
+                }
+            }
+        }
+        throw new IllegalStateException(
+                owner.getName() + "." + field.getName()
+                        + " uses @Access(PROPERTY) but has no JavaBean setter"
+                        + " (expected " + setterName + "(" + field.getType().getSimpleName() + "))");
+    }
+
+    /**
+     * 이름이 일치하는 zero-arg 메서드를 선언 클래스 계층에서 찾는다. 없으면 {@code null}.
+     */
+    private static Method findZeroArgMethod(Class<?> owner, String name) {
+        for (Class<?> type = owner; type != null && type != Object.class; type = type.getSuperclass()) {
+            for (Method method : type.getDeclaredMethods()) {
+                if (method.getName().equals(name) && method.getParameterCount() == 0) {
+                    return method;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String capitalize(String name) {
+        if (name.isEmpty()) {
+            return name;
+        }
+        return Character.toUpperCase(name.charAt(0)) + name.substring(1);
     }
 
     /**
@@ -1839,7 +1948,10 @@ public final class EntityMetadataFactory {
                 oneToManyInfo,
                 null,
                 false,
-                ""
+                "",
+                false,
+                null,
+                null
         );
     }
 
@@ -1973,7 +2085,10 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 mapsIdMarker != null,
-                mapsIdMarker == null ? "" : mapsIdMarker);
+                mapsIdMarker == null ? "" : mapsIdMarker,
+                false,
+                null,
+                null);
     }
 
     /**
@@ -2047,7 +2162,10 @@ public final class EntityMetadataFactory {
                     null,
                     null,
                     false,
-                    ""
+                    "",
+                    false,
+                    null,
+                    null
             );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
@@ -2105,7 +2223,10 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 mapsIdMarker != null,
-                mapsIdMarker == null ? "" : mapsIdMarker);
+                mapsIdMarker == null ? "" : mapsIdMarker,
+                false,
+                null,
+                null);
     }
 
     /**
@@ -2168,7 +2289,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null, null, false, "");
+                info, null, null, null, false, "", false, null, null);
     }
 
     /**
@@ -2352,7 +2473,10 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 false,
-                "");
+                "",
+                false,
+                null,
+                null);
     }
 
     /**
