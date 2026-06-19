@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -66,8 +68,26 @@ class EntityMetadataFactoryOneToOneTest {
     }
 
     @Test
-    void rejectsCascade() {
-        assertThrows(IllegalArgumentException.class, () -> factory.getEntityMetadata(CascadingOneToOne.class));
+    void capturesCascadeMetadataOnOwningOneToOne() {
+        EntityMetadata<CascadingOneToOne> metadata = factory.getEntityMetadata(CascadingOneToOne.class);
+        PersistentProperty passport = metadata.findProperty("passport").orElseThrow();
+
+        // owning @OneToOne(cascade=ALL)은 거부되지 않고 ToOneCascadeInfo로 캡처돼 persist/remove 전파를 켠다.
+        assertTrue(passport.manyToOne());
+        assertNotNull(passport.toOneCascadeInfo(), "cascade가 지정되면 ToOneCascadeInfo가 채워져야 한다");
+        assertTrue(passport.cascadePersistReference(), "CascadeType.ALL은 persist 전파를 켠다");
+        assertTrue(passport.cascadeRemoveReference(), "CascadeType.ALL은 remove 전파를 켠다");
+    }
+
+    @Test
+    void markerOnlyOneToOneHasNullCascadeInfo() {
+        EntityMetadata<Person> person = factory.getEntityMetadata(Person.class);
+        PersistentProperty passport = person.findProperty("passport").orElseThrow();
+
+        // cascade 미지정 owning @OneToOne은 기존 동작 보존을 위해 toOneCascadeInfo=null이어야 한다.
+        assertNull(passport.toOneCascadeInfo(), "cascade 미지정이면 toOneCascadeInfo는 null");
+        assertFalse(passport.cascadePersistReference());
+        assertFalse(passport.cascadeRemoveReference());
     }
 
     @Test

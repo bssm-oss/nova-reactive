@@ -150,30 +150,81 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
             Optional<PersistenceSession> session = currentSession(ctx);
-            // @MapsId 파생 식별자: INSERT/UPDATE 결정 전에 연관 엔티티의 PK를 owner의 @Id로 복사한다.
-            // 동기 작업이지만 누락된 연관 엔티티 등은 Mono.error로 흐르게 try/catch로 감싼다.
-            try {
-                applyMapsIdDerivedIdentifier(metadata, entity);
-            } catch (RuntimeException exception) {
-                return Mono.error(exception);
-            }
-            Mono<T> saved = metadata.mapsIdProperty().isPresent()
-                    // @MapsId는 app-assigned 파생키이므로 id-null isNew 휴리스틱과 충돌한다. 복합키와 동일하게
-                    // 존재확인 SELECT로 insert/update를 가른다(세션 유무에 맞춰 stateless/session 동작 보존).
-                    ? saveWithDerivedIdentifier(session, metadata, entity)
-                    : session.isEmpty()
-                    // 세션 밖(트랜잭션 미사용 등): 현행 stateless 동작 그대로.
-                    ? saveStateless(metadata, entity)
-                    : saveInSession(session.get(), metadata, entity);
-            // entity row 저장 후 owning @ManyToMany link table과 @ElementCollection collection table을
-            // full-replace로 동기화하고(둘 다 없으면 무비용), 마지막으로 @OneToMany(cascade=PERSIST/orphanRemoval)
-            // child 전파를 reactive 순서대로 수행한다 — parent INSERT/UPDATE가 먼저 완료되어야 child FK 바인딩이 성립한다.
-            return saved.flatMap(persisted ->
-                    reconcileManyToManyLinks(metadata, persisted)
-                            .then(reconcileElementCollections(metadata, persisted))
-                            .then(cascadeSaveOneToManyChildren(metadata, persisted))
-                            .thenReturn(persisted));
+            // @ManyToOne/@OneToOne(cascade=PERSIST/MERGE/ALL) 참조 엔티티를 owner INSERT/UPDATE 전에 먼저
+            // 저장해 generated id를 확보한다 — owner row를 쓸 때 read()가 그 참조의 @Id를 FK 컬럼으로 추출하므로,
+            // 참조가 먼저 저장돼 있어야 FK가 null이 아닌 값으로 바인딩된다(@OneToMany child-after-parent와 반대 순서).
+            // 전파할 to-one cascade가 없으면 무비용으로 entity를 그대로 흘린다. @MapsId 파생 식별자도 이 시점
+            // 이후에야 연관 엔티티의 PK가 확정되므로 cascade 선저장 뒤에 적용한다.
+            Mono<T> ownerWithReferences = cascadeSaveToOneReferences(metadata, entity).thenReturn(entity);
+            return ownerWithReferences.flatMap(owner -> {
+                // @MapsId 파생 식별자: INSERT/UPDATE 결정 전에 연관 엔티티의 PK를 owner의 @Id로 복사한다.
+                // 동기 작업이지만 누락된 연관 엔티티 등은 Mono.error로 흐르게 try/catch로 감싼다.
+                try {
+                    applyMapsIdDerivedIdentifier(metadata, owner);
+                } catch (RuntimeException exception) {
+                    return Mono.<T>error(exception);
+                }
+                Mono<T> saved = metadata.mapsIdProperty().isPresent()
+                        // @MapsId는 app-assigned 파생키이므로 id-null isNew 휴리스틱과 충돌한다. 복합키와 동일하게
+                        // 존재확인 SELECT로 insert/update를 가른다(세션 유무에 맞춰 stateless/session 동작 보존).
+                        ? saveWithDerivedIdentifier(session, metadata, owner)
+                        : session.isEmpty()
+                        // 세션 밖(트랜잭션 미사용 등): 현행 stateless 동작 그대로.
+                        ? saveStateless(metadata, owner)
+                        : saveInSession(session.get(), metadata, owner);
+                // entity row 저장 후 owning @ManyToMany link table과 @ElementCollection collection table을
+                // full-replace로 동기화하고(둘 다 없으면 무비용), 마지막으로 @OneToMany(cascade=PERSIST/orphanRemoval)
+                // child 전파를 reactive 순서대로 수행한다 — parent INSERT/UPDATE가 먼저 완료되어야 child FK 바인딩이 성립한다.
+                return saved.flatMap(persisted ->
+                        reconcileManyToManyLinks(metadata, persisted)
+                                .then(reconcileElementCollections(metadata, persisted))
+                                .then(cascadeSaveOneToManyChildren(metadata, persisted))
+                                .thenReturn(persisted));
+            });
         });
+    }
+
+    /**
+     * {@code @ManyToOne(cascade=PERSIST/MERGE/ALL)} 또는 owning {@code @OneToOne(cascade=...)}의 참조 엔티티를
+     * owner 저장 전에 먼저 {@link #save(Object)}로 재귀 저장한다. owner의 FK 컬럼 값은 {@link PersistentProperty#read(Object)}가
+     * 이 참조의 @Id를 추출해 만들어지므로, 참조가 먼저 영속화돼 id를 가져야 FK가 올바르게 채워진다(현재 Reactor
+     * Context=동일 세션/트랜잭션이 그대로 전파된다). 참조 필드가 null이거나 cascade-persist 관계가 없으면 무비용.
+     * owning-side {@code @OneToOne}은 {@link EntityMetadata#manyToOneProperties()}에 포함되므로 한 자리에서 함께 처리된다.
+     */
+    private <T> Mono<Void> cascadeSaveToOneReferences(EntityMetadata<T> metadata, T owner) {
+        List<PersistentProperty> cascading = metadata.manyToOneProperties().stream()
+                .filter(PersistentProperty::cascadePersistReference)
+                .toList();
+        if (cascading.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(cascading)
+                .concatMap(property -> {
+                    Object reference;
+                    try {
+                        reference = property.field().get(owner);
+                    } catch (IllegalAccessException exception) {
+                        return Mono.error(new IllegalStateException(
+                                "Cannot read to-one reference " + property.propertyName()
+                                        + " for cascade on " + metadata.entityType().getName(), exception));
+                    }
+                    if (reference == null) {
+                        // null 참조 = 이번 save에서 이 관계를 관리하지 않음 → cascade no-op.
+                        return Mono.empty();
+                    }
+                    // 참조 엔티티를 먼저 저장해 id를 확보한다. 반환된(=관리되는) 인스턴스를 owner 필드에 다시 set해
+                    // 이후 owner row 쓰기에서 read()가 채워진 @Id를 FK로 추출하도록 한다.
+                    return save(reference).doOnNext(savedReference -> {
+                        try {
+                            property.field().set(owner, savedReference);
+                        } catch (IllegalAccessException exception) {
+                            throw new IllegalStateException(
+                                    "Cannot rebind cascaded to-one reference " + property.propertyName()
+                                            + " on " + metadata.entityType().getName(), exception);
+                        }
+                    }).then();
+                })
+                .then();
     }
 
     /**
@@ -1290,9 +1341,53 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         // @OneToMany(cascade=REMOVE/ALL) 또는 orphanRemoval=true child를 parent 삭제 전에 먼저 삭제해 FK 의존성을
         // 만족시킨다. 전파할 관계가 없으면 무비용. 그 뒤 parent를 삭제한다(reactive 순서 보장).
+        //
+        // @ManyToOne/@OneToOne(cascade=REMOVE/ALL) 참조 엔티티는 반대로 owner 삭제 *후*에 삭제한다 — FK가 owner
+        // row에 있으므로 owner가 먼저 사라져야 참조 row 삭제가 FK 의존성을 위반하지 않는다. 참조 id는 owner row가
+        // 사라지기 전에 미리 수집해 둔다(entity 객체에서 동기적으로 읽음).
         return cascadeRemoveOneToManyChildren(metadata, id)
                 .then(performDelete(metadata, entity, id))
-                .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata));
+                .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata))
+                .flatMap(affected -> cascadeRemoveToOneReferences(metadata, entity).thenReturn(affected));
+    }
+
+    /**
+     * {@code @ManyToOne(cascade=REMOVE/ALL)} 또는 owning {@code @OneToOne(cascade=REMOVE/ALL)}의 참조 엔티티를
+     * owner 삭제 직후 삭제한다. owner row의 FK가 참조를 가리키므로 owner가 먼저 삭제돼야 참조 삭제가 FK 의존성을
+     * 위반하지 않는다(@OneToMany child-before-parent와 반대 순서). 참조 필드가 null이거나 cascade-remove 관계가
+     * 없으면 무비용. 참조 엔티티는 {@link #deleteById(Class, Object)}로 삭제해 listener/soft-delete 경로를 공유한다.
+     */
+    private <T> Mono<Void> cascadeRemoveToOneReferences(EntityMetadata<T> metadata, T owner) {
+        List<PersistentProperty> removing = metadata.manyToOneProperties().stream()
+                .filter(PersistentProperty::cascadeRemoveReference)
+                .toList();
+        if (removing.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(removing)
+                .concatMap(property -> {
+                    Object reference;
+                    try {
+                        reference = property.field().get(owner);
+                    } catch (IllegalAccessException exception) {
+                        return Mono.error(new IllegalStateException(
+                                "Cannot read to-one reference " + property.propertyName()
+                                        + " for cascade remove on " + metadata.entityType().getName(), exception));
+                    }
+                    if (reference == null) {
+                        return Mono.empty();
+                    }
+                    Class<?> referenceType = property.manyToOneTargetType() != null
+                            ? property.manyToOneTargetType() : reference.getClass();
+                    EntityMetadata<?> referenceMetadata = metadataFactory.getEntityMetadata(referenceType);
+                    Object referenceId = referenceMetadata.readIdValue(reference);
+                    if (referenceId == null) {
+                        // id 없는 참조(미영속)면 삭제할 row가 없다 → no-op.
+                        return Mono.empty();
+                    }
+                    return deleteById(referenceType, referenceId).then();
+                })
+                .then();
     }
 
     /**

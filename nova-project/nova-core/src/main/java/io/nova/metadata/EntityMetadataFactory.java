@@ -1646,7 +1646,8 @@ public final class EntityMetadataFactory {
                 "",
                 propertyAccess,
                 propertyAccessGetter,
-                propertyAccessSetter
+                propertyAccessSetter,
+                null
         );
     }
 
@@ -1951,6 +1952,7 @@ public final class EntityMetadataFactory {
                 "",
                 false,
                 null,
+                null,
                 null
         );
     }
@@ -2024,11 +2026,9 @@ public final class EntityMetadataFactory {
         // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 관계는 findById에서
         // 자동 fetch되지 않고 FetchGroup을 명시 구동할 때만 hydration된다. 따라서 EAGER와 LAZY는
         // 런타임에서 동일하게 동작한다(둘 다 구동 전엔 null, FK 컬럼은 정상 persist).
-        if (manyToOne.cascade().length > 0) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @ManyToOne(cascade=...) is not supported; persist the parent explicitly");
-        }
+        ToOneCascadeInfo toOneCascadeInfo = manyToOne.cascade().length > 0
+                ? new ToOneCascadeInfo(Set.of(manyToOne.cascade()))
+                : null;
         JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
         Class<?> targetType = manyToOne.targetEntity();
         if (targetType == void.class) {
@@ -2088,7 +2088,8 @@ public final class EntityMetadataFactory {
                 mapsIdMarker == null ? "" : mapsIdMarker,
                 false,
                 null,
-                null);
+                null,
+                toOneCascadeInfo);
     }
 
     /**
@@ -2102,11 +2103,9 @@ public final class EntityMetadataFactory {
         OneToOne oneToOne = field.getAnnotation(OneToOne.class);
         // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 EAGER/LAZY가 런타임에서
         // 동일하게 동작하며 관계는 FetchGroup을 명시 구동할 때만 populate된다. FK 컬럼은 정상 persist.
-        if (oneToOne.cascade().length > 0) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @OneToOne(cascade=...) is not supported; persist the related entity explicitly");
-        }
+        ToOneCascadeInfo toOneCascadeInfo = oneToOne.cascade().length > 0
+                ? new ToOneCascadeInfo(Set.of(oneToOne.cascade()))
+                : null;
         Class<?> targetType = oneToOne.targetEntity();
         if (targetType == void.class) {
             targetType = field.getType();
@@ -2164,6 +2163,7 @@ public final class EntityMetadataFactory {
                     false,
                     "",
                     false,
+                    null,
                     null,
                     null
             );
@@ -2226,7 +2226,8 @@ public final class EntityMetadataFactory {
                 mapsIdMarker == null ? "" : mapsIdMarker,
                 false,
                 null,
-                null);
+                null,
+                toOneCascadeInfo);
     }
 
     /**
@@ -2289,7 +2290,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null, null, false, "", false, null, null);
+                info, null, null, null, false, "", false, null, null, null);
     }
 
     /**
@@ -2475,6 +2476,7 @@ public final class EntityMetadataFactory {
                 false,
                 "",
                 false,
+                null,
                 null,
                 null);
     }

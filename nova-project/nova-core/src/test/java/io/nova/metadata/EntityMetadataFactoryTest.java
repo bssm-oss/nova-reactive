@@ -1082,12 +1082,29 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void rejectsManyToOneCascade() {
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(ManyToOneCascadeEntity.class)
-        );
-        assertTrue(exception.getMessage().contains("@ManyToOne(cascade=...)"));
+    void capturesManyToOneCascadeMetadata() {
+        EntityMetadata<ManyToOneCascadeEntity> metadata =
+                factory.getEntityMetadata(ManyToOneCascadeEntity.class);
+
+        PersistentProperty account = metadata.findProperty("account").orElseThrow();
+        // @ManyToOne(cascade=PERSIST)은 더 이상 거부되지 않고 ToOneCascadeInfo로 캡처돼 persist 전파를 켠다.
+        assertTrue(account.manyToOne());
+        assertNotNull(account.toOneCascadeInfo(), "cascade가 지정되면 ToOneCascadeInfo가 채워져야 한다");
+        assertTrue(account.cascadePersistReference(), "CascadeType.PERSIST는 persist 전파를 켠다");
+        assertFalse(account.cascadeRemoveReference(), "PERSIST만 지정했으므로 remove 전파는 false");
+    }
+
+    @Test
+    void markerOnlyManyToOneHasNullCascadeInfo() {
+        EntityMetadata<io.nova.support.fixtures.FixtureEntities.BookWithAuthorAnnotated> metadata =
+                factory.getEntityMetadata(io.nova.support.fixtures.FixtureEntities.BookWithAuthorAnnotated.class);
+
+        PersistentProperty author = metadata.findProperty("author").orElseThrow();
+        // cascade 미지정 @ManyToOne은 기존 동작 보존을 위해 toOneCascadeInfo=null이어야 한다.
+        assertTrue(author.manyToOne());
+        assertNull(author.toOneCascadeInfo(), "cascade 미지정이면 toOneCascadeInfo는 null");
+        assertFalse(author.cascadePersistReference());
+        assertFalse(author.cascadeRemoveReference());
     }
 
     @Test

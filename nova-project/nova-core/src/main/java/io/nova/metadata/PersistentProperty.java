@@ -120,6 +120,12 @@ public final class PersistentProperty {
      * 때만 non-null이며, embedded host-path를 따라 도달한 leaf holder 인스턴스에서 호출된다.
      */
     private final Method propertyAccessSetter;
+    /**
+     * {@code @ManyToOne} / {@code @OneToOne}의 cascade 메타데이터. cascade가 지정되지 않은 marker-only 단건 관계와
+     * 그 외 모든 property는 {@code null}이다. {@link io.nova.core.SimpleReactiveEntityOperations}의 save/delete
+     * 경로가 이 값을 보고 참조 엔티티 전파(선저장 후 FK 세팅 / 삭제 전파) 여부를 결정한다.
+     */
+    private final ToOneCascadeInfo toOneCascadeInfo;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -165,7 +171,8 @@ public final class PersistentProperty {
             String mapsIdValue,
             boolean propertyAccess,
             Method propertyAccessGetter,
-            Method propertyAccessSetter
+            Method propertyAccessSetter,
+            ToOneCascadeInfo toOneCascadeInfo
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -224,6 +231,7 @@ public final class PersistentProperty {
             propertyAccessGetter.setAccessible(true);
             propertyAccessSetter.setAccessible(true);
         }
+        this.toOneCascadeInfo = toOneCascadeInfo;
     }
 
     /**
@@ -278,7 +286,8 @@ public final class PersistentProperty {
                 mapsIdValue,
                 propertyAccess,
                 propertyAccessGetter,
-                propertyAccessSetter
+                propertyAccessSetter,
+                toOneCascadeInfo
         );
     }
 
@@ -335,7 +344,8 @@ public final class PersistentProperty {
                 mapsIdValue,
                 propertyAccess,
                 propertyAccessGetter,
-                propertyAccessSetter
+                propertyAccessSetter,
+                toOneCascadeInfo
         );
     }
 
@@ -607,6 +617,29 @@ public final class PersistentProperty {
      */
     public boolean orphanRemoval() {
         return oneToManyInfo != null && oneToManyInfo.orphanRemoval();
+    }
+
+    /**
+     * {@code @ManyToOne} / {@code @OneToOne}의 cascade 메타데이터. cascade가 지정되지 않은 marker-only 단건 관계와
+     * 관계가 아닌 property는 {@code null}을 반환한다.
+     */
+    public ToOneCascadeInfo toOneCascadeInfo() {
+        return toOneCascadeInfo;
+    }
+
+    /**
+     * 이 to-one 관계({@code @ManyToOne}/{@code @OneToOne})가 owner save() 시 참조 엔티티를 먼저 저장
+     * (cascade PERSIST/MERGE/ALL)해 generated id를 확보한 뒤 FK로 연결해야 하는지.
+     */
+    public boolean cascadePersistReference() {
+        return toOneCascadeInfo != null && (toOneCascadeInfo.cascadePersist() || toOneCascadeInfo.cascadeMerge());
+    }
+
+    /**
+     * 이 to-one 관계가 owner delete() 시 참조 엔티티를 자동 삭제(cascade REMOVE/ALL)해야 하는지.
+     */
+    public boolean cascadeRemoveReference() {
+        return toOneCascadeInfo != null && toOneCascadeInfo.cascadeRemove();
     }
 
     /**
