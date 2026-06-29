@@ -5,6 +5,7 @@ import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.SecondaryTableInfo;
 import io.nova.query.AggregateSpec;
 import io.nova.query.QuerySpec;
 
@@ -354,5 +355,56 @@ public interface SqlRenderer {
      */
     default SqlStatement selectTablePerClassById(InheritanceLayout layout, Object id) {
         throw new UnsupportedOperationException("selectTablePerClassById is not supported by this SqlRenderer");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // @SecondaryTable — primary 테이블과 보조 테이블에 컬럼을 나눠 저장하는 멀티테이블 INSERT/SELECT/
+    // UPDATE/DELETE 렌더링. primary 단일-테이블 메서드 시그니처는 그대로 두고, 보조 테이블은 아래 additive
+    // default 메서드로 표현한다. reactive 순서(primary insert로 PK 확보 → 보조 insert; delete는 보조 → primary)는
+    // 엔티티 오퍼레이션 계층이 보장한다. 렌더러는 각 단계의 단일 SQL 문장만 만든다.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * 보조 테이블 INSERT를 렌더한다 — PK 조인 컬럼(= entity의 primary PK 값) + 그 보조 테이블로 라우팅된
+     * insertable 컬럼들. primary INSERT가 먼저 실행되어 entity에 PK가 채워져 있어야 한다.
+     */
+    default SqlStatement insertSecondary(
+            EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable, Object entity) {
+        throw new UnsupportedOperationException("insertSecondary is not supported by this SqlRenderer");
+    }
+
+    /**
+     * 보조 테이블 UPDATE를 렌더한다 — 그 보조 테이블의 updatable 컬럼만 SET, PK 조인 컬럼으로 WHERE.
+     * updatable 컬럼이 하나도 없으면 {@code null}을 반환해 호출자가 이 단계를 건너뛰게 한다.
+     */
+    default SqlStatement updateSecondary(
+            EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable, Object entity) {
+        throw new UnsupportedOperationException("updateSecondary is not supported by this SqlRenderer");
+    }
+
+    /**
+     * 보조 테이블에서 PK 조인 컬럼 등치로 DELETE(primary DELETE보다 먼저 실행해 FK 의존성 보존).
+     */
+    default SqlStatement deleteSecondaryById(
+            EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable, Object id) {
+        throw new UnsupportedOperationException("deleteSecondaryById is not supported by this SqlRenderer");
+    }
+
+    /**
+     * 보조 테이블을 가진 엔티티의 findById SELECT를 렌더한다 — primary ⟕ 각 보조 테이블 LEFT JOIN + PK 등치 WHERE.
+     * {@code @SoftDelete}가 있으면 alive 가드를 덧붙인다.
+     */
+    default SqlStatement selectByIdWithSecondaryTables(EntityMetadata<?> metadata, Object id) {
+        throw new UnsupportedOperationException(
+                "selectByIdWithSecondaryTables is not supported by this SqlRenderer");
+    }
+
+    /**
+     * 보조 테이블을 가진 엔티티의 일반 SELECT를 렌더한다 — primary ⟕ 각 보조 테이블 LEFT JOIN.
+     * predicate/sort/page는 {@code querySpec}을 따른다(primary 컬럼 기준).
+     */
+    default SqlStatement selectWithSecondaryTables(EntityMetadata<?> metadata, QuerySpec querySpec) {
+        throw new UnsupportedOperationException(
+                "selectWithSecondaryTables is not supported by this SqlRenderer");
     }
 }

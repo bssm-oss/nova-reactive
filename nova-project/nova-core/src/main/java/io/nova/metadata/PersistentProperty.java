@@ -126,6 +126,12 @@ public final class PersistentProperty {
      * 경로가 이 값을 보고 참조 엔티티 전파(선저장 후 FK 세팅 / 삭제 전파) 여부를 결정한다.
      */
     private final ToOneCascadeInfo toOneCascadeInfo;
+    /**
+     * {@code @Column(table="...")}로 지정된 보조 테이블({@code @SecondaryTable}) 이름. 비어 있으면 이 컬럼은
+     * primary 테이블에 저장된다. 비어 있지 않으면 이 컬럼은 해당 이름의 보조 테이블 행에 저장되며, primary
+     * INSERT/UPDATE/SELECT 컬럼 집합에서 제외되고 별도의 secondary INSERT/UPDATE/LEFT JOIN 경로로 흐른다.
+     */
+    private final String secondaryTableName;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -172,7 +178,8 @@ public final class PersistentProperty {
             boolean propertyAccess,
             Method propertyAccessGetter,
             Method propertyAccessSetter,
-            ToOneCascadeInfo toOneCascadeInfo
+            ToOneCascadeInfo toOneCascadeInfo,
+            String secondaryTableName
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -232,6 +239,7 @@ public final class PersistentProperty {
             propertyAccessSetter.setAccessible(true);
         }
         this.toOneCascadeInfo = toOneCascadeInfo;
+        this.secondaryTableName = secondaryTableName == null ? "" : secondaryTableName;
     }
 
     /**
@@ -287,7 +295,8 @@ public final class PersistentProperty {
                 propertyAccess,
                 propertyAccessGetter,
                 propertyAccessSetter,
-                toOneCascadeInfo
+                toOneCascadeInfo,
+                secondaryTableName
         );
     }
 
@@ -345,7 +354,8 @@ public final class PersistentProperty {
                 propertyAccess,
                 propertyAccessGetter,
                 propertyAccessSetter,
-                toOneCascadeInfo
+                toOneCascadeInfo,
+                secondaryTableName
         );
     }
 
@@ -625,6 +635,20 @@ public final class PersistentProperty {
      */
     public ToOneCascadeInfo toOneCascadeInfo() {
         return toOneCascadeInfo;
+    }
+
+    /**
+     * {@code @Column(table="...")}로 지정된 보조 테이블 이름. primary 테이블 컬럼이면 빈 문자열.
+     */
+    public String secondaryTableName() {
+        return secondaryTableName;
+    }
+
+    /**
+     * 이 컬럼이 보조 테이블({@code @SecondaryTable})로 라우팅되면 {@code true}.
+     */
+    public boolean secondary() {
+        return !secondaryTableName.isEmpty();
     }
 
     /**

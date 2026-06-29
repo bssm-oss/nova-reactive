@@ -13,6 +13,7 @@ import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.SecondaryTableInfo;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
@@ -736,6 +737,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // JOINED: 루트 INSERT(생성 id 확보) → 서브타입 INSERT(같은 id를 FK로). reactive 순서로 보장한다.
             return insertJoined(metadata, entity);
         }
+        Mono<T> primary = insertPrimaryRow(metadata, entity);
+        if (!metadata.hasSecondaryTables()) {
+            return primary;
+        }
+        // @SecondaryTable: primary INSERT로 PK를 확보한 뒤 같은 PK 값으로 각 보조 테이블 행을 INSERT한다.
+        // 동일 reactive 체인(=동일 tx/세션 커넥션)에서 primary 다음에 순차 실행된다.
+        return primary.flatMap(saved -> insertSecondaryRows(metadata, saved).thenReturn(saved));
+    }
+
+    /**
+     * primary 테이블 INSERT만 수행한다(생성 키 전략별 분기 포함). 보조 테이블 INSERT는 호출자({@link #insertNew})가
+     * primary INSERT 완료 후 이어서 발행한다.
+     */
+    private <T> Mono<T> insertPrimaryRow(EntityMetadata<T> metadata, T entity) {
         if (metadata.hasCompositeId()) {
             // @EmbeddedId 복합키는 generation 전략이 없는 application-assigned이므로 그대로 INSERT한다.
             SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
@@ -1022,6 +1037,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // JOINED: 루트 테이블(공통 컬럼)과 서브타입 테이블(자기 컬럼)을 각각 UPDATE한다. @Version 미지원.
             return updateJoined(metadata, entity);
         }
+        Mono<T> primary = updatePrimaryRow(metadata, entity);
+        if (!metadata.hasSecondaryTables()) {
+            return primary;
+        }
+        // @SecondaryTable: primary UPDATE 후 각 보조 테이블 행을 UPDATE한다(updatable 컬럼 없는 테이블은 건너뜀).
+        return primary.flatMap(saved -> updateSecondaryRows(metadata, saved).thenReturn(saved));
+    }
+
+    /**
+     * primary 테이블 UPDATE(@Version 낙관락 포함)만 수행한다. 보조 테이블 UPDATE는 호출자({@link #updateExisting})가
+     * 이어서 발행한다.
+     */
+    private <T> Mono<T> updatePrimaryRow(EntityMetadata<T> metadata, T entity) {
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
         SqlStatement statement = dialect.sqlRenderer().update(metadata, entity);
         if (versionProperty == null) {
@@ -1041,6 +1069,43 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     versionProperty.write(entity, next);
                     return Mono.just(entity);
                 });
+    }
+
+    /**
+     * entity INSERT 직후 각 보조 테이블({@code @SecondaryTable})에 같은 primary PK 값으로 행을 INSERT한다.
+     * 보조 테이블이 모든 컬럼이 null이어도 행을 항상 만들어, 이후 UPDATE/LEFT JOIN SELECT가 성립하게 한다.
+     * {@link #sqlExecutor}만 호출하므로 세션 auto-flush 재진입이 없다.
+     */
+    private Mono<Void> insertSecondaryRows(EntityMetadata<?> metadata, Object entity) {
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return Flux.fromIterable(metadata.secondaryTables())
+                .concatMap(secondary -> sqlExecutor.execute(renderer.insertSecondary(metadata, secondary, entity)))
+                .then();
+    }
+
+    /**
+     * entity UPDATE 직후 각 보조 테이블 행을 UPDATE한다. 보조 테이블에 updatable 컬럼이 없으면(렌더러가
+     * {@code null} 반환) 그 단계는 건너뛴다. {@link #sqlExecutor}만 호출한다.
+     */
+    private Mono<Void> updateSecondaryRows(EntityMetadata<?> metadata, Object entity) {
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return Flux.fromIterable(metadata.secondaryTables())
+                .concatMap(secondary -> {
+                    SqlStatement statement = renderer.updateSecondary(metadata, secondary, entity);
+                    return statement == null ? Mono.<Long>empty() : sqlExecutor.execute(statement);
+                })
+                .then();
+    }
+
+    /**
+     * primary DELETE 전에 각 보조 테이블 행을 먼저 삭제한다(보조 테이블이 primary PK를 FK로 참조하므로 FK 의존성
+     * 보존). {@link #sqlExecutor}만 호출한다.
+     */
+    private Mono<Void> deleteSecondaryRows(EntityMetadata<?> metadata, Object id) {
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return Flux.fromIterable(metadata.secondaryTables())
+                .concatMap(secondary -> sqlExecutor.execute(renderer.deleteSecondaryById(metadata, secondary, id)))
+                .then();
     }
 
     /**
@@ -1086,27 +1151,51 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (versionProperty != null) {
             effectiveFields = augmentWithExtraField(effectiveFields, versionProperty.propertyName());
         }
-        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
-        if (versionProperty == null) {
-            return sqlExecutor.execute(statement)
-                    .thenReturn(entity)
-                    .doOnNext(updated -> listenerInvoker.invokePostUpdate(updated, metadata));
+        // @SecondaryTable: 요청 필드 중 보조 컬럼만 있고 primary 컬럼이 전혀 없으면(@Version/@UpdatedAt 미선언)
+        // primary partial UPDATE를 건너뛴다(빈 SET SQL 방지). primary 컬럼이 하나라도 있으면 기존대로 primary
+        // UPDATE를 발행한다. 빈 필드 목록은 renderer가 "update requires at least one field"로 거부하도록 그대로
+        // 흘려보낸다(보조 컬럼이 실제로 요청됐을 때만 skip). 보조 테이블은 항상 full UPDATE로 동기화한다(idempotent).
+        boolean hasPrimaryField = false;
+        boolean hasSecondaryField = false;
+        for (String fieldName : effectiveFields) {
+            PersistentProperty property = metadata.findProperty(fieldName).orElse(null);
+            if (property == null) {
+                continue;
+            }
+            if (property.secondary()) {
+                hasSecondaryField = true;
+            } else {
+                hasPrimaryField = true;
+            }
         }
-        Object current = versionProperty.read(entity);
-        Object next = nextVersionValue(versionProperty, current);
-        return sqlExecutor.execute(statement)
-                .flatMap(affected -> {
-                    if (affected == 0L) {
-                        return Mono.error(new OptimisticLockingFailureException(
-                                "Optimistic locking failure: row not found or version mismatch for "
-                                        + metadata.entityType().getName()
-                                        + " id=" + id
-                                        + " version=" + current));
-                    }
-                    versionProperty.write(entity, next);
-                    return Mono.just(entity);
-                })
-                .doOnNext(updated -> listenerInvoker.invokePostUpdate(updated, metadata));
+        boolean skipPrimaryUpdate = metadata.hasSecondaryTables() && !hasPrimaryField && hasSecondaryField;
+        Mono<T> primaryUpdate;
+        if (skipPrimaryUpdate) {
+            primaryUpdate = Mono.just(entity);
+        } else if (versionProperty == null) {
+            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
+            primaryUpdate = sqlExecutor.execute(statement).thenReturn(entity);
+        } else {
+            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
+            Object current = versionProperty.read(entity);
+            Object next = nextVersionValue(versionProperty, current);
+            primaryUpdate = sqlExecutor.execute(statement)
+                    .flatMap(affected -> {
+                        if (affected == 0L) {
+                            return Mono.error(new OptimisticLockingFailureException(
+                                    "Optimistic locking failure: row not found or version mismatch for "
+                                            + metadata.entityType().getName()
+                                            + " id=" + id
+                                            + " version=" + current));
+                        }
+                        versionProperty.write(entity, next);
+                        return Mono.just(entity);
+                    });
+        }
+        Mono<T> result = metadata.hasSecondaryTables()
+                ? primaryUpdate.flatMap(saved -> updateSecondaryRows(metadata, saved).thenReturn(saved))
+                : primaryUpdate;
+        return result.doOnNext(updated -> listenerInvoker.invokePostUpdate(updated, metadata));
     }
 
     private static Iterable<String> augmentWithExtraField(Iterable<String> fields, String extraField) {
@@ -1229,32 +1318,41 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             if (versionProperty != null) {
                 fields.add(versionProperty.propertyName());
             }
-            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
-            if (versionProperty == null) {
-                return sqlExecutor.execute(statement)
-                        .doOnSuccess(ignored -> {
-                            listenerInvoker.invokePostUpdate(entity, metadata);
-                            entry.refreshSnapshot();
+            // @SecondaryTable: dirty 필드 중 primary 컬럼이 있으면 primary partial UPDATE를 발행한다. primary
+            // 컬럼이 전혀 없으면(보조 컬럼만 dirty) primary UPDATE를 건너뛴다. 보조 테이블은 full UPDATE로 동기화.
+            boolean hasPrimaryField = fields.stream()
+                    .anyMatch(field -> metadata.findProperty(field).map(p -> !p.secondary()).orElse(false));
+            Mono<Void> primaryUpdate;
+            if (!hasPrimaryField) {
+                primaryUpdate = Mono.empty();
+            } else if (versionProperty == null) {
+                SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
+                primaryUpdate = sqlExecutor.execute(statement).then();
+            } else {
+                SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
+                Object current = versionProperty.read(entity);
+                Object next = nextVersionValue(versionProperty, current);
+                primaryUpdate = sqlExecutor.execute(statement)
+                        .flatMap(affected -> {
+                            if (affected == 0L) {
+                                return Mono.error(new OptimisticLockingFailureException(
+                                        "Optimistic locking failure: row not found or version mismatch for "
+                                                + metadata.entityType().getName()
+                                                + " id=" + metadata.readIdValue(entity)
+                                                + " version=" + current));
+                            }
+                            versionProperty.write(entity, next);
+                            return Mono.just(affected);
                         })
                         .then();
             }
-            Object current = versionProperty.read(entity);
-            Object next = nextVersionValue(versionProperty, current);
-            return sqlExecutor.execute(statement)
-                    .flatMap(affected -> {
-                        if (affected == 0L) {
-                            return Mono.error(new OptimisticLockingFailureException(
-                                    "Optimistic locking failure: row not found or version mismatch for "
-                                            + metadata.entityType().getName()
-                                            + " id=" + metadata.readIdValue(entity)
-                                            + " version=" + current));
-                        }
-                        versionProperty.write(entity, next);
-                        listenerInvoker.invokePostUpdate(entity, metadata);
-                        entry.refreshSnapshot();
-                        return Mono.just(affected);
-                    })
-                    .then();
+            Mono<Void> withSecondary = metadata.hasSecondaryTables()
+                    ? primaryUpdate.then(updateSecondaryRows(metadata, entity))
+                    : primaryUpdate;
+            return withSecondary.doOnSuccess(ignored -> {
+                listenerInvoker.invokePostUpdate(entity, metadata);
+                entry.refreshSnapshot();
+            });
         });
     }
 
@@ -1263,6 +1361,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@code findById(.., FetchGroup)}처럼 merge된 group을 따로 hydrate할 호출자가 사용한다.
      */
     private <T, ID> Mono<T> findByIdInternal(EntityMetadata<T> metadata, ID id) {
+        if (metadata.hasSecondaryTables()) {
+            // @SecondaryTable: primary ⟕ 보조 테이블 LEFT JOIN으로 한 row를 조회한다(컬럼은 전역 유일하므로
+            // 디코딩은 일반 mapRow가 그대로 처리한다).
+            return sqlExecutor.queryOne(
+                    dialect.sqlRenderer().selectByIdWithSecondaryTables(metadata, id),
+                    row -> mapRow(metadata, row));
+        }
         if (isMultiTableInheritance(metadata)) {
             return findByIdMultiTable(metadata, id);
         }
@@ -1347,6 +1452,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * annotation-driven 자동 hydration을 거치지 않고 일반 SELECT만 발행하는 내부 경로.
      */
     private <T> Flux<T> findAllInternal(EntityMetadata<T> metadata, QuerySpec querySpec) {
+        if (metadata.hasSecondaryTables()) {
+            // @SecondaryTable: primary ⟕ 보조 테이블 LEFT JOIN으로 조회한다(predicate/sort는 primary 컬럼 기준).
+            return sqlExecutor.queryMany(
+                    dialect.sqlRenderer().selectWithSecondaryTables(metadata, normalize(querySpec)),
+                    row -> mapRow(metadata, row));
+        }
         if (isMultiTableInheritance(metadata)) {
             return findAllMultiTable(metadata, querySpec);
         }
@@ -1429,6 +1540,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         String idPropertyName = metadata.idProperty().propertyName();
         QuerySpec spec = QuerySpec.empty().where(Criteria.in(idPropertyName, materialized));
+        if (metadata.hasSecondaryTables()) {
+            // @SecondaryTable: LEFT JOIN SELECT 경로(findAllInternal)로 위임한다.
+            return findAllInternal(metadata, spec);
+        }
         if (isMultiTableInheritance(metadata)) {
             return findAllMultiTable(metadata, spec);
         }
@@ -1540,6 +1655,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (metadata.hasInheritance() && metadata.inheritance().joined()) {
             return deleteJoined(metadata, id);
         }
+        Mono<Long> core = performDeleteCore(metadata, entity, id);
+        // @SecondaryTable hard delete: 보조 테이블 행을 먼저 삭제한다(보조 FK가 primary PK를 참조). soft delete는
+        // primary 행을 논리적으로 남기므로 보조 행도 그대로 둔다.
+        if (metadata.hasSecondaryTables() && metadata.softDeleteProperty().isEmpty()) {
+            return deleteSecondaryRows(metadata, id).then(core);
+        }
+        return core;
+    }
+
+    private <T> Mono<Long> performDeleteCore(EntityMetadata<T> metadata, T entity, Object id) {
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         Optional<PersistentProperty> version = metadata.versionProperty();
         if (softDelete.isPresent() && version.isPresent()) {
@@ -1615,6 +1740,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (softDelete.isPresent()) {
             Object deletedAt = currentTimeFor(softDelete.get());
             return sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
+        }
+        if (metadata.hasSecondaryTables()) {
+            // @SecondaryTable hard delete: 보조 테이블 행을 먼저 삭제(FK 의존성) 후 primary 행을 삭제한다.
+            return deleteSecondaryRows(metadata, id)
+                    .then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)));
         }
         return sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id));
     }

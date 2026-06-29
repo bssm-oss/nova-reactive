@@ -4,6 +4,7 @@ import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.InheritanceInfo;
 import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.SecondaryTableInfo;
 import io.nova.query.AggregateFunction;
 import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
@@ -41,7 +42,11 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
     @Override
     public SqlStatement insert(EntityMetadata<?> metadata, Object entity) {
-        List<PersistentProperty> properties = metadata.insertableProperties();
+        // 보조 테이블(@SecondaryTable)로 라우팅된 컬럼은 primary INSERT에서 제외한다 — 별도 insertSecondary로
+        // 흐른다. 보조 테이블이 없으면 이 필터는 무비용 통과다(모든 컬럼이 primary).
+        List<PersistentProperty> properties = metadata.insertableProperties().stream()
+                .filter(property -> !property.secondary())
+                .toList();
         List<String> columns = new ArrayList<>();
         List<String> markers = new ArrayList<>();
         List<Object> bindings = new ArrayList<>();
@@ -66,7 +71,10 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
     @Override
     public SqlStatement update(EntityMetadata<?> metadata, Object entity) {
-        List<PersistentProperty> properties = metadata.updatableProperties();
+        // 보조 테이블 컬럼은 primary UPDATE에서 제외한다(별도 updateSecondary 경로).
+        List<PersistentProperty> properties = metadata.updatableProperties().stream()
+                .filter(property -> !property.secondary())
+                .toList();
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
         List<String> assignments = new ArrayList<>();
         List<Object> bindings = new ArrayList<>();
@@ -121,7 +129,13 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             if (idPropertyNames.contains(fieldName)) {
                 throw new IllegalArgumentException("Cannot update id property: " + fieldName);
             }
-            properties.add(findProperty(metadata, fieldName));
+            PersistentProperty property = findProperty(metadata, fieldName);
+            // 보조 테이블 컬럼은 primary partial UPDATE의 SET에 넣지 않는다 — 오퍼레이션 계층이 보조 테이블
+            // UPDATE를 별도로 발행한다. 호출자는 primary 컬럼이 최소 하나 남도록 보장한다.
+            if (property.secondary()) {
+                continue;
+            }
+            properties.add(property);
         }
 
         List<String> assignments = new ArrayList<>(properties.size());
@@ -1367,6 +1381,146 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             branches.add("select " + String.join(", ", items) + " from " + table(subtype.metadata()));
         }
         return String.join(" union all ", branches);
+    }
+
+    // =============================================================================================
+    // @SecondaryTable
+    // =============================================================================================
+
+    @Override
+    public SqlStatement insertSecondary(
+            EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable, Object entity) {
+        PersistentProperty idProperty = metadata.idProperty();
+        RenderContext context = new RenderContext();
+        List<String> columns = new ArrayList<>();
+        List<String> markers = new ArrayList<>();
+        columns.add(dialect.quote(secondaryTable.pkJoinColumn()));
+        markers.add(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(idProperty.toColumnValue(idProperty.read(entity)));
+        for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondaryTable)) {
+            if (!property.insertable()) {
+                continue;
+            }
+            columns.add(column(property));
+            markers.add(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(property.toColumnValue(property.read(entity)));
+        }
+        String sql = "insert into " + secondaryTableRef(secondaryTable)
+                + " (" + String.join(", ", columns) + ") values (" + String.join(", ", markers) + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement updateSecondary(
+            EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable, Object entity) {
+        PersistentProperty idProperty = metadata.idProperty();
+        RenderContext context = new RenderContext();
+        List<String> assignments = new ArrayList<>();
+        for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondaryTable)) {
+            if (!property.updatable()) {
+                continue;
+            }
+            assignments.add(column(property) + " = " + dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(property.toColumnValue(property.read(entity)));
+        }
+        if (assignments.isEmpty()) {
+            // updatable한 보조 컬럼이 없으면 갱신할 것이 없다 — 호출자가 이 단계를 건너뛴다.
+            return null;
+        }
+        String idMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(idProperty.toColumnValue(idProperty.read(entity)));
+        String sql = "update " + secondaryTableRef(secondaryTable)
+                + " set " + String.join(", ", assignments)
+                + " where " + dialect.quote(secondaryTable.pkJoinColumn()) + " = " + idMarker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement deleteSecondaryById(
+            EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable, Object id) {
+        RenderContext context = new RenderContext();
+        String marker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(metadata.idProperty().toColumnValue(id));
+        String sql = "delete from " + secondaryTableRef(secondaryTable)
+                + " where " + dialect.quote(secondaryTable.pkJoinColumn()) + " = " + marker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement selectByIdWithSecondaryTables(EntityMetadata<?> metadata, Object id) {
+        RenderContext context = new RenderContext();
+        // JOINED 다형 SELECT와 동일하게 LEFT JOIN을 파생 테이블로 감싼다 — primary PK와 보조 PK 조인 컬럼이
+        // 같은 이름이어도 select-list가 평탄한 단일 alias 집합으로 투영하므로 outer WHERE의 비한정 컬럼이
+        // 모호해지지 않는다.
+        String inner = "select " + secondaryJoinSelectList(metadata)
+                + " from " + secondaryJoinFromClause(metadata);
+        StringBuilder sql = new StringBuilder("select * from (").append(inner).append(") as ")
+                .append(dialect.quote("nova_secondary"));
+        PersistentProperty idProperty = metadata.idProperty();
+        String marker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(idProperty.toColumnValue(id));
+        sql.append(" where ").append(dialect.quote(idProperty.columnName())).append(" = ").append(marker);
+        appendSoftDeleteAlive(sql, metadata, " and ");
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
+    public SqlStatement selectWithSecondaryTables(EntityMetadata<?> metadata, QuerySpec querySpec) {
+        RenderContext context = new RenderContext();
+        String inner = "select " + secondaryJoinSelectList(metadata)
+                + " from " + secondaryJoinFromClause(metadata);
+        StringBuilder sql = new StringBuilder("select * from (").append(inner).append(") as ")
+                .append(dialect.quote("nova_secondary"));
+        appendWhereClause(sql, context, metadata, querySpec.predicate(), querySpec.cursor());
+        appendOrderBy(sql, metadata, querySpec.sort());
+        appendPage(sql, context, querySpec);
+        appendLockClause(sql, querySpec);
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    /**
+     * 보조 테이블 참조를 schema-aware로 quote 한다.
+     */
+    private String secondaryTableRef(SecondaryTableInfo info) {
+        String quoted = dialect.quote(info.tableName());
+        return info.schema().isBlank() ? quoted : dialect.quote(info.schema()) + "." + quoted;
+    }
+
+    /**
+     * primary + 보조 테이블 LEFT JOIN의 select-list. 각 컬럼을 자기 테이블 참조로 qualify해 {@code table.col as col}로
+     * 투영한다(JOINED와 동일 방식). 컬럼 이름은 엔티티 전역에서 유일하므로 파생 테이블의 bare alias가 충돌하지 않는다.
+     */
+    private String secondaryJoinSelectList(EntityMetadata<?> metadata) {
+        String primaryTable = table(metadata);
+        List<String> items = new ArrayList<>();
+        for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
+            items.add(primaryTable + "." + dialect.quote(property.columnName())
+                    + " as " + dialect.quote(property.columnName()));
+        }
+        for (SecondaryTableInfo secondary : metadata.secondaryTables()) {
+            String secondaryTable = secondaryTableRef(secondary);
+            for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondary)) {
+                items.add(secondaryTable + "." + dialect.quote(property.columnName())
+                        + " as " + dialect.quote(property.columnName()));
+            }
+        }
+        return String.join(", ", items);
+    }
+
+    /**
+     * primary 테이블에 각 보조 테이블을 {@code primary.referencedColumn = secondary.pkJoinColumn}으로 LEFT JOIN하는
+     * FROM 절(JOINED와 동일하게 full table 참조로 qualify해 별칭 없이 모호성을 피한다).
+     */
+    private String secondaryJoinFromClause(EntityMetadata<?> metadata) {
+        String primaryTable = table(metadata);
+        StringBuilder from = new StringBuilder(primaryTable);
+        for (SecondaryTableInfo secondary : metadata.secondaryTables()) {
+            String secondaryTable = secondaryTableRef(secondary);
+            from.append(" left join ").append(secondaryTable)
+                    .append(" on ").append(primaryTable).append(".").append(dialect.quote(secondary.primaryKeyColumn()))
+                    .append(" = ").append(secondaryTable).append(".").append(dialect.quote(secondary.pkJoinColumn()));
+        }
+        return from.toString();
     }
 
     protected static final class RenderContext {

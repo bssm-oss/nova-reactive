@@ -67,6 +67,12 @@ public final class EntityMetadata<T> {
      */
     private final EntityListenerCallbacks listenerCallbacks;
     private final boolean excludeDefaultListeners;
+    /**
+     * {@code @SecondaryTable}로 선언된 보조 테이블 매핑들(선언 순서). 비어 있으면 모든 컬럼이 primary 테이블에
+     * 저장된다. 각 보조 테이블에 라우팅된 컬럼은 {@link PersistentProperty#secondary()}로 식별되며,
+     * INSERT/UPDATE/SELECT/DELETE 멀티테이블 경로가 이 목록으로 보조 테이블별 SQL을 만든다.
+     */
+    private final List<SecondaryTableInfo> secondaryTables;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -136,6 +142,33 @@ public final class EntityMetadata<T> {
             EntityListenerCallbacks listenerCallbacks,
             boolean excludeDefaultListeners
     ) {
+        this(entityType, entityName, tableName, schema, properties, idProperty,
+                prePersistCallbacks, postPersistCallbacks, preUpdateCallbacks, postUpdateCallbacks,
+                postLoadCallbacks, preRemoveCallbacks, postRemoveCallbacks, indexes, uniqueConstraints,
+                inheritance, listenerCallbacks, excludeDefaultListeners, List.of());
+    }
+
+    public EntityMetadata(
+            Class<T> entityType,
+            String entityName,
+            String tableName,
+            String schema,
+            List<PersistentProperty> properties,
+            PersistentProperty idProperty,
+            List<Method> prePersistCallbacks,
+            List<Method> postPersistCallbacks,
+            List<Method> preUpdateCallbacks,
+            List<Method> postUpdateCallbacks,
+            List<Method> postLoadCallbacks,
+            List<Method> preRemoveCallbacks,
+            List<Method> postRemoveCallbacks,
+            List<IndexDefinition> indexes,
+            List<UniqueConstraintDefinition> uniqueConstraints,
+            InheritanceInfo inheritance,
+            EntityListenerCallbacks listenerCallbacks,
+            boolean excludeDefaultListeners,
+            List<SecondaryTableInfo> secondaryTables
+    ) {
         this.entityType = entityType;
         this.entityName = entityName;
         this.tableName = tableName;
@@ -201,6 +234,7 @@ public final class EntityMetadata<T> {
         this.inheritance = inheritance == null ? InheritanceInfo.NONE : inheritance;
         this.listenerCallbacks = listenerCallbacks == null ? EntityListenerCallbacks.EMPTY : listenerCallbacks;
         this.excludeDefaultListeners = excludeDefaultListeners;
+        this.secondaryTables = secondaryTables == null ? List.of() : List.copyOf(secondaryTables);
     }
 
     /**
@@ -565,5 +599,40 @@ public final class EntityMetadata<T> {
      */
     public boolean isInheritanceRoot() {
         return inheritance.present() && inheritance.isRoot();
+    }
+
+    /**
+     * {@code @SecondaryTable}로 선언된 보조 테이블 매핑들. 없으면 빈 리스트.
+     */
+    public List<SecondaryTableInfo> secondaryTables() {
+        return secondaryTables;
+    }
+
+    /**
+     * 이 엔티티가 하나 이상의 {@code @SecondaryTable}을 가지면 {@code true}.
+     */
+    public boolean hasSecondaryTables() {
+        return !secondaryTables.isEmpty();
+    }
+
+    /**
+     * primary 테이블에 저장되는 컬럼 매핑 property들. {@code @Column(table=...)}로 보조 테이블에 라우팅된
+     * 컬럼은 제외된다. 보조 테이블이 없으면 {@link #columnMappedProperties()}와 동일하다.
+     */
+    public List<PersistentProperty> primaryColumnMappedProperties() {
+        if (!hasSecondaryTables()) {
+            return columnMappedProperties;
+        }
+        return columnMappedProperties.stream().filter(property -> !property.secondary()).toList();
+    }
+
+    /**
+     * 주어진 보조 테이블에 라우팅된 컬럼 매핑 property들(선언 순서). id/pk 조인 컬럼은 포함되지 않는다
+     * (보조 테이블의 PK 조인 컬럼은 {@link SecondaryTableInfo#pkJoinColumn()}로 별도 표현된다).
+     */
+    public List<PersistentProperty> secondaryColumnMappedProperties(SecondaryTableInfo secondaryTable) {
+        return columnMappedProperties.stream()
+                .filter(property -> property.secondaryTableName().equals(secondaryTable.tableName()))
+                .toList();
     }
 }

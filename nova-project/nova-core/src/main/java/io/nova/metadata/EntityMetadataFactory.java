@@ -38,6 +38,7 @@ import jakarta.persistence.MapsId;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OneToOne;
+import jakarta.persistence.PrimaryKeyJoinColumn;
 import jakarta.persistence.PostLoad;
 import jakarta.persistence.PostPersist;
 import jakarta.persistence.PostRemove;
@@ -45,6 +46,8 @@ import jakarta.persistence.PostUpdate;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
+import jakarta.persistence.SecondaryTable;
+import jakarta.persistence.SecondaryTables;
 import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.TableGenerator;
 import jakarta.persistence.Temporal;
@@ -562,6 +565,7 @@ public final class EntityMetadataFactory {
         List<UniqueConstraintDefinition> uniqueConstraints = extractUniqueConstraints(
                 entityType, tableName, columnNames,
                 table == null ? new UniqueConstraint[0] : table.uniqueConstraints());
+        List<SecondaryTableInfo> secondaryTables = resolveSecondaryTables(entityType, idProperty, properties);
 
         EntityMetadata<T> metadata = new EntityMetadata<>(
                 entityType,
@@ -581,10 +585,111 @@ public final class EntityMetadataFactory {
                 uniqueConstraints,
                 inheritance,
                 collectEntityListeners(entityType),
-                entityType.isAnnotationPresent(ExcludeDefaultListeners.class)
+                entityType.isAnnotationPresent(ExcludeDefaultListeners.class),
+                secondaryTables
         );
         registerHierarchyMember(metadata);
         return metadata;
+    }
+
+    /**
+     * {@code @SecondaryTable}/{@code @SecondaryTables}로 선언된 보조 테이블들을 해석하고 검증한다.
+     * <p>
+     * fail-fast 규칙(조용한 무시 금지):
+     * <ul>
+     *   <li>{@code @Column(table="...")}가 선언되지 않은 보조 테이블을 가리키면 거부.</li>
+     *   <li>복합키({@code @EmbeddedId}/{@code @IdClass}) 엔티티에 보조 테이블을 달면 거부(v1 미지원).</li>
+     *   <li>{@code @Id}/{@code @GeneratedValue} 컬럼을 보조 테이블로 라우팅하면 거부.</li>
+     *   <li>보조 테이블당 PK 조인 컬럼이 둘 이상이면 거부(단일키만 지원).</li>
+     * </ul>
+     * PK 조인 컬럼/참조 컬럼이 미지정이면 primary {@code @Id} 컬럼 이름을 기본값으로 쓴다(JPA 기본).
+     */
+    private List<SecondaryTableInfo> resolveSecondaryTables(
+            Class<?> entityType, PersistentProperty idProperty, List<PersistentProperty> properties) {
+        List<SecondaryTable> declarations = new ArrayList<>();
+        SecondaryTables multi = entityType.getAnnotation(SecondaryTables.class);
+        if (multi != null) {
+            declarations.addAll(Arrays.asList(multi.value()));
+        }
+        SecondaryTable single = entityType.getAnnotation(SecondaryTable.class);
+        if (single != null) {
+            declarations.add(single);
+        }
+        boolean compositeId = idProperty.embedded()
+                || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class)
+                || properties.stream().filter(PersistentProperty::id).count() > 1;
+        if (declarations.isEmpty()) {
+            // 보조 테이블 선언이 없는데 @Column(table=...)로 라우팅된 컬럼이 있으면 조용히 primary로 흡수하지
+            // 않고 거부한다(거짓 매핑 방지).
+            for (PersistentProperty property : properties) {
+                if (property.secondary()) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + "." + property.propertyName()
+                                    + " @Column(table=\"" + property.secondaryTableName() + "\") references a"
+                                    + " secondary table that is not declared via @SecondaryTable");
+                }
+            }
+            return List.of();
+        }
+        if (compositeId) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + " @SecondaryTable is not supported with a composite id"
+                            + " (@EmbeddedId/@IdClass) in this version");
+        }
+        String primaryPkColumn = idProperty.columnName();
+        LinkedHashMap<String, SecondaryTableInfo> byName = new LinkedHashMap<>();
+        for (SecondaryTable declaration : declarations) {
+            String name = declaration.name();
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @SecondaryTable requires a non-blank name");
+            }
+            if (byName.containsKey(name)) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " declares duplicate @SecondaryTable name '" + name + "'");
+            }
+            PrimaryKeyJoinColumn[] pkJoinColumns = declaration.pkJoinColumns();
+            String pkJoinColumn;
+            String referencedColumn;
+            if (pkJoinColumns.length == 0) {
+                pkJoinColumn = primaryPkColumn;
+                referencedColumn = primaryPkColumn;
+            } else if (pkJoinColumns.length == 1) {
+                pkJoinColumn = pkJoinColumns[0].name().isBlank() ? primaryPkColumn : pkJoinColumns[0].name();
+                referencedColumn = pkJoinColumns[0].referencedColumnName().isBlank()
+                        ? primaryPkColumn : pkJoinColumns[0].referencedColumnName();
+            } else {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @SecondaryTable(\"" + name + "\") declares multiple"
+                                + " pkJoinColumns (composite keys are not supported)");
+            }
+            String schema = declaration.schema() == null ? "" : declaration.schema();
+            byName.put(name, new SecondaryTableInfo(name, schema, pkJoinColumn, referencedColumn));
+        }
+        // 보조 테이블로 라우팅된 컬럼들을 검증: 선언된 테이블만 가리켜야 하고, id/생성키 컬럼은 보조 테이블에
+        // 둘 수 없다(PK는 primary 테이블이 소유하고 보조 테이블은 그 PK를 FK로 공유한다).
+        for (PersistentProperty property : properties) {
+            if (!property.secondary()) {
+                continue;
+            }
+            if (!byName.containsKey(property.secondaryTableName())) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + property.propertyName()
+                                + " @Column(table=\"" + property.secondaryTableName() + "\") references an"
+                                + " undeclared @SecondaryTable; declared: " + byName.keySet());
+            }
+            if (property.id()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + property.propertyName()
+                                + " an @Id column cannot be routed to a @SecondaryTable");
+            }
+            if (property.generated()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + property.propertyName()
+                                + " a @GeneratedValue column cannot be routed to a @SecondaryTable");
+            }
+        }
+        return new ArrayList<>(byName.values());
     }
 
     /**
@@ -781,12 +886,6 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * jakarta.persistence.Column 중 Nova가 honor하지 않는 속성이 설정되면 metadata 빌드 시점에
-     * 명확히 거부한다 ("조용히 무시되는 거짓말 매핑" 방지). name / nullable / length / precision /
-     * scale / insertable / updatable / unique / columnDefinition은 honor한다. secondary table 매핑만
-     * 지원하지 않는다.
-     */
-    /**
      * 엔티티 자신의 필드와, 매핑에 기여하는 조상들의 필드를 함께 반환한다. 조상은 {@link MappedSuperclass}
      * (id/audit를 가진 BaseEntity)와 SINGLE_TABLE 상속의 상위 {@link Entity}(루트/중간 엔티티)를 포함한다.
      * 상위 클래스의 필드(루트의 @Id 등)가 먼저 오도록 root-first로 정렬한다.
@@ -955,14 +1054,6 @@ public final class EntityMetadataFactory {
                     "Invalid @TableGenerator " + attribute + " '" + value + "' on "
                             + declaringType.getName() + "." + field.getName()
                             + " — must match identifier pattern " + SEQUENCE_GENERATOR_NAME_PATTERN.pattern());
-        }
-    }
-
-    private static void rejectUnsupportedColumnAttributes(Class<?> declaringType, Field field, Column column) {
-        if (!column.table().isBlank()) {
-            throw new IllegalArgumentException(
-                    declaringType.getName() + "." + field.getName()
-                            + " @Column(table=...) (secondary tables) is not supported");
         }
     }
 
@@ -1437,9 +1528,6 @@ public final class EntityMetadataFactory {
             String columnNameOverride
     ) {
         Column column = field.getAnnotation(Column.class);
-        if (column != null) {
-            rejectUnsupportedColumnAttributes(declaringType, field, column);
-        }
         GeneratedValue generatedValue = field.getAnnotation(GeneratedValue.class);
         boolean isId = field.isAnnotationPresent(Id.class);
         boolean isSoftDelete = field.isAnnotationPresent(SoftDelete.class);
@@ -1668,6 +1756,15 @@ public final class EntityMetadataFactory {
         }
 
         boolean embedded = hostPath != null && !hostPath.isEmpty();
+        // @Column(table="...")는 이 컬럼을 @SecondaryTable 보조 테이블 행으로 라우팅한다. 보조 테이블 이름이
+        // 실제로 선언됐는지는 resolveSecondaryTables가 검증한다(조용한 무시 금지). v1은 top-level 컬럼만 보조
+        // 테이블로 보내며, @Embedded/@EmbeddedId 하위 필드의 table=은 미지원으로 fail-fast 거부한다.
+        String secondaryTableName = column == null ? "" : column.table();
+        if (!secondaryTableName.isBlank() && embedded) {
+            throw new IllegalArgumentException(
+                    declaringType.getName() + "." + field.getName()
+                            + " @Column(table=...) on an @Embedded/@EmbeddedId sub-field is not supported");
+        }
         int length = column != null ? column.length() : 255;
         int precision = column != null ? column.precision() : 0;
         int scale = column != null ? column.scale() : 0;
@@ -1729,7 +1826,8 @@ public final class EntityMetadataFactory {
                 propertyAccess,
                 propertyAccessGetter,
                 propertyAccessSetter,
-                null
+                null,
+                secondaryTableName
         );
     }
 
@@ -2089,7 +2187,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 null,
-                null
+                null,
+                ""
         );
     }
 
@@ -2228,7 +2327,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 null,
-                toOneCascadeInfo);
+                toOneCascadeInfo,
+                "");
     }
 
     /**
@@ -2304,7 +2404,8 @@ public final class EntityMetadataFactory {
                     false,
                     null,
                     null,
-                    null
+                    null,
+                    ""
             );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
@@ -2366,7 +2467,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 null,
-                toOneCascadeInfo);
+                toOneCascadeInfo,
+                "");
     }
 
     /**
@@ -2429,7 +2531,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null, null, false, "", false, null, null, null);
+                info, null, null, null, false, "", false, null, null, null, "");
     }
 
     /**
@@ -2622,7 +2724,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 null,
-                null);
+                null,
+                "");
     }
 
     /**

@@ -11,6 +11,7 @@ import io.nova.metadata.InheritanceInfo;
 import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.SecondaryTableInfo;
 import io.nova.metadata.TableGeneratorInfo;
 import io.nova.metadata.UniqueConstraintDefinition;
 
@@ -248,6 +249,43 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         return "create table " + (ifNotExists ? "if not exists " : "")
                 + qualifiedTable(metadata)
                 + " (" + String.join(", ", columns) + ")";
+    }
+
+    @Override
+    public String createSecondaryTable(EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable) {
+        List<String> columns = new ArrayList<>();
+        // PK 조인 컬럼은 primary PK 타입을 공유하는 FK PK다(IDENTITY/auto-generation은 emit하지 않고 plain typed PK).
+        columns.add(dialect.quote(secondaryTable.pkJoinColumn()) + " "
+                + sqlType(metadata.idProperty()) + " not null primary key");
+        for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondaryTable)) {
+            columns.add(columnDefinition(property, false));
+        }
+        // PK 조인 컬럼이 primary 테이블의 참조 컬럼을 가리키는 FK. primary 테이블이 먼저 존재해야 하므로
+        // SchemaInitializer가 primary → secondary 순서로 생성한다(삭제는 역순).
+        columns.add("foreign key (" + dialect.quote(secondaryTable.pkJoinColumn()) + ") references "
+                + qualifiedTable(metadata) + " (" + dialect.quote(secondaryTable.primaryKeyColumn()) + ")");
+        return "create table " + qualifiedSecondaryTable(secondaryTable)
+                + " (" + String.join(", ", columns) + ")";
+    }
+
+    @Override
+    public String dropSecondaryTable(SecondaryTableInfo secondaryTable) {
+        return "drop table " + qualifiedSecondaryTable(secondaryTable);
+    }
+
+    @Override
+    public String dropSecondaryTableIfExists(SecondaryTableInfo secondaryTable) {
+        return "drop table if exists " + qualifiedSecondaryTable(secondaryTable);
+    }
+
+    /**
+     * 스키마 한정 보조 테이블 참조를 만든다.
+     */
+    private String qualifiedSecondaryTable(SecondaryTableInfo secondaryTable) {
+        String quoted = dialect.quote(secondaryTable.tableName());
+        return secondaryTable.schema().isBlank()
+                ? quoted
+                : dialect.quote(secondaryTable.schema()) + "." + quoted;
     }
 
     @Override

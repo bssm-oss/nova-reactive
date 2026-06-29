@@ -6,6 +6,7 @@ import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.SecondaryTableInfo;
 import io.nova.metadata.TableGeneratorInfo;
 
 import java.util.List;
@@ -174,5 +175,36 @@ public interface SchemaGenerator {
     default String addForeignKey(ForeignKeyDefinition definition) {
         throw new UnsupportedOperationException(
                 "addForeignKey is not supported by this SchemaGenerator");
+    }
+
+    /**
+     * {@code @SecondaryTable} 보조 테이블 DDL을 만든다 — primary PK를 FK PK로 공유하는 조인 컬럼 +
+     * 그 보조 테이블로 라우팅된 컬럼들. 기본 구현은 미지원이며 dialect base({@link AbstractSchemaGenerator})가
+     * override 한다.
+     */
+    default String createSecondaryTable(EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable) {
+        throw new UnsupportedOperationException("createSecondaryTable is not supported by this SchemaGenerator");
+    }
+
+    /**
+     * {@link #createSecondaryTable(EntityMetadata, SecondaryTableInfo)}의 idempotent 변형.
+     */
+    default String createSecondaryTableIfNotExists(EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable) {
+        return createSecondaryTable(metadata, secondaryTable)
+                .replaceFirst("(?i)^create table\\s+", "create table if not exists ");
+    }
+
+    /**
+     * 보조 테이블을 제거하는 {@code DROP TABLE} 구문. 기본은 raw 이름을 쓰며 dialect base가 quote 한다.
+     */
+    default String dropSecondaryTable(SecondaryTableInfo secondaryTable) {
+        return "drop table " + secondaryTable.tableName();
+    }
+
+    /**
+     * 보조 테이블을 제거하는 idempotent {@code DROP TABLE IF EXISTS} 구문.
+     */
+    default String dropSecondaryTableIfExists(SecondaryTableInfo secondaryTable) {
+        return "drop table if exists " + secondaryTable.tableName();
     }
 }

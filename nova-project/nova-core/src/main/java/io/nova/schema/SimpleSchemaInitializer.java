@@ -190,11 +190,61 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         if (!existingTables.contains(table)) {
             return Mono.just("table '" + table + "' is missing");
         }
-        List<String> expectedColumns = new ArrayList<>(metadata.columnMappedProperties().stream()
+        // primary 테이블에는 primary 컬럼(+ 상속 discriminator)만 기대한다. @SecondaryTable로 라우팅된 컬럼은
+        // 보조 테이블 쪽에서 검증한다.
+        List<String> expectedColumns = new ArrayList<>(metadata.primaryColumnMappedProperties().stream()
                 .map(PersistentProperty::columnName)
                 .toList());
         if (metadata.hasInheritance()) {
             expectedColumns.add(metadata.inheritance().discriminatorColumn());
+        }
+        Mono<String> primaryProblem = operations.queryNative(
+                        NativeQuery.of(dialect.listColumnsSql(table)),
+                        row -> row.get(Dialect.COLUMN_NAME_COLUMN, String.class))
+                .collect(() -> new java.util.TreeSet<String>(String.CASE_INSENSITIVE_ORDER),
+                        java.util.TreeSet::add)
+                .map(actualColumns -> {
+                    List<String> missing = expectedColumns.stream()
+                            .filter(column -> !actualColumns.contains(column))
+                            .toList();
+                    return missing.isEmpty() ? "" : "table '" + table + "' is missing columns " + missing;
+                });
+        if (!metadata.hasSecondaryTables()) {
+            return primaryProblem;
+        }
+        Mono<String> secondaryProblem = Flux.fromIterable(metadata.secondaryTables())
+                .concatMap(secondary -> validateSecondaryTable(metadata, secondary, existingTables))
+                .filter(problem -> !problem.isEmpty())
+                .collectList()
+                .map(problems -> String.join("; ", problems));
+        return Mono.zip(primaryProblem, secondaryProblem, SimpleSchemaInitializer::joinProblems);
+    }
+
+    private static String joinProblems(String first, String second) {
+        if (first.isEmpty()) {
+            return second;
+        }
+        if (second.isEmpty()) {
+            return first;
+        }
+        return first + "; " + second;
+    }
+
+    /**
+     * 한 보조 테이블의 존재와 (PK 조인 컬럼 + 라우팅된 컬럼) 존재를 검증해 문제 메시지(없으면 빈 문자열)를 발행한다.
+     */
+    private Mono<String> validateSecondaryTable(
+            EntityMetadata<?> metadata,
+            io.nova.metadata.SecondaryTableInfo secondary,
+            java.util.Set<String> existingTables) {
+        String table = secondary.tableName();
+        if (!existingTables.contains(table)) {
+            return Mono.just("secondary table '" + table + "' is missing");
+        }
+        List<String> expectedColumns = new ArrayList<>();
+        expectedColumns.add(secondary.pkJoinColumn());
+        for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondary)) {
+            expectedColumns.add(property.columnName());
         }
         return operations.queryNative(
                         NativeQuery.of(dialect.listColumnsSql(table)),
@@ -205,7 +255,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                     List<String> missing = expectedColumns.stream()
                             .filter(column -> !actualColumns.contains(column))
                             .toList();
-                    return missing.isEmpty() ? "" : "table '" + table + "' is missing columns " + missing;
+                    return missing.isEmpty() ? "" : "secondary table '" + table + "' is missing columns " + missing;
                 });
     }
 
@@ -223,6 +273,14 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 ? generator.createTableIfNotExists(metadata)
                 : generator.createTable(metadata);
         Mono<Void> create = operations.executeNative(NativeQuery.of(createDdl)).then();
+        if (metadata.hasSecondaryTables()) {
+            // 보조 테이블은 primary 테이블 생성 이후에 만든다(보조 테이블 PK 조인 컬럼이 primary PK를 FK로 참조).
+            create = create.then(Flux.fromIterable(metadata.secondaryTables())
+                    .concatMap(secondary -> operations.executeNative(NativeQuery.of(options.ifNotExists()
+                            ? generator.createSecondaryTableIfNotExists(metadata, secondary)
+                            : generator.createSecondaryTable(metadata, secondary))))
+                    .then());
+        }
         if (!options.includeIndexes()) {
             return create;
         }
@@ -481,7 +539,17 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         String dropDdl = options.ifNotExists()
                 ? generator.dropTableIfExists(metadata)
                 : generator.dropTable(metadata);
-        return operations.executeNative(NativeQuery.of(dropDdl)).then();
+        Mono<Void> dropPrimary = operations.executeNative(NativeQuery.of(dropDdl)).then();
+        if (!metadata.hasSecondaryTables()) {
+            return dropPrimary;
+        }
+        // 보조 테이블을 먼저 드롭한다(primary를 FK로 참조하므로). 그 다음 primary 테이블.
+        return Flux.fromIterable(metadata.secondaryTables())
+                .concatMap(secondary -> operations.executeNative(NativeQuery.of(options.ifNotExists()
+                        ? generator.dropSecondaryTableIfExists(secondary)
+                        : generator.dropSecondaryTable(secondary))))
+                .then()
+                .then(dropPrimary);
     }
 
     /**
