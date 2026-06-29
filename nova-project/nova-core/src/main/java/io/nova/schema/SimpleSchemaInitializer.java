@@ -83,7 +83,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .then(Flux.fromIterable(collapseToRoots(all))
                         .concatMap(type -> createOne(type, options))
                         .then())
-                .then(addOneToManyOrderColumns(all))
+                .then(addOneToManyOrderColumns(all, options))
                 .then(createJoinTables(all, options))
                 .then(createCollectionTables(all, options))
                 .then(addForeignKeys(all, options));
@@ -156,7 +156,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .then(dropTableGenerators(all))
                 .then(createTableGenerators(all, createOptions))
                 .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
-                .then(addOneToManyOrderColumns(all))
+                .then(addOneToManyOrderColumns(all, createOptions))
                 .then(createJoinTables(all, createOptions))
                 .then(createCollectionTables(all, createOptions))
                 .then(addForeignKeys(all, createOptions));
@@ -397,9 +397,11 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
      * {@code @OneToMany} 매핑이 소유하므로, child 테이블 생성 후 이 단계에서 추가한다. (childTable, columnName)으로
      * dedupe해 여러 parent가 같은 child를 가리켜도 중복 추가하지 않는다. 정렬 {@code @OneToMany}가 없으면 no-op이다.
      */
-    private Mono<Void> addOneToManyOrderColumns(List<Class<?>> types) {
+    private Mono<Void> addOneToManyOrderColumns(List<Class<?>> types, SchemaOptions options) {
         SchemaGenerator generator = dialect.schemaGenerator();
-        LinkedHashMap<String, String> ddlByKey = new LinkedHashMap<>();
+        // childTable → (orderColumn 이름 → ALTER ADD COLUMN ddl). (childTable, column)으로 dedupe해
+        // 여러 parent가 같은 child를 가리켜도 중복 추가하지 않는다.
+        LinkedHashMap<String, LinkedHashMap<String, String>> byChildTable = new LinkedHashMap<>();
         for (Class<?> type : types) {
             EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
             for (PersistentProperty property : metadata.oneToManyProperties()) {
@@ -412,15 +414,54 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                     continue;
                 }
                 EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(childType);
-                String key = childMetadata.tableName() + "." + orderColumn.columnName();
-                ddlByKey.putIfAbsent(key,
-                        generator.addOneToManyOrderColumn(childMetadata, orderColumn.columnName()));
+                byChildTable
+                        .computeIfAbsent(childMetadata.tableName(), t -> new LinkedHashMap<>())
+                        .putIfAbsent(orderColumn.columnName(),
+                                generator.addOneToManyOrderColumn(childMetadata, orderColumn.columnName()));
             }
         }
-        if (ddlByKey.isEmpty()) {
+        if (byChildTable.isEmpty()) {
             return Mono.empty();
         }
-        return Flux.fromIterable(ddlByKey.values())
+        return Flux.fromIterable(byChildTable.entrySet())
+                .concatMap(entry -> addOrderColumnsForChildTable(entry.getKey(), entry.getValue(), options))
+                .then();
+    }
+
+    /**
+     * 한 child 테이블에 정렬 {@code @OneToMany}의 order 컬럼들을 추가한다. {@code ifNotExists}(=={@code ddl-auto=UPDATE})
+     * 모드에서는 ALTER ADD COLUMN이 PG/MySQL에서 IF NOT EXISTS를 지원하지 않으므로, 카탈로그({@link Dialect#listColumnsSql})
+     * 로 기존 컬럼을 먼저 읽어 이미 존재하는 order 컬럼은 건너뛴다 — 재시작 시 "duplicate column"으로 스키마 초기화가
+     * 깨지지 않도록(FK 발행과 동일한 멱등 계약).
+     */
+    private Mono<Void> addOrderColumnsForChildTable(
+            String childTable, LinkedHashMap<String, String> ddlByColumn, SchemaOptions options) {
+        if (!options.ifNotExists()) {
+            // 새 스키마(fresh create / recreate의 드롭 후 재생성): 컬럼이 없는 상태이므로 무조건 발행한다.
+            return emitOrderColumnDdls(ddlByColumn.values());
+        }
+        return operations.queryNative(
+                        NativeQuery.of(dialect.listColumnsSql(childTable)),
+                        row -> row.get(Dialect.COLUMN_NAME_COLUMN, String.class))
+                .collect(() -> new java.util.TreeSet<String>(String.CASE_INSENSITIVE_ORDER),
+                        (set, name) -> {
+                            if (name != null) {
+                                set.add(name);
+                            }
+                        })
+                .flatMap(existing -> {
+                    List<String> pending = new ArrayList<>();
+                    for (var byColumn : ddlByColumn.entrySet()) {
+                        if (!existing.contains(byColumn.getKey())) {
+                            pending.add(byColumn.getValue());
+                        }
+                    }
+                    return emitOrderColumnDdls(pending);
+                });
+    }
+
+    private Mono<Void> emitOrderColumnDdls(Iterable<String> ddls) {
+        return Flux.fromIterable(ddls)
                 .concatMap(ddl -> operations.executeNative(NativeQuery.of(ddl)))
                 .then();
     }

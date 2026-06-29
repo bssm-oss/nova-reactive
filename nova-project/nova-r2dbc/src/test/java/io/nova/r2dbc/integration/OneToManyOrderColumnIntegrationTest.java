@@ -95,6 +95,24 @@ class OneToManyOrderColumnIntegrationTest {
                 .verifyComplete();
     }
 
+    @Test
+    void repeatedCreateIsIdempotentForOrderColumn() {
+        // ddl-auto=UPDATE 재시작 시뮬레이션: setUp이 이미 1회 create했으므로 같은 DB에 create()(ifNotExists=true 기본)를
+        // 한 번 더 호출. order 컬럼 ALTER가 비멱등이면 "duplicate column"으로 throw → 멱등이어야 완료된다.
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        StepVerifier.create(schema.create(Playlist.class, Track.class)).verifyComplete();
+
+        // 재발행 후에도 순서 컬럼 기능이 정상 동작한다(컬럼이 중복 추가되거나 유실되지 않음).
+        Playlist playlist = new Playlist();
+        playlist.add(new Track("gamma"));
+        playlist.add(new Track("alpha"));
+        Long id = support.operations().save(playlist).map(Playlist::getId).block();
+        StepVerifier.create(support.operations().findById(Playlist.class, id))
+                .assertNext(loaded -> assertEquals(List.of("gamma", "alpha"), titles(loaded)))
+                .verifyComplete();
+    }
+
     private static List<String> titles(Playlist playlist) {
         return playlist.getTracks().stream().map(Track::getTitle).toList();
     }
