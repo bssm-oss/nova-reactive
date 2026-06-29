@@ -1875,6 +1875,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 전에 호출돼, 낙관락 실패 시 보조 행이 보존되도록(=비트랜잭션 무변경 계약) 보장한다. id/version 모두
      * primary 테이블 컬럼이므로 보조 테이블을 조인하지 않는 primary-only COUNT다.
      */
+    /**
+     * 보조 행을 지우기 전에 primary 행이 기대 {@code @Version}으로 존재하는지 COUNT로 선검증한다. 호출자가 처음부터
+     * stale version을 들고 delete하면 어떤 DELETE도 발행되지 않아 보조/primary가 보존된다.
+     * <p><b>원자성 한계</b>: COUNT → 보조 DELETE → version-checked primary DELETE는 별개 문이므로, 트랜잭션
+     * 밖(statement별 autocommit)에서는 COUNT와 primary DELETE 사이에 다른 actor가 version을 bump하면 보조만
+     * 지워지고 primary DELETE가 실패하는 좁은 TOCTOU 구간이 남는다. versioned {@code @SecondaryTable} hard
+     * delete의 "락 실패 ⇒ 무변경" 원자성은 호출을 트랜잭션 경계 안에서 수행할 때만 보장된다.
+     */
     private Mono<Void> ensurePrimaryVersionPresent(
             EntityMetadata<?> metadata, Object entity, Object id, PersistentProperty versionProperty) {
         Object currentVersion = versionProperty.read(entity);

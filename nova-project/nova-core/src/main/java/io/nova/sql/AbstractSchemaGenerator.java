@@ -372,6 +372,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      * {@link #boundConstraintName(String)}로 결정적 truncation + 해시 접미를 적용해 한계 내로 보장한다.
      * 이 이름은 멱등 발행의 존재 체크 키({@link #foreignKeyName(ForeignKeyDefinition)} → {@link #addForeignKey})와
      * 정확히 일치해야 하므로 같은 메서드를 단일 자리에서 쓴다 — 한계 적용도 여기 한 곳에서만 한다.
+     * <p><b>비대칭 주의</b>: 길이 bounding은 이 자동 이름에만 적용된다. 명시적 {@code @ForeignKey(name=...)}은
+     * 사용자가 준 그대로 발행되므로 dialect 식별자 한계를 넘으면 런타임 DDL이 실패할 수 있다(이름이 양쪽에서
+     * 동일하므로 멱등성은 깨지지 않는다). 명시 이름의 길이는 사용자 책임이다.
      */
     protected String defaultForeignKeyName(ForeignKeyDefinition definition) {
         return boundConstraintName("fk_" + definition.table() + "_" + String.join("_", definition.columns()));
