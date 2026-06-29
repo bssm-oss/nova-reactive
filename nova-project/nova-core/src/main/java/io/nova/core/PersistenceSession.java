@@ -34,10 +34,19 @@ final class PersistenceSession {
      * 세션이 관리하는 엔티티 1건. 로드/persist 시점의 컬럼 스냅샷을 보관하고, 현재 상태와 비교해 변경된
      * property 이름을 제공한다.
      */
+    /**
+     * 컬렉션 스냅샷 자리에 두는 센티넬 — 영속 baseline을 알 수 없는 경우(detached 엔티티를 직접 save)다. flush는
+     * 이 표시를 만나면 diff 대신 full-replace로 동기화해 현행 save(detached) 의미(전체 재작성)를 보존한다.
+     */
+    static final Object FORCE_FULL = new Object();
+
     static final class ManagedEntry {
         private final Object entity;
         private final EntityMetadata<?> metadata;
         private Map<String, Object> snapshot;
+        // propertyName -> 컬렉션의 영속 baseline 정규 표현(ops가 만들어 넣는다: multiset Map / ordered List /
+        // Map / FORCE_FULL). 키가 없으면 "아직 baseline 미캡처"(로드 hydration 전 등)다.
+        private final Map<String, Object> collectionSnapshots = new LinkedHashMap<>();
 
         private ManagedEntry(Object entity, EntityMetadata<?> metadata, Map<String, Object> snapshot) {
             this.entity = entity;
@@ -76,6 +85,26 @@ final class PersistenceSession {
          */
         void refreshSnapshot() {
             this.snapshot = buildSnapshot(metadata, entity);
+        }
+
+        /**
+         * 컬렉션 property의 영속 baseline 정규 표현을 반환한다. 아직 캡처된 적이 없으면 {@code null}이다
+         * ({@link #hasCollectionSnapshot}로 구분). flush가 이 값과 현재 컬렉션 표현을 비교해 변경 여부/diff를 정한다.
+         */
+        Object collectionSnapshot(String propertyName) {
+            return collectionSnapshots.get(propertyName);
+        }
+
+        boolean hasCollectionSnapshot(String propertyName) {
+            return collectionSnapshots.containsKey(propertyName);
+        }
+
+        /**
+         * 컬렉션 baseline 표현을 설정한다 — 로드 후 캡처, 신규 INSERT 후 빈 baseline, detached save의 {@link #FORCE_FULL},
+         * flush 성공 후 갱신에 모두 쓰인다. 표현 자체(multiset/list/map)는 ops 레이어가 만든다.
+         */
+        void putCollectionSnapshot(String propertyName, Object representation) {
+            collectionSnapshots.put(propertyName, representation);
         }
     }
 
@@ -130,6 +159,15 @@ final class PersistenceSession {
      */
     Collection<ManagedEntry> managedEntries() {
         return identityMap.values();
+    }
+
+    /**
+     * 주어진 엔티티의 관리 엔트리를 반환한다(미관리/식별 불가면 {@code null}). 컬렉션 baseline 캡처처럼 ops가
+     * 특정 엔트리에 부가 상태를 기록할 때 쓴다.
+     */
+    ManagedEntry managedEntry(EntityMetadata<?> metadata, Object entity) {
+        EntityKey key = keyFor(metadata, entity);
+        return key == null ? null : identityMap.get(key);
     }
 
     boolean isEmpty() {

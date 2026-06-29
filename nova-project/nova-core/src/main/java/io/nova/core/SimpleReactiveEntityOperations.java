@@ -184,12 +184,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 // entity row 저장 후 owning @ManyToMany link table과 @ElementCollection collection table을
                 // full-replace로 동기화하고(둘 다 없으면 무비용), 마지막으로 @OneToMany(cascade=PERSIST/orphanRemoval)
                 // child 전파를 reactive 순서대로 수행한다 — parent INSERT/UPDATE가 먼저 완료되어야 child FK 바인딩이 성립한다.
-                return saved.flatMap(persisted ->
-                        reconcileManyToManyLinks(metadata, persisted)
-                                .then(reconcileElementCollections(metadata, persisted))
-                                .then(cascadeSaveOneToManyChildren(metadata, persisted))
-                                .then(reindexOrderedOneToManyChildren(metadata, persisted))
-                                .thenReturn(persisted));
+                return saved.flatMap(persisted -> {
+                    // 세션이 있으면 join/collection 테이블 행 작성을 flush로 지연한다 — 단, link/EC row 작성에 필요한
+                    // 엔티티 cascade(@ManyToMany transient/merge target)는 id 확보를 위해 save 시점에 eager로 끝낸다
+                    // (flush는 sqlExecutor만 쓰는 불변식이라 save 재진입 불가). 세션 밖은 현행 즉시 full-replace.
+                    Mono<Void> collectionSync = session.isPresent()
+                            ? cascadeSaveManyToManyTargets(metadata, persisted).then()
+                            : reconcileManyToManyLinks(metadata, persisted)
+                                    .then(reconcileElementCollections(metadata, persisted));
+                    return collectionSync
+                            .then(cascadeSaveOneToManyChildren(metadata, persisted))
+                            .then(reindexOrderedOneToManyChildren(metadata, persisted))
+                            .thenReturn(persisted);
+                });
             });
         });
     }
@@ -1453,6 +1460,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     hydrateChildren(List.of(parent), annotationGroup)
                             .then(hydrateManyToMany(List.of(parent), metadata))
                             .then(hydrateElementCollections(List.of(parent), metadata))
+                            .doOnSuccess(ignored -> captureCollectionSnapshots(session, metadata, parent))
                             .thenReturn(parent));
         });
     }
@@ -1475,6 +1483,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             hydrateChildren(parents, annotationGroup)
                                     .then(hydrateManyToMany(parents, metadata))
                                     .then(hydrateElementCollections(parents, metadata))
+                                    .doOnSuccess(ignored ->
+                                            parents.forEach(p -> captureCollectionSnapshots(session, metadata, p)))
                                     .thenMany(Flux.fromIterable(parents)));
         });
     }
@@ -1528,7 +1538,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object entity = entry.entity();
             EntityMetadata<?> metadata = entry.metadata();
             if (entry.dirtyPropertyNames().isEmpty()) {
-                return Mono.empty();
+                // 스칼라 변경이 없어도 세션에서 지연된 컬렉션(join/collection 테이블)은 flush로 동기화한다.
+                return syncCollections(entry, entity, metadata);
             }
             try {
                 auditApplier.applyOnUpdate(entity, metadata);
@@ -1582,8 +1593,236 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return withSecondary.doOnSuccess(ignored -> {
                 listenerInvoker.invokePostUpdate(entity, metadata);
                 entry.refreshSnapshot();
-            });
+            }).then(syncCollections(entry, entity, metadata));
         });
+    }
+
+    // ===== 세션 컬렉션 diff-at-flush (Stage 1: change-detect + full-replace) =====
+
+    /**
+     * 세션이 켜진 상태에서 owner save 시 {@code @ManyToMany(cascade=PERSIST/MERGE)}의 대상 엔티티만 eager로 저장한다.
+     * link 행 작성은 flush로 지연되지만, 대상 엔티티는 id가 있어야 link를 쓸 수 있고 flush({@link #sqlExecutor}만 호출)
+     * 에서 {@link #save}를 재진입할 수 없으므로 save 시점에 끝낸다. cascade가 없으면 무비용.
+     */
+    private <T> Mono<Void> cascadeSaveManyToManyTargets(EntityMetadata<T> metadata, T owner) {
+        List<PersistentProperty> cascading = metadata.manyToManyProperties().stream()
+                .filter(property -> property.cascadePersistManyToManyTargets()
+                        || property.cascadeMergeManyToManyTargets())
+                .toList();
+        if (cascading.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(cascading)
+                .concatMap(property -> {
+                    Object collection = readCollectionField(property, owner);
+                    if (collection == null) {
+                        return Mono.empty();
+                    }
+                    EntityMetadata<?> targetMetadata =
+                            metadataFactory.getEntityMetadata(property.manyToManyInfo().targetType());
+                    List<Object> elements = new ArrayList<>();
+                    for (Object element : (Iterable<?>) collection) {
+                        elements.add(element);
+                    }
+                    // resolveManyToManyTargetIds가 cascade 분기에서 대상을 저장한다(결과 id는 flush가 다시 읽으므로 버린다).
+                    return resolveManyToManyTargetIds(metadata, property, targetMetadata, owner, elements).then();
+                })
+                .then();
+    }
+
+    /**
+     * 로드/findAll 경로에서 컬렉션 hydration 직후, 세션이 있으면 각 owner의 컬렉션 영속 baseline을 캡처한다.
+     * 이후 flush가 이 baseline과 현재 컬렉션을 비교해 변경 없으면 skip(0 SQL), 변경되면 동기화한다. baseline이
+     * 없으면(미캡처) flush는 안전하게 full-replace 한다.
+     */
+    private void captureCollectionSnapshots(Optional<PersistenceSession> session, EntityMetadata<?> metadata, Object owner) {
+        if (session.isEmpty() || owner == null) {
+            return;
+        }
+        PersistenceSession.ManagedEntry entry = session.get().managedEntry(metadata, owner);
+        if (entry == null) {
+            return;
+        }
+        for (PersistentProperty property : collectionSyncProperties(metadata)) {
+            Object collection = readCollectionField(property, owner);
+            // null 컬렉션은 hydration이 채우지 않은 경우 — baseline 미설정으로 남겨 full-replace를 피하고 건드리지 않는다.
+            if (collection != null) {
+                entry.putCollectionSnapshot(property.propertyName(), collectionRepresentation(metadata, property, owner));
+            }
+        }
+    }
+
+    /**
+     * 세션 flush 시 한 managed entry의 지연된 컬렉션(owning {@code @ManyToMany} + {@code @ElementCollection})을
+     * 동기화한다. baseline과 현재 표현이 같으면 SQL을 내지 않고, 다르면 full-replace(Stage 1)로 재작성한 뒤
+     * baseline을 갱신한다. {@link #sqlExecutor}만 호출(flush 불변식).
+     */
+    private Mono<Void> syncCollections(
+            PersistenceSession.ManagedEntry entry, Object entity, EntityMetadata<?> metadata) {
+        List<PersistentProperty> properties = collectionSyncProperties(metadata);
+        if (properties.isEmpty()) {
+            return Mono.empty();
+        }
+        Object ownerId = metadata.idProperty().read(entity);
+        if (ownerId == null) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(properties)
+                .concatMap(property -> syncOneCollection(entry, metadata, property, entity, ownerId))
+                .then();
+    }
+
+    private Mono<Void> syncOneCollection(
+            PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata,
+            PersistentProperty property, Object owner, Object ownerId) {
+        Object collection = readCollectionField(property, owner);
+        if (collection == null) {
+            // null 컬렉션 = 이번 세션에서 이 관계를 관리하지 않음 → 건드리지 않는다(현행 reconcile과 동일 의미).
+            return Mono.empty();
+        }
+        Object current = collectionRepresentation(metadata, property, owner);
+        Object baseline = entry.collectionSnapshot(property.propertyName());
+        boolean ordered = isOrderedCollection(property);
+        if (baseline != null && baseline != PersistenceSession.FORCE_FULL
+                && collectionRepresentationsEqual(baseline, current, ordered)) {
+            return Mono.empty();
+        }
+        Mono<Void> write = property.manyToMany()
+                ? fullReplaceManyToMany(metadata, property, owner, ownerId)
+                : reconcileOneElementCollection(metadata, property, owner, ownerId);
+        return write.doOnSuccess(ignored -> entry.putCollectionSnapshot(property.propertyName(), current));
+    }
+
+    /**
+     * flush 시 owning {@code @ManyToMany} link 행을 full-replace한다 — cascade는 save 시점에 이미 끝났으므로
+     * 대상 id를 동기로 읽고({@link #sqlExecutor}만), owner의 link 행 전체 삭제 후 현재 대상들을 다시 insert한다.
+     */
+    private Mono<Void> fullReplaceManyToMany(
+            EntityMetadata<?> metadata, PersistentProperty property, Object owner, Object ownerId) {
+        ManyToManyInfo info = property.manyToManyInfo();
+        EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
+        JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
+        List<Object> targetIds = readManyToManyTargetIds(property, targetMetadata, owner);
+        SqlRenderer renderer = dialect.sqlRenderer();
+        Mono<Void> delete = sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
+        if (targetIds.isEmpty()) {
+            return delete;
+        }
+        return delete.thenMany(Flux.fromIterable(targetIds)
+                        .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRow(definition, ownerId, targetId))))
+                .then();
+    }
+
+    /**
+     * owning {@code @ManyToMany}의 현재 대상 id들을 동기로 읽는다(flush 전용, cascade 없음). 대상이 미영속이면
+     * (cascade 미설정 + 직접 저장 안 함) fail-fast — save 시점 cascade가 이미 영속화했어야 한다.
+     */
+    private List<Object> readManyToManyTargetIds(
+            PersistentProperty property, EntityMetadata<?> targetMetadata, Object owner) {
+        Object collection = readCollectionField(property, owner);
+        List<Object> ids = new ArrayList<>();
+        if (collection == null) {
+            return ids;
+        }
+        for (Object element : (Iterable<?>) collection) {
+            Object targetId = targetMetadata.idProperty().read(element);
+            if (targetId == null) {
+                throw new IllegalStateException(
+                        "@ManyToMany targets must be persisted before flush on "
+                                + property.propertyName() + "; add cascade=PERSIST to cascade transient targets");
+            }
+            ids.add(targetId);
+        }
+        return ids;
+    }
+
+    /** 세션 flush가 지연 동기화하는 컬렉션 property들 — owning {@code @ManyToMany} + {@code @ElementCollection}. */
+    private List<PersistentProperty> collectionSyncProperties(EntityMetadata<?> metadata) {
+        List<PersistentProperty> properties = new ArrayList<>();
+        for (PersistentProperty property : metadata.manyToManyProperties()) {
+            if (property.manyToManyInfo().owning()) {
+                properties.add(property);
+            }
+        }
+        properties.addAll(metadata.elementCollectionProperties());
+        return properties;
+    }
+
+    private boolean isOrderedCollection(PersistentProperty property) {
+        return property.elementCollection() && property.elementCollectionInfo().orderColumn() != null;
+    }
+
+    private Object readCollectionField(PersistentProperty property, Object owner) {
+        try {
+            return property.field().get(owner);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot read collection " + property.propertyName(), exception);
+        }
+    }
+
+    /**
+     * 컬렉션의 영속 상태를 비교 가능한 정규 표현으로 만든다 — 원소별 키의 {@code List}. 키는 실제 저장 행과 같은 값
+     * (M2M=대상 id, EC 기본=값, EC @Embeddable=컬럼 튜플, EC Map=(key,value) 쌍)을 써서 baseline과 정확히 일치한다.
+     * 비교 의미(순서 vs multiset)는 {@link #collectionRepresentationsEqual}이 정한다.
+     */
+    private List<Object> collectionRepresentation(
+            EntityMetadata<?> metadata, PersistentProperty property, Object owner) {
+        Object collection = readCollectionField(property, owner);
+        List<Object> keys = new ArrayList<>();
+        if (collection == null) {
+            return keys;
+        }
+        if (property.manyToMany()) {
+            EntityMetadata<?> targetMetadata =
+                    metadataFactory.getEntityMetadata(property.manyToManyInfo().targetType());
+            for (Object element : (Iterable<?>) collection) {
+                keys.add(targetMetadata.idProperty().read(element));
+            }
+            return keys;
+        }
+        ElementCollectionInfo info = property.elementCollectionInfo();
+        if (info.map()) {
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) collection).entrySet()) {
+                if (entry.getKey() == null || entry.getValue() == null) {
+                    continue;
+                }
+                Object valueKey = info.embeddable()
+                        ? readEmbeddableColumnValues(info, entry.getValue())
+                        : entry.getValue();
+                keys.add(List.of(entry.getKey(), valueKey));
+            }
+            return keys;
+        }
+        for (Object value : (Iterable<?>) collection) {
+            if (value == null) {
+                continue;
+            }
+            keys.add(info.embeddable() ? readEmbeddableColumnValues(info, value) : value);
+        }
+        return keys;
+    }
+
+    /**
+     * 두 컬렉션 표현이 영속 관점에서 같은지. ordered({@code @OrderColumn} List)는 순서까지 같아야 하고, 그 외
+     * (M2M·EC Set·EC bag·Map)는 원소 빈도(multiset)만 같으면 된다.
+     */
+    private boolean collectionRepresentationsEqual(Object baseline, Object current, boolean ordered) {
+        if (!(baseline instanceof List<?> before) || !(current instanceof List<?> now)) {
+            return false;
+        }
+        if (ordered) {
+            return before.equals(now);
+        }
+        return frequencies(before).equals(frequencies(now));
+    }
+
+    private static Map<Object, Integer> frequencies(List<?> elements) {
+        Map<Object, Integer> counts = new LinkedHashMap<>();
+        for (Object element : elements) {
+            counts.merge(element, 1, Integer::sum);
+        }
+        return counts;
     }
 
     /**
