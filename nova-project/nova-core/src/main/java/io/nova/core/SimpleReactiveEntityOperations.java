@@ -19,6 +19,7 @@ import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
 import io.nova.query.Condition;
 import io.nova.query.Criteria;
+import io.nova.query.LockMode;
 import io.nova.query.NativeQuery;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
@@ -1084,8 +1085,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
-     * entity UPDATE 직후 각 보조 테이블 행을 UPDATE한다. 보조 테이블에 updatable 컬럼이 없으면(렌더러가
-     * {@code null} 반환) 그 단계는 건너뛴다. {@link #sqlExecutor}만 호출한다.
+     * entity UPDATE 직후 <b>모든</b> 보조 테이블 행을 full UPDATE한다(full save 경로 전용 — 어떤 컬럼이
+     * 변경됐는지 알 수 없으므로 전 보조 테이블을 entity의 현재 값으로 덮어쓴다). 보조 테이블에 updatable
+     * 컬럼이 없으면(렌더러가 {@code null} 반환) 그 단계는 건너뛴다. {@link #sqlExecutor}만 호출한다.
+     * <p>
+     * 계약(마이그레이션 엣지): 보조 행이 부재한 데이터(예: 보조 테이블 도입 전에 적재된 레거시 primary 행)를
+     * UPDATE하면 해당 보조 테이블 UPDATE는 0행에 영향하고 <em>조용히</em> 끝난다 — upsert(없으면 INSERT)가
+     * 아니다. 보조 행은 항상 {@link #insertSecondaryRows}(=INSERT 경로)에서만 만들어진다.
      */
     private Mono<Void> updateSecondaryRows(EntityMetadata<?> metadata, Object entity) {
         SqlRenderer renderer = dialect.sqlRenderer();
@@ -1095,6 +1101,41 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     return statement == null ? Mono.<Long>empty() : sqlExecutor.execute(statement);
                 })
                 .then();
+    }
+
+    /**
+     * partial/dirty UPDATE 경로 전용 — {@code changedProperties}에 자기 컬럼이 하나라도 포함된 보조 테이블만
+     * full UPDATE한다. primary 컬럼만 바뀐 변경은 어떤 보조 테이블도 건드리지 않아(불필요한 write 제거) 정확성을
+     * 유지하면서 쓰기 폭을 dirty 보조 테이블로 좁힌다. {@link #updateSecondaryRows(EntityMetadata, Object)}의
+     * 마이그레이션-엣지(보조 행 부재 시 0행 silent, upsert 아님) 계약은 동일하게 적용된다.
+     */
+    private Mono<Void> updateSecondaryRows(
+            EntityMetadata<?> metadata, Object entity, java.util.Set<String> changedProperties) {
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return Flux.fromIterable(metadata.secondaryTables())
+                .filter(secondary -> secondaryTableTouchedBy(metadata, secondary, changedProperties))
+                .concatMap(secondary -> {
+                    SqlStatement statement = renderer.updateSecondary(metadata, secondary, entity);
+                    return statement == null ? Mono.<Long>empty() : sqlExecutor.execute(statement);
+                })
+                .then();
+    }
+
+    /**
+     * 주어진 보조 테이블의 컬럼 매핑 property 중 하나라도 {@code changedProperties}에 들어 있는지 — 즉 이번
+     * 변경이 이 보조 테이블을 실제로 더럽혔는지 판정한다.
+     */
+    private static boolean secondaryTableTouchedBy(
+            EntityMetadata<?> metadata, SecondaryTableInfo secondary, java.util.Set<String> changedProperties) {
+        if (changedProperties.isEmpty()) {
+            return false;
+        }
+        for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondary)) {
+            if (changedProperties.contains(property.propertyName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1168,6 +1209,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 hasPrimaryField = true;
             }
         }
+        // @Version 계약: versionProperty가 있으면 위 augment 단계가 version 컬럼(=primary)을 effectiveFields에
+        // 항상 추가하므로 hasPrimaryField가 참이 되어 primary UPDATE가 반드시 발행된다 — 즉 보조 컬럼만 요청한
+        // secondary-only update도 version을 bump+검증해 lost-update를 탐지한다(JPA 의미). @Version이 없을 때만
+        // skipPrimaryUpdate가 성립해, 보조 컬럼만 바뀐 변경이 primary 빈 SET 없이 보조 테이블만 갱신한다(이
+        // 경우 검증할 version이 없으므로 lost-update 미탐지는 설계상 정상).
         boolean skipPrimaryUpdate = metadata.hasSecondaryTables() && !hasPrimaryField && hasSecondaryField;
         Mono<T> primaryUpdate;
         if (skipPrimaryUpdate) {
@@ -1192,8 +1238,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         return Mono.just(entity);
                     });
         }
+        // 요청 필드(+augment) 중 보조 컬럼이 포함된 보조 테이블만 갱신한다 — primary 컬럼만 요청한 partial
+        // update가 매번 전 보조 테이블을 덮어쓰던 불필요한 write를 제거한다(정확성 유지).
+        LinkedHashSet<String> requestedFields = new LinkedHashSet<>();
+        for (String field : effectiveFields) {
+            requestedFields.add(field);
+        }
         Mono<T> result = metadata.hasSecondaryTables()
-                ? primaryUpdate.flatMap(saved -> updateSecondaryRows(metadata, saved).thenReturn(saved))
+                ? primaryUpdate.flatMap(saved ->
+                        updateSecondaryRows(metadata, saved, requestedFields).thenReturn(saved))
                 : primaryUpdate;
         return result.doOnNext(updated -> listenerInvoker.invokePostUpdate(updated, metadata));
     }
@@ -1346,8 +1399,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         })
                         .then();
             }
+            // dirty 필드에 자기 컬럼이 포함된 보조 테이블만 갱신한다 — primary 컬럼만 dirty인 변경은 어떤 보조
+            // 테이블도 건드리지 않아 불필요한 write를 제거한다(정확성 유지). version 컬럼은 primary이므로
+            // 보조 테이블 dirty 판정에 영향을 주지 않는다.
             Mono<Void> withSecondary = metadata.hasSecondaryTables()
-                    ? primaryUpdate.then(updateSecondaryRows(metadata, entity))
+                    ? primaryUpdate.then(updateSecondaryRows(metadata, entity, fields))
                     : primaryUpdate;
             return withSecondary.doOnSuccess(ignored -> {
                 listenerInvoker.invokePostUpdate(entity, metadata);
@@ -1454,8 +1510,21 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private <T> Flux<T> findAllInternal(EntityMetadata<T> metadata, QuerySpec querySpec) {
         if (metadata.hasSecondaryTables()) {
             // @SecondaryTable: primary ⟕ 보조 테이블 LEFT JOIN으로 조회한다(predicate/sort는 primary 컬럼 기준).
+            QuerySpec spec = normalize(querySpec);
+            if (spec.lockMode() != LockMode.NONE) {
+                // 비관락 + @SecondaryTable fail-fast. 보조 테이블 SELECT는 LEFT JOIN을 파생 테이블
+                // (select * from (... left join ...) as nova_secondary)로 감싸므로, 거기에 FOR UPDATE/FOR SHARE를
+                // 붙이면 PostgreSQL 등은 "FOR UPDATE cannot be applied to the nullable side of an outer join" 또는
+                // 파생 테이블 락 거부로 런타임 에러를 낸다. 조용히 깨진 SQL을 던지는 대신 명확히 거부한다.
+                return Flux.error(new UnsupportedOperationException(
+                        "Pessimistic lock (" + spec.lockMode() + ") is not supported together with @SecondaryTable on "
+                                + metadata.entityType().getName()
+                                + ": the secondary-table SELECT wraps a LEFT JOIN in a derived table, which databases"
+                                + " such as PostgreSQL refuse to lock. Remove the lock mode, or query the primary"
+                                + " table without the secondary-table mapping for the locked read."));
+            }
             return sqlExecutor.queryMany(
-                    dialect.sqlRenderer().selectWithSecondaryTables(metadata, normalize(querySpec)),
+                    dialect.sqlRenderer().selectWithSecondaryTables(metadata, spec),
                     row -> mapRow(metadata, row));
         }
         if (isMultiTableInheritance(metadata)) {
@@ -1656,12 +1725,54 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return deleteJoined(metadata, id);
         }
         Mono<Long> core = performDeleteCore(metadata, entity, id);
-        // @SecondaryTable hard delete: 보조 테이블 행을 먼저 삭제한다(보조 FK가 primary PK를 참조). soft delete는
-        // primary 행을 논리적으로 남기므로 보조 행도 그대로 둔다.
-        if (metadata.hasSecondaryTables() && metadata.softDeleteProperty().isEmpty()) {
+        if (!metadata.hasSecondaryTables() || metadata.softDeleteProperty().isPresent()) {
+            // 보조 테이블이 없거나 soft delete(primary 행을 논리적으로 보존)면 보조 행을 건드리지 않는다.
+            return core;
+        }
+        // @SecondaryTable hard delete. 스키마 생성이 보조 테이블 PK 조인 컬럼 → primary PK의 enforced FK를
+        // emit하므로(AbstractSchemaGenerator.createSecondaryTable) FK 의존성상 보조 행을 primary 행보다 먼저
+        // 삭제해야 한다(child-before-parent). primary DELETE를 물리적으로 먼저 실행하면 보조 행이 남아 있어
+        // FK 위반이 된다.
+        Optional<PersistentProperty> version = metadata.versionProperty();
+        if (version.isEmpty()) {
+            // @Version 없음: 낙관락 실패 개념이 없으므로 기존 FK 안전 순서(보조 → primary)를 그대로 유지한다.
             return deleteSecondaryRows(metadata, id).then(core);
         }
-        return core;
+        // @Version 보유: stale 엔티티로 삭제하면 primary version-checked DELETE가 0행 →
+        // OptimisticLockingFailureException이 된다. 보조 행을 먼저 지운 뒤라면 비트랜잭션(autocommit)에서
+        // 보조 행만 사라져 "락 실패면 무변경" 계약이 깨진다(데이터 손실). FK 때문에 primary DELETE를 보조
+        // DELETE보다 먼저 발행할 수는 없으므로, 보조 행을 건드리기 전에 primary 행의 (id, version) 존재를
+        // SELECT로 선검증한다. 선검증이 실패하면 어떤 DELETE도 발행하지 않아 보조 행이 보존된다. 통과하면
+        // FK 안전 순서(보조 → primary)로 삭제하며, primary DELETE는 그 사이 동시 변경 대비로 여전히
+        // version-checked다(좁은 race window에서도 primary는 절대 잘못된 version으로 지워지지 않는다).
+        return ensurePrimaryVersionPresent(metadata, entity, id, version.get())
+                .then(deleteSecondaryRows(metadata, id))
+                .then(core);
+    }
+
+    /**
+     * primary 테이블에 주어진 {@code id}와 entity의 현재 {@code @Version} 값을 가진 행이 존재하는지 COUNT로
+     * 선검증한다. 존재하지 않으면(행 부재 또는 version 불일치) {@link OptimisticLockingFailureException}으로
+     * 끝나 호출자가 어떤 DELETE도 발행하지 않게 한다. @SecondaryTable hard delete에서 보조 행을 먼저 지우기
+     * 전에 호출돼, 낙관락 실패 시 보조 행이 보존되도록(=비트랜잭션 무변경 계약) 보장한다. id/version 모두
+     * primary 테이블 컬럼이므로 보조 테이블을 조인하지 않는 primary-only COUNT다.
+     */
+    private Mono<Void> ensurePrimaryVersionPresent(
+            EntityMetadata<?> metadata, Object entity, Object id, PersistentProperty versionProperty) {
+        Object currentVersion = versionProperty.read(entity);
+        QuerySpec spec = QuerySpec.empty().where(Criteria.and(
+                Criteria.eq(metadata.idProperty().propertyName(), id),
+                Criteria.eq(versionProperty.propertyName(), currentVersion)));
+        return sqlExecutor.queryOne(
+                        dialect.sqlRenderer().count(metadata, spec), row -> row.get("count", Long.class))
+                .defaultIfEmpty(0L)
+                .flatMap(count -> count > 0L
+                        ? Mono.empty()
+                        : Mono.error(new OptimisticLockingFailureException(
+                                "Optimistic locking failure: row not found or version mismatch for "
+                                        + metadata.entityType().getName()
+                                        + " id=" + id
+                                        + " version=" + currentVersion)));
     }
 
     private <T> Mono<Long> performDeleteCore(EntityMetadata<T> metadata, T entity, Object id) {
