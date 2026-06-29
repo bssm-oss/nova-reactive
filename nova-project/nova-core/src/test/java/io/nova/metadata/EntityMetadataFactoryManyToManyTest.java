@@ -74,10 +74,21 @@ class EntityMetadataFactoryManyToManyTest {
     }
 
     @Test
-    void rejectsCascade() {
+    void honorsOwningSideCascade() {
+        EntityMetadata<CascadingManyToMany> metadata = factory.getEntityMetadata(CascadingManyToMany.class);
+        ManyToManyInfo info = metadata.findProperty("courses").orElseThrow().manyToManyInfo();
+        // owning @ManyToMany(cascade=ALL) → PERSIST/MERGE 모두 전파.
+        assertTrue(info.owning());
+        assertTrue(info.cascadePersist());
+        assertTrue(info.cascadeMerge());
+    }
+
+    @Test
+    void rejectsCascadeOnInverseSide() {
+        // cascade는 owning side(@JoinTable)에서만 의미가 있으므로 mappedBy side 선언은 fail-fast로 거부한다.
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(CascadingManyToMany.class));
-        assertTrue(error.getMessage().contains("cascade"));
+                () -> factory.getEntityMetadata(InverseCascadeTarget.class));
+        assertTrue(error.getMessage().contains("owning side"));
     }
 
     @Test
@@ -150,6 +161,29 @@ class EntityMetadataFactoryManyToManyTest {
 
         @ManyToMany(cascade = CascadeType.ALL)
         List<Course> courses;
+    }
+
+    @Entity
+    @Table(name = "inv_cascade_owner")
+    static class InverseCascadeOwner {
+        @Id
+        Long id;
+
+        @ManyToMany
+        @JoinTable(name = "inv_cascade_link",
+                joinColumns = @JoinColumn(name = "owner_id"),
+                inverseJoinColumns = @JoinColumn(name = "target_id"))
+        List<InverseCascadeTarget> targets;
+    }
+
+    @Entity
+    @Table(name = "inv_cascade_target")
+    static class InverseCascadeTarget {
+        @Id
+        Long id;
+
+        @ManyToMany(mappedBy = "targets", cascade = CascadeType.ALL)
+        List<InverseCascadeOwner> owners;
     }
 
     @Entity

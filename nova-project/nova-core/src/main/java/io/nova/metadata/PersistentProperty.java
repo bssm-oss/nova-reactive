@@ -703,6 +703,22 @@ public final class PersistentProperty {
     }
 
     /**
+     * {@code true}이면 owning {@code @ManyToMany(cascade=PERSIST/ALL)}이므로 owner save 시 transient 대상
+     * 엔티티를 link 행 작성 전에 먼저 영속화한다.
+     */
+    public boolean cascadePersistManyToManyTargets() {
+        return manyToManyInfo != null && manyToManyInfo.owning() && manyToManyInfo.cascadePersist();
+    }
+
+    /**
+     * {@code true}이면 owning {@code @ManyToMany(cascade=MERGE/ALL)}이므로 이미 영속된 대상 엔티티도 owner save
+     * 시 다시 저장한다.
+     */
+    public boolean cascadeMergeManyToManyTargets() {
+        return manyToManyInfo != null && manyToManyInfo.owning() && manyToManyInfo.cascadeMerge();
+    }
+
+    /**
      * {@code true}이면 이 property는 {@code @ElementCollection} 값 컬렉션이며 {@link #elementCollectionInfo()}가
      * collection table 매핑을 담는다. 부모 테이블에 컬럼이 없는 marker다.
      */

@@ -425,24 +425,80 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
         JoinTableDefinition definition = joinDefinition(ownerMetadata, info, targetMetadata);
-        List<Object> targetIds = new ArrayList<>();
+        List<Object> elements = new ArrayList<>();
         for (Object element : (Iterable<?>) collection) {
-            Object targetId = targetMetadata.idProperty().read(element);
-            if (targetId == null) {
-                return Mono.error(new IllegalStateException(
-                        "@ManyToMany targets must be persisted (non-null id) before saving the owner on "
-                                + ownerMetadata.entityType().getName() + "." + property.propertyName()));
-            }
-            targetIds.add(targetId);
+            elements.add(element);
         }
         SqlRenderer renderer = dialect.sqlRenderer();
         Mono<Void> delete = sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
-        if (targetIds.isEmpty()) {
-            return delete;
+        return resolveManyToManyTargetIds(ownerMetadata, property, targetMetadata, owner, elements)
+                .flatMap(targetIds -> {
+                    if (targetIds.isEmpty()) {
+                        return delete;
+                    }
+                    return delete.thenMany(Flux.fromIterable(targetIds)
+                                    .concatMap(targetId -> sqlExecutor.execute(
+                                            renderer.insertJoinRow(definition, ownerId, targetId))))
+                            .then();
+                });
+    }
+
+    /**
+     * {@code @ManyToMany} link 행에 쓸 대상 id 목록을 만든다. owning {@code cascade=PERSIST/MERGE}가 있으면
+     * transient 대상을 link 작성 전에 먼저 {@link #save(Object)}하고(MERGE면 이미 영속된 대상도 재저장), cascade가
+     * 없으면 기존 동작대로 모든 대상이 이미 영속(non-null id)임을 요구한다. 사이클/공유 참조는 to-one cascade와 동일한
+     * {@code CASCADE_VISITED_KEY} 집합으로 무한 재귀를 막는다(owner 자신도 visited에 넣어 target→owner 재저장을 차단).
+     */
+    private Mono<List<Object>> resolveManyToManyTargetIds(
+            EntityMetadata<?> ownerMetadata, PersistentProperty property,
+            EntityMetadata<?> targetMetadata, Object owner, List<Object> elements) {
+        boolean cascadePersist = property.cascadePersistManyToManyTargets();
+        boolean cascadeMerge = property.cascadeMergeManyToManyTargets();
+        if (!cascadePersist && !cascadeMerge) {
+            List<Object> ids = new ArrayList<>();
+            for (Object element : elements) {
+                Object targetId = targetMetadata.idProperty().read(element);
+                if (targetId == null) {
+                    return Mono.error(new IllegalStateException(
+                            "@ManyToMany targets must be persisted (non-null id) before saving the owner on "
+                                    + ownerMetadata.entityType().getName() + "." + property.propertyName()
+                                    + "; add cascade=PERSIST to cascade transient targets"));
+                }
+                ids.add(targetId);
+            }
+            return Mono.just(ids);
         }
-        return delete.thenMany(Flux.fromIterable(targetIds)
-                        .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRow(definition, ownerId, targetId))))
-                .then();
+        return Mono.deferContextual(ctx -> {
+            java.util.Set<Object> visited = ctx.<java.util.Set<Object>>getOrEmpty(CASCADE_VISITED_KEY)
+                    .orElseGet(() -> java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+            visited.add(owner);
+            return Flux.fromIterable(elements)
+                    .concatMap(element -> {
+                        Object targetId = targetMetadata.idProperty().read(element);
+                        // 영속 대상 + MERGE 아님 → 재저장 없이 현재 id를 그대로 link한다(PERSIST는 transient에만 전파).
+                        if (targetId != null && !cascadeMerge) {
+                            return Mono.just(targetId);
+                        }
+                        // 사이클/공유 참조: 이미 cascade 경로에 있으면 재저장하지 않고 현재 id를 쓴다.
+                        if (!visited.add(element)) {
+                            Object idNow = targetMetadata.idProperty().read(element);
+                            return idNow != null ? Mono.just(idNow) : Mono.error(new IllegalStateException(
+                                    "@ManyToMany cascade encountered a transient target in a reference cycle on "
+                                            + ownerMetadata.entityType().getName() + "." + property.propertyName()));
+                        }
+                        return save(element).map(saved -> {
+                            Object savedId = targetMetadata.idProperty().read(saved);
+                            if (savedId == null) {
+                                throw new IllegalStateException(
+                                        "@ManyToMany cascade-saved target has a null id on "
+                                                + ownerMetadata.entityType().getName() + "." + property.propertyName());
+                            }
+                            return savedId;
+                        });
+                    })
+                    .collectList()
+                    .contextWrite(c -> c.put(CASCADE_VISITED_KEY, visited));
+        });
     }
 
     private JoinTableDefinition joinDefinition(

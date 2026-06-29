@@ -10,6 +10,7 @@ import jakarta.persistence.Convert;
 import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.DiscriminatorValue;
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Embeddable;
@@ -2501,16 +2502,12 @@ public final class EntityMetadataFactory {
     /**
      * {@code @ManyToMany} property를 만든다. owning({@code mappedBy} 없음, {@code @JoinTable})과
      * inverse({@code mappedBy}) 모두 컬럼 없는 marker이며 link table 매핑을 {@link ManyToManyInfo}에 담는다.
-     * cascade는 거부하고, fetch=LAZY는 허용한다(Nova는 {@code @OneToMany}처럼 eager-hydrate). 복합키 owner/target,
-     * 다중 join 컬럼, 잘못된 {@code mappedBy}, raw/non-collection 필드는 fail-fast로 거부한다.
+     * owning side의 cascade(PERSIST/MERGE/ALL)는 honor하고(inverse side cascade는 거부), fetch=LAZY는 허용한다
+     * (Nova는 {@code @OneToMany}처럼 eager-hydrate). 복합키 owner/target, 다중 join 컬럼, 잘못된 {@code mappedBy},
+     * raw/non-collection 필드는 fail-fast로 거부한다.
      */
     private PersistentProperty createManyToManyProperty(Class<?> entityType, String ownerTableName, Field field) {
         ManyToMany annotation = field.getAnnotation(ManyToMany.class);
-        if (annotation.cascade().length > 0) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @ManyToMany(cascade=...) is not supported; persist related entities explicitly via save/saveAll");
-        }
         Class<?> fieldType = field.getType();
         if (!List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
             throw new IllegalArgumentException(
@@ -2520,8 +2517,18 @@ public final class EntityMetadataFactory {
         boolean usesSet = Set.class.isAssignableFrom(fieldType);
         Class<?> target = resolveManyToManyTarget(entityType, field, annotation);
         String mappedBy = annotation.mappedBy();
-        ManyToManyInfo info = (mappedBy == null || mappedBy.isBlank())
-                ? resolveOwningManyToManyInfo(entityType, ownerTableName, field, target, usesSet)
+        boolean owning = mappedBy == null || mappedBy.isBlank();
+        Set<CascadeType> cascadeTypes = Set.of(annotation.cascade());
+        if (!owning && !cascadeTypes.isEmpty()) {
+            // link 동기화·cascade 전파는 owning side에서만 일어난다. inverse(mappedBy)에 cascade를 선언하면
+            // 조용히 무시되어 오해를 부르므로 fail-fast로 거부하고 owning side에 선언하도록 안내한다.
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @ManyToMany cascade must be declared on the owning side (the @JoinTable side),"
+                            + " not the mappedBy side");
+        }
+        ManyToManyInfo info = owning
+                ? resolveOwningManyToManyInfo(entityType, ownerTableName, field, target, usesSet).withCascade(cascadeTypes)
                 : resolveInverseManyToManyInfo(entityType, field, target, mappedBy, usesSet);
         return new PersistentProperty(
                 field,
