@@ -1758,7 +1758,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // @ManyToOne/@OneToOne(cascade=REMOVE/ALL) 참조 엔티티는 반대로 owner 삭제 *후*에 삭제한다 — FK가 owner
         // row에 있으므로 owner가 먼저 사라져야 참조 row 삭제가 FK 의존성을 위반하지 않는다. 참조 id는 owner row가
         // 사라지기 전에 미리 수집해 둔다(entity 객체에서 동기적으로 읽음).
+        // hard delete일 때만 owner 소유 컬렉션(@ElementCollection 행, owning @ManyToMany link 행)을 owner보다
+        // 먼저 정리한다 — collection/join 테이블의 @ForeignKey가 owner를 참조하면 FK 의존성을 만족시켜야 한다.
+        // soft delete는 owner 행을 논리 보존하므로 컬렉션도 보존한다.
+        Mono<Void> ownedCollectionCleanup = metadata.softDeleteProperty().isPresent()
+                ? Mono.empty()
+                : removeOwnedCollectionRows(metadata, id);
         return cascadeRemoveOneToManyChildren(metadata, id)
+                .then(ownedCollectionCleanup)
                 .then(performDelete(metadata, entity, id))
                 .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata))
                 .flatMap(affected -> cascadeRemoveToOneReferences(metadata, entity).thenReturn(affected));
@@ -1834,6 +1841,38 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
+     * owner를 hard delete 하기 전에 owner가 소유한 컬렉션 행을 정리한다 — {@code @ElementCollection} collection
+     * table 행과 owning {@code @ManyToMany} join table link 행. JPA에서 이들은 owner에 종속된 소유 컬렉션이므로
+     * cascade 속성과 무관하게 owner와 함께 항상 제거된다(값 컬렉션/링크는 독립 수명이 없다). collection/join 테이블이
+     * {@code @ForeignKey}로 owner를 참조하면 owner 행보다 먼저 지워야 FK 위반을 피하므로 owner DELETE 앞에서 호출한다.
+     * <p>이미 만들어진 reconcile 경로의 정의 빌더({@link #collectionDefinition}/{@link #joinDefinition})와 렌더
+     * 메서드({@code deleteCollectionRows}/{@code deleteJoinRows})를 재사용한다.
+     * <p>v1 한계: owning 측만 정리한다 — inverse {@code @ManyToMany} 엔티티를 삭제할 때 그 엔티티를 target으로 가리키는
+     * 다른 owner의 link 행은 정리되지 않는다. soft delete는 owner 행을 논리 보존하므로 호출자가 hard delete에서만 부른다.
+     */
+    private Mono<Void> removeOwnedCollectionRows(EntityMetadata<?> metadata, Object ownerId) {
+        SqlRenderer renderer = dialect.sqlRenderer();
+        List<Mono<Void>> deletes = new ArrayList<>();
+        for (PersistentProperty property : metadata.elementCollectionProperties()) {
+            CollectionTableDefinition definition = collectionDefinition(metadata, property.elementCollectionInfo());
+            deletes.add(sqlExecutor.execute(renderer.deleteCollectionRows(definition, ownerId)).then());
+        }
+        for (PersistentProperty property : metadata.manyToManyProperties()) {
+            ManyToManyInfo info = property.manyToManyInfo();
+            if (!info.owning()) {
+                continue;
+            }
+            EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
+            JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
+            deletes.add(sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then());
+        }
+        if (deletes.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.concat(deletes).then();
+    }
+
+    /**
      * hard/soft delete 분기를 수행한다. {@code @PreRemove}는 호출 측에서 이미 발화했고, 성공적으로
      * 행이 영향받았을 때 {@code @PostRemove}는 이 {@code Mono}를 구독하는 {@link #delete(Object)}가 발화한다.
      * optimistic locking 실패는 {@code Mono.error}로 끝나므로 {@code @PostRemove}가 호출되지 않는다.
@@ -1869,15 +1908,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
-     * primary 테이블에 주어진 {@code id}와 entity의 현재 {@code @Version} 값을 가진 행이 존재하는지 COUNT로
-     * 선검증한다. 존재하지 않으면(행 부재 또는 version 불일치) {@link OptimisticLockingFailureException}으로
-     * 끝나 호출자가 어떤 DELETE도 발행하지 않게 한다. @SecondaryTable hard delete에서 보조 행을 먼저 지우기
-     * 전에 호출돼, 낙관락 실패 시 보조 행이 보존되도록(=비트랜잭션 무변경 계약) 보장한다. id/version 모두
-     * primary 테이블 컬럼이므로 보조 테이블을 조인하지 않는 primary-only COUNT다.
-     */
-    /**
-     * 보조 행을 지우기 전에 primary 행이 기대 {@code @Version}으로 존재하는지 COUNT로 선검증한다. 호출자가 처음부터
-     * stale version을 들고 delete하면 어떤 DELETE도 발행되지 않아 보조/primary가 보존된다.
+     * 보조 행을 지우기 전에 primary 행이 기대 {@code @Version}으로 존재하는지 COUNT로 선검증한다. 존재하지 않으면
+     * (행 부재 또는 version 불일치) {@link OptimisticLockingFailureException}으로 끝나 호출자가 어떤 DELETE도
+     * 발행하지 않게 한다 — 호출자가 처음부터 stale version을 들고 delete하면 보조/primary가 모두 보존된다.
+     * id/version 모두 primary 테이블 컬럼이므로 보조 테이블을 조인하지 않는 primary-only COUNT다.
      * <p><b>원자성 한계</b>: COUNT → 보조 DELETE → version-checked primary DELETE는 별개 문이므로, 트랜잭션
      * 밖(statement별 autocommit)에서는 COUNT와 primary DELETE 사이에 다른 actor가 version을 bump하면 보조만
      * 지워지고 primary DELETE가 실패하는 좁은 TOCTOU 구간이 남는다. versioned {@code @SecondaryTable} hard
