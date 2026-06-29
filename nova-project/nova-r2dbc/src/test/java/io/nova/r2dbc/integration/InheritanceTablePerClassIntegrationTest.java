@@ -98,6 +98,29 @@ class InheritanceTablePerClassIntegrationTest {
     }
 
     @Test
+    void countAndExistsOnAbstractRootAggregateAcrossConcreteTables() {
+        // M1 회귀: TPC 추상 루트는 자기 테이블(t_vehicle)이 없으므로 count/exists가 구체 테이블들을 집계해야 한다.
+        StepVerifier.create(support.operations().exists(TVehicle.class, QuerySpec.empty()))
+                .expectNext(false)
+                .verifyComplete();
+
+        support.operations().save(new TCar("ada", 4))
+                .then(support.operations().save(new TTruck("ben", 12.5)))
+                .then(support.operations().save(new TCar("cyd", 2)))
+                .block();
+
+        StepVerifier.create(support.operations().count(TVehicle.class, QuerySpec.empty()))
+                .expectNext(3L)
+                .verifyComplete();
+        StepVerifier.create(support.operations().exists(TVehicle.class, QuerySpec.empty()))
+                .expectNext(true)
+                .verifyComplete();
+        StepVerifier.create(support.operations().count(TCar.class, QuerySpec.empty()))
+                .expectNext(2L)
+                .verifyComplete();
+    }
+
+    @Test
     void updatePersistsToConcreteTable() {
         TCar saved = (TCar) support.operations().save(new TCar("ada", 4)).block();
         saved.setName("ada-renamed");

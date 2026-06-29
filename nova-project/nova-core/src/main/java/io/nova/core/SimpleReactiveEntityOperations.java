@@ -1184,8 +1184,27 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * JOIN/UNION 경로를 타야 하는지 판정한다.
      */
     private static boolean isMultiTableInheritance(EntityMetadata<?> metadata) {
+        if (!metadata.hasInheritance()) {
+            return false;
+        }
+        InheritanceInfo info = metadata.inheritance();
+        // JOINED는 루트/구체 모두 컬럼이 여러 테이블에 흩어져 있어 JOIN이 필요하다. TABLE_PER_CLASS는 각 구체
+        // 타입이 모든 컬럼을 가진 독립 테이블이므로 구체 타입 조회는 자기 테이블만 보면 된다(UNION+client filter
+        // 불필요) — 추상 루트 다형 조회만 UNION이 필요하다.
+        if (info.joined()) {
+            return true;
+        }
+        return info.tablePerClass() && metadata.isInheritanceRoot();
+    }
+
+    /**
+     * 이 메타데이터가 TABLE_PER_CLASS 상속의 추상 루트인지 — 즉 자기 물리 테이블이 없고 구체 서브타입
+     * 테이블들의 합집합으로만 조회/집계해야 하는지 판정한다.
+     */
+    private static boolean isTablePerClassRoot(EntityMetadata<?> metadata) {
         return metadata.hasInheritance()
-                && (metadata.inheritance().joined() || metadata.inheritance().tablePerClass());
+                && metadata.inheritance().tablePerClass()
+                && metadata.isInheritanceRoot();
     }
 
     /**
@@ -1509,13 +1528,31 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @Override
     public <T> Mono<Long> count(Class<T> entityType, QuerySpec querySpec) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
-        return sqlExecutor.queryOne(dialect.sqlRenderer().count(metadata, normalize(querySpec)), row -> row.get("count", Long.class));
+        QuerySpec spec = normalize(querySpec);
+        if (isTablePerClassRoot(metadata)) {
+            // TPC 추상 루트는 자기 물리 테이블이 없으므로 구체 서브타입 테이블들의 count를 합산한다
+            // (predicate는 모든 구체 테이블에 존재하는 루트 컬럼 기준).
+            InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+            return Flux.fromIterable(layout.subtypes())
+                    .concatMap(sub -> sqlExecutor.queryOne(
+                            dialect.sqlRenderer().count(sub.metadata(), spec), row -> row.get("count", Long.class)))
+                    .reduce(0L, Long::sum);
+        }
+        return sqlExecutor.queryOne(dialect.sqlRenderer().count(metadata, spec), row -> row.get("count", Long.class));
     }
 
     @Override
     public <T> Mono<Boolean> exists(Class<T> entityType, QuerySpec querySpec) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
-        return sqlExecutor.queryOne(dialect.sqlRenderer().exists(metadata, normalize(querySpec)), row -> Boolean.TRUE)
+        QuerySpec spec = normalize(querySpec);
+        if (isTablePerClassRoot(metadata)) {
+            InheritanceLayout layout = metadataFactory.inheritanceLayout(metadata.inheritance().root());
+            return Flux.fromIterable(layout.subtypes())
+                    .concatMap(sub -> sqlExecutor.queryOne(
+                            dialect.sqlRenderer().exists(sub.metadata(), spec), row -> Boolean.TRUE))
+                    .hasElements();
+        }
+        return sqlExecutor.queryOne(dialect.sqlRenderer().exists(metadata, spec), row -> Boolean.TRUE)
                 .defaultIfEmpty(Boolean.FALSE);
     }
 

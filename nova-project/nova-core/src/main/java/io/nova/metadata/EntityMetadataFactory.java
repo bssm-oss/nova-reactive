@@ -305,7 +305,19 @@ public final class EntityMetadataFactory {
         Collections.sort(orderedKeys);
         List<InheritanceLayout.ConcreteSubtype> subtypes = new ArrayList<>();
         for (String key : orderedKeys) {
-            EntityMetadata<?> subMeta = getEntityMetadata(members.get(key));
+            Class<?> subClass = members.get(key);
+            // 다단계 상속(루트와 구체 서브타입 사이에 중간 @Entity가 있는 경우)은 현재 단일 레벨로 flatten되어
+            // JPA 의미(중간 타입의 자체 테이블/조인)를 위반한다 → fail-fast로 거부한다.
+            for (Class<?> c = subClass.getSuperclass(); c != null && c != rootClass; c = c.getSuperclass()) {
+                if (c.isAnnotationPresent(Entity.class)) {
+                    throw new IllegalArgumentException(
+                            rootClass.getName() + " inheritance hierarchy has an intermediate @Entity '" + c.getName()
+                                    + "' between the root and '" + subClass.getName()
+                                    + "'; Nova supports only a single level of JOINED/TABLE_PER_CLASS subtypes"
+                                    + " (multi-level @Entity hierarchies are not supported)");
+                }
+            }
+            EntityMetadata<?> subMeta = getEntityMetadata(subClass);
             List<PersistentProperty> ownColumns = info.joined()
                     ? joinedOwnTableColumns(subMeta, rootClass)
                     : subMeta.columnMappedProperties();

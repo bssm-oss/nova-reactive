@@ -148,6 +148,16 @@ class EntityMetadataFactoryInheritanceTest {
         assertThrows(IllegalArgumentException.class, () -> factory.getEntityMetadata(DupB.class));
     }
 
+    @Test
+    void rejectsMultiLevelJoinedHierarchy() {
+        // M3: 루트와 leaf 사이에 중간 @Entity(ThreeLevelMid)가 있는 다단계 상속은 단일 레벨로 flatten되어
+        // JPA 의미를 위반하므로 fail-fast여야 한다.
+        factory.getEntityMetadata(ThreeLevelLeaf.class);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.inheritanceLayout(ThreeLevelRoot.class));
+        assertTrue(error.getMessage().contains("intermediate @Entity"));
+    }
+
     // --- fixtures -----------------------------------------------------------
 
     @Entity
@@ -248,5 +258,28 @@ class EntityMetadataFactoryInheritanceTest {
     @Entity
     @DiscriminatorValue("SAME")
     static class DupB extends DupRoot {
+    }
+
+    @Entity
+    @Table(name = "tl_root")
+    @Inheritance(strategy = InheritanceType.JOINED)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    abstract static class ThreeLevelRoot {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @Table(name = "tl_mid")
+    @DiscriminatorValue("MID")
+    static class ThreeLevelMid extends ThreeLevelRoot {
+        String midColumn;
+    }
+
+    @Entity
+    @Table(name = "tl_leaf")
+    @DiscriminatorValue("LEAF")
+    static class ThreeLevelLeaf extends ThreeLevelMid {
+        String leafColumn;
     }
 }
