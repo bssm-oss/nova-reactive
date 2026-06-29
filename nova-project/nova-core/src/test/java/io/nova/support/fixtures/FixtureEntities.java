@@ -292,6 +292,83 @@ public final class FixtureEntities {
     }
 
     /**
+     * {@code @Temporal}을 {@code java.sql.*}(여기선 {@link java.sql.Timestamp}) 타입에 잘못 단 거부 케이스 픽스처.
+     * {@code java.sql.Timestamp}는 {@code java.util.Date}의 하위 타입이지만 SQL 정밀도가 타입 자체에 확정돼 있어
+     * {@code @Temporal}이 불필요하며, factory는 java.time/일반 java.util.Date와 구분되는 명확한 사유로 거부한다.
+     */
+    @Entity
+    public static class TemporalOnSqlTypeEntity {
+        @Id
+        private Long id;
+
+        @Temporal(TemporalType.TIMESTAMP)
+        private java.sql.Timestamp recordedAt;
+
+        public TemporalOnSqlTypeEntity() {
+        }
+    }
+
+    /** {@code @Temporal}과 {@code @Enumerated}를 같은 필드에 함께 단 거부 케이스 픽스처. */
+    @Entity
+    public static class TemporalPlusEnumeratedEntity {
+        @Id
+        private Long id;
+
+        @Temporal(TemporalType.TIMESTAMP)
+        @Enumerated(EnumType.STRING)
+        private Status status;
+
+        public TemporalPlusEnumeratedEntity() {
+        }
+    }
+
+    /** {@code @Temporal}과 {@code @Json}을 같은 필드에 함께 단 거부 케이스 픽스처. */
+    @Entity
+    public static class TemporalPlusJsonEntity {
+        @Id
+        private Long id;
+
+        @Temporal(TemporalType.TIMESTAMP)
+        @Json
+        private Date payload;
+
+        public TemporalPlusJsonEntity() {
+        }
+    }
+
+    /** {@code @Temporal}과 {@code @Convert}를 같은 필드에 함께 단 거부 케이스 픽스처. */
+    @Entity
+    public static class TemporalPlusConvertEntity {
+        @Id
+        private Long id;
+
+        @Temporal(TemporalType.TIMESTAMP)
+        @jakarta.persistence.Convert(converter = DateToEpochMillisConverter.class)
+        private Date occurredAt;
+
+        public TemporalPlusConvertEntity() {
+        }
+    }
+
+    /**
+     * {@link Date}를 epoch millis({@link Long})로 왕복하는 JPA 표준 변환기. {@code @Temporal}+{@code @Convert}
+     * 조합 거부 픽스처({@link TemporalPlusConvertEntity})에서 사용한다 — 조합 거부는 변환기 검증을 통과한 뒤에
+     * 발화하므로 변환기 자체는 유효해야 한다(no-arg ctor + attribute 타입 일치).
+     */
+    public static class DateToEpochMillisConverter
+            implements jakarta.persistence.AttributeConverter<Date, Long> {
+        @Override
+        public Long convertToDatabaseColumn(Date attribute) {
+            return attribute == null ? null : attribute.getTime();
+        }
+
+        @Override
+        public Date convertToEntityAttribute(Long dbData) {
+            return dbData == null ? null : new Date(dbData);
+        }
+    }
+
+    /**
      * {@code @Column}의 length/precision/scale 매핑을 검증하기 위한 픽스처다. id는 명시적으로 할당하며
      * (IDENTITY 아님) bigint primary key가 된다.
      * <ul>

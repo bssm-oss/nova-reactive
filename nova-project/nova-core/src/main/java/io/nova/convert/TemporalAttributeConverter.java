@@ -28,6 +28,20 @@ import java.util.GregorianCalendar;
  * <p>변환은 시스템 기본 시간대({@link ZoneId#systemDefault()})를 기준으로 한 instant↔calendar-date 환산을
  * 사용한다(Hibernate의 기본 calendar 동작과 동치). {@code DATE}는 시각 성분을, {@code TIME}은 날짜 성분을
  * 버린다(SQL {@code date}/{@code time} 의미와 일치). {@code null}은 그대로 통과시켜 SQL {@code NULL}을 보존한다.
+ *
+ * <p><b>운영 주의 — 시간대 비결정성:</b> {@code write}/{@code read}가 모두 {@link ZoneId#systemDefault()}
+ * (JVM 기본 시간대)에 종속된다. {@code java.util.Date}/{@code Calendar}는 instant(절대 시각)지만 저장 표현은
+ * 시간대 없는 {@code LocalDate}/{@code LocalTime}/{@code LocalDateTime}이므로, 환산에 쓰는 시간대가 바뀌면
+ * 같은 instant가 다른 wall-clock 값으로 저장/복원될 수 있다. 따라서:
+ * <ul>
+ *   <li>애플리케이션 인스턴스 간 시간대를 고정하라(예: {@code -Duser.timezone=UTC} 또는 컨테이너 {@code TZ}
+ *       환경변수). 서로 다른 시간대의 노드가 같은 데이터를 읽고 쓰면 값이 어긋난다.</li>
+ *   <li>{@code DATE}/{@code TIMESTAMP}의 자정 복원({@code atStartOfDay}/{@code atZone})은 DST 전환으로 그
+ *       지역 자정이 존재하지 않는 날(spring-forward gap)에 시각이 한 시간 밀려 복원될 수 있다. 시간대를
+ *       UTC처럼 DST가 없는 영역으로 고정하면 이 엣지를 피한다.</li>
+ *   <li>시간대에 독립적인 매핑이 필요하면 레거시 {@code @Temporal} 대신 java.time 타입
+ *       ({@code LocalDate}/{@code LocalDateTime}/{@code OffsetDateTime})을 직접 사용하라.</li>
+ * </ul>
  */
 public final class TemporalAttributeConverter implements AttributeConverter<Object, Object> {
     /**

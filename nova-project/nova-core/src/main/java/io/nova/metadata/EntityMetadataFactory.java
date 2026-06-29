@@ -1740,6 +1740,16 @@ public final class EntityMetadataFactory {
                                 + field.getType().getName());
             }
             if (!isUtilDate && !isCalendar) {
+                // java.sql.Date/Time/Timestamp는 java.util.Date의 하위 타입이라 정확 비교(== java.util.Date.class)에는
+                // 걸리지 않지만 "is not java.util.Date" 메시지는 오해를 부른다. 이들은 SQL date/time/timestamp 의미가
+                // 타입 자체에 이미 확정돼 @Temporal이 불필요하므로(드라이버 네이티브 매핑 대상), 별도의 명확한 사유로 거부한다.
+                if (java.util.Date.class.isAssignableFrom(field.getType())) {
+                    throw new IllegalArgumentException(
+                            declaringType.getName() + "." + field.getName()
+                                    + " is annotated with @Temporal but its type " + field.getType().getName()
+                                    + " is a java.sql.* type whose temporal precision is already fixed by the type;"
+                                    + " map java.sql.Date/Time/Timestamp without @Temporal");
+                }
                 // JPA도 java.time 타입에 @Temporal을 금지한다(불필요/모호). java.time은 그 자체로 정밀도가
                 // 확정되므로 @Temporal 없이 매핑돼야 한다.
                 throw new IllegalArgumentException(

@@ -29,6 +29,43 @@ class MariaDbDialectTest {
     }
 
     @Test
+    void createTableEmitsDatetimeForTemporalTimestampColumnEndToEnd() {
+        // 토큰 단위 검증을 넘어, createTable DDL이 실제로 @Temporal(TIMESTAMP) 컬럼을 MariaDB `datetime`으로
+        // emit하는지(DATE/TIME은 date/time 유지) 문자열 단위로 확인한다(라이브 DB 불요).
+        EntityMetadata<MariaDbTemporalEvent> temporalMetadata =
+                new EntityMetadataFactory(new DefaultNamingStrategy()).getEntityMetadata(MariaDbTemporalEvent.class);
+
+        assertEquals(
+                "create table `temporal_events` (`id` bigint primary key auto_increment,"
+                        + " `event_date` date, `event_time` time, `event_timestamp` datetime)",
+                dialect.schemaGenerator().createTable(temporalMetadata)
+        );
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "temporal_events")
+    static class MariaDbTemporalEvent {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.IDENTITY)
+        private Long id;
+
+        @jakarta.persistence.Temporal(jakarta.persistence.TemporalType.DATE)
+        @jakarta.persistence.Column(name = "event_date")
+        private java.util.Date eventDate;
+
+        @jakarta.persistence.Temporal(jakarta.persistence.TemporalType.TIME)
+        @jakarta.persistence.Column(name = "event_time")
+        private java.util.Date eventTime;
+
+        @jakarta.persistence.Temporal(jakarta.persistence.TemporalType.TIMESTAMP)
+        @jakarta.persistence.Column(name = "event_timestamp")
+        private java.util.Date eventTimestamp;
+
+        MariaDbTemporalEvent() {
+        }
+    }
+
+    @Test
     void quotesIdentifiersWithBackticks() {
         assertEquals("`accounts`", dialect.quote("accounts"));
     }

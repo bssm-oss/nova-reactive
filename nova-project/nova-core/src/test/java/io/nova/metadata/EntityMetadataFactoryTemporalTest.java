@@ -1,8 +1,13 @@
 package io.nova.metadata;
 
+import io.nova.convert.AttributeConverter;
 import io.nova.support.fixtures.FixtureEntities.MissingTemporalEntity;
 import io.nova.support.fixtures.FixtureEntities.TemporalEvent;
 import io.nova.support.fixtures.FixtureEntities.TemporalOnJavaTimeEntity;
+import io.nova.support.fixtures.FixtureEntities.TemporalOnSqlTypeEntity;
+import io.nova.support.fixtures.FixtureEntities.TemporalPlusConvertEntity;
+import io.nova.support.fixtures.FixtureEntities.TemporalPlusEnumeratedEntity;
+import io.nova.support.fixtures.FixtureEntities.TemporalPlusJsonEntity;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -13,6 +18,7 @@ import java.util.Calendar;
 import java.util.Date;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -134,5 +140,80 @@ class EntityMetadataFactoryTemporalTest {
                 () -> factory.getEntityMetadata(MissingTemporalEntity.class));
         assertTrue(exception.getMessage().contains("@Temporal"),
                 "message should mention missing @Temporal: " + exception.getMessage());
+    }
+
+    @Test
+    void rejectsTemporalOnSqlTypeWithDedicatedMessage() {
+        // java.sql.Timestamp는 java.util.Date의 하위 타입이라 == java.util.Date.class 비교에는 걸리지 않는다.
+        // "is not java.util.Date" 메시지로 오인되지 않도록, java.sql.* 전용 사유로 거부됨을 검증한다.
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(TemporalOnSqlTypeEntity.class));
+        String message = exception.getMessage();
+        assertTrue(message.contains("java.sql.*"),
+                "message should call out the java.sql.* type explicitly: " + message);
+        assertTrue(message.contains("java.sql.Timestamp"),
+                "message should name the offending field type: " + message);
+        assertFalse(message.contains("is not java.util.Date or java.util.Calendar"),
+                "java.sql.* must not reuse the misleading java.time message: " + message);
+    }
+
+    @Test
+    void rejectsCombiningTemporalWithEnumerated() {
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> factory.getEntityMetadata(TemporalPlusEnumeratedEntity.class));
+        assertTrue(exception.getMessage().contains("@Temporal"),
+                "message should mention @Temporal: " + exception.getMessage());
+        assertTrue(exception.getMessage().contains("@Enumerated"),
+                "message should mention @Enumerated: " + exception.getMessage());
+    }
+
+    @Test
+    void rejectsCombiningTemporalWithJson() {
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> factory.getEntityMetadata(TemporalPlusJsonEntity.class));
+        assertTrue(exception.getMessage().contains("@Temporal"),
+                "message should mention @Temporal: " + exception.getMessage());
+        assertTrue(exception.getMessage().contains("@Json"),
+                "message should mention @Json: " + exception.getMessage());
+    }
+
+    @Test
+    void rejectsCombiningTemporalWithConvert() {
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> factory.getEntityMetadata(TemporalPlusConvertEntity.class));
+        assertTrue(exception.getMessage().contains("@Temporal"),
+                "message should mention @Temporal: " + exception.getMessage());
+        assertTrue(exception.getMessage().contains("@Convert"),
+                "message should mention @Convert: " + exception.getMessage());
+    }
+
+    @Test
+    void rejectsCombiningTemporalWithRegisteredConverter() {
+        // 도메인 타입(java.util.Date)에 일반 converter가 등록돼 있으면 @Temporal과 충돌한다 —
+        // 둘 다 같은 컬럼 매핑을 주장하므로 fail-fast로 거부한다.
+        EntityMetadataFactory withConverter = new EntityMetadataFactory(new DefaultNamingStrategy());
+        withConverter.registerConverter(Date.class, new AttributeConverter<Date, Long>() {
+            @Override
+            public Long write(Date source) {
+                return source == null ? null : source.getTime();
+            }
+
+            @Override
+            public Date read(Long source) {
+                return source == null ? null : new Date(source);
+            }
+        });
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> withConverter.getEntityMetadata(TemporalEvent.class));
+        assertTrue(exception.getMessage().contains("@Temporal"),
+                "message should mention @Temporal: " + exception.getMessage());
+        assertTrue(exception.getMessage().contains("registered AttributeConverter"),
+                "message should mention the registered converter conflict: " + exception.getMessage());
     }
 }
