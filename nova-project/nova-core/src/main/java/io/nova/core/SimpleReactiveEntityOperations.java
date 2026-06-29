@@ -1474,8 +1474,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     if (reference == null) {
                         return Mono.empty();
                     }
-                    Class<?> referenceType = property.manyToOneTargetType() != null
-                            ? property.manyToOneTargetType() : reference.getClass();
+                    // 선언 타입(manyToOneTargetType)이 아니라 실제 인스턴스 클래스로 삭제한다. 상속 관계에서
+                    // 참조가 서브타입이면 선언 타입(특히 TABLE_PER_CLASS 추상 루트는 테이블이 없음)으로 삭제하면
+                    // 잘못된/존재하지 않는 테이블을 친다. Nova는 lazy proxy가 없어 getClass()가 실제 엔티티 타입이다.
+                    Class<?> referenceType = reference.getClass();
                     EntityMetadata<?> referenceMetadata = metadataFactory.getEntityMetadata(referenceType);
                     Object referenceId = referenceMetadata.readIdValue(reference);
                     if (referenceId == null) {

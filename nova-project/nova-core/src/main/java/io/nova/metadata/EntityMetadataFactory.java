@@ -2048,6 +2048,9 @@ public final class EntityMetadataFactory {
     }
 
     private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {
+        // 한계(문서화): 관계 property는 항상 FIELD access로 읽고/쓴다. 클래스 레벨 @Access(PROPERTY) 엔티티라도
+        // @ManyToOne/@OneToOne FK는 backing field로 접근한다. Nova는 backing field를 요구하므로 setter가
+        // 단순 대입이면 무해하나, 변환 accessor를 쓰는 관계는 JPA와 달라질 수 있다.
         ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
         String mapsIdMarker = resolveMapsIdMarker(entityType, field);
         // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 관계는 findById에서
