@@ -35,7 +35,7 @@ class ManyToManyCascadeIntegrationTest {
         support = H2IntegrationTestSupport.create();
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
-        schema.create(Author.class, Book.class, PlainAuthor.class).block();
+        schema.create(Author.class, Book.class, PlainAuthor.class, Person.class).block();
     }
 
     private long rowCount(String table) {
@@ -71,7 +71,39 @@ class ManyToManyCascadeIntegrationTest {
         plain.getBooks().add(new Book("unsaved"));
 
         StepVerifier.create(support.operations().save(plain))
-                .verifyError();
+                .verifyErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("cascade=PERSIST"));
+    }
+
+    @Test
+    void cascadeMergeReSavesModifiedExistingTargets() {
+        Book book = support.operations().save(new Book("old")).block();
+        Author ada = new Author("ada");
+        ada.getBooks().add(book);
+        Author saved = support.operations().save(ada).block();
+
+        // 이미 영속된 target을 수정하고 owner를 다시 save → cascade=ALL(MERGE)이 target UPDATE를 전파한다.
+        book.setTitle("new");
+        support.operations().save(saved).block();
+
+        StepVerifier.create(support.operations().findById(Book.class, book.getId()))
+                .assertNext(reloaded -> assertEquals("new", reloaded.getTitle()))
+                .verifyComplete();
+    }
+
+    @Test
+    void selfReferentialCascadeCycleTerminates() {
+        // a ↔ b 상호 참조(둘 다 transient). owner를 visited에 seed하므로 cascade가 무한 재귀하지 않고 종료해야 한다.
+        Person a = new Person("a");
+        Person b = new Person("b");
+        a.getFriends().add(b);
+        b.getFriends().add(a);
+
+        StepVerifier.create(support.operations().save(a)).expectNextCount(1).verifyComplete();
+
+        // 두 사람 모두 영속화되고 friendship 링크가 양방향으로 1건씩 만들어진다(무한 루프 없이).
+        assertEquals(2L, rowCount("person"));
+        assertEquals(2L, rowCount("friendship"));
     }
 
     @Entity
@@ -82,7 +114,7 @@ class ManyToManyCascadeIntegrationTest {
         private Long id;
         private String name;
 
-        @ManyToMany(cascade = CascadeType.PERSIST)
+        @ManyToMany(cascade = CascadeType.ALL)
         @JoinTable(name = "author_book",
                 joinColumns = @JoinColumn(name = "author_id"),
                 inverseJoinColumns = @JoinColumn(name = "book_id"))
@@ -151,6 +183,36 @@ class ManyToManyCascadeIntegrationTest {
 
         public String getTitle() {
             return title;
+        }
+
+        public void setTitle(String title) {
+            this.title = title;
+        }
+    }
+
+    @Entity
+    @Table(name = "person")
+    public static class Person {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+
+        @ManyToMany(cascade = CascadeType.ALL)
+        @JoinTable(name = "friendship",
+                joinColumns = @JoinColumn(name = "person_id"),
+                inverseJoinColumns = @JoinColumn(name = "friend_id"))
+        private Set<Person> friends = new LinkedHashSet<>();
+
+        public Person() {
+        }
+
+        public Person(String name) {
+            this.name = name;
+        }
+
+        public Set<Person> getFriends() {
+            return friends;
         }
     }
 }

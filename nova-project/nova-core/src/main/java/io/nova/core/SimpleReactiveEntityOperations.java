@@ -1817,10 +1817,24 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // hard delete일 때만 owner 소유 컬렉션(@ElementCollection 행, owning @ManyToMany link 행)을 owner보다
         // 먼저 정리한다 — collection/join 테이블의 @ForeignKey가 owner를 참조하면 FK 의존성을 만족시켜야 한다.
         // soft delete는 owner 행을 논리 보존하므로 컬렉션도 보존한다.
-        Mono<Void> ownedCollectionCleanup = metadata.softDeleteProperty().isPresent()
-                ? Mono.empty()
-                : removeOwnedCollectionRows(metadata, id);
-        return cascadeRemoveOneToManyChildren(metadata, id)
+        boolean hardDelete = metadata.softDeleteProperty().isEmpty();
+        Mono<Void> ownedCollectionCleanup = hardDelete
+                ? removeOwnedCollectionRows(metadata, id)
+                : Mono.empty();
+        // versioned hard delete에서 owner DELETE *전에* 비가역 정리(owned-collection 행, cascade-remove/orphan child)가
+        // 일어나는 경우에만, 그 정리 앞에서 (id, version) 존재를 선검증한다. 비트랜잭션(autocommit)에서 stale version이면
+        // 정리 SQL이 이미 커밋된 뒤 owner DELETE가 0행으로 실패해 부분 삭제가 되는 것을 막는다(performDelete가 실제
+        // DELETE에서 다시 version-check 하므로 그 사이 동시 변경도 막힌다). 비가역 작업이 없으면(또는 @SecondaryTable만
+        // 있으면 performDelete가 자체 선검증) 추가 COUNT 없이 performDelete의 version-checked DELETE로 충분하다.
+        boolean irreversiblePreOwnerWork = hasOwnedCollectionTables(metadata)
+                || metadata.oneToManyProperties().stream()
+                        .anyMatch(property -> property.cascadeRemoveChildren() || property.orphanRemoval());
+        Mono<Void> versionGuard =
+                (hardDelete && metadata.versionProperty().isPresent() && irreversiblePreOwnerWork)
+                        ? ensurePrimaryVersionPresent(metadata, entity, id, metadata.versionProperty().get())
+                        : Mono.empty();
+        return versionGuard
+                .then(cascadeRemoveOneToManyChildren(metadata, id))
                 .then(ownedCollectionCleanup)
                 .then(performDelete(metadata, entity, id))
                 .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata))
@@ -1902,9 +1916,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * cascade 속성과 무관하게 owner와 함께 항상 제거된다(값 컬렉션/링크는 독립 수명이 없다). collection/join 테이블이
      * {@code @ForeignKey}로 owner를 참조하면 owner 행보다 먼저 지워야 FK 위반을 피하므로 owner DELETE 앞에서 호출한다.
      * <p>이미 만들어진 reconcile 경로의 정의 빌더({@link #collectionDefinition}/{@link #joinDefinition})와 렌더
-     * 메서드({@code deleteCollectionRows}/{@code deleteJoinRows})를 재사용한다.
+     * 메서드({@code deleteCollectionRows}/{@code deleteJoinRows})를 재사용한다. 모든 per-entity hard delete 경로
+     * ({@code delete(entity)}/{@code deleteById}/{@code deleteAll(Iterable)}/{@code deleteAllById}와 그들을
+     * 경유하는 cascade-remove)가 공유한다. 임의 조건 bulk {@code deleteAll(Class, QuerySpec)}은 매칭 owner id를
+     * 알 수 없어 정리하지 않는다(JPA bulk delete가 cascade를 우회하는 것과 동일).
      * <p>v1 한계: owning 측만 정리한다 — inverse {@code @ManyToMany} 엔티티를 삭제할 때 그 엔티티를 target으로 가리키는
-     * 다른 owner의 link 행은 정리되지 않는다. soft delete는 owner 행을 논리 보존하므로 호출자가 hard delete에서만 부른다.
+     * 다른 owner의 link 행은 정리되지 않는다. enforced {@code @ForeignKey}가 있으면 그 link 행의 고아화가 아니라
+     * target hard delete가 FK 위반으로 실패할 수 있다. soft delete는 owner 행을 논리 보존하므로 호출자가 hard
+     * delete에서만 부른다.
      */
     private Mono<Void> removeOwnedCollectionRows(EntityMetadata<?> metadata, Object ownerId) {
         SqlRenderer renderer = dialect.sqlRenderer();
@@ -1926,6 +1945,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.empty();
         }
         return Flux.concat(deletes).then();
+    }
+
+    /**
+     * 이 엔티티가 owner로서 정리해야 할 소유 컬렉션 테이블(@ElementCollection collection table 또는 owning
+     * @ManyToMany link table)을 가지는지 여부. batch hard delete 경로가 owner당 정리 루프를 돌릴지 빠르게 가른다.
+     */
+    private boolean hasOwnedCollectionTables(EntityMetadata<?> metadata) {
+        if (!metadata.elementCollectionProperties().isEmpty()) {
+            return true;
+        }
+        return metadata.manyToManyProperties().stream()
+                .anyMatch(property -> property.manyToManyInfo().owning());
     }
 
     /**
@@ -2068,12 +2099,17 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object deletedAt = currentTimeFor(softDelete.get());
             return sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
         }
+        // hard delete: owner 소유 컬렉션(@ElementCollection 행, owning @ManyToMany link 행)을 owner보다 먼저
+        // 정리한다(@ForeignKey FK 의존성). 소유 컬렉션이 없으면 무비용. delete(entity)뿐 아니라 cascade-remove가
+        // 경유하는 이 경로도 같은 정리를 받아야 고아 행/FK 위반이 생기지 않는다.
+        Mono<Void> ownedCleanup = removeOwnedCollectionRows(metadata, id);
         if (metadata.hasSecondaryTables()) {
             // @SecondaryTable hard delete: 보조 테이블 행을 먼저 삭제(FK 의존성) 후 primary 행을 삭제한다.
-            return deleteSecondaryRows(metadata, id)
+            return ownedCleanup
+                    .then(deleteSecondaryRows(metadata, id))
                     .then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)));
         }
-        return sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id));
+        return ownedCleanup.then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)));
     }
 
     @Override
@@ -2285,7 +2321,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         return sqlExecutor.execute(
                                 dialect.sqlRenderer().softDeleteByIds(metadata, entry.getValue(), deletedAt));
                     }
-                    return sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, entry.getValue()));
+                    // hard batch delete: 소유 컬렉션이 있으면 각 owner의 collection/link 행을 batch delete 앞에서 정리한다.
+                    Mono<Void> ownedCleanup = hasOwnedCollectionTables(metadata)
+                            ? Flux.fromIterable(entry.getValue())
+                                    .concatMap(ownerId -> removeOwnedCollectionRows(metadata, ownerId))
+                                    .then()
+                            : Mono.empty();
+                    return ownedCleanup.then(
+                            sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, entry.getValue())));
                 })
                 .reduce(0L, Long::sum);
     }
@@ -2298,6 +2341,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object deletedAt = currentTimeFor(softDelete.get());
             return sqlExecutor.execute(dialect.sqlRenderer().softDeleteByQuery(metadata, querySpec, deletedAt));
         }
+        // 임의 조건 bulk delete는 매칭 owner id를 알 수 없어 owner당 @ElementCollection/@ManyToMany link 정리를
+        // 하지 않는다 — JPA bulk delete(JPQL/CriteriaDelete)가 cascade·lifecycle을 우회하는 것과 같은 의미다.
+        // 소유 컬렉션을 정리하려면 per-entity delete(entity)/deleteById/deleteAll(Iterable)/deleteAllById를 쓴다.
         return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(metadata, querySpec));
     }
 
@@ -2875,7 +2921,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object deletedAt = currentTimeFor(softDelete.get());
             return sqlExecutor.execute(dialect.sqlRenderer().softDeleteByIds(metadata, idValues, deletedAt));
         }
-        return sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, idValues));
+        // hard batch delete: 소유 컬렉션이 있으면 각 owner의 collection/link 행을 batch delete 앞에서 정리한다.
+        Mono<Void> ownedCleanup = hasOwnedCollectionTables(metadata)
+                ? Flux.fromIterable(idValues)
+                        .concatMap(ownerId -> removeOwnedCollectionRows(metadata, ownerId))
+                        .then()
+                : Mono.empty();
+        return ownedCleanup.then(sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, idValues)));
     }
 
     /**
