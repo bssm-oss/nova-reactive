@@ -835,37 +835,59 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private Mono<Long> allocateTableGeneratorBlock(
             io.nova.metadata.TableGeneratorInfo info, TableGeneratorBlock block, int attemptsLeft) {
-        Long ready = block.next();
-        if (ready != null) {
-            return Mono.just(ready);
-        }
-        if (attemptsLeft <= 0) {
-            return Mono.error(new IllegalStateException(
-                    "@GeneratedValue(TABLE) generator '" + info.pkColumnValue() + "' on " + info.table()
-                            + " could not allocate an id block after repeated compare-and-set contention"));
-        }
-        int allocationSize = info.allocationSize();
-        SqlStatement select = new SqlStatement(
-                dialect.tableGeneratorSelectSql(
-                        info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue()),
-                List.of());
-        return sqlExecutor.queryOne(select, row -> row.get(Dialect.TABLE_GENERATOR_VALUE_COLUMN, Long.class))
-                .flatMap(current -> {
-                    long next = current + allocationSize;
-                    SqlStatement cas = new SqlStatement(
-                            dialect.tableGeneratorCompareAndSetSql(
-                                    info.table(), info.valueColumnName(), info.pkColumnName(),
-                                    info.pkColumnValue(), current, next),
-                            List.of());
-                    return sqlExecutor.execute(cas).flatMap(affected -> {
-                        if (affected != null && affected == 1L) {
-                            // CAS 승리: [current, next-1] 블록 확보. refillAndNext가 newValue=next에서 첫 id=current를 역산한다.
-                            return Mono.just(block.refillAndNext(next, allocationSize));
-                        }
-                        // CAS 패배: 새 현재값을 다시 읽어 서로소 블록을 재확보한다.
-                        return allocateTableGeneratorBlock(info, block, attemptsLeft - 1);
+        // next() 부수효과는 구독 시점에만 발생해야 한다(여러 번 구독/재시도 시 assembly-time 발급 방지). 따라서
+        // 진입부 전체를 Mono.defer로 감싼다.
+        return Mono.defer(() -> {
+            Long ready = block.next();
+            if (ready != null) {
+                return Mono.just(ready);
+            }
+            if (attemptsLeft <= 0) {
+                return Mono.error(new IllegalStateException(
+                        "@GeneratedValue(TABLE) generator '" + info.pkColumnValue() + "' on " + info.table()
+                                + " could not allocate an id block after repeated compare-and-set contention"));
+            }
+            // 블록 소진: per-block single-flight로 refill한다. 동시에 소진한 subscriber들은 같은 DB refill을
+            // 공유하고 완료 후 각자 next()로 발급받아 id gap 낭비를 없앤다(서로소 블록은 CAS가 보장 → 중복 없음).
+            return block.refillOnce(() -> refillTableGeneratorBlock(info, block, TABLE_GENERATOR_MAX_CAS_ATTEMPTS))
+                    .then(allocateTableGeneratorBlock(info, block, attemptsLeft - 1));
+        });
+    }
+
+    private Mono<Void> refillTableGeneratorBlock(
+            io.nova.metadata.TableGeneratorInfo info, TableGeneratorBlock block, int attemptsLeft) {
+        return Mono.defer(() -> {
+            if (attemptsLeft <= 0) {
+                return Mono.error(new IllegalStateException(
+                        "@GeneratedValue(TABLE) generator '" + info.pkColumnValue() + "' on " + info.table()
+                                + " could not allocate an id block after repeated compare-and-set contention"));
+            }
+            int allocationSize = info.allocationSize();
+            SqlStatement select = new SqlStatement(
+                    dialect.tableGeneratorSelectSql(
+                            info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue()),
+                    List.of());
+            return sqlExecutor.queryOne(select, row -> row.get(Dialect.TABLE_GENERATOR_VALUE_COLUMN, Long.class))
+                    .flatMap(current -> {
+                        long next = current + allocationSize;
+                        SqlStatement cas = new SqlStatement(
+                                dialect.tableGeneratorCompareAndSetSql(
+                                        info.table(), info.valueColumnName(), info.pkColumnName(),
+                                        info.pkColumnValue(), current, next),
+                                List.of());
+                        return sqlExecutor.execute(cas).flatMap(affected -> {
+                            if (affected != null && affected == 1L) {
+                                block.refill(next, allocationSize);
+                                // 블록을 채운 즉시 single-flight 참조를 비운다(다음 소진은 새 refill). 이미 이
+                                // refill을 공유 중인 동시 대기자들은 그대로 완료를 받고 각자 next()로 발급받는다.
+                                block.clearInFlight();
+                                return Mono.<Void>empty();
+                            }
+                            // CAS 패배: 새 현재값을 다시 읽어 서로소 블록을 재확보한다.
+                            return refillTableGeneratorBlock(info, block, attemptsLeft - 1);
+                        });
                     });
-                });
+        });
     }
 
     /**
@@ -888,6 +910,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         private long nextId;
         private long blockMax;
         private boolean exhausted = true;
+        // 진행 중인 refill을 공유하는 single-flight 홀더(동시 소진 시 DB refill 1회만 수행).
+        private final java.util.concurrent.atomic.AtomicReference<Mono<Void>> inFlightRefill =
+                new java.util.concurrent.atomic.AtomicReference<>();
 
         synchronized Long next() {
             if (exhausted || nextId > blockMax) {
@@ -897,16 +922,39 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
 
         /**
-         * 증가-우선 모델: 카운터를 allocationSize만큼 증가시킨 결과({@code newValue})로 블록
-         * [newValue - allocationSize, newValue - 1]을 채우고 첫 식별자를 발급한다. seed가 initialValue이므로
-         * 첫 블록의 첫 id는 정확히 initialValue다.
+         * 카운터를 allocationSize만큼 증가시킨 결과({@code newValue})로 블록 [newValue - allocationSize,
+         * newValue - 1]을 채운다(발급은 호출자가 {@link #next()}로). seed가 initialValue이므로 첫 블록의 첫
+         * id는 정확히 initialValue다.
          */
-        synchronized long refillAndNext(long newValue, int allocationSize) {
-            long first = newValue - allocationSize;
+        synchronized void refill(long newValue, int allocationSize) {
+            this.nextId = newValue - allocationSize;
             this.blockMax = newValue - 1;
-            this.nextId = first + 1;
             this.exhausted = false;
-            return first;
+        }
+
+        /** 진행 중 refill 공유 참조를 비운다 — 다음 소진이 새 refill을 시작하게 한다. */
+        void clearInFlight() {
+            inFlightRefill.set(null);
+        }
+
+        /**
+         * refill을 per-block single-flight로 실행한다. 진행 중인 refill이 있으면 그것을 공유하고, 없으면
+         * {@code refillFactory}로 하나를 만들어 캐시(공유)한다. 공유 참조는 refill 본체가 성공(블록 채운 직후)
+         * 또는 실패(error) 시 비운다 — doFinally에 의존하지 않아 결정적이다. 한 번의 DB refill이 동시 대기자
+         * 모두를 채워 id gap 낭비를 막는다(서로소 블록은 CAS가 보장 → 중복 id 없음).
+         */
+        Mono<Void> refillOnce(java.util.function.Supplier<Mono<Void>> refillFactory) {
+            return Mono.defer(() -> inFlightRefill.updateAndGet(existing -> {
+                if (existing != null) {
+                    return existing;
+                }
+                return refillFactory.get()
+                        .onErrorResume(error -> {
+                            clearInFlight();
+                            return Mono.error(error);
+                        })
+                        .cache();
+            }));
         }
     }
 
