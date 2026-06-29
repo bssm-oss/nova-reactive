@@ -609,6 +609,14 @@ public final class PersistentProperty {
     }
 
     /**
+     * 이 {@code @OneToMany}가 {@code @OrderColumn}으로 정렬되면 그 순서 컬럼 메타데이터, 아니면 {@code null}.
+     * 순서 컬럼은 child 테이블에 위치하며 save 시 raw UPDATE로 0..n-1을 기록하고 fetch 시 List 순서를 복원한다.
+     */
+    public OrderColumnInfo oneToManyOrderColumn() {
+        return oneToManyInfo == null ? null : oneToManyInfo.orderColumn();
+    }
+
+    /**
      * 이 {@code @OneToMany}가 parent save() 시 child를 자동 저장(cascade PERSIST/ALL)해야 하는지.
      */
     public boolean cascadePersistChildren() {

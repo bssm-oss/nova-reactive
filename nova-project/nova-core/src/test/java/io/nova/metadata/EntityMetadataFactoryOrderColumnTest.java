@@ -5,6 +5,7 @@ import jakarta.persistence.Embeddable;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderBy;
@@ -33,7 +34,7 @@ class EntityMetadataFactoryOrderColumnTest {
         ElementCollectionInfo info = metadata.findProperty("tracks").orElseThrow().elementCollectionInfo();
 
         assertTrue(info.ordered());
-        assertEquals("tracks_ORDER", info.orderColumn().columnName());
+        assertEquals("tracks_order", info.orderColumn().columnName());
         assertFalse(info.usesSet());
     }
 
@@ -53,7 +54,7 @@ class EntityMetadataFactoryOrderColumnTest {
 
         assertTrue(info.embeddable());
         assertTrue(info.ordered());
-        assertEquals("legs_ORDER", info.orderColumn().columnName());
+        assertEquals("legs_order", info.orderColumn().columnName());
     }
 
     @Test
@@ -93,10 +94,28 @@ class EntityMetadataFactoryOrderColumnTest {
     }
 
     @Test
-    void rejectsOrderColumnOnOneToMany() {
+    void honorsOrderColumnOnOneToMany() {
+        EntityMetadata<Parent> metadata = factory.getEntityMetadata(Parent.class);
+        PersistentProperty children = metadata.findProperty("children").orElseThrow();
+
+        assertTrue(children.oneToMany());
+        // child 테이블의 순서 컬럼 — naming strategy 경유 기본 이름 children_order.
+        assertEquals("children_order", children.oneToManyOrderColumn().columnName());
+    }
+
+    @Test
+    void honorsExplicitOrderColumnNameOnOneToMany() {
+        EntityMetadata<NamedParent> metadata = factory.getEntityMetadata(NamedParent.class);
+        PersistentProperty children = metadata.findProperty("children").orElseThrow();
+
+        assertEquals("child_pos", children.oneToManyOrderColumn().columnName());
+    }
+
+    @Test
+    void rejectsOrderColumnOnManyToMany() {
         IllegalStateException error = assertThrows(IllegalStateException.class,
-                () -> factory.getEntityMetadata(Parent.class));
-        assertTrue(error.getMessage().contains("not supported in v1"));
+                () -> factory.getEntityMetadata(ManyToManyWithOrder.class));
+        assertTrue(error.getMessage().contains("@OrderColumn on @ManyToMany is not supported"));
     }
 
     // --- fixtures -----------------------------------------------------------
@@ -216,5 +235,45 @@ class EntityMetadataFactoryOrderColumnTest {
         @OneToMany(mappedBy = "parent", targetEntity = Child.class)
         @OrderColumn
         List<Child> children;
+    }
+
+    @Entity
+    @Table(name = "named_parent")
+    static class NamedParent {
+        @Id
+        Long id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = NamedChild.class)
+        @OrderColumn(name = "child_pos")
+        List<NamedChild> children;
+    }
+
+    @Entity
+    @Table(name = "named_child")
+    static class NamedChild {
+        @Id
+        Long id;
+
+        @ManyToOne
+        @JoinColumn(name = "parent_id")
+        NamedParent parent;
+    }
+
+    @Entity
+    @Table(name = "m2m_peer")
+    static class Peer {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @Table(name = "m2m_with_order")
+    static class ManyToManyWithOrder {
+        @Id
+        Long id;
+
+        @ManyToMany
+        @OrderColumn
+        List<Peer> peers;
     }
 }

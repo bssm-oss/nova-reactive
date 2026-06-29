@@ -71,6 +71,11 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                 + " " + fkColumnType(definition.ownerForeignKeyType()) + " not null";
         List<String> columns = new ArrayList<>();
         columns.add(ownerColumn);
+        if (definition.map()) {
+            // Map<K,V>: owner FK 다음에 key 컬럼을 둔다(owner FK, key, value[s]). key는 not null.
+            columns.add(dialect.quote(definition.mapKey().columnName())
+                    + " " + elementColumnType(definition.mapKey().columnType()) + " not null");
+        }
         if (definition.embeddable()) {
             // @Embeddable 원소: 펼친 필드마다 컬럼 1개를 emit한다(owner FK, field1, field2, ...).
             for (CollectionTableDefinition.ElementColumn column : definition.elementColumns()) {
@@ -86,6 +91,13 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         }
         return "create table " + dialect.quote(definition.tableName())
                 + " (" + String.join(", ", columns) + ")";
+    }
+
+    @Override
+    public String addOneToManyOrderColumn(EntityMetadata<?> childMetadata, String orderColumnName) {
+        // child 테이블에 nullable 정수 순서 컬럼을 더한다(기존 child row는 NULL → 첫 ordered save에서 0..n-1로 채워짐).
+        return "alter table " + qualifiedTable(childMetadata)
+                + " add column " + dialect.quote(orderColumnName) + " integer";
     }
 
     /**

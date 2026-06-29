@@ -83,6 +83,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .then(Flux.fromIterable(collapseToRoots(all))
                         .concatMap(type -> createOne(type, options))
                         .then())
+                .then(addOneToManyOrderColumns(all))
                 .then(createJoinTables(all, options))
                 .then(createCollectionTables(all, options))
                 .then(addForeignKeys(all, options));
@@ -155,6 +156,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .then(dropTableGenerators(all))
                 .then(createTableGenerators(all, createOptions))
                 .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
+                .then(addOneToManyOrderColumns(all))
                 .then(createJoinTables(all, createOptions))
                 .then(createCollectionTables(all, createOptions))
                 .then(addForeignKeys(all, createOptions));
@@ -390,6 +392,40 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     }
 
     /**
+     * {@code @OneToMany(mappedBy)} + {@code @OrderColumn}으로 정렬되는 컬렉션의 순서 정수 컬럼을 child 테이블에
+     * {@code ALTER TABLE ... ADD COLUMN}으로 더한다. 순서 컬럼은 child 엔티티의 필드가 아니라 parent의
+     * {@code @OneToMany} 매핑이 소유하므로, child 테이블 생성 후 이 단계에서 추가한다. (childTable, columnName)으로
+     * dedupe해 여러 parent가 같은 child를 가리켜도 중복 추가하지 않는다. 정렬 {@code @OneToMany}가 없으면 no-op이다.
+     */
+    private Mono<Void> addOneToManyOrderColumns(List<Class<?>> types) {
+        SchemaGenerator generator = dialect.schemaGenerator();
+        LinkedHashMap<String, String> ddlByKey = new LinkedHashMap<>();
+        for (Class<?> type : types) {
+            EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
+            for (PersistentProperty property : metadata.oneToManyProperties()) {
+                var orderColumn = property.oneToManyOrderColumn();
+                if (orderColumn == null) {
+                    continue;
+                }
+                Class<?> childType = property.oneToManyTargetType();
+                if (childType == null) {
+                    continue;
+                }
+                EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(childType);
+                String key = childMetadata.tableName() + "." + orderColumn.columnName();
+                ddlByKey.putIfAbsent(key,
+                        generator.addOneToManyOrderColumn(childMetadata, orderColumn.columnName()));
+            }
+        }
+        if (ddlByKey.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(ddlByKey.values())
+                .concatMap(ddl -> operations.executeNative(NativeQuery.of(ddl)))
+                .then();
+    }
+
+    /**
      * 주어진 엔티티들의 {@code @ElementCollection} collection table을 생성한다. tableName으로 dedupe하며,
      * 값 컬렉션이 없으면 no-op이다.
      */
@@ -480,19 +516,8 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
             for (PersistentProperty property : metadata.elementCollectionProperties()) {
                 ElementCollectionInfo info = property.elementCollectionInfo();
                 Class<?> ownerIdType = metadata.idProperty().javaType();
-                List<CollectionTableDefinition.ElementColumn> elementColumns = new ArrayList<>();
-                for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-                    elementColumns.add(new CollectionTableDefinition.ElementColumn(
-                            column.columnName(), column.columnType()));
-                }
-                byName.putIfAbsent(info.collectionTableName(), new CollectionTableDefinition(
-                        info.collectionTableName(),
-                        info.ownerForeignKeyColumn(),
-                        ownerIdType,
-                        info.valueColumn(),
-                        info.valueType(),
-                        elementColumns,
-                        info.orderColumn()));
+                byName.putIfAbsent(info.collectionTableName(),
+                        info.toCollectionTableDefinition(ownerIdType));
             }
         }
         return new ArrayList<>(byName.values());

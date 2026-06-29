@@ -93,6 +93,22 @@ public final class FetchGroup<P> {
                 BiConsumer<P, List<C>> setter,
                 Sort orderBy
         ) {
+            return with(childType, childForeignKeyColumn, parentIdExtractor, setter, orderBy, null);
+        }
+
+        /**
+         * child 리스트 정렬을 {@code @OrderColumn}으로 지정하는 변형 — {@code orderColumn}은 child 테이블의 순서
+         * 정수 컬럼 이름이며, hydration 시 그 컬럼 값으로 child를 정렬한다(컬럼이 child 엔티티 property가 아니므로
+         * property 기반 {@code orderBy}와는 별개 경로). {@code orderColumn}이 {@code null}이면 정렬 컬럼을 쓰지 않는다.
+         */
+        public <C> Builder<P> with(
+                Class<C> childType,
+                String childForeignKeyColumn,
+                Function<P, Object> parentIdExtractor,
+                BiConsumer<P, List<C>> setter,
+                Sort orderBy,
+                String orderColumn
+        ) {
             Objects.requireNonNull(childType, "childType must not be null");
             Objects.requireNonNull(childForeignKeyColumn, "childForeignKeyColumn must not be null");
             if (childForeignKeyColumn.isBlank()) {
@@ -100,7 +116,8 @@ public final class FetchGroup<P> {
             }
             Objects.requireNonNull(parentIdExtractor, "parentIdExtractor must not be null");
             Objects.requireNonNull(setter, "setter must not be null");
-            specs.add(new FetchSpec<>(childType, childForeignKeyColumn, parentIdExtractor, setter, false, orderBy));
+            specs.add(new FetchSpec<>(
+                    childType, childForeignKeyColumn, parentIdExtractor, setter, false, orderBy, orderColumn));
             return this;
         }
 
@@ -130,7 +147,8 @@ public final class FetchGroup<P> {
             // singleSetter를 list 기반 BiConsumer로 adapt — 호출자가 boilerplate를 짜지 않게 한다.
             BiConsumer<P, List<C>> listSetter = (parent, children) ->
                     singleSetter.accept(parent, children == null || children.isEmpty() ? null : children.get(0));
-            specs.add(new FetchSpec<>(childType, childPrimaryKeyColumn, parentForeignKeyExtractor, listSetter, true, null));
+            specs.add(new FetchSpec<>(
+                    childType, childPrimaryKeyColumn, parentForeignKeyExtractor, listSetter, true, null, null));
             return this;
         }
 
@@ -158,7 +176,8 @@ public final class FetchGroup<P> {
             Objects.requireNonNull(singleSetter, "singleSetter must not be null");
             BiConsumer<P, List<C>> listSetter = (parent, children) ->
                     singleSetter.accept(parent, children == null || children.isEmpty() ? null : children.get(0));
-            specs.add(new FetchSpec<>(childType, childForeignKeyColumn, parentIdExtractor, listSetter, true, null));
+            specs.add(new FetchSpec<>(
+                    childType, childForeignKeyColumn, parentIdExtractor, listSetter, true, null, null));
             return this;
         }
 
@@ -180,14 +199,16 @@ public final class FetchGroup<P> {
             Function<P, Object> parentIdExtractor,
             BiConsumer<P, List<C>> setter,
             boolean single,
-            Sort orderBy
+            Sort orderBy,
+            String orderColumn
     ) {
         public FetchSpec {
             Objects.requireNonNull(childType, "childType must not be null");
             Objects.requireNonNull(childForeignKeyColumn, "childForeignKeyColumn must not be null");
             Objects.requireNonNull(parentIdExtractor, "parentIdExtractor must not be null");
             Objects.requireNonNull(setter, "setter must not be null");
-            // orderBy는 선택값(null 허용)
+            // orderBy / orderColumn은 선택값(null 허용). 둘 다 정렬 수단이지만 orderColumn은 child property가
+            // 아닌 child 테이블의 물리 순서 컬럼이며 @OrderColumn @OneToMany에서만 채워진다.
         }
     }
 }

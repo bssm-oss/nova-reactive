@@ -1,5 +1,6 @@
 package io.nova.core;
 
+import jakarta.persistence.EnumType;
 import jakarta.persistence.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.fetch.AnnotationFetchGroupBuilder;
@@ -187,6 +188,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         reconcileManyToManyLinks(metadata, persisted)
                                 .then(reconcileElementCollections(metadata, persisted))
                                 .then(cascadeSaveOneToManyChildren(metadata, persisted))
+                                .then(reindexOrderedOneToManyChildren(metadata, persisted))
                                 .thenReturn(persisted));
             });
         });
@@ -489,6 +491,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         CollectionTableDefinition definition = collectionDefinition(ownerMetadata, info);
         SqlRenderer renderer = dialect.sqlRenderer();
         Mono<Void> delete = sqlExecutor.execute(renderer.deleteCollectionRows(definition, ownerId)).then();
+        if (info.map()) {
+            // Map<K,V>: full-replace로 (owner FK, key, value) 행을 다시 쓴다. null key/value entry는 skip한다.
+            return reconcileMapEntries(info, definition, renderer, delete, ownerId, (Map<?, ?>) collection);
+        }
         List<Object> elements = new ArrayList<>();
         for (Object value : (Iterable<?>) collection) {
             if (value != null) {
@@ -541,30 +547,78 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return values;
     }
 
-    private CollectionTableDefinition collectionDefinition(EntityMetadata<?> ownerMetadata, ElementCollectionInfo info) {
-        if (info.embeddable()) {
-            List<CollectionTableDefinition.ElementColumn> elementColumns = new ArrayList<>();
-            for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-                elementColumns.add(new CollectionTableDefinition.ElementColumn(
-                        column.columnName(), column.columnType()));
+    /**
+     * {@code @ElementCollection Map<K,V>}을 collection table에 full-replace로 다시 쓴다. 각 entry를 (owner FK,
+     * key, value[s]) 행으로 insert하며, {@code null} key나 {@code null} value를 가진 entry는 건너뛴다(JPA map은
+     * null key를 허용하지 않는다). value 표현은 기본 타입/{@code @Embeddable}을 그대로 재사용한다.
+     */
+    private Mono<Void> reconcileMapEntries(
+            ElementCollectionInfo info, CollectionTableDefinition definition, SqlRenderer renderer,
+            Mono<Void> delete, Object ownerId, Map<?, ?> map) {
+        List<Map.Entry<?, ?>> entries = new ArrayList<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) {
+                entries.add(entry);
             }
-            return new CollectionTableDefinition(
-                    info.collectionTableName(),
-                    info.ownerForeignKeyColumn(),
-                    wrapPrimitive(ownerMetadata.idProperty().javaType()),
-                    info.valueColumn(),
-                    info.valueType(),
-                    elementColumns,
-                    info.orderColumn());
         }
-        return new CollectionTableDefinition(
-                info.collectionTableName(),
-                info.ownerForeignKeyColumn(),
-                wrapPrimitive(ownerMetadata.idProperty().javaType()),
-                info.valueColumn(),
-                info.valueType(),
-                List.of(),
-                info.orderColumn());
+        if (entries.isEmpty()) {
+            return delete;
+        }
+        boolean embeddable = info.embeddable();
+        return delete.thenMany(Flux.fromIterable(entries)
+                        .concatMap(entry -> {
+                            Object key = encodeMapKey(info, entry.getKey());
+                            SqlStatement statement;
+                            if (embeddable) {
+                                List<Object> columnValues = readEmbeddableColumnValues(info, entry.getValue());
+                                statement = renderer.insertEmbeddableMapCollectionRow(definition, ownerId, key, columnValues);
+                            } else {
+                                statement = renderer.insertMapCollectionRow(definition, ownerId, key, entry.getValue());
+                            }
+                            return sqlExecutor.execute(statement);
+                        }))
+                .then();
+    }
+
+    /**
+     * Map key를 저장 표현으로 인코딩한다 — enum key는 {@code @MapKeyEnumerated}에 따라 이름(STRING) 또는
+     * ordinal(ORDINAL)로, 기본 타입 key는 그대로 둔다.
+     */
+    private static Object encodeMapKey(ElementCollectionInfo info, Object key) {
+        ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        if (mapKey.enumKey()) {
+            Enum<?> enumKey = (Enum<?>) key;
+            return mapKey.keyEnumType() == EnumType.STRING ? enumKey.name() : enumKey.ordinal();
+        }
+        return key;
+    }
+
+    /**
+     * collection table에서 읽은 저장 표현을 도메인 Map key로 디코딩한다 — enum key는 이름/ordinal에서 enum
+     * 상수로, 기본 타입 key는 그대로 둔다.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Object decodeMapKey(ElementCollectionInfo info, Object stored) {
+        ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        if (!mapKey.enumKey()) {
+            return stored;
+        }
+        Class<?> keyType = mapKey.keyType();
+        if (mapKey.keyEnumType() == EnumType.STRING) {
+            return Enum.valueOf((Class<? extends Enum>) keyType, (String) stored);
+        }
+        Object[] constants = keyType.getEnumConstants();
+        int ordinal = ((Number) stored).intValue();
+        if (ordinal < 0 || ordinal >= constants.length) {
+            throw new IllegalStateException(
+                    "Stored ordinal " + ordinal + " is out of range for enum map key " + keyType.getName());
+        }
+        return constants[ordinal];
+    }
+
+    private CollectionTableDefinition collectionDefinition(EntityMetadata<?> ownerMetadata, ElementCollectionInfo info) {
+        // schema 생성과 동일한 정의를 공유한다(@Embeddable 펼침 / @OrderColumn / Map key 컬럼 일괄 반영).
+        return info.toCollectionTableDefinition(wrapPrimitive(ownerMetadata.idProperty().javaType()));
     }
 
     /**
@@ -660,6 +714,70 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         fkMatches,
                         Criteria.notIn(childMetadata.idProperty().propertyName(), retainedIds)));
         return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec));
+    }
+
+    /**
+     * {@code @OneToMany(mappedBy)} + {@code @OrderColumn}으로 정렬되는 컬렉션의 순서를 parent save 직후 child
+     * 테이블의 순서 컬럼에 0..n-1로 raw UPDATE한다 — full-replace 의미라 재정렬/삭제 후에도 현재 List 위치로
+     * 재인덱싱된다. cascade 여부와 무관하게 실행되지만, child는 이미 영속(non-null id)이어야 한다(cascade=PERSIST가
+     * 있으면 직전 단계가 보장하고, 없으면 사용자가 먼저 저장했어야 한다). 정렬 {@code @OneToMany}가 없으면 무비용이다.
+     */
+    private <T> Mono<Void> reindexOrderedOneToManyChildren(EntityMetadata<T> metadata, T parent) {
+        List<PersistentProperty> ordered = metadata.oneToManyProperties().stream()
+                .filter(property -> property.oneToManyOrderColumn() != null)
+                .toList();
+        if (ordered.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(ordered)
+                .concatMap(property -> reindexOneToManyProperty(metadata, property, parent))
+                .then();
+    }
+
+    private <T> Mono<Void> reindexOneToManyProperty(
+            EntityMetadata<T> metadata, PersistentProperty property, T parent) {
+        if (property.oneToManyTargetType() == null) {
+            return Mono.error(new IllegalStateException(
+                    metadata.entityType().getName() + "." + property.propertyName()
+                            + " @OneToMany @OrderColumn requires targetEntity to be specified"));
+        }
+        EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+        String orderColumnName = property.oneToManyOrderColumn().columnName();
+        Object collection;
+        try {
+            collection = property.field().get(parent);
+        } catch (IllegalAccessException exception) {
+            return Mono.error(new IllegalStateException(
+                    "Cannot read @OneToMany collection " + property.propertyName(), exception));
+        }
+        if (collection == null) {
+            // null 컬렉션 = 이번 save에서 이 관계를 관리하지 않음 → 순서 재인덱싱 no-op.
+            return Mono.empty();
+        }
+        List<Object> children = new ArrayList<>();
+        for (Object child : (Iterable<?>) collection) {
+            if (child != null) {
+                children.add(child);
+            }
+        }
+        if (children.isEmpty()) {
+            return Mono.empty();
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return Flux.range(0, children.size())
+                .concatMap(index -> {
+                    Object childId = childMetadata.idProperty().read(children.get(index));
+                    if (childId == null) {
+                        return Mono.error(new IllegalStateException(
+                                metadata.entityType().getName() + "." + property.propertyName()
+                                        + " @OneToMany @OrderColumn requires each child to be persisted"
+                                        + " (non-null id) before reindexing; enable cascade=PERSIST or save"
+                                        + " the children first"));
+                    }
+                    return sqlExecutor.execute(
+                            renderer.updateOneToManyOrder(childMetadata, orderColumnName, childId, index));
+                })
+                .then();
     }
 
     /**
@@ -2347,6 +2465,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
     }
 
+    private static <P> void injectEmptyMaps(PersistentProperty property, List<P> parents) {
+        for (P parent : parents) {
+            injectMap(property, parent, new LinkedHashMap<>());
+        }
+    }
+
+    private static void injectMap(PersistentProperty property, Object parent, Map<?, ?> entries) {
+        try {
+            property.field().set(parent, new LinkedHashMap<>(entries));
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException("Cannot inject @ElementCollection Map " + property.propertyName(), exception);
+        }
+    }
+
     /**
      * {@code @ElementCollection} 값 컬렉션을 1-hop으로 hydration한다 — collection table을 owner FK IN으로 조회해
      * owner별 값 리스트를 모아 주입한다(원소가 엔티티가 아니라 기본 타입이므로 second hop 불필요). property당 IN-query 1회.
@@ -2364,6 +2496,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private <P> Mono<Void> hydrateOneElementCollection(
             List<P> parents, EntityMetadata<P> metadata, PersistentProperty property) {
         ElementCollectionInfo info = property.elementCollectionInfo();
+        if (info.map()) {
+            return hydrateOneMapCollection(parents, metadata, property);
+        }
         CollectionTableDefinition definition = collectionDefinition(metadata, info);
         PersistentProperty parentIdProperty = metadata.idProperty();
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
@@ -2402,6 +2537,60 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         List<Object> values = valuesByOwner.getOrDefault(entry.getKey(), List.of());
                         for (P parent : entry.getValue()) {
                             injectCollection(property, parent, values, info.usesSet());
+                        }
+                    }
+                })
+                .then();
+    }
+
+    /**
+     * {@code @ElementCollection Map<K,V>}을 1-hop으로 hydration한다 — collection table을 owner FK IN으로 조회해
+     * (owner FK, key, value) 행을 owner별 {@code Map}으로 모아 주입한다. key는 저장 표현에서 도메인 타입으로
+     * 디코딩하고(enum 이름/ordinal → 상수), value는 기본 타입/{@code @Embeddable}을 그대로 재사용한다.
+     */
+    private <P> Mono<Void> hydrateOneMapCollection(
+            List<P> parents, EntityMetadata<P> metadata, PersistentProperty property) {
+        ElementCollectionInfo info = property.elementCollectionInfo();
+        CollectionTableDefinition definition = collectionDefinition(metadata, info);
+        PersistentProperty parentIdProperty = metadata.idProperty();
+        Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
+        Class<?> valueType = info.valueType();
+        Class<?> keyColumnType = info.mapKey().keyColumnType();
+
+        LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
+        for (P parent : parents) {
+            Object id = parentIdProperty.read(parent);
+            if (id != null) {
+                parentsById.computeIfAbsent(id, key -> new ArrayList<>()).add(parent);
+            }
+        }
+        if (parentsById.isEmpty()) {
+            injectEmptyMaps(property, parents);
+            return Mono.empty();
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
+        boolean embeddable = info.embeddable();
+        return sqlExecutor.queryMany(
+                        renderer.selectCollectionRows(definition, ownerIds),
+                        row -> {
+                            Object ownerKey = row.get(info.ownerForeignKeyColumn(), ownerIdType);
+                            Object mapKey = decodeMapKey(info, row.get(info.mapKey().keyColumn(), keyColumnType));
+                            Object element = embeddable
+                                    ? instantiateEmbeddableElement(info, row)
+                                    : row.get(info.valueColumn(), valueType);
+                            return new Object[]{ownerKey, mapKey, element};
+                        })
+                .collectList()
+                .doOnNext(rows -> {
+                    LinkedHashMap<Object, LinkedHashMap<Object, Object>> mapsByOwner = new LinkedHashMap<>();
+                    for (Object[] row : rows) {
+                        mapsByOwner.computeIfAbsent(row[0], key -> new LinkedHashMap<>()).put(row[1], row[2]);
+                    }
+                    for (Map.Entry<Object, List<P>> entry : parentsById.entrySet()) {
+                        Map<Object, Object> entries = mapsByOwner.getOrDefault(entry.getKey(), new LinkedHashMap<>());
+                        for (P parent : entry.getValue()) {
+                            injectMap(property, parent, entries);
                         }
                     }
                 })
@@ -2459,10 +2648,55 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         // child fetch는 내부 경로로만 수행해 cyclical 관계가 무한 재귀를 일으키지 않게 한다.
         // 호출자가 child entity의 추가 관계까지 자동으로 hydrate되길 원하면 명시적 FetchGroup을 별도로 추가해야 한다.
+        List<Object> orderedParentIds = new ArrayList<>(parentIds);
         return findAllInternal(childMetadata, querySpec)
                 .collectList()
-                .doOnNext(children -> assignChildrenToParents(parents, children, spec, fkProperty))
+                .flatMap(children -> {
+                    if (spec.orderColumn() == null) {
+                        assignChildrenToParents(parents, children, spec, fkProperty);
+                        return Mono.empty();
+                    }
+                    // @OrderColumn @OneToMany: 순서 컬럼은 child 엔티티 property가 아니므로 property 기반 ORDER BY로
+                    // 정렬할 수 없다. child 테이블의 (PK, order) 행을 한 번 더 조회해 order 값으로 child를 정렬한 뒤
+                    // FK 그룹화한다. 전역 order 오름차순 정렬을 안정 그룹화하면 각 parent 버킷이 0..n-1 순서가 된다.
+                    return sortChildrenByOrderColumn(childMetadata, spec, orderedParentIds, children)
+                            .doOnNext(sorted -> assignChildrenToParents(parents, sorted, spec, fkProperty))
+                            .then();
+                })
                 .then();
+    }
+
+    /**
+     * {@code @OrderColumn} @OneToMany fetch 정렬: child 테이블의 (PK, order) 행을 조회해 child를 order 컬럼
+     * 오름차순으로 정렬한 리스트를 만든다. order 값이 없는(NULL) child는 끝으로 보낸다(안정 정렬).
+     */
+    private <C> Mono<List<C>> sortChildrenByOrderColumn(
+            EntityMetadata<C> childMetadata, FetchGroup.FetchSpec<?, C> spec,
+            List<Object> parentIds, List<C> children) {
+        if (children.isEmpty()) {
+            return Mono.just(children);
+        }
+        PersistentProperty childIdProperty = childMetadata.idProperty();
+        Class<?> childIdType = wrapPrimitive(childIdProperty.javaType());
+        SqlStatement statement = dialect.sqlRenderer().selectOneToManyOrder(
+                childMetadata, spec.childForeignKeyColumn(), spec.orderColumn(), parentIds);
+        return sqlExecutor.queryMany(statement,
+                        row -> new Object[]{
+                                row.get(childIdProperty.columnName(), childIdType),
+                                row.get(spec.orderColumn(), Integer.class)})
+                .collectList()
+                .map(orderRows -> {
+                    Map<Object, Integer> orderByChildId = new LinkedHashMap<>();
+                    for (Object[] orderRow : orderRows) {
+                        if (orderRow[1] != null) {
+                            orderByChildId.put(orderRow[0], ((Number) orderRow[1]).intValue());
+                        }
+                    }
+                    List<C> sorted = new ArrayList<>(children);
+                    sorted.sort(java.util.Comparator.comparingInt(child ->
+                            orderByChildId.getOrDefault(childIdProperty.read(child), Integer.MAX_VALUE)));
+                    return sorted;
+                });
     }
 
     /**

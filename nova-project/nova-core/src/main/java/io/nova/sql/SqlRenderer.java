@@ -247,10 +247,49 @@ public interface SqlRenderer {
     }
 
     /**
-     * 주어진 owner id들의 (owner FK, value) row를 조회하는 구문(hydration 1단계).
+     * 주어진 owner id들의 (owner FK, value) row를 조회하는 구문(hydration 1단계). collection table이
+     * {@code Map<K,V>}이면 key 컬럼도 select 목록에 포함한다.
      */
     default SqlStatement selectCollectionRows(CollectionTableDefinition definition, List<Object> ownerIds) {
         throw new UnsupportedOperationException("selectCollectionRows is not supported by this SqlRenderer");
+    }
+
+    /**
+     * {@code @ElementCollection Map<K,V>} collection table에 (owner, key, value) row 1건을 추가하는 구문
+     * (기본 타입 value).
+     */
+    default SqlStatement insertMapCollectionRow(
+            CollectionTableDefinition definition, Object ownerId, Object key, Object value) {
+        throw new UnsupportedOperationException("insertMapCollectionRow is not supported by this SqlRenderer");
+    }
+
+    /**
+     * {@code @ElementCollection Map<K,@Embeddable>} collection table에 (owner, key, col1, col2, ...) row 1건을
+     * 추가하는 구문. {@code columnValues}는 {@link CollectionTableDefinition#elementColumns()} 순서와 정렬되어야 한다.
+     */
+    default SqlStatement insertEmbeddableMapCollectionRow(
+            CollectionTableDefinition definition, Object ownerId, Object key, java.util.List<Object> columnValues) {
+        throw new UnsupportedOperationException(
+                "insertEmbeddableMapCollectionRow is not supported by this SqlRenderer");
+    }
+
+    /**
+     * {@code @OneToMany(mappedBy)} + {@code @OrderColumn} 정렬에서 child 행의 순서 컬럼을 {@code orderIndex}로
+     * 갱신하는 {@code UPDATE child SET orderCol = ? WHERE childPk = ?} 구문. re-save 시 현재 List 위치로 재인덱싱한다.
+     */
+    default SqlStatement updateOneToManyOrder(
+            EntityMetadata<?> childMetadata, String orderColumnName, Object childId, int orderIndex) {
+        throw new UnsupportedOperationException("updateOneToManyOrder is not supported by this SqlRenderer");
+    }
+
+    /**
+     * {@code @OneToMany} + {@code @OrderColumn} fetch 정렬용으로 child의 (PK, order) 행을 조회하는
+     * {@code SELECT childPk, orderCol FROM child WHERE fkColumn IN (...)} 구문. 결과로 child를 순서 컬럼 기준
+     * 정렬한다.
+     */
+    default SqlStatement selectOneToManyOrder(
+            EntityMetadata<?> childMetadata, String foreignKeyColumn, String orderColumnName, List<Object> parentIds) {
+        throw new UnsupportedOperationException("selectOneToManyOrder is not supported by this SqlRenderer");
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -55,12 +55,17 @@ public final class AnnotationFetchGroupBuilder {
             Function<P, Object> parentIdExtractor = parent -> idProperty.read(parent);
             BiConsumer<P, java.util.List<Object>> setter = (parent, children) ->
                     writeField(parent, oneToMany.field(), children);
+            // @OrderColumn(child 테이블의 물리 순서 컬럼)과 @OrderBy(child property 정렬)는 상호 배타(factory에서 거부)다.
+            String orderColumn = oneToMany.oneToManyOrderColumn() != null
+                    ? oneToMany.oneToManyOrderColumn().columnName()
+                    : null;
             builder.with(
                     (Class<Object>) childType,
                     fkColumn,
                     parentIdExtractor,
                     setter,
-                    resolveOrderBy(oneToMany.field(), childType)
+                    resolveOrderBy(oneToMany.field(), childType),
+                    orderColumn
             );
         }
         // @ManyToOne — child 측 PK column으로 IN-query를 발행한다. parent에서 FK 값을 꺼내 IN 키로 사용.

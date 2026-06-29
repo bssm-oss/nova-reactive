@@ -34,6 +34,9 @@ import io.nova.annotation.Json;
 import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MapKey;
+import jakarta.persistence.MapKeyColumn;
+import jakarta.persistence.MapKeyEnumerated;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
@@ -2086,11 +2089,14 @@ public final class EntityMetadataFactory {
                         location + " @OrderColumn is only valid on an ordered List collection,"
                                 + " not on a single-valued @ManyToOne/@OneToOne relationship");
             }
-            // @OneToMany/@ManyToMany의 순서 컬럼은 child(또는 join) 테이블에 위치하며, 그 테이블은 별도 엔티티에서
-            // 독립적으로 DDL이 생성되므로 v1 범위 밖이다. @OrderColumn은 현재 @ElementCollection List에만 지원한다.
-            throw new IllegalStateException(
-                    location + " @OrderColumn on @OneToMany/@ManyToMany is not supported in v1;"
-                            + " @OrderColumn is currently supported only on @ElementCollection List");
+            // @ManyToMany의 순서 컬럼은 link 테이블에 위치하며, 그 테이블은 양측 ownership과 별도 DDL 경로를
+            // 가지므로 아직 지원하지 않는다. @OneToMany(mappedBy)는 child 테이블에 순서 컬럼을 두는 지원 경로로
+            // 흐른다(createOneToManyProperty). @ElementCollection List는 collection table에 둔다.
+            if (isManyToMany) {
+                throw new IllegalStateException(
+                        location + " @OrderColumn on @ManyToMany is not supported;"
+                                + " @OrderColumn is supported on @ElementCollection List and @OneToMany(mappedBy) List");
+            }
         }
     }
 
@@ -2143,11 +2149,13 @@ public final class EntityMetadataFactory {
      */
     private PersistentProperty createOneToManyProperty(Class<?> entityType, Field field) {
         OneToMany annotation = field.getAnnotation(OneToMany.class);
+        OrderColumnInfo orderColumn = resolveOneToManyOrderColumn(entityType, field);
         OneToManyInfo oneToManyInfo;
-        if (annotation.cascade().length > 0 || annotation.orphanRemoval()) {
+        if (annotation.cascade().length > 0 || annotation.orphanRemoval() || orderColumn != null) {
             oneToManyInfo = new OneToManyInfo(
                     Set.of(annotation.cascade()),
-                    annotation.orphanRemoval());
+                    annotation.orphanRemoval(),
+                    orderColumn);
         } else {
             oneToManyInfo = null;
         }
@@ -2680,20 +2688,23 @@ public final class EntityMetadataFactory {
 
     /**
      * {@code @ElementCollection} 값 컬렉션 property를 만든다. 기본 타입 원소를 collection table {@code (owner FK,
-     * value)}에 저장하는 컬럼 없는 marker다. {@code @CollectionTable}/{@code @JoinColumn}/{@code @Column}이 있으면
-     * 그 이름을, 없으면 JPA 기본 규약을 따른다. {@code @Embeddable} 원소, 복합키 owner, non-collection 필드는
-     * v1에서 fail-fast로 거부한다.
+     * value)}에 저장하는 컬럼 없는 marker다. {@code Map<K,V>}는 추가로 key 컬럼을 둔다(owner FK, key, value).
+     * {@code @CollectionTable}/{@code @JoinColumn}/{@code @Column}/{@code @MapKeyColumn}이 있으면 그 이름을, 없으면
+     * JPA 기본 규약을 따른다. {@code @MapKey}/{@code @Embeddable} key/복합키 owner/non-collection 필드는 fail-fast로 거부한다.
      */
     private PersistentProperty createElementCollectionProperty(Class<?> entityType, String ownerTableName, Field field) {
         Class<?> fieldType = field.getType();
-        if (!List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
+        boolean isMap = Map.class.isAssignableFrom(fieldType);
+        if (!isMap && !List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
             throw new IllegalArgumentException(
                     entityType.getName() + "." + field.getName()
-                            + " @ElementCollection must map to a List or Set; got " + fieldType.getName());
+                            + " @ElementCollection must map to a List, Set, or Map; got " + fieldType.getName());
         }
-        boolean usesSet = Set.class.isAssignableFrom(fieldType);
-        Class<?> elementType = resolveElementCollectionElementType(entityType, field);
         String location = entityType.getName() + "." + field.getName();
+        boolean usesSet = Set.class.isAssignableFrom(fieldType);
+        Class<?> elementType = isMap
+                ? resolveMapValueType(entityType, field, location)
+                : resolveElementCollectionElementType(entityType, field);
         String ownerIdColumn = resolveSingleIdColumn(entityType, location);
         CollectionTable collectionTable = field.getAnnotation(CollectionTable.class);
         String tableName = collectionTable != null && !collectionTable.name().isBlank()
@@ -2703,26 +2714,41 @@ public final class EntityMetadataFactory {
                 collectionTable == null ? null : collectionTable.joinColumns(),
                 namingStrategy.joinColumnName(entityType.getSimpleName(), ownerIdColumn),
                 location + " @CollectionTable.joinColumns");
-        OrderColumnInfo orderColumn = resolveElementCollectionOrderColumn(field, usesSet, location);
+        ElementCollectionInfo.MapKeyInfo mapKey =
+                isMap ? resolveMapKeyInfo(entityType, field, location) : null;
+        OrderColumnInfo orderColumn;
+        if (isMap) {
+            // Map은 정렬 의미가 없다 — @OrderColumn은 거부한다(조용한 무시 금지).
+            if (field.isAnnotationPresent(jakarta.persistence.OrderColumn.class)) {
+                throw new IllegalArgumentException(
+                        location + " @OrderColumn is not valid on a Map @ElementCollection (maps are unordered)");
+            }
+            orderColumn = null;
+        } else {
+            orderColumn = resolveElementCollectionOrderColumn(field, usesSet, location);
+        }
         ElementCollectionInfo info;
         if (elementType.isAnnotationPresent(Embeddable.class)) {
             // @Embeddable 원소: 원소 타입의 영속 필드들을 collection table 다중 컬럼으로 펼친다. owner FK는 단일
             // 컬럼으로 유지하고, value 컬럼은 의미가 없으므로 빈 문자열을 둔다.
             List<ElementCollectionInfo.EmbeddableColumn> embeddableColumns =
                     expandEmbeddableElementColumns(elementType, field, location, ownerForeignKeyColumn);
-            rejectOrderColumnCollision(orderColumn, ownerForeignKeyColumn,
-                    embeddableColumns.stream().map(ElementCollectionInfo.EmbeddableColumn::columnName).toList(), location);
+            List<String> valueColumns =
+                    embeddableColumns.stream().map(ElementCollectionInfo.EmbeddableColumn::columnName).toList();
+            rejectOrderColumnCollision(orderColumn, ownerForeignKeyColumn, valueColumns, location);
+            rejectMapKeyCollision(mapKey, ownerForeignKeyColumn, valueColumns, location);
             info = new ElementCollectionInfo(
-                    tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns, orderColumn);
+                    tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns, orderColumn, mapKey);
         } else {
             Column column = field.getAnnotation(Column.class);
             String valueColumn = column != null && !column.name().isBlank()
                     ? column.name()
                     : namingStrategy.columnName(field.getName());
             rejectOrderColumnCollision(orderColumn, ownerForeignKeyColumn, List.of(valueColumn), location);
+            rejectMapKeyCollision(mapKey, ownerForeignKeyColumn, List.of(valueColumn), location);
             info = new ElementCollectionInfo(
                     tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet,
-                    List.of(), orderColumn);
+                    List.of(), orderColumn, mapKey);
         }
         return new PersistentProperty(
                 field, field.getName(), "", fieldType,
@@ -2754,7 +2780,8 @@ public final class EntityMetadataFactory {
      *   <li>{@code Set}에 달리면 거부한다 — {@code Set}은 순서 의미가 없다(JPA도 {@code List}에만 허용).</li>
      *   <li>{@code @OrderBy}와 동시에 달리면 거부한다 — 두 정렬 전략은 모순이다(JPA도 금지).</li>
      * </ul>
-     * 컬럼 이름은 {@code @OrderColumn(name=...)}이 비어 있으면 JPA 기본 규약 {@code <property>_ORDER}를 쓴다.
+     * 컬럼 이름은 {@code @OrderColumn(name=...)}이 비어 있으면 naming strategy를 경유한 기본 규약
+     * {@code <property>_order}(snake_case 일관성)를 쓴다.
      */
     private OrderColumnInfo resolveElementCollectionOrderColumn(Field field, boolean usesSet, String location) {
         jakarta.persistence.OrderColumn orderColumn = field.getAnnotation(jakarta.persistence.OrderColumn.class);
@@ -2769,8 +2796,42 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     location + " cannot declare both @OrderColumn and @OrderBy; the two ordering strategies conflict");
         }
-        String name = orderColumn.name().isBlank() ? field.getName() + "_ORDER" : orderColumn.name();
+        String name = orderColumn.name().isBlank() ? defaultOrderColumnName(field) : orderColumn.name();
         return new OrderColumnInfo(name);
+    }
+
+    /**
+     * {@code @OneToMany(mappedBy)} List 필드의 {@code @OrderColumn}을 {@link OrderColumnInfo}로 해석한다.
+     * {@code @OrderColumn}이 없으면 {@code null}. 순서 컬럼은 child 테이블에 위치한다. {@code Set} @OneToMany나
+     * {@code @OrderBy}와의 동시 선언은 거부한다(두 정렬 전략 모순). 컬럼 이름 기본값은 naming strategy 경유
+     * {@code <property>_order}이다.
+     */
+    private OrderColumnInfo resolveOneToManyOrderColumn(Class<?> entityType, Field field) {
+        jakarta.persistence.OrderColumn orderColumn = field.getAnnotation(jakarta.persistence.OrderColumn.class);
+        if (orderColumn == null) {
+            return null;
+        }
+        String location = entityType.getName() + "." + field.getName();
+        if (!List.class.isAssignableFrom(field.getType())) {
+            throw new IllegalArgumentException(
+                    location + " @OrderColumn is only valid on an ordered List @OneToMany, not on "
+                            + field.getType().getName());
+        }
+        if (field.isAnnotationPresent(jakarta.persistence.OrderBy.class)) {
+            throw new IllegalArgumentException(
+                    location + " cannot declare both @OrderColumn and @OrderBy; the two ordering strategies conflict");
+        }
+        String name = orderColumn.name().isBlank() ? defaultOrderColumnName(field) : orderColumn.name();
+        return new OrderColumnInfo(name);
+    }
+
+    /**
+     * {@code @OrderColumn(name)}이 비어 있을 때의 기본 순서 컬럼 이름을 naming strategy로 만든다 —
+     * {@code <property>_order}(snake_case). raw {@code field.getName()+"_ORDER"} 대신 naming strategy를
+     * 경유해 다른 컬럼 이름들과 표기 일관성을 맞춘다.
+     */
+    private String defaultOrderColumnName(Field field) {
+        return namingStrategy.columnName(field.getName()) + "_order";
     }
 
     /**
@@ -2788,6 +2849,115 @@ public final class EntityMetadataFactory {
                     location + " @OrderColumn name '" + orderColumnName
                             + "' collides with another collection table column");
         }
+    }
+
+    /**
+     * {@code @ElementCollection Map<K,V>}의 key가 가질 수 있는 기본 타입. enum key는 별도 경로로 처리하므로
+     * 여기엔 포함하지 않는다(임의 {@code @Embeddable}/엔티티 key는 거부).
+     */
+    private static final Set<Class<?>> SUPPORTED_MAP_KEY_BASIC_TYPES =
+            Set.of(String.class, Integer.class, Long.class, Short.class, Boolean.class, UUID.class);
+
+    /**
+     * {@code @ElementCollection Map} key 컬럼 이름이 owner FK나 값/펼침 컬럼과 충돌하면 거부한다 — silent
+     * 컬럼 덮어쓰기로 데이터가 손상되지 않도록 한 자리에서 검증한다. map이 아니면 no-op.
+     */
+    private static void rejectMapKeyCollision(
+            ElementCollectionInfo.MapKeyInfo mapKey, String ownerForeignKeyColumn,
+            List<String> valueColumns, String location) {
+        if (mapKey == null) {
+            return;
+        }
+        String keyColumnName = mapKey.keyColumn();
+        if (keyColumnName.equals(ownerForeignKeyColumn) || valueColumns.contains(keyColumnName)) {
+            throw new IllegalArgumentException(
+                    location + " @MapKeyColumn name '" + keyColumnName
+                            + "' collides with another collection table column");
+        }
+    }
+
+    /**
+     * {@code @ElementCollection Map}의 value 타입을 해석한다. {@code @ElementCollection(targetClass=...)}이
+     * 지정되면 그 타입을, 아니면 generic {@code Map<K,V>}의 두 번째 타입 인자를 쓴다. raw {@code Map}이면 거부한다.
+     */
+    private static Class<?> resolveMapValueType(Class<?> entityType, Field field, String location) {
+        ElementCollection annotation = field.getAnnotation(ElementCollection.class);
+        if (annotation.targetClass() != void.class) {
+            return annotation.targetClass();
+        }
+        Type generic = field.getGenericType();
+        if (generic instanceof ParameterizedType parameterized) {
+            Type[] arguments = parameterized.getActualTypeArguments();
+            if (arguments.length == 2 && arguments[1] instanceof Class<?> valueType) {
+                return valueType;
+            }
+        }
+        throw new IllegalArgumentException(
+                location + " @ElementCollection cannot infer the Map value type from a raw map; specify targetClass");
+    }
+
+    /**
+     * {@code @ElementCollection Map}의 key 타입을 generic {@code Map<K,V>}의 첫 번째 타입 인자로 해석한다.
+     * raw {@code Map}이면 거부한다.
+     */
+    private static Class<?> resolveMapKeyType(Class<?> entityType, Field field, String location) {
+        Type generic = field.getGenericType();
+        if (generic instanceof ParameterizedType parameterized) {
+            Type[] arguments = parameterized.getActualTypeArguments();
+            if (arguments.length == 2 && arguments[0] instanceof Class<?> keyType) {
+                return keyType;
+            }
+        }
+        throw new IllegalArgumentException(
+                location + " @ElementCollection cannot infer the Map key type from a raw map; use a parameterized Map<K,V>");
+    }
+
+    /**
+     * {@code @ElementCollection Map}의 key 매핑({@link ElementCollectionInfo.MapKeyInfo})을 해석한다.
+     * <ul>
+     *   <li>{@code @MapKey}(엔티티 property를 key로) — v1 미지원, fail-fast 거부.</li>
+     *   <li>{@code @Embeddable} key 타입 — v1 미지원, fail-fast 거부.</li>
+     *   <li>enum key — {@code @MapKeyEnumerated}로 STRING/ORDINAL 결정(미지정 시 JPA 기본 ORDINAL).</li>
+     *   <li>기본 타입 key(String/Integer/Long/Short/Boolean/UUID) — 자기 자신(wrapper 정규화)으로 저장.</li>
+     *   <li>그 외 key 타입 / 비-enum에 {@code @MapKeyEnumerated} — fail-fast 거부.</li>
+     * </ul>
+     * key 컬럼 이름은 {@code @MapKeyColumn(name=...)} → naming strategy 기본 {@code <property>_key} 순으로 정한다.
+     */
+    private ElementCollectionInfo.MapKeyInfo resolveMapKeyInfo(Class<?> entityType, Field field, String location) {
+        if (field.isAnnotationPresent(MapKey.class)) {
+            throw new IllegalArgumentException(
+                    location + " @MapKey (using an associated entity property as the map key) is not supported;"
+                            + " use a basic or enum map key with @MapKeyColumn");
+        }
+        Class<?> keyType = resolveMapKeyType(entityType, field, location);
+        if (keyType.isAnnotationPresent(Embeddable.class)) {
+            throw new IllegalArgumentException(
+                    location + " @ElementCollection Map with an @Embeddable key type " + keyType.getName()
+                            + " is not supported; use a basic or enum map key");
+        }
+        MapKeyColumn mapKeyColumn = field.getAnnotation(MapKeyColumn.class);
+        String keyColumnName = mapKeyColumn != null && !mapKeyColumn.name().isBlank()
+                ? mapKeyColumn.name()
+                : namingStrategy.columnName(field.getName()) + "_key";
+        MapKeyEnumerated mapKeyEnumerated = field.getAnnotation(MapKeyEnumerated.class);
+        if (keyType.isEnum()) {
+            EnumType enumType = mapKeyEnumerated != null ? mapKeyEnumerated.value() : EnumType.ORDINAL;
+            Class<?> keyColumnType = enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ElementCollectionInfo.MapKeyInfo(keyColumnName, keyType, keyColumnType, enumType);
+        }
+        if (mapKeyEnumerated != null) {
+            throw new IllegalArgumentException(
+                    location + " @MapKeyEnumerated is only valid on an enum map key, but the key type is "
+                            + keyType.getName());
+        }
+        Class<?> wrapped = wrapPrimitiveType(keyType);
+        if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapped)) {
+            throw new IllegalArgumentException(
+                    location + " @ElementCollection Map key type " + keyType.getName()
+                            + " is not supported; supported key types: String, Integer, Long, Short, Boolean, UUID,"
+                            + " or an enum");
+        }
+        return new ElementCollectionInfo.MapKeyInfo(keyColumnName, wrapped, wrapped, null);
     }
 
     /**

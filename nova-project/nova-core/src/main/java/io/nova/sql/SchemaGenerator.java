@@ -165,6 +165,17 @@ public interface SchemaGenerator {
     }
 
     /**
+     * {@code @OneToMany(mappedBy)} + {@code @OrderColumn}의 순서 정수 컬럼을 child 테이블에 추가하는
+     * {@code ALTER TABLE ... ADD COLUMN ... integer} 구문을 반환한다. 순서 컬럼은 child 엔티티의 필드가 아니라
+     * parent의 {@code @OneToMany} 매핑이 소유하므로 child 테이블 생성 후 별도 ALTER로 더한다.
+     * <p>기본 구현은 미지원으로 처리하므로 dialect 베이스({@link AbstractSchemaGenerator})가 override 한다.
+     */
+    default String addOneToManyOrderColumn(EntityMetadata<?> childMetadata, String orderColumnName) {
+        throw new UnsupportedOperationException(
+                "addOneToManyOrderColumn is not supported by this SchemaGenerator");
+    }
+
+    /**
      * 외래키(FOREIGN KEY) 제약을 추가하는 {@code ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY (...)
      * REFERENCES ...} 구문을 반환한다 — JPA {@code @ForeignKey(ConstraintMode.CONSTRAINT)} 소스 호환의
      * emission 지점이다. 모든 테이블이 만들어진 뒤 별도 phase로 발행되므로 forward reference(자식이 부모보다

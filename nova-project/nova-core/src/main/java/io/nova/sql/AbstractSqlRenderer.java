@@ -361,6 +361,10 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         RenderContext context = new RenderContext();
         StringBuilder projection = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
+        if (definition.map()) {
+            // Map<K,V>: owner FK 다음에 key 컬럼을 select 해 hydration이 (owner, key, value)로 Map을 복원한다.
+            projection.append(", ").append(dialect.quote(definition.mapKey().columnName()));
+        }
         if (definition.embeddable()) {
             for (io.nova.metadata.CollectionTableDefinition.ElementColumn column : definition.elementColumns()) {
                 projection.append(", ").append(dialect.quote(column.columnName()));
@@ -385,6 +389,89 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             sql.append(" order by ").append(dialect.quote(definition.ownerForeignKeyColumn()))
                     .append(", ").append(dialect.quote(definition.orderColumn().columnName())).append(" asc");
         }
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
+    public SqlStatement insertMapCollectionRow(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId, Object key, Object value) {
+        // Map<K,V> 기본 타입 value: (owner FK, key, value) 3컬럼을 한 row로 insert한다.
+        RenderContext context = new RenderContext();
+        String ownerMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(ownerId);
+        String keyMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(key);
+        String valueMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(value);
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + dialect.quote(definition.ownerForeignKeyColumn())
+                + ", " + dialect.quote(definition.mapKey().columnName())
+                + ", " + dialect.quote(definition.valueColumn()) + ")"
+                + " values (" + ownerMarker + ", " + keyMarker + ", " + valueMarker + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement insertEmbeddableMapCollectionRow(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId, Object key, List<Object> columnValues) {
+        List<io.nova.metadata.CollectionTableDefinition.ElementColumn> columns = definition.elementColumns();
+        if (columnValues.size() != columns.size()) {
+            throw new IllegalArgumentException(
+                    "insertEmbeddableMapCollectionRow expects " + columns.size()
+                            + " column values but got " + columnValues.size());
+        }
+        // Map<K,@Embeddable> value: (owner FK, key, col1, col2, ...) 한 row로 insert한다.
+        RenderContext context = new RenderContext();
+        StringBuilder names = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
+        StringBuilder markers = new StringBuilder(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(ownerId);
+        names.append(", ").append(dialect.quote(definition.mapKey().columnName()));
+        markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(key);
+        for (int i = 0; i < columns.size(); i++) {
+            names.append(", ").append(dialect.quote(columns.get(i).columnName()));
+            markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(columnValues.get(i));
+        }
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + names + ") values (" + markers + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement updateOneToManyOrder(
+            EntityMetadata<?> childMetadata, String orderColumnName, Object childId, int orderIndex) {
+        RenderContext context = new RenderContext();
+        String orderMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(orderIndex);
+        String idMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(childId);
+        String sql = "update " + table(childMetadata)
+                + " set " + dialect.quote(orderColumnName) + " = " + orderMarker
+                + " where " + column(childMetadata.idProperty()) + " = " + idMarker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement selectOneToManyOrder(
+            EntityMetadata<?> childMetadata, String foreignKeyColumn, String orderColumnName, List<Object> parentIds) {
+        if (parentIds.isEmpty()) {
+            throw new IllegalArgumentException("selectOneToManyOrder requires at least one parent id");
+        }
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("select ")
+                .append(column(childMetadata.idProperty()))
+                .append(", ").append(dialect.quote(orderColumnName))
+                .append(" from ").append(table(childMetadata))
+                .append(" where ").append(dialect.quote(foreignKeyColumn)).append(" in (");
+        for (int i = 0; i < parentIds.size(); i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(parentIds.get(i));
+        }
+        sql.append(")");
         return new SqlStatement(sql.toString(), context.bindings());
     }
 
