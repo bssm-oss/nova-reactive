@@ -20,6 +20,7 @@ import io.nova.support.fixtures.FixtureEntities.RepeatedIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.SingleIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.SingleUniqueConstraintEntity;
+import io.nova.support.fixtures.FixtureEntities.TemporalEvent;
 import io.nova.support.fixtures.FixtureEntities.UnsupportedTypeEntity;
 import org.junit.jupiter.api.Test;
 
@@ -108,6 +109,20 @@ class AbstractSchemaGeneratorTest {
         );
 
         assertEquals("Unsupported column type: java.util.Locale", exception.getMessage());
+    }
+
+    @Test
+    void rendersTemporalColumnsAsDateTimeAndTimestamp() {
+        String statement = dialect.schemaGenerator().createTable(
+                factory.getEntityMetadata(TemporalEvent.class)
+        );
+
+        // @Temporal(java.util.Date/Calendar)은 저장 타입(LocalDate/LocalTime/LocalDateTime)을 거쳐
+        // 기본 dialect 토큰 date/time/timestamp 컬럼으로 생성된다.
+        assertTrue(statement.contains("event_date date"), statement);
+        assertTrue(statement.contains("event_time time"), statement);
+        assertTrue(statement.contains("event_timestamp timestamp"), statement);
+        assertTrue(statement.contains("scheduled_at timestamp"), statement);
     }
 
     @Test

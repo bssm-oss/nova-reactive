@@ -45,6 +45,8 @@ import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.TableGenerator;
+import jakarta.persistence.Temporal;
+import jakarta.persistence.TemporalType;
 import jakarta.persistence.Transient;
 import io.nova.annotation.SoftDelete;
 import jakarta.persistence.Table;
@@ -56,6 +58,7 @@ import io.nova.convert.EnumOrdinalConverter;
 import io.nova.convert.EnumStringConverter;
 import io.nova.convert.JpaAttributeConverterAdapter;
 import io.nova.convert.JsonAttributeConverter;
+import io.nova.convert.TemporalAttributeConverter;
 import io.nova.json.JsonCodec;
 
 import java.lang.annotation.Annotation;
@@ -1610,6 +1613,55 @@ public final class EntityMetadataFactory {
             }
             converter = new JpaAttributeConverterAdapter<>(instantiateJpaConverter(converterClass));
             converterColumnType = attributeAndColumn[1];
+        }
+
+        // @Temporal: 레거시 java.util.Date/Calendar 필드를 java.time 저장 표현으로 매핑한다. Nova는 java.time
+        // 네이티브이므로 @Temporal이 붙은 Date/Calendar에 TemporalAttributeConverter를 달고, 저장 타입
+        // (DATE→LocalDate, TIME→LocalTime, TIMESTAMP→LocalDateTime)을 converterColumnType으로 보관해
+        // schema 컬럼 타입(date/time/timestamp)과 row 디코딩이 도메인 타입이 아닌 저장 타입을 따르게 한다.
+        Temporal temporal = field.getAnnotation(Temporal.class);
+        boolean isUtilDate = field.getType() == java.util.Date.class;
+        boolean isCalendar = java.util.Calendar.class.isAssignableFrom(field.getType());
+        if (temporal != null) {
+            if (isEnumerated || isJson) {
+                throw new IllegalStateException(
+                        declaringType.getName() + "." + field.getName()
+                                + " cannot combine @Temporal with @Enumerated/@Json");
+            }
+            if (convert != null && !convert.disableConversion()) {
+                throw new IllegalStateException(
+                        declaringType.getName() + "." + field.getName()
+                                + " cannot combine @Temporal with @Convert");
+            }
+            if (userConverter != null) {
+                throw new IllegalStateException(
+                        declaringType.getName() + "." + field.getName()
+                                + " cannot combine @Temporal with a registered AttributeConverter for "
+                                + field.getType().getName());
+            }
+            if (!isUtilDate && !isCalendar) {
+                // JPA도 java.time 타입에 @Temporal을 금지한다(불필요/모호). java.time은 그 자체로 정밀도가
+                // 확정되므로 @Temporal 없이 매핑돼야 한다.
+                throw new IllegalArgumentException(
+                        declaringType.getName() + "." + field.getName()
+                                + " is annotated with @Temporal but its type " + field.getType().getName()
+                                + " is not java.util.Date or java.util.Calendar; java.time types must not use @Temporal");
+            }
+            TemporalType temporalType = temporal.value();
+            converter = new TemporalAttributeConverter(field.getType(), temporalType);
+            converterColumnType = switch (temporalType) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+        } else if ((isUtilDate || isCalendar) && converter == null) {
+            // java.util.Date/Calendar는 SQL 매핑이 date/time/timestamp 중 무엇인지 본질적으로 모호하다.
+            // 등록된 converter나 @Convert가 책임지지 않는 한, JPA와 동일하게 @Temporal을 요구한다(조용한 기본값 금지).
+            throw new IllegalArgumentException(
+                    declaringType.getName() + "." + field.getName()
+                            + " maps " + field.getType().getName()
+                            + " but is missing @Temporal(TemporalType.DATE|TIME|TIMESTAMP);"
+                            + " java.util.Date/Calendar mapping is ambiguous without it");
         }
 
         boolean embedded = hostPath != null && !hostPath.isEmpty();

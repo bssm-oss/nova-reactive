@@ -389,6 +389,17 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                     ? "numeric(" + property.precision() + ", " + property.scale() + ")"
                     : "numeric(19, 2)";
         }
+        // @Temporal(java.util.Date/Calendar)은 저장 타입(LocalDate/LocalTime/LocalDateTime)으로 columnType이
+        // 노출된다. 실제 SQL 타입 토큰(date/time/timestamp, dialect별 차이 포함)은 dialect가 결정한다.
+        if (type == java.time.LocalDate.class) {
+            return dialect.dateColumnType();
+        }
+        if (type == java.time.LocalTime.class) {
+            return dialect.timeColumnType();
+        }
+        if (type == java.time.LocalDateTime.class) {
+            return dialect.timestampColumnType();
+        }
         throw new IllegalArgumentException("Unsupported column type: " + type.getName());
     }
 }

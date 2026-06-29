@@ -37,6 +37,8 @@ import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
 import io.nova.annotation.SoftDelete;
 import jakarta.persistence.Table;
+import jakarta.persistence.Temporal;
+import jakarta.persistence.TemporalType;
 import jakarta.persistence.Transient;
 import jakarta.persistence.UniqueConstraint;
 import io.nova.annotation.UpdatedAt;
@@ -45,6 +47,8 @@ import jakarta.persistence.Version;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.UUID;
 
 public final class FixtureEntities {
@@ -192,6 +196,98 @@ public final class FixtureEntities {
         private java.util.Locale locale;
 
         public UnsupportedTypeEntity() {
+        }
+    }
+
+    /**
+     * 레거시 JPA {@code @Temporal} 매핑 픽스처다. {@code java.util.Date}를 DATE/TIME/TIMESTAMP로,
+     * {@code java.util.Calendar}를 TIMESTAMP로 각각 매핑해 컬럼 타입 결정과 H2 round-trip을 검증한다.
+     */
+    @Entity
+    @Table(name = "temporal_event")
+    public static class TemporalEvent {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Temporal(TemporalType.DATE)
+        @Column(name = "event_date")
+        private Date eventDate;
+
+        @Temporal(TemporalType.TIME)
+        @Column(name = "event_time")
+        private Date eventTime;
+
+        @Temporal(TemporalType.TIMESTAMP)
+        @Column(name = "event_timestamp")
+        private Date eventTimestamp;
+
+        @Temporal(TemporalType.TIMESTAMP)
+        @Column(name = "scheduled_at")
+        private Calendar scheduledAt;
+
+        public TemporalEvent() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public Date getEventDate() {
+            return eventDate;
+        }
+
+        public void setEventDate(Date eventDate) {
+            this.eventDate = eventDate;
+        }
+
+        public Date getEventTime() {
+            return eventTime;
+        }
+
+        public void setEventTime(Date eventTime) {
+            this.eventTime = eventTime;
+        }
+
+        public Date getEventTimestamp() {
+            return eventTimestamp;
+        }
+
+        public void setEventTimestamp(Date eventTimestamp) {
+            this.eventTimestamp = eventTimestamp;
+        }
+
+        public Calendar getScheduledAt() {
+            return scheduledAt;
+        }
+
+        public void setScheduledAt(Calendar scheduledAt) {
+            this.scheduledAt = scheduledAt;
+        }
+    }
+
+    /** {@code @Temporal}을 java.time 타입에 잘못 단 거부 케이스 픽스처. */
+    @Entity
+    public static class TemporalOnJavaTimeEntity {
+        @Id
+        private Long id;
+
+        @Temporal(TemporalType.TIMESTAMP)
+        private LocalDateTime when;
+
+        public TemporalOnJavaTimeEntity() {
+        }
+    }
+
+    /** {@code @Temporal} 누락(java.util.Date) 거부 케이스 픽스처. */
+    @Entity
+    public static class MissingTemporalEntity {
+        @Id
+        private Long id;
+
+        private Date createdOn;
+
+        public MissingTemporalEntity() {
         }
     }
 

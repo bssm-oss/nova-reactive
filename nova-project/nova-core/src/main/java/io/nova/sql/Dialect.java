@@ -222,6 +222,31 @@ public interface Dialect {
     }
 
     /**
+     * {@code @Temporal(TemporalType.DATE)} 컬럼(날짜만)에 사용할 SQL 타입을 반환한다. 기본값은 ANSI
+     * {@code date}이며, 다른 토큰을 쓰는 dialect는 override 한다. 컬럼 이름/nullability는 schema generator가
+     * 일반 컬럼과 동일하게 결정하고, 이 메서드는 타입 토큰만 제공한다.
+     */
+    default String dateColumnType() {
+        return "date";
+    }
+
+    /**
+     * {@code @Temporal(TemporalType.TIME)} 컬럼(시각만)에 사용할 SQL 타입을 반환한다. 기본값은 ANSI
+     * {@code time}이며, 다른 토큰을 쓰는 dialect는 override 한다.
+     */
+    default String timeColumnType() {
+        return "time";
+    }
+
+    /**
+     * {@code @Temporal(TemporalType.TIMESTAMP)} 컬럼(날짜+시각)에 사용할 SQL 타입을 반환한다. 기본값은 ANSI
+     * {@code timestamp}이며, MySQL의 {@code datetime}처럼 다른 토큰을 쓰는 dialect는 override 한다.
+     */
+    default String timestampColumnType() {
+        return "timestamp";
+    }
+
+    /**
      * 주어진 {@link LockMode}에 해당하는 pessimistic lock 절을 반환한다. 절은 SELECT SQL의
      * 맨 뒤에 그대로 이어 붙일 수 있도록 선행 공백을 포함한다. {@link LockMode#NONE}은 빈 문자열이다.
      * <p>
