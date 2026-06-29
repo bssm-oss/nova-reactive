@@ -6,6 +6,7 @@ import io.nova.metadata.EntityMetadataFactory;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OracleSchemaGeneratorTest {
     private final OracleDialect dialect = new OracleDialect();
@@ -43,6 +44,22 @@ class OracleSchemaGeneratorTest {
                 "create table \"json_accounts\" (\"id\" number(19) primary key, \"payload\" clob)",
                 dialect.schemaGenerator().createTable(metadata)
         );
+    }
+
+    @Test
+    void boundsUnnamedForeignKeyNameToOracle30CharLimit() {
+        // Oracle 12.2 미만의 30바이트 식별자 한계 — 긴 fk_<table>_<column> 자동 이름이 30자 내로 bound되고,
+        // 멱등 발행의 존재 체크 키(foreignKeyName)와 실제 DDL의 제약 이름이 정확히 일치해야 한다.
+        io.nova.metadata.ForeignKeyDefinition def = new io.nova.metadata.ForeignKeyDefinition(
+                "warehouse_inventory_reconciliation", "",
+                java.util.List.of("distribution_center_id"), "ref", java.util.List.of("id"));
+
+        String name = dialect.schemaGenerator().foreignKeyName(def);
+        assertTrue(name.length() <= 30, "bounded to Oracle 30-char limit, got " + name.length() + ": " + name);
+        assertEquals(name, dialect.schemaGenerator().foreignKeyName(def));
+        String ddl = dialect.schemaGenerator().addForeignKey(def);
+        assertTrue(ddl.contains("add constraint \"" + name + "\" foreign key"),
+                "addForeignKey must embed the exact bounded name, got " + ddl);
     }
 
     @Test

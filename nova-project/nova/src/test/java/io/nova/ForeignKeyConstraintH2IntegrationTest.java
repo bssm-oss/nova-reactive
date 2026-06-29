@@ -1,10 +1,15 @@
 package io.nova;
 
+import jakarta.persistence.CollectionTable;
+import jakarta.persistence.Column;
 import jakarta.persistence.ConstraintMode;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.ForeignKey;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinTable;
+import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import io.nova.core.ReactiveEntityOperations;
@@ -112,6 +117,75 @@ class ForeignKeyConstraintH2IntegrationTest {
         ).verifyError();
     }
 
+    @Test
+    void joinTableForeignKeysRejectViolatingLinkInsert() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        // owning @ManyToMany의 @JoinTable(foreignKey=, inverseForeignKey=)로 link table 양쪽 FK가 발행된다.
+        // 존재하지 않는 student/course를 가리키는 link row INSERT는 FK 위반으로 driver가 거부해야 한다.
+        StepVerifier.create(
+                schema.create(java.util.List.of(FkStudent.class, FkCourse.class))
+                        .then(operations.executeNative(NativeQuery.of(
+                                "insert into \"fk_enrollment\" (\"student_id\", \"course_id\") values (999, 888)")))
+        ).verifyError();
+    }
+
+    @Test
+    void joinTableForeignKeysAllowValidLinkInsert() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        // 양쪽 부모 행이 먼저 존재하면 link row는 FK를 통과해야 한다(제약이 과도하게 막지 않는지 확인).
+        StepVerifier.create(
+                schema.create(java.util.List.of(FkStudent.class, FkCourse.class))
+                        .then(operations.executeNative(NativeQuery.of(
+                                "insert into \"fk_student\" (\"id\") values (1)")))
+                        .then(operations.executeNative(NativeQuery.of(
+                                "insert into \"fk_course\" (\"id\") values (2)")))
+                        .then(operations.executeNative(NativeQuery.of(
+                                "insert into \"fk_enrollment\" (\"student_id\", \"course_id\") values (1, 2)")))
+        ).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void collectionTableForeignKeyRejectsViolatingInsert() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        // @ElementCollection의 @CollectionTable(foreignKey=...)로 owner FK가 발행된다. 존재하지 않는 owner를
+        // 가리키는 collection row INSERT는 FK 위반으로 거부되어야 한다.
+        StepVerifier.create(
+                schema.create(java.util.List.of(FkElementOwner.class))
+                        .then(operations.executeNative(NativeQuery.of(
+                                "insert into \"fk_owner_tags\" (\"owner_id\", \"tag\") values (999, 'x')")))
+        ).verifyError();
+    }
+
+    @Test
+    void unnamedForeignKeyWithLongIdentifiersIsBoundedAndEnforcedIdempotently() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        // 긴 테이블/컬럼명 + 이름 없는 @ForeignKey(기본 CONSTRAINT) → 자동 제약명이 한계 내로 bound된다.
+        // (1) 멱등 발행(ifNotExists 기본)을 두 번 호출해도 깨지지 않고, (2) bound된 FK가 위반 INSERT를 거부한다.
+        StepVerifier.create(
+                schema.create(java.util.List.of(LongNameFkParent.class, LongNameFkChild.class))
+                        .then(schema.create(java.util.List.of(LongNameFkParent.class, LongNameFkChild.class)))
+        ).verifyComplete();
+
+        StepVerifier.create(
+                operations.executeNative(NativeQuery.of(
+                        "insert into \"warehouse_inventory_reconciliation_audit_history_child\""
+                                + " (\"id\", \"originating_distribution_center_reference_identifier\")"
+                                + " values (1, 999)"))
+        ).verifyError();
+    }
+
     @Entity
     @Table(name = "fk_parent")
     public static class FkParent {
@@ -120,6 +194,99 @@ class ForeignKeyConstraintH2IntegrationTest {
         private String name;
 
         public FkParent() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_student")
+    public static class FkStudent {
+        @Id
+        private Long id;
+
+        @ManyToMany(targetEntity = FkCourse.class)
+        @JoinTable(
+                name = "fk_enrollment",
+                joinColumns = @JoinColumn(name = "student_id"),
+                inverseJoinColumns = @JoinColumn(name = "course_id"),
+                foreignKey = @ForeignKey(name = "fk_enr_student"),
+                inverseForeignKey = @ForeignKey(name = "fk_enr_course"))
+        private java.util.Set<FkCourse> courses;
+
+        public FkStudent() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_course")
+    public static class FkCourse {
+        @Id
+        private Long id;
+
+        public FkCourse() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_element_owner")
+    public static class FkElementOwner {
+        @Id
+        private Long id;
+
+        @ElementCollection
+        @CollectionTable(
+                name = "fk_owner_tags",
+                joinColumns = @JoinColumn(name = "owner_id"),
+                foreignKey = @ForeignKey(name = "fk_tags_owner"))
+        @Column(name = "tag")
+        private java.util.Set<String> tags;
+
+        public FkElementOwner() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "warehouse_inventory_reconciliation_audit_history_parent")
+    public static class LongNameFkParent {
+        @Id
+        private Long id;
+
+        public LongNameFkParent() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "warehouse_inventory_reconciliation_audit_history_child")
+    public static class LongNameFkChild {
+        @Id
+        private Long id;
+
+        // 이름 없는 @ForeignKey(기본 CONSTRAINT) → fk_<table>_<column> 자동 이름이 63자를 넘어 bound된다.
+        @ManyToOne(targetEntity = LongNameFkParent.class)
+        @JoinColumn(name = "originating_distribution_center_reference_identifier",
+                foreignKey = @ForeignKey)
+        private LongNameFkParent parent;
+
+        public LongNameFkChild() {
         }
 
         public Long getId() {

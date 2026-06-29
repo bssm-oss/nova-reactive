@@ -5,8 +5,12 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.support.fixtures.FixtureEntities.FkChildConstrained;
 import io.nova.support.fixtures.FixtureEntities.FkChildDefault;
+import io.nova.support.fixtures.FixtureEntities.FkChildReferencedNonPk;
+import io.nova.support.fixtures.FixtureEntities.FkChildReferencedPk;
 import io.nova.support.fixtures.FixtureEntities.FkChildSuppressed;
+import io.nova.support.fixtures.FixtureEntities.FkChildToComposite;
 import io.nova.support.fixtures.FixtureEntities.FkElementOwner;
+import io.nova.support.fixtures.FixtureEntities.FkInheritanceRoot;
 import io.nova.support.fixtures.FixtureEntities.FkParent;
 import io.nova.support.fixtures.FixtureEntities.FkStudent;
 import org.junit.jupiter.api.Test;
@@ -14,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -96,5 +101,42 @@ class ForeignKeyConstraintsTest {
     @Test
     void parentEntityAloneHasNoForeignKeys() {
         assertTrue(ForeignKeyConstraints.resolve(List.of(FkParent.class), factory).isEmpty());
+    }
+
+    @Test
+    void referencedColumnNameMatchingPrimaryKeyIsHonored() {
+        // @JoinColumn(referencedColumnName="id")가 대상 PK 컬럼과 일치 → 그 컬럼을 참조한다.
+        List<ForeignKeyDefinition> defs =
+                ForeignKeyConstraints.resolve(List.of(FkChildReferencedPk.class), factory);
+
+        assertEquals(1, defs.size());
+        ForeignKeyDefinition fk = defs.get(0);
+        assertEquals("fk_child_ref_pk", fk.table());
+        assertEquals(List.of("parent_id"), fk.columns());
+        assertEquals("fk_parent", fk.referencedTable());
+        assertEquals(List.of("id"), fk.referencedColumns());
+    }
+
+    @Test
+    void referencedColumnNameOnNonPrimaryKeyIsRejected() {
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> ForeignKeyConstraints.resolve(List.of(FkChildReferencedNonPk.class), factory));
+        assertTrue(ex.getMessage().contains("referencedColumnName"));
+        assertTrue(ex.getMessage().contains("primary key"));
+    }
+
+    @Test
+    void compositeKeyTargetIsRejected() {
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> ForeignKeyConstraints.resolve(List.of(FkChildToComposite.class), factory));
+        assertTrue(ex.getMessage().contains("composite-key"));
+    }
+
+    @Test
+    void explicitForeignKeyOnInheritanceEntityIsRejected() {
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> ForeignKeyConstraints.resolve(List.of(FkInheritanceRoot.class), factory));
+        assertTrue(ex.getMessage().contains("inheritance entity"));
+        assertTrue(ex.getMessage().contains("not supported"));
     }
 }

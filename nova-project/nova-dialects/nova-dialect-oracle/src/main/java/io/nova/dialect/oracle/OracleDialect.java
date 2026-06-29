@@ -175,6 +175,15 @@ public final class OracleDialect implements Dialect {
         }
 
         /**
+         * Oracle 12.2 미만은 식별자가 30바이트로 제한된다(12.2+는 128). 자동 생성 FK 제약 이름이 어떤 배포에서도
+         * 깨지지 않도록 보수적으로 30으로 줄여, 멱등 발행 시에도 카탈로그 이름과 정확히 일치하게 한다.
+         */
+        @Override
+        protected int maxConstraintNameLength() {
+            return 30;
+        }
+
+        /**
          * Java 프로퍼티 타입을 Oracle 네이티브 컬럼 타입으로 매핑한다.
          * <ul>
          *   <li>{@code String} → {@code varchar2(255)}</li>

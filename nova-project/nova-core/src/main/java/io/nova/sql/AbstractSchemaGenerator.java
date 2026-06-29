@@ -355,9 +355,44 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     /**
      * {@code @ForeignKey(name)}이 비어 있을 때 쓰는 결정적 FK 제약 이름을 만든다. {@code fk_<table>_<columns>}
      * 형태로, 같은 link/collection 테이블의 owner/inverse FK가 서로 다른 이름을 갖도록 컬럼명을 포함한다.
+     *
+     * <p>긴 테이블/컬럼명이 dialect 식별자 한계({@link #maxConstraintNameLength()})를 넘으면
+     * {@link #boundConstraintName(String)}로 결정적 truncation + 해시 접미를 적용해 한계 내로 보장한다.
+     * 이 이름은 멱등 발행의 존재 체크 키({@link #foreignKeyName(ForeignKeyDefinition)} → {@link #addForeignKey})와
+     * 정확히 일치해야 하므로 같은 메서드를 단일 자리에서 쓴다 — 한계 적용도 여기 한 곳에서만 한다.
      */
     protected String defaultForeignKeyName(ForeignKeyDefinition definition) {
-        return "fk_" + definition.table() + "_" + String.join("_", definition.columns());
+        return boundConstraintName("fk_" + definition.table() + "_" + String.join("_", definition.columns()));
+    }
+
+    /**
+     * 자동 생성 제약 이름이 사용할 수 있는 최대 식별자 길이(문자 수)를 반환한다. 기본값은 보수적인 {@code 63}으로
+     * PostgreSQL(63), MySQL/MariaDB(64), H2에서 모두 안전하다. 더 짧은 한계를 갖는 dialect(예: Oracle 12.2 미만의
+     * 30바이트)는 자신의 {@code SchemaGenerator}에서 override 한다. 식별자는 SQL identifier 패턴(ASCII)으로
+     * 검증되므로 문자 수와 바이트 수가 일치한다.
+     */
+    protected int maxConstraintNameLength() {
+        return 63;
+    }
+
+    /**
+     * 자동 생성 제약 이름을 {@link #maxConstraintNameLength()} 한계 내로 결정적으로 줄인다. 한계 이하이면 그대로
+     * 반환하고, 초과하면 앞부분을 자른 뒤 원본 전체의 결정적 해시(부호 없는 16진 {@code String.hashCode})를 접미로
+     * 붙여 서로 다른 긴 이름이 충돌하지 않게 한다. 같은 입력은 JVM/재시작과 무관하게 항상 같은 결과를 내므로
+     * (JLS가 {@code String.hashCode}를 고정), 멱등 발행 시 카탈로그의 기존 제약 이름과 정확히 일치한다.
+     */
+    protected final String boundConstraintName(String rawName) {
+        int max = maxConstraintNameLength();
+        if (rawName.length() <= max) {
+            return rawName;
+        }
+        String suffix = Integer.toUnsignedString(rawName.hashCode(), 16);
+        int keep = max - suffix.length() - 1; // '_' 구분자 1자
+        if (keep < 1) {
+            // 한계가 해시보다도 짧은 병리적 경우(현실 dialect엔 없음): 해시만 한계까지 자른다.
+            return suffix.substring(0, Math.min(suffix.length(), Math.max(1, max)));
+        }
+        return rawName.substring(0, keep) + "_" + suffix;
     }
 
     private String joinQuoted(List<String> identifiers) {

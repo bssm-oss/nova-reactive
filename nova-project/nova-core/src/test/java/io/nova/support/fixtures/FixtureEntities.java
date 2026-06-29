@@ -2768,4 +2768,117 @@ public final class FixtureEntities {
         public MisplacedForeignKeyEntity() {
         }
     }
+
+    /**
+     * {@code @JoinColumn(referencedColumnName=...)}이 대상 PK 컬럼({@code id})과 일치 — honor되어 그 컬럼을 참조한다.
+     */
+    @Entity
+    @Table(name = "fk_child_ref_pk")
+    public static class FkChildReferencedPk {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = FkParent.class)
+        @JoinColumn(name = "parent_id", referencedColumnName = "id",
+                foreignKey = @jakarta.persistence.ForeignKey(name = "fk_ref_pk"))
+        private FkParent parent;
+
+        public FkChildReferencedPk() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    /**
+     * {@code @JoinColumn(referencedColumnName=...)}이 대상의 비-PK 컬럼({@code name})을 가리킴 — v1 미지원이므로
+     * FK 해석이 fail-fast로 거부해야 한다.
+     */
+    @Entity
+    @Table(name = "fk_child_ref_nonpk")
+    public static class FkChildReferencedNonPk {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = FkParent.class)
+        @JoinColumn(name = "parent_id", referencedColumnName = "name",
+                foreignKey = @jakarta.persistence.ForeignKey(name = "fk_ref_nonpk"))
+        private FkParent parent;
+
+        public FkChildReferencedNonPk() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    /** 복합키(@EmbeddedId) 부모 — FK 대상이 단일 PK가 아니므로 참조 시 거부 케이스를 만든다. */
+    @Entity
+    @Table(name = "fk_composite_parent")
+    public static class FkCompositeParent {
+        @jakarta.persistence.EmbeddedId
+        private Key key;
+
+        public FkCompositeParent() {
+        }
+
+        @Embeddable
+        public static class Key {
+            private Long a;
+            private Long b;
+
+            public Key() {
+            }
+        }
+    }
+
+    /**
+     * 복합키 대상을 단일 FK 컬럼으로 참조하려는 child + {@code @ForeignKey(CONSTRAINT)} — 단일 PK 참조만
+     * 지원하는 v1에서 FK 해석이 fail-fast로 거부해야 한다.
+     */
+    @Entity
+    @Table(name = "fk_child_to_composite")
+    public static class FkChildToComposite {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = FkCompositeParent.class)
+        @JoinColumn(name = "parent_key",
+                foreignKey = @jakarta.persistence.ForeignKey(name = "fk_to_composite"))
+        private FkCompositeParent parent;
+
+        public FkChildToComposite() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    /**
+     * 상속(SINGLE_TABLE)에 참여하면서 {@code @ManyToOne} + {@code @ForeignKey(CONSTRAINT)}를 명시한 엔티티 —
+     * FK + 상속은 v1 미지원이므로 조용히 건너뛰는 대신 fail-fast로 거부해 가시화해야 한다.
+     */
+    @Entity
+    @Table(name = "fk_inheritance_root")
+    @Inheritance(strategy = InheritanceType.SINGLE_TABLE)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    public static class FkInheritanceRoot {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = FkParent.class)
+        @JoinColumn(name = "parent_id",
+                foreignKey = @jakarta.persistence.ForeignKey(name = "fk_inh_parent"))
+        private FkParent parent;
+
+        public FkInheritanceRoot() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
 }

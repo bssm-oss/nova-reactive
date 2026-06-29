@@ -350,6 +350,66 @@ class AbstractSchemaGeneratorTest {
                 ddl);
     }
 
+    @Test
+    void unnamedForeignKeyNameWithinDefaultLimitIsNotTruncated() {
+        // 짧은 이름은 fk_<table>_<column> 형태 그대로(63자 이내).
+        io.nova.metadata.ForeignKeyDefinition def = new io.nova.metadata.ForeignKeyDefinition(
+                "orders", "", List.of("customer_id"), "customers", List.of("id"));
+        assertEquals("fk_orders_customer_id", dialect.schemaGenerator().foreignKeyName(def));
+    }
+
+    @Test
+    void unnamedForeignKeyNameExceedingDefaultLimitIsBoundedAndDeterministic() {
+        // 긴 테이블/컬럼명으로 fk_<table>_<column>이 63자를 초과 → truncation + 결정적 해시 접미로 한계 내 보장.
+        String longTable = "really_long_warehouse_inventory_reconciliation_audit_history_table";
+        String longColumn = "originating_distribution_center_identifier_column_value";
+        io.nova.metadata.ForeignKeyDefinition def = new io.nova.metadata.ForeignKeyDefinition(
+                longTable, "", List.of(longColumn), "ref", List.of("id"));
+
+        String name = dialect.schemaGenerator().foreignKeyName(def);
+        assertTrue(name.length() <= 63, "bounded to default 63 chars, got " + name.length() + ": " + name);
+        // 결정적: 같은 입력은 항상 같은 이름.
+        assertEquals(name, dialect.schemaGenerator().foreignKeyName(def));
+        // 멱등 발행의 존재 체크 키(foreignKeyName)와 실제 발행되는 DDL의 제약 이름이 정확히 일치해야 한다.
+        String ddl = dialect.schemaGenerator().addForeignKey(def);
+        assertTrue(ddl.contains("add constraint " + name + " foreign key"),
+                "addForeignKey must embed the exact bounded name, got " + ddl);
+    }
+
+    @Test
+    void distinctLongNamesProduceDistinctBoundedNames() {
+        // prefix가 같아 truncation 결과가 동일해도, 해시 접미가 충돌을 회피해 서로 다른 이름이 나와야 한다.
+        String prefix = "shared_extremely_long_common_table_name_prefix_for_collision_xx";
+        io.nova.metadata.ForeignKeyDefinition a = new io.nova.metadata.ForeignKeyDefinition(
+                prefix, "", List.of("alpha_column_aaaaaaaaaaaaaaaaaaaa"), "ref", List.of("id"));
+        io.nova.metadata.ForeignKeyDefinition b = new io.nova.metadata.ForeignKeyDefinition(
+                prefix, "", List.of("beta_column_bbbbbbbbbbbbbbbbbbbbb"), "ref", List.of("id"));
+
+        String nameA = dialect.schemaGenerator().foreignKeyName(a);
+        String nameB = dialect.schemaGenerator().foreignKeyName(b);
+        assertTrue(nameA.length() <= 63 && nameB.length() <= 63);
+        assertFalse(nameA.equals(nameB), "collision-avoiding hash suffix must differentiate, got " + nameA);
+    }
+
+    @Test
+    void shorterDialectLimitTruncatesFurther() {
+        // Oracle처럼 30자 한계를 가진 dialect를 모사 — maxConstraintNameLength() override가 적용되는지 검증.
+        SchemaGenerator oracleLike = new AbstractSchemaGenerator(dialect) {
+            @Override
+            protected int maxConstraintNameLength() {
+                return 30;
+            }
+        };
+        io.nova.metadata.ForeignKeyDefinition def = new io.nova.metadata.ForeignKeyDefinition(
+                "warehouse_inventory_reconciliation", "",
+                List.of("distribution_center_id"), "ref", List.of("id"));
+
+        String name = oracleLike.foreignKeyName(def);
+        assertTrue(name.length() <= 30, "bounded to 30 chars, got " + name.length() + ": " + name);
+        // 같은 정의를 default(63) generator로 해석하면 30자 generator보다 길어, override가 실제로 좁힌다.
+        assertTrue(dialect.schemaGenerator().foreignKeyName(def).length() > 30);
+    }
+
     private static final class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
         private final SqlRenderer renderer = new AbstractSqlRenderer(this) {
