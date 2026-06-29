@@ -44,6 +44,22 @@ public final class OracleDialect implements Dialect {
     }
 
     @Override
+    public String listForeignKeyNamesSql() {
+        // Oracle엔 information_schema가 없으므로 user_constraints(현재 스키마)에서 referential 제약('R')을 읽는다.
+        return "select constraint_name as " + Dialect.FOREIGN_KEY_NAME_COLUMN
+                + " from user_constraints where constraint_type = 'R'";
+    }
+
+    @Override
+    public String timeColumnType() {
+        // Oracle에는 TIME-only 데이터타입이 없다(DATE/TIMESTAMP는 날짜 성분을 포함). ANSI `time` 토큰을 그대로
+        // 내보내면 ORA-00902(invalid datatype)로 DDL이 깨지므로, 조용히 잘못된 컬럼을 만드는 대신 fail-fast 한다.
+        // @Temporal(DATE)/@Temporal(TIMESTAMP)는 Oracle 토큰 date/timestamp가 유효하므로 그대로 동작한다.
+        throw new UnsupportedOperationException(
+                "Oracle has no TIME-only column type; @Temporal(TemporalType.TIME) is not supported on Oracle");
+    }
+
+    @Override
     public BindMarkerStrategy bindMarkers() {
         return bindMarkers;
     }

@@ -178,6 +178,16 @@ public interface SchemaGenerator {
     }
 
     /**
+     * {@link #addForeignKey(ForeignKeyDefinition)}가 실제로 발행할 제약 이름을 반환한다 — 명시적 이름이 있으면
+     * 그대로, 없으면 결정적 자동 이름. 멱등 발행({@code ddl-auto=UPDATE} 재시작) 시 이미 존재하는 제약을
+     * 거르는 데 쓰이므로 {@code addForeignKey}와 반드시 같은 이름을 돌려줘야 한다. 기본 구현은 명시적 이름만
+     * 알 수 있으므로 자동 이름을 쓰는 generator({@link AbstractSchemaGenerator})는 override 한다.
+     */
+    default String foreignKeyName(ForeignKeyDefinition definition) {
+        return definition.constraintName();
+    }
+
+    /**
      * {@code @SecondaryTable} 보조 테이블 DDL을 만든다 — primary PK를 FK PK로 공유하는 조인 컬럼 +
      * 그 보조 테이블로 라우팅된 컬럼들. 기본 구현은 미지원이며 dialect base({@link AbstractSchemaGenerator})가
      * override 한다.

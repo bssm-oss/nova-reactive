@@ -29,6 +29,15 @@ class MySqlDialectTest {
     }
 
     @Test
+    void mapsTemporalTimestampToDatetimeButKeepsDateAndTime() {
+        // @Temporal(TIMESTAMP)은 MySQL TIMESTAMP의 범위/TZ/ON UPDATE 부작용을 피하려고 datetime으로 매핑한다.
+        assertEquals("datetime", dialect.timestampColumnType());
+        // DATE/TIME 토큰은 MySQL에 존재하므로 ANSI 기본값 그대로 유효하다.
+        assertEquals("date", dialect.dateColumnType());
+        assertEquals("time", dialect.timeColumnType());
+    }
+
+    @Test
     void rendersExistsQuery() {
         SqlStatement statement = dialect.sqlRenderer().exists(
                 metadata,

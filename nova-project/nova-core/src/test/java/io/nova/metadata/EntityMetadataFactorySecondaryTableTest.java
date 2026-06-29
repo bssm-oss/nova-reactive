@@ -7,6 +7,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Inheritance;
+import jakarta.persistence.InheritanceType;
 import jakarta.persistence.PrimaryKeyJoinColumn;
 import jakarta.persistence.SecondaryTable;
 import jakarta.persistence.Table;
@@ -117,6 +119,14 @@ class EntityMetadataFactorySecondaryTableTest {
         assertTrue(exception.getMessage().contains("composite keys"));
     }
 
+    @Test
+    void rejectsSecondaryTableOnInheritanceHierarchy() {
+        // @SecondaryTable + @Inheritance는 insert/read 경로가 서로 다른 테이블 모델을 가정해 깨지므로 거부.
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class, () -> factory.getEntityMetadata(InheritedSecondary.class));
+        assertTrue(exception.getMessage().contains("@Inheritance"));
+    }
+
     @Entity
     @Table(name = "users")
     @SecondaryTable(name = "user_details")
@@ -212,6 +222,17 @@ class EntityMetadataFactorySecondaryTableTest {
         @Id
         private Long id;
         @Column(table = "multi_pk_join_extra")
+        private String detail;
+    }
+
+    @Entity
+    @Table(name = "inherited_secondary")
+    @Inheritance(strategy = InheritanceType.SINGLE_TABLE)
+    @SecondaryTable(name = "inherited_secondary_extra")
+    static class InheritedSecondary {
+        @Id
+        private Long id;
+        @Column(table = "inherited_secondary_extra")
         private String detail;
     }
 }

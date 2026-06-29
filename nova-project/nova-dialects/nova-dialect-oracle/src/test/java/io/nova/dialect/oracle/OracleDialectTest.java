@@ -35,6 +35,23 @@ class OracleDialectTest {
     }
 
     @Test
+    void failsFastOnTemporalTimeSinceOracleHasNoTimeType() {
+        // Oracle엔 TIME-only 타입이 없어 ANSI `time` 토큰은 ORA-00902로 깨진다 → 조용히 잘못된 DDL 대신 fail-fast.
+        assertThrows(UnsupportedOperationException.class, dialect::timeColumnType);
+        // DATE/TIMESTAMP는 Oracle 토큰이 유효하므로 그대로 동작한다.
+        assertEquals("date", dialect.dateColumnType());
+        assertEquals("timestamp", dialect.timestampColumnType());
+    }
+
+    @Test
+    void listsForeignKeyNamesFromUserConstraints() {
+        // Oracle엔 information_schema가 없으므로 user_constraints의 referential 제약을 읽는다.
+        String sql = dialect.listForeignKeyNamesSql();
+        assertTrue(sql.contains("user_constraints"));
+        assertTrue(sql.contains(Dialect.FOREIGN_KEY_NAME_COLUMN));
+    }
+
+    @Test
     void rendersDeleteWithDoubleQuotedIdentifiersAndQuestionMark() {
         SqlStatement statement = dialect.sqlRenderer().deleteById(metadata, 9L);
 

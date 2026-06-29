@@ -85,7 +85,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                         .then())
                 .then(createJoinTables(all, options))
                 .then(createCollectionTables(all, options))
-                .then(addForeignKeys(all));
+                .then(addForeignKeys(all, options));
     }
 
     @Override
@@ -157,7 +157,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
                 .then(createJoinTables(all, createOptions))
                 .then(createCollectionTables(all, createOptions))
-                .then(addForeignKeys(all));
+                .then(addForeignKeys(all, createOptions));
     }
 
     @Override
@@ -431,12 +431,42 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
      * {@code NO_CONSTRAINT}는 FK를 만들지 않으므로(기존 동작 보존) 발행할 제약이 없으면 no-op이다. 모든 참조
      * 테이블이 이미 존재하므로 forward reference가 안전하다.
      */
-    private Mono<Void> addForeignKeys(List<Class<?>> types) {
+    private Mono<Void> addForeignKeys(List<Class<?>> types, SchemaOptions options) {
         List<ForeignKeyDefinition> definitions = ForeignKeyConstraints.resolve(types, metadataFactory);
         if (definitions.isEmpty()) {
             return Mono.empty();
         }
         SchemaGenerator generator = dialect.schemaGenerator();
+        if (!options.ifNotExists()) {
+            // 새 스키마(fresh create / recreate의 드롭 후 재생성): 제약이 없는 상태이므로 무조건 발행한다.
+            return emitForeignKeys(definitions, generator);
+        }
+        // 멱등 발행(ddl-auto=UPDATE 재시작): 이미 존재하는 FK 제약 이름을 읽어 거른다. ALTER ADD CONSTRAINT는
+        // PostgreSQL/MySQL에서 IF NOT EXISTS를 지원하지 않아, 카탈로그 조회로 중복을 피해야 재기동이 멱등해진다.
+        return operations.queryNative(
+                        NativeQuery.of(dialect.listForeignKeyNamesSql()),
+                        row -> row.get(Dialect.FOREIGN_KEY_NAME_COLUMN, String.class))
+                .collect(() -> new java.util.TreeSet<String>(String.CASE_INSENSITIVE_ORDER),
+                        (set, name) -> {
+                            if (name != null) {
+                                set.add(name);
+                            }
+                        })
+                .flatMap(existing -> {
+                    List<ForeignKeyDefinition> pending = new ArrayList<>();
+                    for (ForeignKeyDefinition definition : definitions) {
+                        if (!existing.contains(generator.foreignKeyName(definition))) {
+                            pending.add(definition);
+                        }
+                    }
+                    return emitForeignKeys(pending, generator);
+                });
+    }
+
+    private Mono<Void> emitForeignKeys(List<ForeignKeyDefinition> definitions, SchemaGenerator generator) {
+        if (definitions.isEmpty()) {
+            return Mono.empty();
+        }
         return Flux.fromIterable(definitions)
                 .concatMap(definition -> operations.executeNative(
                         NativeQuery.of(generator.addForeignKey(definition))))

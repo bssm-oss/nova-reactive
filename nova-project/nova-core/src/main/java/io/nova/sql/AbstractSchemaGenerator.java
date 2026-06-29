@@ -336,10 +336,15 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      * 이름이 비어 있으면 {@link #defaultForeignKeyName} 결정적 자동 이름을 사용한다.
      */
     @Override
-    public String addForeignKey(ForeignKeyDefinition definition) {
-        String name = definition.constraintName().isBlank()
+    public String foreignKeyName(ForeignKeyDefinition definition) {
+        return definition.constraintName().isBlank()
                 ? defaultForeignKeyName(definition)
                 : definition.constraintName();
+    }
+
+    @Override
+    public String addForeignKey(ForeignKeyDefinition definition) {
+        String name = foreignKeyName(definition);
         return "alter table " + dialect.quote(definition.table())
                 + " add constraint " + dialect.quote(name)
                 + " foreign key (" + joinQuoted(definition.columns()) + ")"

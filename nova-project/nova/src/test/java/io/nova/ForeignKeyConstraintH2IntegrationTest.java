@@ -92,6 +92,26 @@ class ForeignKeyConstraintH2IntegrationTest {
         ).expectNextCount(1).verifyComplete();
     }
 
+    @Test
+    void repeatedCreateWithIfNotExistsIsIdempotentForForeignKeys() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        // ddl-auto=UPDATE 재시작 시뮬레이션: 같은 DB에 create()(ifNotExists=true 기본)를 두 번 호출. FK ALTER가
+        // 중복 발행되면(이전 버그) 두 번째 create가 "constraint already exists"로 깨진다 → 멱등이어야 완료된다.
+        StepVerifier.create(
+                schema.create(java.util.List.of(FkParent.class, FkChildConstrained.class))
+                        .then(schema.create(java.util.List.of(FkParent.class, FkChildConstrained.class)))
+        ).verifyComplete();
+
+        // FK 제약은 정확히 한 번 존재 → 위반 INSERT는 여전히 거부된다(중복도 누락도 아님).
+        StepVerifier.create(
+                operations.executeNative(NativeQuery.of(
+                        "insert into \"fk_child_constrained\" (\"id\", \"parent_id\") values (1, 999)"))
+        ).verifyError();
+    }
+
     @Entity
     @Table(name = "fk_parent")
     public static class FkParent {

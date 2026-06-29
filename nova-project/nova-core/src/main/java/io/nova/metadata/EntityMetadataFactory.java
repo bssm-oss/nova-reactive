@@ -565,7 +565,7 @@ public final class EntityMetadataFactory {
         List<UniqueConstraintDefinition> uniqueConstraints = extractUniqueConstraints(
                 entityType, tableName, columnNames,
                 table == null ? new UniqueConstraint[0] : table.uniqueConstraints());
-        List<SecondaryTableInfo> secondaryTables = resolveSecondaryTables(entityType, idProperty, properties);
+        List<SecondaryTableInfo> secondaryTables = resolveSecondaryTables(entityType, idProperty, properties, inheritance);
 
         EntityMetadata<T> metadata = new EntityMetadata<>(
                 entityType,
@@ -605,7 +605,8 @@ public final class EntityMetadataFactory {
      * PK 조인 컬럼/참조 컬럼이 미지정이면 primary {@code @Id} 컬럼 이름을 기본값으로 쓴다(JPA 기본).
      */
     private List<SecondaryTableInfo> resolveSecondaryTables(
-            Class<?> entityType, PersistentProperty idProperty, List<PersistentProperty> properties) {
+            Class<?> entityType, PersistentProperty idProperty, List<PersistentProperty> properties,
+            InheritanceInfo inheritance) {
         List<SecondaryTable> declarations = new ArrayList<>();
         SecondaryTables multi = entityType.getAnnotation(SecondaryTables.class);
         if (multi != null) {
@@ -635,6 +636,14 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     entityType.getName() + " @SecondaryTable is not supported with a composite id"
                             + " (@EmbeddedId/@IdClass) in this version");
+        }
+        // @SecondaryTable과 @Inheritance(JOINED/SINGLE_TABLE/TABLE_PER_CLASS) 조합은 insert/read 경로가
+        // 서로 다른 테이블 모델(다형 JOIN/discriminator vs 보조 테이블 LEFT JOIN)을 가정해 깨지므로 v1에서
+        // 거부한다(조용한 거짓 매핑 방지).
+        if (inheritance.present()) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + " @SecondaryTable is not supported on an @Inheritance hierarchy"
+                            + " in this version");
         }
         String primaryPkColumn = idProperty.columnName();
         LinkedHashMap<String, SecondaryTableInfo> byName = new LinkedHashMap<>();

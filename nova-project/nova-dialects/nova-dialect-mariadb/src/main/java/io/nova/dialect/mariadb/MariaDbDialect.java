@@ -29,6 +29,13 @@ public final class MariaDbDialect implements Dialect {
     }
 
     @Override
+    public String timestampColumnType() {
+        // MySQL과 동일: TIMESTAMP의 1970–2038 범위/암묵 TZ 변환/ON UPDATE 부작용을 피하려고 @Temporal(TIMESTAMP)은
+        // datetime으로 매핑한다.
+        return "datetime";
+    }
+
+    @Override
     public String quote(String identifier) {
         return "`" + identifier + "`";
     }

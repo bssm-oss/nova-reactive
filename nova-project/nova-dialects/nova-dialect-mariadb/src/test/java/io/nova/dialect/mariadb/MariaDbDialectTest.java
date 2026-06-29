@@ -22,6 +22,13 @@ class MariaDbDialectTest {
     }
 
     @Test
+    void mapsTemporalTimestampToDatetimeButKeepsDateAndTime() {
+        assertEquals("datetime", dialect.timestampColumnType());
+        assertEquals("date", dialect.dateColumnType());
+        assertEquals("time", dialect.timeColumnType());
+    }
+
+    @Test
     void quotesIdentifiersWithBackticks() {
         assertEquals("`accounts`", dialect.quote("accounts"));
     }

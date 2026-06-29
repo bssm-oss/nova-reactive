@@ -155,6 +155,26 @@ public interface Dialect {
     String TABLE_NAME_COLUMN = "nova_table_name";
 
     /**
+     * 현재 스키마에 이미 존재하는 FOREIGN KEY 제약 이름들을 조회하는 SQL을 반환한다. {@code @ForeignKey}
+     * 제약을 {@code ifNotExists}(=={@code ddl-auto=UPDATE}) 모드로 멱등 발행할 때, 이미 만들어진 제약을
+     * 다시 {@code ALTER TABLE ADD CONSTRAINT} 하지 않으려고 기존 이름을 먼저 읽는다(중복 발행은
+     * PostgreSQL/MySQL에서 에러라 컨텍스트 기동을 깨뜨린다).
+     *
+     * <p>표준 {@code information_schema.table_constraints}를 조회하며(H2 / PostgreSQL / MySQL / MariaDB),
+     * Oracle처럼 information_schema가 없는 dialect는 override한다. 구문은 반드시 단일 컬럼을
+     * {@link #FOREIGN_KEY_NAME_COLUMN} alias로 노출해야 하며, 이름은 대소문자 무시로 비교된다.
+     */
+    default String listForeignKeyNamesSql() {
+        return "select constraint_name as " + FOREIGN_KEY_NAME_COLUMN
+                + " from information_schema.table_constraints where constraint_type = 'FOREIGN KEY'";
+    }
+
+    /**
+     * {@link #listForeignKeyNamesSql()} 결과의 제약 이름 컬럼 alias.
+     */
+    String FOREIGN_KEY_NAME_COLUMN = "nova_fk_name";
+
+    /**
      * 주어진 테이블의 컬럼 이름들을 한 컬럼으로 나열하는 SELECT 구문을 반환한다.
      * {@code nova.ddl-auto=validate}가 컬럼 누락까지 검증할 때 사용한다. 기본 구현은 표준
      * {@code information_schema.columns}를 조회하며, Oracle처럼 information_schema가 없는 dialect는

@@ -26,6 +26,14 @@ public final class MySqlDialect implements Dialect {
     }
 
     @Override
+    public String timestampColumnType() {
+        // MySQL의 TIMESTAMP는 1970–2038 범위로 제한되고 세션 TZ 기준 암묵 UTC 변환 + 첫 컬럼에 암묵
+        // DEFAULT/ON UPDATE CURRENT_TIMESTAMP가 붙어 @Temporal(TIMESTAMP) 값이 조용히 손상될 수 있다.
+        // datetime은 범위가 넓고 TZ 무변환이라 java.util.Date 매핑에 충실하다(Hibernate와 동일 선택).
+        return "datetime";
+    }
+
+    @Override
     public String quote(String identifier) {
         return "`" + identifier + "`";
     }
