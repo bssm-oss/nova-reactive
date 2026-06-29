@@ -282,8 +282,38 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement insertCollectionRow(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId, Object value, int orderIndex) {
+        // @OrderColumn 정렬: (owner FK, value, order) 3컬럼을 한 row로 insert한다.
+        RenderContext context = new RenderContext();
+        String ownerMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(ownerId);
+        String valueMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(value);
+        String orderMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(orderIndex);
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + dialect.quote(definition.ownerForeignKeyColumn())
+                + ", " + dialect.quote(definition.valueColumn())
+                + ", " + dialect.quote(definition.orderColumn().columnName()) + ")"
+                + " values (" + ownerMarker + ", " + valueMarker + ", " + orderMarker + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
     public SqlStatement insertEmbeddableCollectionRow(
             io.nova.metadata.CollectionTableDefinition definition, Object ownerId, List<Object> columnValues) {
+        return insertEmbeddableCollectionRowInternal(definition, ownerId, columnValues, null);
+    }
+
+    @Override
+    public SqlStatement insertEmbeddableCollectionRow(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId, List<Object> columnValues, int orderIndex) {
+        return insertEmbeddableCollectionRowInternal(definition, ownerId, columnValues, orderIndex);
+    }
+
+    private SqlStatement insertEmbeddableCollectionRowInternal(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId, List<Object> columnValues, Integer orderIndex) {
         List<io.nova.metadata.CollectionTableDefinition.ElementColumn> columns = definition.elementColumns();
         if (columnValues.size() != columns.size()) {
             throw new IllegalArgumentException(
@@ -298,6 +328,12 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             names.append(", ").append(dialect.quote(columns.get(i).columnName()));
             markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
             context.addBinding(columnValues.get(i));
+        }
+        if (orderIndex != null) {
+            // @OrderColumn 정렬: 펼친 컬럼 뒤에 order 컬럼을 마지막으로 붙인다.
+            names.append(", ").append(dialect.quote(definition.orderColumn().columnName()));
+            markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(orderIndex);
         }
         String sql = "insert into " + dialect.quote(definition.tableName())
                 + " (" + names + ") values (" + markers + ")";
@@ -330,6 +366,11 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             context.addBinding(ownerIds.get(i));
         }
         sql.append(")");
+        if (definition.ordered()) {
+            // @OrderColumn: owner FK로 그룹 단위를 묶고 그 안에서 order 컬럼 오름차순으로 정렬해 List 순서를 복원한다.
+            sql.append(" order by ").append(dialect.quote(definition.ownerForeignKeyColumn()))
+                    .append(", ").append(dialect.quote(definition.orderColumn().columnName())).append(" asc");
+        }
         return new SqlStatement(sql.toString(), context.bindings());
     }
 

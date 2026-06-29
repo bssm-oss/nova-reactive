@@ -403,7 +403,8 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                         ownerIdType,
                         info.valueColumn(),
                         info.valueType(),
-                        elementColumns));
+                        elementColumns,
+                        info.orderColumn()));
             }
         }
         return new ArrayList<>(byName.values());

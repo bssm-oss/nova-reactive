@@ -23,14 +23,15 @@ public record ElementCollectionInfo(
         String valueColumn,
         Class<?> valueType,
         boolean usesSet,
-        List<EmbeddableColumn> embeddableColumns
+        List<EmbeddableColumn> embeddableColumns,
+        OrderColumnInfo orderColumn
 ) {
     public ElementCollectionInfo {
         embeddableColumns = embeddableColumns == null ? List.of() : List.copyOf(embeddableColumns);
     }
 
     /**
-     * 기본 타입 원소용 생성자 — {@code @Embeddable} 펼침 컬럼이 없는 단일 값 컬럼 형태.
+     * 기본 타입 원소용 생성자 — {@code @Embeddable} 펼침 컬럼도 순서 컬럼도 없는 단일 값 컬럼 형태.
      */
     public ElementCollectionInfo(
             String collectionTableName,
@@ -38,7 +39,20 @@ public record ElementCollectionInfo(
             String valueColumn,
             Class<?> valueType,
             boolean usesSet) {
-        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet, List.of());
+        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet, List.of(), null);
+    }
+
+    /**
+     * {@code @Embeddable} 원소용 생성자 — 펼침 컬럼은 있고 순서 컬럼은 없는 형태.
+     */
+    public ElementCollectionInfo(
+            String collectionTableName,
+            String ownerForeignKeyColumn,
+            String valueColumn,
+            Class<?> valueType,
+            boolean usesSet,
+            List<EmbeddableColumn> embeddableColumns) {
+        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet, embeddableColumns, null);
     }
 
     /**
@@ -46,6 +60,14 @@ public record ElementCollectionInfo(
      */
     public boolean embeddable() {
         return !embeddableColumns.isEmpty();
+    }
+
+    /**
+     * {@code @OrderColumn}이 선언되어 물리 순서를 별도 정수 컬럼에 영속하면 {@code true}. {@code @OrderColumn}이
+     * 없으면 {@code false}이며 collection table에 순서 컬럼을 두지 않는다.
+     */
+    public boolean ordered() {
+        return orderColumn != null;
     }
 
     /**

@@ -496,18 +496,29 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (elements.isEmpty()) {
             return delete;
         }
+        // @OrderColumn이면 0-기반 인덱스를 order 컬럼에 함께 기록한다. full-replace라 인덱스 = 현재 List 위치다.
+        boolean ordered = definition.ordered();
         if (info.embeddable()) {
             // @Embeddable 원소: 각 원소의 펼친 필드 값들을 한 row의 다중 컬럼으로 insert한다.
-            return delete.thenMany(Flux.fromIterable(elements)
-                            .concatMap(element -> {
+            return delete.thenMany(Flux.range(0, elements.size())
+                            .concatMap(index -> {
+                                Object element = elements.get(index);
                                 List<Object> columnValues = readEmbeddableColumnValues(info, element);
-                                return sqlExecutor.execute(
-                                        renderer.insertEmbeddableCollectionRow(definition, ownerId, columnValues));
+                                SqlStatement statement = ordered
+                                        ? renderer.insertEmbeddableCollectionRow(definition, ownerId, columnValues, index)
+                                        : renderer.insertEmbeddableCollectionRow(definition, ownerId, columnValues);
+                                return sqlExecutor.execute(statement);
                             }))
                     .then();
         }
-        return delete.thenMany(Flux.fromIterable(elements)
-                        .concatMap(value -> sqlExecutor.execute(renderer.insertCollectionRow(definition, ownerId, value))))
+        return delete.thenMany(Flux.range(0, elements.size())
+                        .concatMap(index -> {
+                            Object value = elements.get(index);
+                            SqlStatement statement = ordered
+                                    ? renderer.insertCollectionRow(definition, ownerId, value, index)
+                                    : renderer.insertCollectionRow(definition, ownerId, value);
+                            return sqlExecutor.execute(statement);
+                        }))
                 .then();
     }
 
@@ -541,14 +552,17 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     wrapPrimitive(ownerMetadata.idProperty().javaType()),
                     info.valueColumn(),
                     info.valueType(),
-                    elementColumns);
+                    elementColumns,
+                    info.orderColumn());
         }
         return new CollectionTableDefinition(
                 info.collectionTableName(),
                 info.ownerForeignKeyColumn(),
                 wrapPrimitive(ownerMetadata.idProperty().javaType()),
                 info.valueColumn(),
-                info.valueType());
+                info.valueType(),
+                List.of(),
+                info.orderColumn());
     }
 
     /**

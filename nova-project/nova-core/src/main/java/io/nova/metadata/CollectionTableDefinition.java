@@ -16,14 +16,15 @@ public record CollectionTableDefinition(
         Class<?> ownerForeignKeyType,
         String valueColumn,
         Class<?> valueType,
-        List<ElementColumn> elementColumns
+        List<ElementColumn> elementColumns,
+        OrderColumnInfo orderColumn
 ) {
     public CollectionTableDefinition {
         elementColumns = elementColumns == null ? List.of() : List.copyOf(elementColumns);
     }
 
     /**
-     * 기본 타입 원소용 생성자 — 단일 값 컬럼만 가진다.
+     * 기본 타입 원소용 생성자 — 단일 값 컬럼만 가지며 순서 컬럼이 없다.
      */
     public CollectionTableDefinition(
             String tableName,
@@ -31,7 +32,20 @@ public record CollectionTableDefinition(
             Class<?> ownerForeignKeyType,
             String valueColumn,
             Class<?> valueType) {
-        this(tableName, ownerForeignKeyColumn, ownerForeignKeyType, valueColumn, valueType, List.of());
+        this(tableName, ownerForeignKeyColumn, ownerForeignKeyType, valueColumn, valueType, List.of(), null);
+    }
+
+    /**
+     * {@code @Embeddable} 원소용 생성자 — 펼침 컬럼은 있고 순서 컬럼은 없는 형태.
+     */
+    public CollectionTableDefinition(
+            String tableName,
+            String ownerForeignKeyColumn,
+            Class<?> ownerForeignKeyType,
+            String valueColumn,
+            Class<?> valueType,
+            List<ElementColumn> elementColumns) {
+        this(tableName, ownerForeignKeyColumn, ownerForeignKeyType, valueColumn, valueType, elementColumns, null);
     }
 
     /**
@@ -39,6 +53,13 @@ public record CollectionTableDefinition(
      */
     public boolean embeddable() {
         return !elementColumns.isEmpty();
+    }
+
+    /**
+     * {@code @OrderColumn}이 선언되어 collection table에 물리 순서 정수 컬럼({@link #orderColumn()})을 두면 {@code true}.
+     */
+    public boolean ordered() {
+        return orderColumn != null;
     }
 
     /**

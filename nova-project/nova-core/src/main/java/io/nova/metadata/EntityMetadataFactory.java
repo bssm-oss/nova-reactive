@@ -1963,6 +1963,18 @@ public final class EntityMetadataFactory {
                     location + " @MapsId is only valid on a to-one relationship (@OneToOne/@ManyToOne),"
                             + " not on @OneToMany/@ManyToMany");
         }
+        if (field.isAnnotationPresent(jakarta.persistence.OrderColumn.class)) {
+            if (isManyToOne || isOneToOne) {
+                throw new IllegalStateException(
+                        location + " @OrderColumn is only valid on an ordered List collection,"
+                                + " not on a single-valued @ManyToOne/@OneToOne relationship");
+            }
+            // @OneToMany/@ManyToMany의 순서 컬럼은 child(또는 join) 테이블에 위치하며, 그 테이블은 별도 엔티티에서
+            // 독립적으로 DDL이 생성되므로 v1 범위 밖이다. @OrderColumn은 현재 @ElementCollection List에만 지원한다.
+            throw new IllegalStateException(
+                    location + " @OrderColumn on @OneToMany/@ManyToMany is not supported in v1;"
+                            + " @OrderColumn is currently supported only on @ElementCollection List");
+        }
     }
 
     /**
@@ -2570,21 +2582,26 @@ public final class EntityMetadataFactory {
                 collectionTable == null ? null : collectionTable.joinColumns(),
                 namingStrategy.joinColumnName(entityType.getSimpleName(), ownerIdColumn),
                 location + " @CollectionTable.joinColumns");
+        OrderColumnInfo orderColumn = resolveElementCollectionOrderColumn(field, usesSet, location);
         ElementCollectionInfo info;
         if (elementType.isAnnotationPresent(Embeddable.class)) {
             // @Embeddable 원소: 원소 타입의 영속 필드들을 collection table 다중 컬럼으로 펼친다. owner FK는 단일
             // 컬럼으로 유지하고, value 컬럼은 의미가 없으므로 빈 문자열을 둔다.
             List<ElementCollectionInfo.EmbeddableColumn> embeddableColumns =
                     expandEmbeddableElementColumns(elementType, field, location, ownerForeignKeyColumn);
+            rejectOrderColumnCollision(orderColumn, ownerForeignKeyColumn,
+                    embeddableColumns.stream().map(ElementCollectionInfo.EmbeddableColumn::columnName).toList(), location);
             info = new ElementCollectionInfo(
-                    tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns);
+                    tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns, orderColumn);
         } else {
             Column column = field.getAnnotation(Column.class);
             String valueColumn = column != null && !column.name().isBlank()
                     ? column.name()
                     : namingStrategy.columnName(field.getName());
+            rejectOrderColumnCollision(orderColumn, ownerForeignKeyColumn, List.of(valueColumn), location);
             info = new ElementCollectionInfo(
-                    tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet);
+                    tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet,
+                    List.of(), orderColumn);
         }
         return new PersistentProperty(
                 field, field.getName(), "", fieldType,
@@ -2606,6 +2623,49 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 null);
+    }
+
+    /**
+     * {@code @ElementCollection} {@code List} 필드의 {@code @OrderColumn}을 {@link OrderColumnInfo}로 해석한다.
+     * {@code @OrderColumn}이 없으면 {@code null}(순서 컬럼 없음). 선언되어 있으면:
+     * <ul>
+     *   <li>{@code Set}에 달리면 거부한다 — {@code Set}은 순서 의미가 없다(JPA도 {@code List}에만 허용).</li>
+     *   <li>{@code @OrderBy}와 동시에 달리면 거부한다 — 두 정렬 전략은 모순이다(JPA도 금지).</li>
+     * </ul>
+     * 컬럼 이름은 {@code @OrderColumn(name=...)}이 비어 있으면 JPA 기본 규약 {@code <property>_ORDER}를 쓴다.
+     */
+    private OrderColumnInfo resolveElementCollectionOrderColumn(Field field, boolean usesSet, String location) {
+        jakarta.persistence.OrderColumn orderColumn = field.getAnnotation(jakarta.persistence.OrderColumn.class);
+        if (orderColumn == null) {
+            return null;
+        }
+        if (usesSet) {
+            throw new IllegalArgumentException(
+                    location + " @OrderColumn is only valid on an ordered List, not on a Set @ElementCollection");
+        }
+        if (field.isAnnotationPresent(jakarta.persistence.OrderBy.class)) {
+            throw new IllegalArgumentException(
+                    location + " cannot declare both @OrderColumn and @OrderBy; the two ordering strategies conflict");
+        }
+        String name = orderColumn.name().isBlank() ? field.getName() + "_ORDER" : orderColumn.name();
+        return new OrderColumnInfo(name);
+    }
+
+    /**
+     * 순서 컬럼 이름이 owner FK 컬럼이나 값/펼침 컬럼과 충돌하면 거부한다 — silent 컬럼 덮어쓰기로 데이터가
+     * 손상되지 않도록 collection table을 만드는 한 자리에서 검증한다. {@code @OrderColumn}이 없으면 no-op.
+     */
+    private static void rejectOrderColumnCollision(
+            OrderColumnInfo orderColumn, String ownerForeignKeyColumn, List<String> valueColumns, String location) {
+        if (orderColumn == null) {
+            return;
+        }
+        String orderColumnName = orderColumn.columnName();
+        if (orderColumnName.equals(ownerForeignKeyColumn) || valueColumns.contains(orderColumnName)) {
+            throw new IllegalArgumentException(
+                    location + " @OrderColumn name '" + orderColumnName
+                            + "' collides with another collection table column");
+        }
     }
 
     /**

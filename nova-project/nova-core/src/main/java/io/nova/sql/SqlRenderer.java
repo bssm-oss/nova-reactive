@@ -217,12 +217,32 @@ public interface SqlRenderer {
     }
 
     /**
+     * {@code @OrderColumn} 정렬 collection table에 (owner, value, order) row 1건을 추가하는 구문(기본 타입 원소).
+     * {@code orderIndex}는 {@code List} 안의 0-기반 위치다.
+     */
+    default SqlStatement insertCollectionRow(
+            CollectionTableDefinition definition, Object ownerId, Object value, int orderIndex) {
+        throw new UnsupportedOperationException("ordered insertCollectionRow is not supported by this SqlRenderer");
+    }
+
+    /**
      * {@code @Embeddable} 원소 collection table에 (owner, col1, col2, ...) row 1건을 추가하는 구문.
      * {@code columnValues}는 {@link CollectionTableDefinition#elementColumns()} 순서와 정렬되어야 한다.
      */
     default SqlStatement insertEmbeddableCollectionRow(
             CollectionTableDefinition definition, Object ownerId, java.util.List<Object> columnValues) {
         throw new UnsupportedOperationException("insertEmbeddableCollectionRow is not supported by this SqlRenderer");
+    }
+
+    /**
+     * {@code @OrderColumn} 정렬 {@code @Embeddable} 원소 collection table에 (owner, col1, col2, ..., order) row
+     * 1건을 추가하는 구문. {@code columnValues}는 {@link CollectionTableDefinition#elementColumns()} 순서와
+     * 정렬되어야 하며 {@code orderIndex}는 {@code List} 안의 0-기반 위치다.
+     */
+    default SqlStatement insertEmbeddableCollectionRow(
+            CollectionTableDefinition definition, Object ownerId, java.util.List<Object> columnValues, int orderIndex) {
+        throw new UnsupportedOperationException(
+                "ordered insertEmbeddableCollectionRow is not supported by this SqlRenderer");
     }
 
     /**

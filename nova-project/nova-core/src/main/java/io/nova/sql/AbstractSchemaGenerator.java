@@ -78,6 +78,11 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         } else {
             columns.add(dialect.quote(definition.valueColumn()) + " " + elementColumnType(definition.valueType()));
         }
+        if (definition.ordered()) {
+            // @OrderColumn: List 원소의 물리 순서를 담는 정수 컬럼. reconcile이 0..n-1을 써넣고 hydration이
+            // ORDER BY ASC로 읽어 순서를 복원한다.
+            columns.add(dialect.quote(definition.orderColumn().columnName()) + " integer");
+        }
         return "create table " + dialect.quote(definition.tableName())
                 + " (" + String.join(", ", columns) + ")";
     }
