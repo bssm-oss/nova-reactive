@@ -636,6 +636,15 @@ public final class PersistentProperty {
     }
 
     /**
+     * 이 to-one 관계가 {@code MERGE}(또는 {@code ALL}) cascade를 가지는지. JPA에서 PERSIST는 새(transient)
+     * 참조에만 전파되지만 MERGE는 이미 영속된 참조에도 상태를 전파하므로, 이미 id가 있는 참조를 재저장할지
+     * 가르는 데 쓴다.
+     */
+    public boolean cascadeMergeReference() {
+        return toOneCascadeInfo != null && toOneCascadeInfo.cascadeMerge();
+    }
+
+    /**
      * 이 to-one 관계가 owner delete() 시 참조 엔티티를 자동 삭제(cascade REMOVE/ALL)해야 하는지.
      */
     public boolean cascadeRemoveReference() {

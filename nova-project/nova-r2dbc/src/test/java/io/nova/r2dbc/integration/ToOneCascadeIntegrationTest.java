@@ -42,7 +42,26 @@ class ToOneCascadeIntegrationTest {
                 Author.class, Article.class,
                 Profile.class, Account.class,
                 MarkerAuthor.class, MarkerArticle.class,
-                Node.class).block();
+                Node.class,
+                PersistOnlyRef.class, PersistOnlyOwner.class).block();
+    }
+
+    @Test
+    void persistOnlyCascadeDoesNotReSaveAlreadyPersistedReference() {
+        // JPA PERSIST 의미: 이미 영속된 참조는 재전파하지 않는다. ref를 저장 후 in-memory로 바꿔도 owner save가
+        // ref를 다시 쓰지 않아야 하므로 DB의 name은 "orig" 그대로다(MERGE였다면 "changed"가 됐을 것).
+        PersistOnlyRef ref = support.operations().save(new PersistOnlyRef("orig")).block();
+        assertNotNull(ref.getId());
+        ref.setName("changed");
+
+        PersistOnlyOwner owner = new PersistOnlyOwner();
+        owner.setRef(ref);
+        support.operations().save(owner).block();
+
+        StepVerifier.create(support.operations().findById(PersistOnlyRef.class, ref.getId()))
+                .assertNext(reloaded -> assertEquals("orig", reloaded.getName(),
+                        "PERSIST-only cascade는 이미 영속된 참조를 재저장하지 않아야 한다"))
+                .verifyComplete();
     }
 
     @Test
@@ -338,6 +357,59 @@ class ToOneCascadeIntegrationTest {
 
         public void setPeer(Node peer) {
             this.peer = peer;
+        }
+    }
+
+    // --- PERSIST-only (no MERGE) cascade fixtures --------------------------
+
+    @Entity
+    @Table(name = "persist_only_ref")
+    public static class PersistOnlyRef {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+
+        public PersistOnlyRef() {
+        }
+
+        public PersistOnlyRef(String name) {
+            this.name = name;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "persist_only_owner")
+    public static class PersistOnlyOwner {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @ManyToOne(targetEntity = PersistOnlyRef.class, cascade = CascadeType.PERSIST)
+        @JoinColumn(name = "ref_id")
+        private PersistOnlyRef ref;
+
+        public PersistOnlyOwner() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setRef(PersistOnlyRef ref) {
+            this.ref = ref;
         }
     }
 }

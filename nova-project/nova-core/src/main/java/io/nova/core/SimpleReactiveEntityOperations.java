@@ -229,6 +229,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             // 이미 cascade 경로에 있는 인스턴스(사이클/공유 참조) → 재저장하지 않는다(무한재귀 방지).
                             return Mono.empty();
                         }
+                        // JPA 의미: PERSIST는 새(transient) 참조에만 전파된다. 이미 영속된(id 존재) 참조는 MERGE가
+                        // 없으면 재저장하지 않는다 — 매 owner save마다 도달 가능한 to-one 그래프 전체를 다시 쓰는
+                        // (존재확인 SELECT + UPDATE) 낭비를 막는다. 참조는 그대로 owner 필드에 남아 있어(이미 id 보유)
+                        // owner row 쓰기에서 FK가 정상 바인딩된다.
+                        Class<?> referenceType = property.manyToOneTargetType() != null
+                                ? property.manyToOneTargetType() : reference.getClass();
+                        Object referenceId = metadataFactory.getEntityMetadata(referenceType).readIdValue(reference);
+                        if (referenceId != null && !property.cascadeMergeReference()) {
+                            return Mono.empty();
+                        }
                         // 참조 엔티티를 먼저 저장해 id를 확보한다. 반환된(=관리되는) 인스턴스를 owner 필드에 다시 set해
                         // 이후 owner row 쓰기에서 read()가 채워진 @Id를 FK로 추출하도록 한다.
                         return save(reference).doOnNext(savedReference -> {
