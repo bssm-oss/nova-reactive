@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew build*)",
+      "Bash(./gradlew test*)",
+      "Bash(./gradlew clean*)",
+      "Bash(./gradlew compileJava*)",
+      "Bash(./gradlew compileTestJava*)",
+      "Bash(./gradlew :nova-core:*)",
+      "Bash(./gradlew :nova-dialect-postgresql:*)",
+      "Bash(./gradlew :nova-dialect-mysql:*)",
+      "Bash(./gradlew --version)",
+      "Bash(./gradlew tasks*)",
+      "Bash(./gradlew dependencies*)",
+      "Bash(./gradlew projects)",
+      "Bash(java --version)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/java-edit-compile.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
