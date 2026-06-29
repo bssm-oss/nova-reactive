@@ -112,6 +112,22 @@ class EntityMetadataFactoryElementCollectionTest {
         assertTrue(error.getMessage().contains("must not extend a superclass"));
     }
 
+    @Test
+    void rejectsAttributeOverrideForUnknownComponentField() {
+        // 오타/존재하지 않는 필드를 가리키는 @AttributeOverride는 조용히 무시되면 안 되고 fail-fast여야 한다.
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(BadOverrideName.class));
+        assertTrue(error.getMessage().contains("does not match any persistent component field"));
+    }
+
+    @Test
+    void rejectsEntityLevelMarkerOnEmbeddableElementSubField() {
+        // @Version/@CreatedAt 등 entity-level 마커는 값 컬렉션 원소에서 의미가 없으므로 거부한다(@Embedded 경로와 정합).
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(VersionedEmbeddableElement.class));
+        assertTrue(error.getMessage().contains("@Version"));
+    }
+
     // --- fixtures -----------------------------------------------------------
 
     @Entity
@@ -232,5 +248,39 @@ class EntityMetadataFactoryElementCollectionTest {
 
         @ElementCollection
         List<InheritingValue> values;
+    }
+
+    @Embeddable
+    static class Xy {
+        int x;
+        int y;
+    }
+
+    @Entity
+    @Table(name = "bad_override")
+    static class BadOverrideName {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @AttributeOverride(name = "nope", column = @Column(name = "c"))
+        List<Xy> points;
+    }
+
+    @Embeddable
+    static class VersionedValue {
+        String label;
+        @jakarta.persistence.Version
+        Long version;
+    }
+
+    @Entity
+    @Table(name = "versioned_embeddable_element")
+    static class VersionedEmbeddableElement {
+        @Id
+        Long id;
+
+        @ElementCollection
+        List<VersionedValue> items;
     }
 }

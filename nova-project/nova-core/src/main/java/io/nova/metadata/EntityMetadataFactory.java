@@ -814,11 +814,23 @@ public final class EntityMetadataFactory {
                 && (current == entityType
                 || current.isAnnotationPresent(MappedSuperclass.class)
                 || current.isAnnotationPresent(Entity.class))) {
-            methods.addAll(Arrays.asList(current.getDeclaredMethods()));
+            // getDeclaredMethods()는 클래스 내 순서가 JVM 비결정이므로, 같은 phase의 콜백이 여럿일 때
+            // 호출 순서가 들쭉날쭉하지 않도록 클래스별로 안정 정렬한다(클래스 계층 순서=derived→base는 유지).
+            List<Method> declared = new ArrayList<>(Arrays.asList(current.getDeclaredMethods()));
+            declared.sort(STABLE_METHOD_ORDER);
+            methods.addAll(declared);
             current = current.getSuperclass();
         }
         return methods;
     }
+
+    /**
+     * 리플렉션 메서드의 안정적(결정적) 정렬 기준 — 이름 → 파라미터 타입 시그니처. {@code getDeclaredMethods()}의
+     * JVM 비결정 순서를 흡수해 라이프사이클 콜백 호출 순서를 재현 가능하게 한다.
+     */
+    private static final java.util.Comparator<Method> STABLE_METHOD_ORDER =
+            java.util.Comparator.comparing(Method::getName)
+                    .thenComparing(method -> Arrays.toString(method.getParameterTypes()));
 
     /**
      * override된 콜백을 한 번만 수집하기 위한 메서드 시그니처 키(이름 + 파라미터 타입). 콜백은 no-arg가
@@ -1316,7 +1328,10 @@ public final class EntityMetadataFactory {
         List<Method> methods = new ArrayList<>();
         Class<?> current = listenerClass;
         while (current != null && current != Object.class) {
-            methods.addAll(Arrays.asList(current.getDeclaredMethods()));
+            // 클래스별 안정 정렬로 콜백 호출 순서를 결정적이게 한다(계층 순서 child→root는 유지).
+            List<Method> declared = new ArrayList<>(Arrays.asList(current.getDeclaredMethods()));
+            declared.sort(STABLE_METHOD_ORDER);
+            methods.addAll(declared);
             current = current.getSuperclass();
         }
         return methods;
@@ -2525,6 +2540,22 @@ public final class EntityMetadataFactory {
         for (AttributeOverride override : collectionField.getAnnotationsByType(AttributeOverride.class)) {
             columnOverrides.put(override.name(), override.column().name());
         }
+        // 오타/존재하지 않는 필드를 가리키는 @AttributeOverride는 조용히 무시되면 의도한 컬럼명이 적용되지
+        // 않으므로 fail-fast로 거부한다.
+        java.util.Set<String> persistableFieldNames = new java.util.HashSet<>();
+        for (Field subField : elementType.getDeclaredFields()) {
+            if (!isNotPersistable(subField)) {
+                persistableFieldNames.add(subField.getName());
+            }
+        }
+        for (String overrideName : columnOverrides.keySet()) {
+            if (!persistableFieldNames.contains(overrideName)) {
+                throw new IllegalArgumentException(
+                        location + " @ElementCollection of @Embeddable " + elementType.getName()
+                                + " has @AttributeOverride(name=\"" + overrideName
+                                + "\") that does not match any persistent component field");
+            }
+        }
         List<ElementCollectionInfo.EmbeddableColumn> columns = new ArrayList<>();
         java.util.Set<String> seenColumnNames = new java.util.HashSet<>();
         seenColumnNames.add(ownerForeignKeyColumn);
@@ -2548,6 +2579,17 @@ public final class EntityMetadataFactory {
                         location + " @ElementCollection of @Embeddable " + elementType.getName()
                                 + " component " + subField.getName()
                                 + " must be a simple value field (no @Id/relationship/@ElementCollection)");
+            }
+            // @Embedded 서브필드와 동일하게 entity-level 마커(@Version/@SoftDelete/@CreatedAt/@UpdatedAt)는
+            // 값 컬렉션 원소에서 의미가 없으므로 거부한다(@Embedded 경로 rejectIllegalSubFieldAnnotations와 정합).
+            if (subField.isAnnotationPresent(Version.class)
+                    || subField.isAnnotationPresent(SoftDelete.class)
+                    || subField.isAnnotationPresent(CreatedAt.class)
+                    || subField.isAnnotationPresent(UpdatedAt.class)) {
+                throw new IllegalArgumentException(
+                        location + " @ElementCollection of @Embeddable " + elementType.getName()
+                                + " component " + subField.getName()
+                                + " must not declare @Version/@SoftDelete/@CreatedAt/@UpdatedAt");
             }
             String overridden = columnOverrides.get(subField.getName());
             Column column = subField.getAnnotation(Column.class);
