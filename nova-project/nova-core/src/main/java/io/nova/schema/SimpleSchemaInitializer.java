@@ -5,6 +5,7 @@ import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
@@ -76,13 +77,15 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
         Objects.requireNonNull(options, "options must not be null");
         List<Class<?>> all = copyOf(entityTypes);
-        // generator 테이블(@TableGenerator)을 먼저 만들고 seed → entity 테이블 → link/collection table 순서로 만든다.
+        // generator 테이블(@TableGenerator)을 먼저 만들고 seed → entity 테이블 → link/collection table → FK 제약 순서로 만든다.
+        // FK 제약(@ForeignKey)은 모든 테이블이 존재한 뒤 마지막 phase로 발행해 forward reference를 안전하게 처리한다.
         return createTableGenerators(all, options)
                 .then(Flux.fromIterable(collapseToRoots(all))
                         .concatMap(type -> createOne(type, options))
                         .then())
                 .then(createJoinTables(all, options))
-                .then(createCollectionTables(all, options));
+                .then(createCollectionTables(all, options))
+                .then(addForeignKeys(all));
     }
 
     @Override
@@ -153,7 +156,8 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .then(createTableGenerators(all, createOptions))
                 .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
                 .then(createJoinTables(all, createOptions))
-                .then(createCollectionTables(all, createOptions));
+                .then(createCollectionTables(all, createOptions))
+                .then(addForeignKeys(all));
     }
 
     @Override
@@ -360,6 +364,24 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                             : generator.dropJoinTable(definition.tableName());
                     return operations.executeNative(NativeQuery.of(ddl));
                 })
+                .then();
+    }
+
+    /**
+     * 모든 테이블이 생성된 뒤 JPA {@code @ForeignKey(ConstraintMode.CONSTRAINT)} 소스 호환 FK 제약을 별도
+     * {@code ALTER TABLE ... ADD CONSTRAINT} phase로 발행한다. {@code @ForeignKey} 미지정/{@code PROVIDER_DEFAULT}/
+     * {@code NO_CONSTRAINT}는 FK를 만들지 않으므로(기존 동작 보존) 발행할 제약이 없으면 no-op이다. 모든 참조
+     * 테이블이 이미 존재하므로 forward reference가 안전하다.
+     */
+    private Mono<Void> addForeignKeys(List<Class<?>> types) {
+        List<ForeignKeyDefinition> definitions = ForeignKeyConstraints.resolve(types, metadataFactory);
+        if (definitions.isEmpty()) {
+            return Mono.empty();
+        }
+        SchemaGenerator generator = dialect.schemaGenerator();
+        return Flux.fromIterable(definitions)
+                .concatMap(definition -> operations.executeNative(
+                        NativeQuery.of(generator.addForeignKey(definition))))
                 .then();
     }
 

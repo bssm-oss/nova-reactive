@@ -2,6 +2,7 @@ package io.nova.sql;
 
 import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
@@ -160,5 +161,18 @@ public interface SchemaGenerator {
     default String alterTableDropColumn(EntityMetadata<?> metadata, String columnName) {
         throw new UnsupportedOperationException(
                 "alterTableDropColumn is not supported by this SchemaGenerator");
+    }
+
+    /**
+     * 외래키(FOREIGN KEY) 제약을 추가하는 {@code ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY (...)
+     * REFERENCES ...} 구문을 반환한다 — JPA {@code @ForeignKey(ConstraintMode.CONSTRAINT)} 소스 호환의
+     * emission 지점이다. 모든 테이블이 만들어진 뒤 별도 phase로 발행되므로 forward reference(자식이 부모보다
+     * 먼저 생성된 경우)도 안전하다. 표준 ANSI FK 문법은 dialect 무관이므로 식별자 quoting만 dialect가 담당한다
+     * ({@link AbstractSchemaGenerator}가 {@link Dialect#quote(String)}로 구현). FK 제약을 지원하지 않는
+     * 커스텀 generator는 기본 구현대로 명시적으로 실패한다.
+     */
+    default String addForeignKey(ForeignKeyDefinition definition) {
+        throw new UnsupportedOperationException(
+                "addForeignKey is not supported by this SchemaGenerator");
     }
 }

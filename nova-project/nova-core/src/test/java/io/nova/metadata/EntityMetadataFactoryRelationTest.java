@@ -16,6 +16,7 @@ import jakarta.persistence.Version;
 import io.nova.support.fixtures.FixtureEntities.AuthorBookJoinColumnConflict;
 import io.nova.support.fixtures.FixtureEntities.AuthorWithBooksAnnotated;
 import io.nova.support.fixtures.FixtureEntities.BookWithAuthorAnnotated;
+import io.nova.support.fixtures.FixtureEntities.MisplacedForeignKeyEntity;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -75,6 +76,15 @@ class EntityMetadataFactoryRelationTest {
         // marker를 제외하므로 books는 그 결과에서 제외된다.
         assertTrue(metadata.properties().stream().anyMatch(p -> p.propertyName().equals("books")));
         assertFalse(metadata.columnMappedProperties().stream().anyMatch(p -> p.propertyName().equals("books")));
+    }
+
+    @Test
+    void explicitForeignKeyOnNonRelationColumnIsRejected() {
+        // @JoinColumn(foreignKey=@ForeignKey(name=...))가 @ManyToOne/@OneToOne 없는 일반 컬럼에 붙으면
+        // 조용히 무시하지 않고 fail-fast로 거부해야 한다.
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> factory.getEntityMetadata(MisplacedForeignKeyEntity.class));
+        assertTrue(error.getMessage().contains("@JoinColumn(foreignKey=...)"));
     }
 
     @Test

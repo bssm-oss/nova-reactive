@@ -2520,4 +2520,175 @@ public final class FixtureEntities {
         public EntityWithBadListener() {
         }
     }
+
+    // ---------------------------------------------------------------------
+    // @ForeignKey 소스 호환 fixture — FK 제약 emission/억제/이름 커스터마이즈 검증용.
+    // ---------------------------------------------------------------------
+
+    /** FK가 참조하는 부모 엔티티. */
+    @Entity
+    @Table(name = "fk_parent")
+    public static class FkParent {
+        @Id
+        private Long id;
+        private String name;
+
+        public FkParent() {
+        }
+
+        public FkParent(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+    }
+
+    /** {@code @ManyToOne} + {@code @ForeignKey(name=...)}(기본 CONSTRAINT) — 명명 FK 제약을 발행해야 한다. */
+    @Entity
+    @Table(name = "fk_child_constrained")
+    public static class FkChildConstrained {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = FkParent.class)
+        @JoinColumn(name = "parent_id",
+                foreignKey = @jakarta.persistence.ForeignKey(name = "fk_child_parent"))
+        private FkParent parent;
+
+        public FkChildConstrained() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setParent(FkParent parent) {
+            this.parent = parent;
+        }
+    }
+
+    /** {@code @ManyToOne} + {@code @ForeignKey(NO_CONSTRAINT)} — FK 제약을 명시적으로 억제해야 한다. */
+    @Entity
+    @Table(name = "fk_child_suppressed")
+    public static class FkChildSuppressed {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = FkParent.class)
+        @JoinColumn(name = "parent_id",
+                foreignKey = @jakarta.persistence.ForeignKey(jakarta.persistence.ConstraintMode.NO_CONSTRAINT))
+        private FkParent parent;
+
+        public FkChildSuppressed() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    /** {@code @ManyToOne} + {@code @JoinColumn}만(=@ForeignKey 부재, PROVIDER_DEFAULT) — Nova 기존 동작(FK 미발행). */
+    @Entity
+    @Table(name = "fk_child_default")
+    public static class FkChildDefault {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = FkParent.class)
+        @JoinColumn(name = "parent_id")
+        private FkParent parent;
+
+        public FkChildDefault() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    /** owning {@code @ManyToMany} + {@code @JoinTable(foreignKey=, inverseForeignKey=)} — link table 양쪽 FK 발행. */
+    @Entity
+    @Table(name = "fk_student")
+    public static class FkStudent {
+        @Id
+        private Long id;
+
+        @jakarta.persistence.ManyToMany(targetEntity = FkCourse.class)
+        @jakarta.persistence.JoinTable(
+                name = "fk_enrollment",
+                joinColumns = @JoinColumn(name = "student_id"),
+                inverseJoinColumns = @JoinColumn(name = "course_id"),
+                foreignKey = @jakarta.persistence.ForeignKey(name = "fk_enr_student"),
+                inverseForeignKey = @jakarta.persistence.ForeignKey(name = "fk_enr_course"))
+        private java.util.Set<FkCourse> courses;
+
+        public FkStudent() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    /** {@link FkStudent} {@code @ManyToMany}의 대상 엔티티. */
+    @Entity
+    @Table(name = "fk_course")
+    public static class FkCourse {
+        @Id
+        private Long id;
+
+        public FkCourse() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    /** {@code @ElementCollection} + {@code @CollectionTable(foreignKey=...)} — owner FK를 발행해야 한다. */
+    @Entity
+    @Table(name = "fk_element_owner")
+    public static class FkElementOwner {
+        @Id
+        private Long id;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.CollectionTable(
+                name = "fk_owner_tags",
+                joinColumns = @JoinColumn(name = "owner_id"),
+                foreignKey = @jakarta.persistence.ForeignKey(name = "fk_tags_owner"))
+        @Column(name = "tag")
+        private java.util.Set<String> tags;
+
+        public FkElementOwner() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    /**
+     * FK가 의미 없는 위치({@code @ManyToOne}/{@code @OneToOne} 없는 일반 컬럼)에 명시적 {@code @ForeignKey}가
+     * 붙은 entity — metadata 빌드 시 fail-fast로 거부되어야 한다.
+     */
+    @Entity
+    @Table(name = "fk_misplaced")
+    public static class MisplacedForeignKeyEntity {
+        @Id
+        private Long id;
+
+        @JoinColumn(foreignKey = @jakarta.persistence.ForeignKey(name = "bad_fk"))
+        private Long amount;
+
+        public MisplacedForeignKeyEntity() {
+        }
+    }
 }

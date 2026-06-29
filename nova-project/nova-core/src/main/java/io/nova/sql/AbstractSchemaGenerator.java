@@ -5,6 +5,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.GenerationType;
 import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.metadata.IndexDefinition;
 import io.nova.metadata.InheritanceInfo;
 import io.nova.metadata.InheritanceLayout;
@@ -283,6 +284,32 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         }
         return "alter table " + qualifiedTable(metadata)
                 + " drop column " + dialect.quote(columnName);
+    }
+
+    /**
+     * {@code @ForeignKey(ConstraintMode.CONSTRAINT)} 소스 호환의 FK 제약 DDL을 렌더한다. 표준 ANSI
+     * {@code ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY (...) REFERENCES ...} 문법은 PostgreSQL/MySQL/
+     * H2/Oracle 모두 동일하므로 dialect 분기 없이 식별자만 {@link Dialect#quote(String)}로 quote한다. 제약
+     * 이름이 비어 있으면 {@link #defaultForeignKeyName} 결정적 자동 이름을 사용한다.
+     */
+    @Override
+    public String addForeignKey(ForeignKeyDefinition definition) {
+        String name = definition.constraintName().isBlank()
+                ? defaultForeignKeyName(definition)
+                : definition.constraintName();
+        return "alter table " + dialect.quote(definition.table())
+                + " add constraint " + dialect.quote(name)
+                + " foreign key (" + joinQuoted(definition.columns()) + ")"
+                + " references " + dialect.quote(definition.referencedTable())
+                + " (" + joinQuoted(definition.referencedColumns()) + ")";
+    }
+
+    /**
+     * {@code @ForeignKey(name)}이 비어 있을 때 쓰는 결정적 FK 제약 이름을 만든다. {@code fk_<table>_<columns>}
+     * 형태로, 같은 link/collection 테이블의 owner/inverse FK가 서로 다른 이름을 갖도록 컬럼명을 포함한다.
+     */
+    protected String defaultForeignKeyName(ForeignKeyDefinition definition) {
+        return "fk_" + definition.table() + "_" + String.join("_", definition.columns());
     }
 
     private String joinQuoted(List<String> identifiers) {

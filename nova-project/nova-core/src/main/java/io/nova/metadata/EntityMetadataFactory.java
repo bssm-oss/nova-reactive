@@ -4,6 +4,7 @@ import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
+import jakarta.persistence.ConstraintMode;
 import io.nova.annotation.CreatedAt;
 import jakarta.persistence.Convert;
 import jakarta.persistence.DiscriminatorColumn;
@@ -16,6 +17,7 @@ import jakarta.persistence.Embedded;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
+import jakarta.persistence.ForeignKey;
 import jakarta.persistence.ExcludeDefaultListeners;
 import jakarta.persistence.ExcludeSuperclassListeners;
 import jakarta.persistence.EnumType;
@@ -393,6 +395,7 @@ public final class EntityMetadataFactory {
                 continue;
             }
             rejectIncompatibleRelationAnnotations(entityType, field);
+            rejectMisplacedForeignKey(entityType, field);
             if (field.isAnnotationPresent(OneToMany.class)) {
                 // OneToMany는 parent 테이블 컬럼이 없는 marker-only property — column uniqueness 검증에서 제외된다.
                 properties.add(createOneToManyProperty(entityType, field));
@@ -1960,6 +1963,48 @@ public final class EntityMetadataFactory {
                     location + " @MapsId is only valid on a to-one relationship (@OneToOne/@ManyToOne),"
                             + " not on @OneToMany/@ManyToMany");
         }
+    }
+
+    /**
+     * FK 제약이 의미를 가질 수 없는 위치에 명시적 {@code @ForeignKey}(= {@code value != PROVIDER_DEFAULT})가
+     * 붙은 경우를 fail-fast로 거부한다 — 조용히 무시하면 사용자가 FK 커스터마이즈가 적용된 것으로 오인한다.
+     * <ul>
+     *   <li>{@code @JoinColumn(foreignKey=...)}는 owning {@code @ManyToOne}/{@code @OneToOne}에서만 honor.</li>
+     *   <li>{@code @JoinTable}의 {@code foreignKey}/{@code inverseForeignKey}는 {@code @ManyToMany}에서만 honor.</li>
+     *   <li>{@code @CollectionTable(foreignKey=...)}는 {@code @ElementCollection}에서만 honor.</li>
+     * </ul>
+     */
+    private static void rejectMisplacedForeignKey(Class<?> entityType, Field field) {
+        String location = entityType.getName() + "." + field.getName();
+        boolean toOne = field.isAnnotationPresent(ManyToOne.class) || field.isAnnotationPresent(OneToOne.class);
+        JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
+        if (joinColumn != null && isExplicitForeignKey(joinColumn.foreignKey()) && !toOne) {
+            throw new IllegalStateException(
+                    location + " @JoinColumn(foreignKey=...) is only honored on an owning"
+                            + " @ManyToOne/@OneToOne relationship");
+        }
+        JoinTable joinTable = field.getAnnotation(JoinTable.class);
+        if (joinTable != null
+                && (isExplicitForeignKey(joinTable.foreignKey())
+                        || isExplicitForeignKey(joinTable.inverseForeignKey()))
+                && !field.isAnnotationPresent(ManyToMany.class)) {
+            throw new IllegalStateException(
+                    location + " @JoinTable foreign key customization is only honored on a @ManyToMany relationship");
+        }
+        CollectionTable collectionTable = field.getAnnotation(CollectionTable.class);
+        if (collectionTable != null && isExplicitForeignKey(collectionTable.foreignKey())
+                && !field.isAnnotationPresent(ElementCollection.class)) {
+            throw new IllegalStateException(
+                    location + " @CollectionTable(foreignKey=...) is only honored on an @ElementCollection");
+        }
+    }
+
+    /**
+     * 사용자가 {@code @ForeignKey}로 FK 동작을 명시했는지 — {@code value()}가 {@code PROVIDER_DEFAULT}가
+     * 아니면(= {@code CONSTRAINT}/{@code NO_CONSTRAINT}) 명시로 본다.
+     */
+    private static boolean isExplicitForeignKey(ForeignKey foreignKey) {
+        return foreignKey != null && foreignKey.value() != ConstraintMode.PROVIDER_DEFAULT;
     }
 
     /**

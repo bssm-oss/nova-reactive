@@ -216,4 +216,16 @@ class PostgresqlDialectTest {
                 statement.sql()
         );
     }
+
+    @Test
+    void addForeignKeyQuotesIdentifiersWithDoubleQuotes() {
+        String ddl = dialect.schemaGenerator().addForeignKey(new io.nova.metadata.ForeignKeyDefinition(
+                "fk_child", "fk_child_parent",
+                java.util.List.of("parent_id"), "fk_parent", java.util.List.of("id")));
+
+        assertEquals(
+                "alter table \"fk_child\" add constraint \"fk_child_parent\""
+                        + " foreign key (\"parent_id\") references \"fk_parent\" (\"id\")",
+                ddl);
+    }
 }

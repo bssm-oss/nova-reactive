@@ -326,6 +326,30 @@ class AbstractSchemaGeneratorTest {
         assertFalse(ddl.contains("doors integer not null"), "서브타입 전용 컬럼은 nullable이어야 한다, got " + ddl);
     }
 
+    @Test
+    void addForeignKeyRendersNamedAnsiConstraint() {
+        String ddl = dialect.schemaGenerator().addForeignKey(new io.nova.metadata.ForeignKeyDefinition(
+                "fk_child_constrained", "fk_child_parent",
+                List.of("parent_id"), "fk_parent", List.of("id")));
+
+        assertEquals(
+                "alter table fk_child_constrained add constraint fk_child_parent"
+                        + " foreign key (parent_id) references fk_parent (id)",
+                ddl);
+    }
+
+    @Test
+    void addForeignKeyGeneratesDeterministicNameWhenUnnamed() {
+        String ddl = dialect.schemaGenerator().addForeignKey(new io.nova.metadata.ForeignKeyDefinition(
+                "fk_child_constrained", "",
+                List.of("parent_id"), "fk_parent", List.of("id")));
+
+        assertEquals(
+                "alter table fk_child_constrained add constraint fk_fk_child_constrained_parent_id"
+                        + " foreign key (parent_id) references fk_parent (id)",
+                ddl);
+    }
+
     private static final class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
         private final SqlRenderer renderer = new AbstractSqlRenderer(this) {
