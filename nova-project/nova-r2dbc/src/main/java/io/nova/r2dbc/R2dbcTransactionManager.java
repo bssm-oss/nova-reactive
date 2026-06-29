@@ -120,6 +120,9 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
             return callback.apply(ctx)
                     .contextWrite(Context.of(CONNECTION_KEY, conn))
                     .flatMap(result -> commit(ctx).thenReturn(result))
+                    // 콜백이 값 없이(empty) 완료돼도 commit 한다 — flatMap은 empty source에서 mapper를 호출하지
+                    // 않으므로, 부수효과(예: 세션 flush)만 있고 결과를 내지 않는 트랜잭션이 commit 없이 롤백되는 것을 막는다.
+                    .switchIfEmpty(Mono.defer(() -> commit(ctx).then(Mono.empty())))
                     .onErrorResume(error -> rollback(ctx).onErrorResume(rb -> Mono.empty())
                             .then(Mono.error(error)));
         });
