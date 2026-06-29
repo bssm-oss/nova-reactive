@@ -103,6 +103,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private static final int TABLE_GENERATOR_MAX_CAS_ATTEMPTS = 64;
 
+    /**
+     * to-one cascade(@ManyToOne/@OneToOne)에서 한 save 트리 동안 이미 처리 중인 인스턴스 집합을 공유하는 Reactor
+     * Context 키. 양방향/self-reference cascade의 무한 재귀를 막는다.
+     */
+    private static final String CASCADE_VISITED_KEY = "io.nova.cascade.to-one.visited";
+
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
             Dialect dialect,
@@ -198,33 +204,47 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (cascading.isEmpty()) {
             return Mono.empty();
         }
-        return Flux.fromIterable(cascading)
-                .concatMap(property -> {
-                    Object reference;
-                    try {
-                        reference = property.field().get(owner);
-                    } catch (IllegalAccessException exception) {
-                        return Mono.error(new IllegalStateException(
-                                "Cannot read to-one reference " + property.propertyName()
-                                        + " for cascade on " + metadata.entityType().getName(), exception));
-                    }
-                    if (reference == null) {
-                        // null 참조 = 이번 save에서 이 관계를 관리하지 않음 → cascade no-op.
-                        return Mono.empty();
-                    }
-                    // 참조 엔티티를 먼저 저장해 id를 확보한다. 반환된(=관리되는) 인스턴스를 owner 필드에 다시 set해
-                    // 이후 owner row 쓰기에서 read()가 채워진 @Id를 FK로 추출하도록 한다.
-                    return save(reference).doOnNext(savedReference -> {
+        return Mono.deferContextual(ctx -> {
+            // cascade 경로에서 이미 처리 중인 인스턴스 집합(identity 기준)을 Reactor Context로 공유한다. 양방향
+            // cascade(A→B, B→A)나 self-reference에서 save가 무한 재귀(StackOverflow)하지 않도록, 이미 방문한
+            // 참조는 다시 저장하지 않는다. JPA가 persistence-context의 managed 추적으로 막는 것을 대체한다.
+            java.util.Set<Object> visited = ctx.<java.util.Set<Object>>getOrEmpty(CASCADE_VISITED_KEY)
+                    .orElseGet(() -> java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+            visited.add(owner);
+            Mono<Void> chain = Flux.fromIterable(cascading)
+                    .concatMap(property -> {
+                        Object reference;
                         try {
-                            property.field().set(owner, savedReference);
+                            reference = property.field().get(owner);
                         } catch (IllegalAccessException exception) {
-                            throw new IllegalStateException(
-                                    "Cannot rebind cascaded to-one reference " + property.propertyName()
-                                            + " on " + metadata.entityType().getName(), exception);
+                            return Mono.error(new IllegalStateException(
+                                    "Cannot read to-one reference " + property.propertyName()
+                                            + " for cascade on " + metadata.entityType().getName(), exception));
                         }
-                    }).then();
-                })
-                .then();
+                        if (reference == null) {
+                            // null 참조 = 이번 save에서 이 관계를 관리하지 않음 → cascade no-op.
+                            return Mono.empty();
+                        }
+                        if (!visited.add(reference)) {
+                            // 이미 cascade 경로에 있는 인스턴스(사이클/공유 참조) → 재저장하지 않는다(무한재귀 방지).
+                            return Mono.empty();
+                        }
+                        // 참조 엔티티를 먼저 저장해 id를 확보한다. 반환된(=관리되는) 인스턴스를 owner 필드에 다시 set해
+                        // 이후 owner row 쓰기에서 read()가 채워진 @Id를 FK로 추출하도록 한다.
+                        return save(reference).doOnNext(savedReference -> {
+                            try {
+                                property.field().set(owner, savedReference);
+                            } catch (IllegalAccessException exception) {
+                                throw new IllegalStateException(
+                                        "Cannot rebind cascaded to-one reference " + property.propertyName()
+                                                + " on " + metadata.entityType().getName(), exception);
+                            }
+                        }).then();
+                    })
+                    .then();
+            // visited 집합을 nested save(reference)가 보도록 Context로 전파한다.
+            return chain.contextWrite(c -> c.put(CASCADE_VISITED_KEY, visited));
+        });
     }
 
     /**

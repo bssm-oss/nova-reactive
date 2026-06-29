@@ -41,7 +41,35 @@ class ToOneCascadeIntegrationTest {
         schema.create(
                 Author.class, Article.class,
                 Profile.class, Account.class,
-                MarkerAuthor.class, MarkerArticle.class).block();
+                MarkerAuthor.class, MarkerArticle.class,
+                Node.class).block();
+    }
+
+    @Test
+    void bidirectionalToOneCascadeDoesNotRecurseInfinitely() {
+        // 회귀: 양방향 cascade=ALL(self-referential) 사이클은 visited-set 가드가 없으면 무한 재귀(StackOverflow).
+        // 가드가 있으면 정상 완료하고 두 행이 모두 저장돼야 한다(FK 바인딩은 ordering상 한쪽만 채워질 수 있음).
+        Node a = new Node("a");
+        Node b = new Node("b");
+        a.setPeer(b);
+        b.setPeer(a);
+
+        StepVerifier.create(support.operations().save(a))
+                .assertNext(saved -> assertNotNull(saved.getId()))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().count(Node.class, QuerySpec.empty()))
+                .assertNext(count -> assertEquals(2L, count, "사이클 cascade는 크래시 없이 두 노드를 저장해야 한다"))
+                .verifyComplete();
+    }
+
+    @Test
+    void selfReferenceToOneCascadeDoesNotRecurseInfinitely() {
+        Node n = new Node("self");
+        n.setPeer(n);
+        StepVerifier.create(support.operations().save(n))
+                .assertNext(saved -> assertNotNull(saved.getId()))
+                .verifyComplete();
     }
 
     @Test
@@ -279,6 +307,37 @@ class ToOneCascadeIntegrationTest {
 
         public MarkerAuthor getAuthor() {
             return author;
+        }
+    }
+
+    // --- self-referential cascade=ALL cycle fixture ------------------------
+
+    @Entity
+    @Table(name = "cascade_node")
+    public static class Node {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+
+        // self-referential @ManyToOne(cascade=ALL). FK nullable이라 사이클에서 한쪽 미바인딩 허용.
+        @ManyToOne(targetEntity = Node.class, cascade = CascadeType.ALL)
+        @JoinColumn(name = "peer_id")
+        private Node peer;
+
+        public Node() {
+        }
+
+        public Node(String name) {
+            this.name = name;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setPeer(Node peer) {
+            this.peer = peer;
         }
     }
 }
