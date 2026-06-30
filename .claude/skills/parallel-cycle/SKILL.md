@@ -7,9 +7,9 @@ description: Nova의 표준 multi-feature 작업 패턴. 사용자가 한 번에
 
 Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 
-**스코프 분리 → 병렬 팀 작업 → 병렬 리뷰 → 보완 → 병합 → E2E 테스트 → 보완 → PR 생성·머지 → 다음 cycle confirm**
+**스코프 분리 → 병렬 팀 작업 → (병렬 리뷰 ↔ 보완)\* → 병합 → (E2E 테스트 ↔ 보완)\* → PR 생성·머지 → 다음 cycle confirm**
 
-리뷰는 **병합 전** worktree 브랜치에서 하고, 보완 후 통합 브랜치로 병합한다. 통합 브랜치에서 E2E를 돌리고, 보완한 뒤 origin에 PR을 올려 squash-merge 한다. (현행처럼 로컬 main 직접 커밋이 아니라 PR 기반.)
+(↔)\*는 **문제(critical/major) 0이 될 때까지 반복하는 수렴 루프**다 — 보완 후 반드시 재리뷰/재E2E해서 새 결함이 없음을 확인해야 다음 단계로 간다. 리뷰는 **병합 전** worktree 브랜치에서 하고, 수렴 후 통합 브랜치로 병합한다. 통합 브랜치에서 E2E를 돌리고, 보완한 뒤 origin에 PR을 올려 squash-merge 한다. (현행처럼 로컬 main 직접 커밋이 아니라 PR 기반.)
 
 ## Trigger 조건
 
@@ -65,9 +65,11 @@ git -C <worktree path> diff main..HEAD
 - Spring `@ConfigurationProperties`이면 dead config 위험 (실제 적용 효과까지 검증되는지)
 - agent별 sandbox 권한 불일치 가능 → 오케스트레이터가 build를 외부에서 직접 verify
 
-## Phase 4 — 보완 (병합 전)
+## Phase 4 — 보완 ↔ 재리뷰 루프 (병합 전, 문제 0까지 반복)
 
-review의 critical/major를 **머지 전에** 해당 worktree에서 해소한다: 같은 agent에 `SendMessage`로 수정 요청하거나, 작은 수정은 worktree에서 직접 edit 후 amend/추가 commit. 보완 후 재리뷰가 필요하면 짧게 재확인. 미해소 major(설계 필요)는 backlog 분류.
+review의 critical/major를 **머지 전에** 해당 worktree에서 해소한다: 같은 agent에 `SendMessage`로 수정 요청하거나, 작은 수정은 worktree에서 직접 edit 후 amend/추가 commit.
+
+**핵심: 보완은 단발이 아니라 수렴 루프다.** 보완할 때마다 **반드시 그 변경분을 재리뷰**하고(같은 reviewer 또는 새 reviewer에 변경 commit range 전달), 새 critical/major가 없을 때까지 보완→재리뷰를 반복한다. 종료 조건: 리뷰어가 critical/major **0건**으로 확인(보완이 새 결함을 만들지 않았음까지 검증). minor는 기록만 하고 넘어갈 수 있으나, 누적 minor가 많으면 한 번 더 정리. 설계 결정이 필요해 이 cycle에서 못 닫는 major는 명시적으로 backlog 분류하고 사용자에게 보고(무한 루프 방지) — 단 "문제 없음" 선언은 미해소 critical/major가 0일 때만.
 
 ## Phase 5 — 병합 (통합 브랜치로)
 
@@ -95,9 +97,9 @@ review의 critical/major를 **머지 전에** 해당 worktree에서 해소한다
 2. **실제 앱 구동**: `nova-example`의 `NovaReactiveExample`(필요 시 `HibernateReactiveExample` 대조)을 실행해 ORM이 실 driver로 동작하는지 확인 — schema 생성, save/find, 관계/컬렉션, 트랜잭션·flush까지 한 흐름으로.
 3. 관련 dialect 통합(H2) + (해당 시) `nova-spring-boot-starter`/`nova-spring-data` 통합.
 
-## Phase 7 — 보완 (E2E 후)
+## Phase 7 — 보완 ↔ E2E 재실행 루프 (문제 0까지 반복)
 
-E2E에서 드러난 결함을 통합 브랜치에서 직접 fix-commit. 회귀 테스트 추가. 다시 Phase 6 핵심만 재실행해 green 확인.
+E2E에서 드러난 결함을 통합 브랜치에서 직접 fix-commit + 회귀 테스트 추가. **보완 후 반드시 Phase 6을 재실행**하고, 새 결함이 안 나올 때까지 보완→E2E 재실행을 반복한다. 코드 변경이 컸으면 Phase 3 리뷰도 변경분에 대해 한 번 더 돌려 재검증. 종료 조건: E2E green + 미해소 critical/major 0건. 그때만 Phase 8로 진행한다.
 
 ## Phase 8 — PR 생성 및 머지
 
