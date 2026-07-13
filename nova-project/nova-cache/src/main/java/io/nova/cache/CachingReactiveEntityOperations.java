@@ -176,17 +176,22 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         // 쿼리 캐시 read-through: opt-in(queryCache != null) + cacheable + 트랜잭션 밖(populateOnRead)
         // + 잠금 없는 쿼리만. 잠금(FOR UPDATE/SHARE)은 항상 DB를 쳐야 하므로 캐시하지 않는다.
         if (queryCache != null && warmEntityCache && querySpec.lockMode() == LockMode.NONE) {
-            Class<?> type = config.keyType();
-            String key = QuerySpecCacheKey.of(type, querySpec);
+            // 무효화 파티션은 canonical keyType(subtype write가 base-type query까지 통째 무효화 — over-invalidation,
+            // 안전). 그러나 캐시 키 문자열은 <b>실제 쿼리 타입(entityType)</b>으로 만든다. 상속 계층에서
+            // findAll(Base, spec)과 findAll(Sub, spec)은 delegate가 서로 다른 결과셋(전체 vs isInstance 부분집합)을
+            // 내므로, 둘이 같은 canonical keyType으로 키를 공유하면 교차 서빙되어 잘못된 결과/ClassCastException을
+            // 낸다. QuerySpecCacheKey가 타입명을 키 선두에 넣으므로 root/subtype 키가 확실히 구분된다.
+            Class<?> partition = config.keyType();
+            String key = QuerySpecCacheKey.of(entityType, querySpec);
             Flux<T> onMiss = Flux.defer(() -> delegate.findAll(entityType, querySpec)
                     .collectList()
-                    .flatMapMany(list -> queryCache.put(type, key, new ArrayList<Object>(list))
+                    .flatMapMany(list -> queryCache.put(partition, key, new ArrayList<Object>(list))
                             // 결과를 쿼리 캐시에 저장 + 엔티티 캐시도 warming(이후 findById 히트).
                             .thenMany(Flux.fromIterable(list))
                             .concatMap(entity -> putEntity(entity).thenReturn(entity))));
             // 빈 리스트도 히트로 취급해야 하므로 Mono 존재 여부로 hit/miss를 판별한다(빈 Flux를
             // switchIfEmpty로 miss 처리하면 빈 결과가 매번 재실행됨).
-            return queryCache.get(type, key)
+            return queryCache.get(partition, key)
                     .map(Optional::of)
                     .defaultIfEmpty(Optional.empty())
                     .flatMapMany(hit -> hit.isPresent()

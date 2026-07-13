@@ -24,6 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 쿼리 캐시 read-through와 write invalidation을, findAll 실행 횟수를 세는 in-memory fake delegate로 고립 검증한다.
@@ -185,6 +187,51 @@ class QueryCacheDecoratorTest {
         assertEquals(2, delegate.findAllCalls.get(), "쿼리 캐시 미배선 시 findAll은 기존대로 매번 delegate를 쳐야 한다");
     }
 
+    // --- 상속 계층 회귀: 다형 query-cache 키 충돌 방지 (CRITICAL 재발 방지) --------
+
+    @Test
+    void baseAndSubtypeQueriesDoNotCrossServe() {
+        // @Cacheable을 root(Animal)에 선언 → Animal/Dog 모두 canonical keyType=Animal로 해석된다. delegate는
+        // findAll(Animal)=전 행, findAll(Dog)=isInstance 부분집합으로 서로 다른 결과셋을 낸다. read 키가
+        // canonical keyType으로 만들어지면 둘이 같은 키를 공유해 교차 서빙(잘못된 결과/ClassCastException)된다.
+        // 실제 쿼리 타입으로 키를 만들면 각자 올바른 결과셋을 받아야 한다.
+        CountingQueryOps delegate = new CountingQueryOps();
+        delegate.seed(new Animal(1L, "generic"));
+        delegate.seed(new Dog(2L, "rex"));
+        ReactiveEntityOperations ops = cachingWithQuery(delegate);
+        QuerySpec all = QuerySpec.empty();
+
+        List<Animal> animals = ops.findAll(Animal.class, all).collectList().block(); // 캐시: 전 행(2)
+        List<Dog> dogs = ops.findAll(Dog.class, all).collectList().block();          // 별도 키 → 부분집합(1)
+
+        assertEquals(2, animals.size(), "findAll(Animal)은 전 계층 행을 반환해야 한다");
+        assertEquals(1, dogs.size(), "findAll(Dog)은 base 결과를 교차 서빙받지 않고 Dog만 반환해야 한다");
+        assertInstanceOf(Dog.class, dogs.get(0), "교차 서빙되면 여기서 Animal 인스턴스거나 CCE가 난다");
+        assertEquals(2, delegate.findAllCalls.get(),
+                "Base/Sub 쿼리는 서로 다른 키라 각각 delegate를 실행해야 한다(false hit 없음)");
+
+        // 재실행은 각 타입별로 히트해야 한다(추가 delegate 호출 없음).
+        assertEquals(2, ops.findAll(Animal.class, all).collectList().block().size());
+        assertEquals(1, ops.findAll(Dog.class, all).collectList().block().size());
+        assertEquals(2, delegate.findAllCalls.get(), "동일 타입 재조회는 각자 캐시 히트여야 한다");
+    }
+
+    @Test
+    void subtypeWriteInvalidatesBaseTypeQuery() {
+        // subtype write는 canonical keyType(Animal) 파티션을 통째 무효화하므로 base-type query도 재조회돼야 한다.
+        CountingQueryOps delegate = new CountingQueryOps();
+        delegate.seed(new Animal(1L, "generic"));
+        ReactiveEntityOperations ops = cachingWithQuery(delegate);
+        QuerySpec all = QuerySpec.empty();
+
+        ops.findAll(Animal.class, all).collectList().block();  // delegate #1, Animal 파티션 캐시
+        ops.save(new Dog(2L, "rex")).block();                  // subtype write → Animal 파티션 무효화
+        ops.findAll(Animal.class, all).collectList().block();  // 무효화되어 delegate #2
+
+        assertTrue(delegate.findAllCalls.get() == 2,
+                "subtype write는 canonical 파티션을 비워 base-type query를 재조회시켜야 한다");
+    }
+
     // --- fake delegate ------------------------------------------------------
 
     final class CountingQueryOps implements ReactiveEntityOperations {
@@ -306,6 +353,38 @@ class QueryCacheDecoratorTest {
         Ledger(Long id, String owner) {
             this.id = id;
             this.owner = owner;
+        }
+    }
+
+    /**
+     * 상속 계층 root. {@code @Cacheable}은 여기에만 선언되므로 Animal/Dog 모두 canonical keyType은 Animal이다.
+     */
+    @Entity
+    @Table(name = "cache_animal")
+    @Cacheable
+    static class Animal {
+        @Id
+        private Long id;
+        @Column(name = "species")
+        private String species;
+
+        Animal() {
+        }
+
+        Animal(Long id, String species) {
+            this.id = id;
+            this.species = species;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_animal")
+    static class Dog extends Animal {
+        Dog() {
+        }
+
+        Dog(Long id, String species) {
+            super(id, species);
         }
     }
 }
