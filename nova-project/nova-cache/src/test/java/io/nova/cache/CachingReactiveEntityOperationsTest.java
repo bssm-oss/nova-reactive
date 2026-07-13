@@ -144,6 +144,24 @@ class CachingReactiveEntityOperationsTest {
     }
 
     @Test
+    void polymorphicWriteWithRedeclaredCacheableStillInvalidatesBaseKey() {
+        // subtype(Cat)에 @Cacheable을 재선언해도 canonical은 root(Animal)이어야 한다. base-type findById가
+        // 심은 키를 subtype save가 evict 못 하면 stale Cat이 서빙된다(재리뷰 MEDIUM 재발 경로).
+        CountingOps delegate = new CountingOps(metadataFactory);
+        delegate.seed(new Cat(1L, "tabby"));
+        ReactiveEntityOperations ops = caching(delegate);
+
+        ops.findById(Animal.class, 1L).block(); // delegate #1 + 캐시(canonical Animal 키)
+        ops.findById(Animal.class, 1L).block(); // 히트(#1)
+
+        ops.save(new Cat(1L, "siamese")).block(); // 재선언 subtype write → canonical 키로 evict
+        ops.findById(Animal.class, 1L).block();  // 무효화되어 delegate #2
+
+        assertEquals(2, delegate.findByIdCalls.get(),
+                "@Cacheable 재선언 subtype write도 root canonical 키를 무효화해야 한다");
+    }
+
+    @Test
     void polymorphicDeleteInvalidatesBaseTypeCacheKey() {
         CountingOps delegate = new CountingOps(metadataFactory);
         Dog dog = new Dog(1L, "rex");
@@ -378,6 +396,22 @@ class CachingReactiveEntityOperationsTest {
         }
 
         Dog(Long id, String species) {
+            super(id, species);
+        }
+    }
+
+    /**
+     * {@code @Cacheable}을 subtype에 <b>재선언</b>한 케이스. nearest-declaring 해석이면 canonical이 Cat으로
+     * 갈라져 base-type findById 캐시를 evict 못 하지만, root-most 정규화면 canonical은 여전히 Animal이다.
+     */
+    @Entity
+    @Table(name = "cache_animal")
+    @Cacheable
+    static class Cat extends Animal {
+        Cat() {
+        }
+
+        Cat(Long id, String species) {
             super(id, species);
         }
     }

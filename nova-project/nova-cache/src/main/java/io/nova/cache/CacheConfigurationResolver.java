@@ -44,21 +44,27 @@ public final class CacheConfigurationResolver {
     }
 
     private CacheConfiguration compute(Class<?> entityType) {
-        Class<?> cacheableDecl = findDeclaringClass(entityType, jakarta.persistence.Cacheable.class);
-        Class<?> cacheDecl = findDeclaringClass(entityType, Cache.class);
+        // canonical 타입 = 캐시 애너테이션(@Cacheable 또는 @Cache)을 선언한 조상 중 root-most(Object에 가장
+        // 가까운) 클래스. 계층의 어느 진입점(base findById, subtype save)에서 resolve 하든 동일한 canonical이
+        // 나오도록, 첫(가장 파생된) 매치에서 멈추지 않고 끝까지 걸으며 마지막 매치를 유지한다. 이 불변식이
+        // read/write 캐시 키를 일치시켜 다형 stale read를 막는다.
+        Class<?> canonicalType = rootMostAnnotatedClass(entityType);
+        if (canonicalType == null) {
+            return CacheConfiguration.notCacheable();
+        }
+
+        // 설정 값은 canonical <b>직접 선언</b> 기준으로 읽는다. canonical의 조상에는 (정의상) 캐시 애너테이션이
+        // 없으므로 getDeclaredAnnotation으로 충분하며, canonical보다 <em>아래(subtype)</em>에 선언된 @Cache/
+        // @Cacheable은 진입점에 따라 보였다 안 보였다 하므로 일부러 무시한다(무시하지 않으면 region/키가 갈라져
+        // 다시 stale). 즉 다형 캐시 설정은 canonical 레벨에 두어야 한다.
         jakarta.persistence.Cacheable cacheable =
-                cacheableDecl == null ? null : cacheableDecl.getDeclaredAnnotation(jakarta.persistence.Cacheable.class);
-        Cache cacheAnn = cacheDecl == null ? null : cacheDecl.getDeclaredAnnotation(Cache.class);
+                canonicalType.getDeclaredAnnotation(jakarta.persistence.Cacheable.class);
+        Cache cacheAnn = canonicalType.getDeclaredAnnotation(Cache.class);
 
         boolean isCacheable = cacheable != null ? cacheable.value() : cacheAnn != null;
         if (!isCacheable) {
             return CacheConfiguration.notCacheable();
         }
-
-        // canonical 타입 = 캐시 애너테이션을 선언한 조상 중 root-most(Object에 가장 가까운) 클래스.
-        // 계층 어느 진입점(base findById, subtype save)에서 resolve 하든 같은 조상 선언 클래스를 찾으므로
-        // 그중 상위 클래스를 canonical로 고정하면 read/write 키가 동일해진다.
-        Class<?> canonicalType = higher(cacheableDecl, cacheDecl);
 
         String region;
         CacheConcurrencyStrategy usage;
@@ -80,26 +86,19 @@ public final class CacheConfigurationResolver {
     }
 
     /**
-     * 두 선언 클래스 중 상위(root-most) 클래스를 반환한다. 하나가 {@code null}이면 다른 하나를 반환한다.
-     * 단일 상속 체인에서 두 조상은 항상 비교 가능하므로 {@link Class#isAssignableFrom(Class)}로 상하 판단한다.
+     * {@code @Cacheable} 또는 {@code @Cache}를 선언한 <b>root-most(Object에 가장 가까운)</b> 조상 클래스를
+     * 반환한다. 계층을 끝까지 걸으며 마지막 매치를 유지하므로, 같은 애너테이션이 base와 subtype 양쪽에
+     * 선언되거나 두 애너테이션이 서로 다른 레벨에 있어도 어느 진입점에서든 동일한 canonical이 나온다.
+     * 매치가 전혀 없으면 {@code null}.
      */
-    private static Class<?> higher(Class<?> a, Class<?> b) {
-        if (a == null) {
-            return b;
-        }
-        if (b == null) {
-            return a;
-        }
-        // a가 b의 상위(또는 동일)면 a가 root-most.
-        return a.isAssignableFrom(b) ? a : b;
-    }
-
-    private static Class<?> findDeclaringClass(Class<?> type, Class<? extends java.lang.annotation.Annotation> annotationType) {
+    private static Class<?> rootMostAnnotatedClass(Class<?> type) {
+        Class<?> rootMost = null;
         for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
-            if (current.getDeclaredAnnotation(annotationType) != null) {
-                return current;
+            if (current.getDeclaredAnnotation(jakarta.persistence.Cacheable.class) != null
+                    || current.getDeclaredAnnotation(Cache.class) != null) {
+                rootMost = current; // 더 상위 선언이 있으면 덮어써 root-most로 수렴.
             }
         }
-        return null;
+        return rootMost;
     }
 }

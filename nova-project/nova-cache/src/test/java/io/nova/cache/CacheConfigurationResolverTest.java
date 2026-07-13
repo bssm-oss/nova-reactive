@@ -77,6 +77,33 @@ class CacheConfigurationResolverTest {
     }
 
     @Test
+    void cacheableRedeclaredOnSubtypeStillResolvesToRootCanonical() {
+        // @Cacheable가 base와 subtype 양쪽에 선언되어도 canonical은 root-most(base)여야 한다 —
+        // 아니면 resolve(base)와 resolve(subtype)의 키 컴포넌트가 갈라져 다형 stale read가 재발한다.
+        CacheConfiguration base = resolver.resolve(RedeclaredBase.class);
+        CacheConfiguration sub = resolver.resolve(RedeclaredSub.class);
+
+        assertEquals(RedeclaredBase.class, base.keyType());
+        assertEquals(RedeclaredBase.class, sub.keyType(),
+                "subtype에 @Cacheable를 재선언해도 canonical keyType은 root여야 한다");
+        assertEquals(base.region(), sub.region());
+    }
+
+    @Test
+    void cacheOnSubtypeOnlyStillSharesRootCacheableRegion() {
+        // @Cacheable는 root, @Cache(region)는 subtype에만 → root findById에서는 @Cache가 안 보이므로
+        // region이 root.name으로, subtype resolve에서는 "x"로 갈라지면 stale. root-most 정규화로 region 일치해야 한다.
+        CacheConfiguration base = resolver.resolve(RootCacheable.class);
+        CacheConfiguration sub = resolver.resolve(SubWithCache.class);
+
+        assertEquals(RootCacheable.class, base.keyType(),
+                "@Cache가 subtype에만 있어도 canonical keyType은 root-most @Cacheable 선언 클래스여야 한다");
+        assertEquals(RootCacheable.class, sub.keyType());
+        assertEquals(base.region(), sub.region(),
+                "base와 subtype이 동일 region을 써야 다형 findById/save가 같은 캐시 인스턴스를 공유한다");
+    }
+
+    @Test
     void unsupportedConcurrencyStrategyFailsFast() {
         IllegalStateException nonstrict = assertThrows(IllegalStateException.class,
                 () -> resolver.resolve(NonstrictStrategy.class));
@@ -117,5 +144,23 @@ class CacheConfigurationResolverTest {
 
     @Cache(usage = CacheConcurrencyStrategy.TRANSACTIONAL)
     static class TransactionalStrategy {
+    }
+
+    // 시나리오 1: @Cacheable를 base와 subtype에 각각 재선언(nearest-declaring이면 canonical이 갈라진다).
+    @Cacheable
+    static class RedeclaredBase {
+    }
+
+    @Cacheable
+    static class RedeclaredSub extends RedeclaredBase {
+    }
+
+    // 시나리오 2: @Cacheable는 root에만, @Cache(region)는 subtype에만.
+    @Cacheable
+    static class RootCacheable {
+    }
+
+    @Cache(region = "sub-region")
+    static class SubWithCache extends RootCacheable {
     }
 }
