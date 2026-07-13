@@ -50,6 +50,14 @@ import java.util.function.Function;
  *   <li>알려진 한계: 단일 JVM in-process 캐시로, 동시 writer 간 완전한 트랜잭셔널 정합성(외부 post-commit
  *       broadcast)은 v2(외부 캐시 프로바이더)에서 다룬다. {@code findById(..., FetchGroup)}와 임의 쿼리
  *       결과는 v1에서 캐시하지 않는다(자식 hydration 편차 회피).</li>
+ *   <li><b>배선 경계(EntityManager 결합):</b> {@code ReactiveEntityManager}는 반드시 이 캐시 데코레이터
+ *       <b>위에</b> 얹어라(예: {@code new SimpleReactiveEntityManager(NovaCache.caching(base, ...), mf)}).
+ *       그래야 EM의 persist/merge/remove가 이 데코레이터의 write invalidation 경로를 거친다. EM을 캐시되지
+ *       않은 <b>base operations 위에</b> 만들고 <em>별도의</em> 캐시 데코레이터로 읽으면, EM write가 무효화를
+ *       우회해 그 캐시가 stale 값을 낼 수 있다. 또한 {@link #flush()}는 세션 dirty를 DB로 내보낼 뿐 캐시를
+ *       갱신하지 않으므로, 세션 안에서 dirty만 mutate하고 write 메서드({@code save}/{@code update}/{@code delete})를
+ *       거치지 않은 변경 역시 캐시 무효화를 트리거하지 않는다 — 캐시와 EM은 같은 데코레이터 스택으로 결합해
+ *       배선해야 정합적이다.</li>
  * </ul>
  *
  * <p>{@code @Cacheable}이 아닌 타입은 캐시 없이 그대로 delegate로 통과한다 — 기존 리액티브 동작과 동일하다.
@@ -273,6 +281,23 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @Override
     public <T> Flux<AggregateRow> aggregate(Class<T> entityType, AggregateSpec spec) {
         return delegate.aggregate(entityType, spec);
+    }
+
+    // --- session flush ------------------------------------------------------
+
+    /**
+     * 현재 Reactor {@code Context}에 바인딩된 세션의 보류 변경을 즉시 DB로 밀어낸다. 이 데코레이터는 세션을
+     * 소유하지 않으므로 감싼 delegate({@code SimpleReactiveEntityOperations})의 flush로 그대로 위임한다.
+     * <p>
+     * {@link ReactiveEntityOperations#flush()}의 기본 구현은 no-op이므로 이 메서드를 override하지 않으면,
+     * 이 캐시 데코레이터 <b>위에</b> 얹은 {@code ReactiveEntityManager.flush()}가 조용히 무시(silent no-op)돼
+     * 세션 dirty가 명시적으로 flush되지 않는 배선 함정이 생긴다. 따라서 delegate.flush()로 위임해 그 표면을
+     * 보존한다. flush는 세션 상태만 내보내며 캐시는 건드리지 않는다(무효화는 write 경로 담당 — 클래스 javadoc의
+     * 배선 경계 참고).
+     */
+    @Override
+    public Mono<Void> flush() {
+        return delegate.flush();
     }
 
     // --- transaction / read session scoping --------------------------------
