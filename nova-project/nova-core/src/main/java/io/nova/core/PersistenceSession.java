@@ -183,6 +183,18 @@ final class PersistenceSession {
     }
 
     /**
+     * 주어진 엔티티를 identity map에서 제거한다(JPA {@code detach} 등가). id로 식별할 수 없으면(예: null id)
+     * no-op이다. 제거된 엔티티는 이후 flush 대상에서 빠지므로 미flush 변경은 폐기된다. 이 메서드는 identity map
+     * 자료구조에서 한 엔트리를 지우기만 하며, 스냅샷/dirty diff 알고리즘 자체는 건드리지 않는다.
+     */
+    void detach(EntityMetadata<?> metadata, Object entity) {
+        EntityKey key = keyFor(metadata, entity);
+        if (key != null) {
+            identityMap.remove(key);
+        }
+    }
+
+    /**
      * 엔티티의 id 컬럼 값 리스트로 identity 키를 만든다. 단일 키는 1원소, 복합키는 컴포넌트 수만큼이다.
      * 모든 컬럼 값이 null이면(아직 식별 불가) {@code null}을 반환해 관리 대상에서 제외한다.
      */

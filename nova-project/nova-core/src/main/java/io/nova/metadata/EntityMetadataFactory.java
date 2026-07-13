@@ -40,6 +40,9 @@ import jakarta.persistence.MapKeyColumn;
 import jakarta.persistence.MapKeyEnumerated;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.MappedSuperclass;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.NamedNativeQuery;
+import jakarta.persistence.NamedQuery;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.PrimaryKeyJoinColumn;
@@ -148,6 +151,12 @@ public final class EntityMetadataFactory {
      * 한 테이블이 모든 서브타입 컬럼을 담도록 만들 때 사용한다.
      */
     private final Map<Class<?>, EntityMetadata<?>> mergedHierarchyCache = new ConcurrentHashMap<>();
+    /**
+     * 클래스별 {@code @NamedQuery}/{@code @NamedNativeQuery} 정의 캐시. 애너테이션 파싱은 리플렉션이므로
+     * 타입당 1회만 수행해 재사용한다. C1d(명명 쿼리) 전용 마커 네임스페이스({@code namedQuery*})로,
+     * 다른 메타데이터 스캔 로직과 독립적이다.
+     */
+    private final Map<Class<?>, List<NamedQueryDefinition>> namedQueryDefinitionsCache = new ConcurrentHashMap<>();
 
     /**
      * {@link JsonCodec} 없이 factory를 만든다 — {@code @Json} 필드가 없는 엔티티만 다룰 때 사용한다.
@@ -185,6 +194,86 @@ public final class EntityMetadataFactory {
         EntityMetadata<T> created = createMetadata(entityType);
         cache.put(entityType, created);
         return created;
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Named queries (C1d) — 마커 네임스페이스: namedQuery*
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * 주어진 타입과 그 매핑 조상({@code @MappedSuperclass}/상위 {@code @Entity})에 선언된
+     * {@code @NamedQuery}/{@code @NamedQueries}/{@code @NamedNativeQuery}/{@code @NamedNativeQueries}를
+     * 파싱해 {@link NamedQueryDefinition} 목록으로 반환한다. 결과는 타입별로 캐시되며 immutable이다.
+     * <p>
+     * 기존 메타데이터 파싱 흐름과 독립적인 추가 스캔 진입점으로, {@link #createMetadata(Class)}를 변경하지
+     * 않는다. 미지원 요소({@code lockMode != NONE}, query hint, {@code resultSetMapping})는 조용히 무시하지
+     * 않고 {@link IllegalStateException}으로 fail-fast 한다.
+     *
+     * @param type 스캔 대상 엔티티 또는 {@code @MappedSuperclass}
+     * @return 선언 순서를 보존한 명명 쿼리 정의 목록(없으면 빈 목록)
+     */
+    public List<NamedQueryDefinition> namedQueryDefinitions(Class<?> type) {
+        Objects.requireNonNull(type, "type must not be null");
+        List<NamedQueryDefinition> cached = namedQueryDefinitionsCache.get(type);
+        if (cached != null) {
+            return cached;
+        }
+        List<NamedQueryDefinition> collected = collectNamedQueryDefinitions(type);
+        List<NamedQueryDefinition> immutable = List.copyOf(collected);
+        namedQueryDefinitionsCache.put(type, immutable);
+        return immutable;
+    }
+
+    private List<NamedQueryDefinition> collectNamedQueryDefinitions(Class<?> type) {
+        // 타입 자신과 매핑에 기여하는 조상(@MappedSuperclass/상위 @Entity)까지 root-first로 스캔한다 —
+        // 상위에 선언된 명명 쿼리가 먼저 등록되도록 mappedFields와 동일한 계층 순서를 따른다.
+        List<Class<?>> chain = new ArrayList<>();
+        chain.add(type);
+        Class<?> ancestor = type.getSuperclass();
+        while (ancestor != null && ancestor != Object.class
+                && (ancestor.isAnnotationPresent(MappedSuperclass.class)
+                || ancestor.isAnnotationPresent(Entity.class))) {
+            chain.add(ancestor);
+            ancestor = ancestor.getSuperclass();
+        }
+        List<NamedQueryDefinition> definitions = new ArrayList<>();
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            Class<?> source = chain.get(i);
+            for (NamedQuery nq : source.getAnnotationsByType(NamedQuery.class)) {
+                if (nq.lockMode() != LockModeType.NONE) {
+                    throw new IllegalStateException("@NamedQuery '" + nq.name() + "' on " + source.getName()
+                            + " declares lockMode " + nq.lockMode() + " which is not supported");
+                }
+                if (nq.hints().length > 0) {
+                    throw new IllegalStateException("@NamedQuery '" + nq.name() + "' on " + source.getName()
+                            + " declares query hints which are not supported");
+                }
+                definitions.add(new NamedQueryDefinition(nq.name(), nq.query(), false, null));
+            }
+            for (NamedNativeQuery nnq : source.getAnnotationsByType(NamedNativeQuery.class)) {
+                if (nnq.hints().length > 0) {
+                    throw new IllegalStateException("@NamedNativeQuery '" + nnq.name() + "' on " + source.getName()
+                            + " declares query hints which are not supported");
+                }
+                if (!nnq.resultSetMapping().isBlank()) {
+                    throw new IllegalStateException("@NamedNativeQuery '" + nnq.name() + "' on " + source.getName()
+                            + " declares resultSetMapping '" + nnq.resultSetMapping() + "' which is not supported");
+                }
+                Class<?> resultClass = nnq.resultClass() == void.class ? null : nnq.resultClass();
+                definitions.add(new NamedQueryDefinition(nnq.name(), nnq.query(), true, resultClass));
+            }
+        }
+        return definitions;
+    }
+
+    /**
+     * 엔티티 클래스(및 상위 클래스)에 선언된 {@code @NamedEntityGraph}/{@code @NamedEntityGraphs}를 읽어
+     * {@code entityGraph*} 마커 네임스페이스의 선언 모델로 반환한다. C2 라운드의 {@code namedQuery*} 마커와
+     * 충돌하지 않도록 hub 생성자를 건드리지 않고 클래스 애너테이션에서 on-demand로 파싱한다 —
+     * {@link io.nova.graph.NamedEntityGraphReader}에 얇게 위임한다.
+     */
+    public java.util.List<io.nova.graph.NamedEntityGraphDefinition> entityGraphDefinitions(Class<?> entityType) {
+        return io.nova.graph.NamedEntityGraphReader.read(entityType);
     }
 
     /**

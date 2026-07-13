@@ -1597,7 +1597,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         });
     }
 
-    // ===== 세션 컬렉션 diff-at-flush (Stage 1: change-detect + full-replace) =====
+    // ===== 세션 컬렉션 diff-at-flush =====
+    // Stage 1: change-detect(baseline == current → 0 SQL).
+    // Stage 2: owning @ManyToMany link set의 최소 diff — 추가된 (owner,target)만 INSERT, 제거된 것만 DELETE.
+    // Stage 3: 기본 타입 @ElementCollection Set의 최소 diff — 추가된 값만 INSERT, 제거된 값만 DELETE.
+    // Stage 4: ordered(@OrderColumn) List / Map / @Embeddable 원소 EC는 위치·키 의존이라 최소 diff가 부정확할 수
+    //          있어 v1은 full-replace를 유지한다(아래 diffableCollection 참고). 중복 원소(bag)가 있으면 값 기반
+    //          단건 DELETE가 동일 값 행을 모두 지워 부정확하므로 그 경우도 full-replace로 안전하게 되돌린다.
 
     /**
      * 세션이 켜진 상태에서 owner save 시 {@code @ManyToMany(cascade=PERSIST/MERGE)}의 대상 엔티티만 eager로 저장한다.
@@ -1680,17 +1686,124 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // null 컬렉션 = 이번 세션에서 이 관계를 관리하지 않음 → 건드리지 않는다(현행 reconcile과 동일 의미).
             return Mono.empty();
         }
-        Object current = collectionRepresentation(metadata, property, owner);
+        List<Object> current = collectionRepresentation(metadata, property, owner);
         Object baseline = entry.collectionSnapshot(property.propertyName());
         boolean ordered = isOrderedCollection(property);
-        if (baseline != null && baseline != PersistenceSession.FORCE_FULL
-                && collectionRepresentationsEqual(baseline, current, ordered)) {
+        boolean haveBaseline = baseline != null && baseline != PersistenceSession.FORCE_FULL
+                && baseline instanceof List<?>;
+        if (haveBaseline && collectionRepresentationsEqual(baseline, current, ordered)) {
+            // Stage 1: baseline == current → 어떤 SQL도 내지 않는다.
             return Mono.empty();
         }
-        Mono<Void> write = property.manyToMany()
-                ? fullReplaceManyToMany(metadata, property, owner, ownerId)
-                : reconcileOneElementCollection(metadata, property, owner, ownerId);
+        Mono<Void> write;
+        List<?> baselineKeys = haveBaseline ? (List<?>) baseline : null;
+        if (haveBaseline && diffableCollection(property)
+                && !hasDuplicateKeys(baselineKeys) && !hasDuplicateKeys(current)) {
+            // Stage 2/3: baseline 대비 제거/추가된 원소만 최소 DELETE/INSERT 한다(중복 없는 set 의미에서만 안전).
+            List<Object> removed = removedKeys(baselineKeys, current);
+            List<Object> added = addedKeys(baselineKeys, current);
+            write = property.manyToMany()
+                    ? diffManyToMany(metadata, property, ownerId, removed, added)
+                    : diffElementCollection(metadata, property, ownerId, removed, added);
+        } else {
+            // Stage 4 및 fallback: baseline 부재/FORCE_FULL, ordered/Map/@Embeddable, 또는 중복 원소 → full-replace.
+            write = property.manyToMany()
+                    ? fullReplaceManyToMany(metadata, property, owner, ownerId)
+                    : reconcileOneElementCollection(metadata, property, owner, ownerId);
+        }
         return write.doOnSuccess(ignored -> entry.putCollectionSnapshot(property.propertyName(), current));
+    }
+
+    /**
+     * 이 컬렉션을 값 기반 최소 diff(제거 원소만 단건 DELETE, 추가 원소만 단건 INSERT)로 안전하게 동기화할 수
+     * 있는지. owning {@code @ManyToMany}는 대상 id 키가 실제 link 행과 1:1이라 항상 diff 가능하다. {@code @ElementCollection}은
+     * 기본 타입 원소 + 비정렬 + 비Map일 때만 diff한다 — {@code @OrderColumn}(위치 의존)/{@code Map}(키 의존)/{@code @Embeddable}
+     * (다중 컬럼 매칭)은 단건 값 DELETE로 정확히 지울 수 없어 full-replace를 유지한다(Stage 4).
+     */
+    private boolean diffableCollection(PersistentProperty property) {
+        if (property.manyToMany()) {
+            return true;
+        }
+        ElementCollectionInfo info = property.elementCollectionInfo();
+        return !info.embeddable() && !info.ordered() && !info.map();
+    }
+
+    /**
+     * owning {@code @ManyToMany} link table을 최소 diff로 동기화한다 — 제거된 대상 id는 link 행 단건 DELETE,
+     * 추가된 대상 id는 link 행 단건 INSERT. DELETE를 먼저 발행해 (owner,target) unique 제약 재삽입 충돌을 피한다.
+     * {@link #sqlExecutor}만 호출(flush 불변식).
+     */
+    private Mono<Void> diffManyToMany(
+            EntityMetadata<?> metadata, PersistentProperty property, Object ownerId,
+            List<Object> removedTargetIds, List<Object> addedTargetIds) {
+        ManyToManyInfo info = property.manyToManyInfo();
+        EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
+        JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
+        // 추가된 대상이 미영속(null id)이면 link 행에 null FK를 쓸 수 없다 — full-replace 경로와 동일한 명확한
+        // fail-fast를 유지한다(save 시점 cascade가 이미 영속화했어야 한다).
+        if (addedTargetIds.contains(null)) {
+            return Mono.error(new IllegalStateException(
+                    "@ManyToMany targets must be persisted before flush on "
+                            + property.propertyName() + "; add cascade=PERSIST to cascade transient targets"));
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return Flux.fromIterable(removedTargetIds)
+                .concatMap(targetId -> sqlExecutor.execute(renderer.deleteJoinRow(definition, ownerId, targetId)))
+                .thenMany(Flux.fromIterable(addedTargetIds)
+                        .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRow(definition, ownerId, targetId))))
+                .then();
+    }
+
+    /**
+     * 기본 타입 {@code @ElementCollection}(Set 의미) collection table을 최소 diff로 동기화한다 — 제거된 값은
+     * 행 단건 DELETE, 추가된 값은 행 단건 INSERT. {@link #sqlExecutor}만 호출(flush 불변식).
+     */
+    private Mono<Void> diffElementCollection(
+            EntityMetadata<?> metadata, PersistentProperty property, Object ownerId,
+            List<Object> removedValues, List<Object> addedValues) {
+        CollectionTableDefinition definition = collectionDefinition(metadata, property.elementCollectionInfo());
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return Flux.fromIterable(removedValues)
+                .concatMap(value -> sqlExecutor.execute(renderer.deleteCollectionRow(definition, ownerId, value)))
+                .thenMany(Flux.fromIterable(addedValues)
+                        .concatMap(value -> sqlExecutor.execute(renderer.insertCollectionRow(definition, ownerId, value))))
+                .then();
+    }
+
+    /**
+     * 컬렉션 표현 키 리스트에 중복이 있는지. 값 기반 단건 DELETE는 동일 값 행을 모두 지우므로, 중복(bag 의미)이
+     * 있으면 최소 diff가 부정확하다 — 이 경우 호출부가 full-replace로 되돌린다.
+     */
+    static boolean hasDuplicateKeys(List<?> keys) {
+        return new java.util.HashSet<>(keys).size() != keys.size();
+    }
+
+    /**
+     * baseline에는 있으나 current에는 없는 키(= 제거된 원소)를 baseline 등장 순서대로 반환한다.
+     */
+    static List<Object> removedKeys(List<?> baseline, List<?> current) {
+        java.util.Set<Object> currentSet = new java.util.HashSet<>(current);
+        List<Object> removed = new ArrayList<>();
+        for (Object key : baseline) {
+            if (!currentSet.contains(key)) {
+                removed.add(key);
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * current에는 있으나 baseline에는 없는 키(= 추가된 원소)를 current 등장 순서대로 반환한다.
+     */
+    static List<Object> addedKeys(List<?> baseline, List<?> current) {
+        java.util.Set<Object> baselineSet = new java.util.HashSet<>(baseline);
+        List<Object> added = new ArrayList<>();
+        for (Object key : current) {
+            if (!baselineSet.contains(key)) {
+                added.add(key);
+            }
+        }
+        return added;
     }
 
     /**
@@ -2418,6 +2531,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         });
     }
 
+    /**
+     * 현재 Context에 세션이 있으면 기존 dirty-diff flush를 발행하고, 없으면 no-op으로 완료한다. 세션 flush의
+     * 내부 알고리즘({@link #flush(PersistenceSession)})과 세션 조회({@link #currentSession(ContextView)})를
+     * 그대로 재사용하는 얇은 공개 진입점이다 — {@link ReactiveEntityManager#flush()}가 이 메서드로 위임한다.
+     */
+    @Override
+    public Mono<Void> flush() {
+        return Mono.deferContextual(ctx -> currentSession(ctx).map(this::flush).orElseGet(Mono::empty));
+    }
+
     @Override
     public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
         return transactionOperations.inTransaction(ignored -> Mono.deferContextual(ctx -> {
@@ -2649,8 +2772,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         EntityMetadata<P> metadata = metadataFactory.getEntityMetadata(entityType);
         FetchGroup<P> merged = mergeWithAnnotationGroup(entityType, fetchGroup, metadata);
+        // 기본 findById와 동일하게 @ManyToMany/@ElementCollection도 hydrate해 FetchGroup 경로가 default eager와
+        // 최소 동등(⊇)이 되게 한다 — EntityGraph/FetchGroup으로 조회 시 M2M/EC 미로드로 default보다 적게
+        // 가져오던 비일관을 제거한다.
         return findByIdInternal(metadata, id)
-                .flatMap(parent -> hydrateChildren(List.of(parent), merged).thenReturn(parent));
+                .flatMap(parent -> hydrateChildren(List.of(parent), merged)
+                        .then(hydrateManyToMany(List.of(parent), metadata))
+                        .then(hydrateElementCollections(List.of(parent), metadata))
+                        .thenReturn(parent));
     }
 
     @Override
@@ -2664,9 +2793,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         EntityMetadata<P> metadata = metadataFactory.getEntityMetadata(entityType);
         FetchGroup<P> merged = mergeWithAnnotationGroup(entityType, fetchGroup, metadata);
+        // 기본 findAll과 동일하게 @ManyToMany/@ElementCollection도 hydrate해 FetchGroup 경로가 default eager와
+        // 최소 동등(⊇)이 되게 한다(위 findById와 동일한 일관성 보정).
         return findAllInternal(metadata, QuerySpec.empty())
                 .collectList()
-                .flatMapMany(parents -> hydrateChildren(parents, merged).thenMany(Flux.fromIterable(parents)));
+                .flatMapMany(parents -> hydrateChildren(parents, merged)
+                        .then(hydrateManyToMany(parents, metadata))
+                        .then(hydrateElementCollections(parents, metadata))
+                        .thenMany(Flux.fromIterable(parents)));
     }
 
     /**

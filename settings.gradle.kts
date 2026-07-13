@@ -20,4 +20,5 @@ include(
     ":nova-project:nova-spring-data",
     ":nova-project:nova-metrics-micrometer",
     ":nova-project:nova-metamodel",
+    ":nova-project:nova-cache",
 )

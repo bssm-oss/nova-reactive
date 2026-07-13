@@ -1,6 +1,7 @@
 package io.nova.core;
 
 import io.nova.fetch.FetchGroup;
+import io.nova.graph.EntityGraph;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.NativeQuery;
@@ -25,6 +26,19 @@ public interface ReactiveEntityOperations {
      * {@code @GeneratedValue}로 생성된 식별자는 저장 후 entity에 다시 주입되어 반환된다.
      */
     <T> Mono<T> save(T entity);
+
+    /**
+     * 현재 Reactor {@code Context}에 바인딩된 영속성 세션의 보류 변경을 즉시 DB로 밀어낸다
+     * (JPA {@code EntityManager.flush()} 등가). 세션이 없으면(트랜잭션 밖 등) 밀어낼 상태가 없으므로
+     * no-op으로 완료한다. 이 메서드는 세션을 새로 만들지 않는다 — 세션은 {@link #inTransaction(Function)}
+     * 스코프 안에서만 존재한다.
+     * <p>
+     * 기본 구현은 세션을 알지 못하는 외부 구현체에서 안전한 no-op이며, {@link SimpleReactiveEntityOperations}가
+     * 활성 세션을 flush하도록 override한다.
+     */
+    default Mono<Void> flush() {
+        return Mono.empty();
+    }
 
     /**
      * 명시한 property 컬럼만 update한다. {@code save(T)}와 달리 SET 절에 빠진 컬럼은 건드리지 않으므로
@@ -305,6 +319,11 @@ public interface ReactiveEntityOperations {
      * 식별자로 단건 parent 엔티티를 조회한 뒤 {@link FetchGroup}으로 선언된 child들을 batch로 hydrate한다.
      * 각 child spec은 한 번의 IN 절 쿼리로 묶이므로 spec이 K개면 child query는 K개로 N+1과 무관하다.
      * <p>
+     * <b>v1 의미(always-eager):</b> Nova는 blocking lazy proxy가 없어(AGENTS.md #4) {@code @ManyToMany}/
+     * {@code @ElementCollection} 연관은 FetchGroup에 선언 여부와 <b>무관하게 항상 hydrate</b>된다. FetchGroup은
+     * 선언된 child의 <b>배치 로드(no N+1)를 보장</b>할 뿐 미선언 M2M/EC를 제외하지 않으므로, 결과는 default
+     * eager 조회와 최소 동등 이상이다.
+     * <p>
      * 기본 구현은 외부 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
      * {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
      */
@@ -317,11 +336,47 @@ public interface ReactiveEntityOperations {
      * 주어진 parent 타입의 모든 엔티티를 조회한 뒤 {@link FetchGroup}으로 선언된 child들을 batch로 hydrate한다.
      * 각 child spec은 한 번의 IN 절 쿼리로 묶이므로 spec이 K개면 child query는 K개로 parent 수와 무관하다.
      * <p>
+     * <b>v1 의미(always-eager):</b> Nova는 blocking lazy proxy가 없어(AGENTS.md #4) {@code @ManyToMany}/
+     * {@code @ElementCollection} 연관은 FetchGroup에 선언 여부와 <b>무관하게 항상 hydrate</b>된다. FetchGroup은
+     * 선언된 child의 <b>배치 로드(no N+1)를 보장</b>할 뿐 미선언 M2M/EC를 제외하지 않으므로, 결과는 default
+     * eager 조회와 최소 동등 이상이다.
+     * <p>
      * 기본 구현은 외부 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
      * {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
      */
     default <P> Flux<P> findAll(Class<P> entityType, FetchGroup<P> fetchGroup) {
         return Flux.error(new UnsupportedOperationException(
                 "ReactiveEntityOperations.findAll(Class, FetchGroup) must be overridden by the implementation"));
+    }
+
+    /**
+     * {@link EntityGraph}(JPA {@code @NamedEntityGraph}/EntityGraph API의 리액티브 등가)로 명명된 연관의
+     * 배치 로드를 보장하며 식별자로 단건 엔티티를 조회한다. EntityGraph는 이미 {@link FetchGroup}으로 해석돼
+     * 있으므로 이 default 메서드는 메타데이터 접근 없이 {@link #findById(Class, Object, FetchGroup)}에 위임한다 —
+     * 명명 연관은 부모당 IN-절 쿼리 한 번으로 로드돼 N+1이 없다.
+     * <p>
+     * <b>v1 의미(always-eager):</b> Nova는 blocking lazy proxy가 없다(AGENTS.md #4). LAZY 등가는 이런 명시적
+     * fetch plan(배치 로드 보장)으로 제공한다. Nova는 매핑 연관을 기본 eager 로드하므로 그래프는 미명명 연관을
+     * <b>제외하지 않으며</b>(제외할 lazy 수단 없음) 결과는 default eager 조회와 최소 동등 이상이다. 지정하지 않은
+     * 연관을 진짜 지연 로딩(필드 접근 시 동기 DB 호출)하는 semantics는 지원하지 않는다.
+     */
+    default <T, ID> Mono<T> findById(Class<T> entityType, ID id, EntityGraph<T> entityGraph) {
+        if (entityGraph == null) {
+            return Mono.error(new IllegalArgumentException("entityGraph must not be null"));
+        }
+        return findById(entityType, id, entityGraph.toFetchGroup());
+    }
+
+    /**
+     * {@link EntityGraph}로 명명된 연관의 배치 로드를 보장하며 주어진 타입의 모든 엔티티를 조회한다.
+     * EntityGraph가 담고 있는 해석된 {@link FetchGroup}으로 {@link #findAll(Class, FetchGroup)}에 위임한다 —
+     * 명명 연관은 IN-절 쿼리 한 번으로 배치 로드돼 N+1이 없다. always-eager라 미명명 연관도 함께 로드된다
+     * (default eager 조회와 최소 동등 이상).
+     */
+    default <T> Flux<T> findAll(Class<T> entityType, EntityGraph<T> entityGraph) {
+        if (entityGraph == null) {
+            return Flux.error(new IllegalArgumentException("entityGraph must not be null"));
+        }
+        return findAll(entityType, entityGraph.toFetchGroup());
     }
 }

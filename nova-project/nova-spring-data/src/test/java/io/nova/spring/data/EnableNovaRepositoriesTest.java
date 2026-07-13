@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -109,6 +110,54 @@ class EnableNovaRepositoriesTest {
                 .verifyComplete();
     }
 
+    @Test
+    void jpqlAtQueryWorksThroughEnableNovaRepositories() {
+        WidgetRepository repository = context.getBean(WidgetRepository.class);
+
+        Mono<Widget> pipeline = repository.save(new Widget(null, "alpha"))
+                .then(repository.save(new Widget(null, "beta")))
+                .then(repository.jpqlByName("alpha"));
+
+        StepVerifier.create(pipeline)
+                .assertNext(w -> assertTrue(w.getName().equals("alpha")))
+                .verifyComplete();
+
+        StepVerifier.create(repository.save(new Widget(null, "zeta")).thenMany(repository.jpqlNames()))
+                .expectNext("alpha", "beta", "zeta")
+                .verifyComplete();
+    }
+
+    @Test
+    void nativeAtQueryWorksThroughEnableNovaRepositories() {
+        WidgetRepository repository = context.getBean(WidgetRepository.class);
+
+        Mono<Widget> pipeline = repository.save(new Widget(null, "gamma"))
+                .then(repository.nativeByName("gamma"));
+
+        StepVerifier.create(pipeline)
+                .assertNext(w -> {
+                    assertNotNull(w.getId());
+                    assertTrue(w.getName().equals("gamma"));
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void modifyingAtQueryWorksThroughEnableNovaRepositories() {
+        WidgetRepository repository = context.getBean(WidgetRepository.class);
+
+        Mono<Long> pipeline = repository.save(new Widget(null, "old"))
+                .then(repository.renameAll("old", "new"));
+
+        StepVerifier.create(pipeline)
+                .expectNext(1L)
+                .verifyComplete();
+
+        StepVerifier.create(repository.jpqlByName("new"))
+                .assertNext(w -> assertTrue(w.getName().equals("new")))
+                .verifyComplete();
+    }
+
     @Entity
     @Table(name = "widgets")
     public static class Widget {
@@ -137,6 +186,21 @@ class EnableNovaRepositoriesTest {
     }
 
     public interface WidgetRepository extends ReactiveCrudRepository<Widget, Long> {
+
+        // @EnableNovaRepositories 경로에서 별도 배선 없이 JpqlExecutor가 자동 구성되어야 동작한다.
+        @Query("SELECT w FROM Widget w WHERE w.name = :name")
+        Mono<Widget> jpqlByName(@Param("name") String name);
+
+        @Query("SELECT w.name FROM Widget w ORDER BY w.name")
+        Flux<String> jpqlNames();
+
+        // native @Query는 Dialect가 자동 구성되어야 bind marker 렌더링이 동작한다.
+        @Query(value = "SELECT * FROM \"widgets\" WHERE \"widget_name\" = :name", nativeQuery = true)
+        Mono<Widget> nativeByName(@Param("name") String name);
+
+        @Modifying
+        @Query("UPDATE Widget w SET w.name = :to WHERE w.name = :from")
+        Mono<Long> renameAll(@Param("from") String from, @Param("to") String to);
     }
 
     @Configuration(proxyBeanMethods = false)
