@@ -10,6 +10,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
 import io.nova.annotation.SoftDelete;
 import io.nova.annotation.UpdatedAt;
 import jakarta.persistence.Version;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -174,6 +176,60 @@ class EntityMetadataFactoryRelationTest {
         assertTrue(factory.getEntityMetadata(BookWithAuthorAnnotated.class).hasRelationProperties());
     }
 
+    @Test
+    void manyToOneFkColumnTypeReflectsUuidTargetId() {
+        PersistentProperty fk = factory.getEntityMetadata(RefToUuidKeyed.class).manyToOneProperties().get(0);
+        // 도메인 타입은 참조 @Id 타입(UUID), 저장/컬럼 타입은 varchar(String) via UuidStringConverter.
+        assertSame(UUID.class, fk.javaType());
+        assertSame(String.class, fk.columnType());
+        // 인코딩: FK 값(UUID)이 저장타입 String으로 변환되어 바인딩된다.
+        UUID id = UUID.randomUUID();
+        Object encoded = fk.toColumnValue(id);
+        assertEquals(id.toString(), encoded);
+        // 디코딩: 저장타입 String이 도메인 UUID로 복원된다(read-source-type 대칭).
+        assertEquals(id, fk.toPropertyValue(id.toString()));
+    }
+
+    @Test
+    void manyToOneFkColumnTypeReflectsStringTargetId() {
+        PersistentProperty fk = factory.getEntityMetadata(RefToStringKeyed.class).manyToOneProperties().get(0);
+        assertSame(String.class, fk.javaType());
+        assertSame(String.class, fk.columnType());
+        assertEquals("abc", fk.toColumnValue("abc"), "String FK는 변환 없이 그대로 바인딩된다");
+    }
+
+    @Test
+    void manyToOneFkColumnTypeReflectsIntegerTargetId() {
+        PersistentProperty fk = factory.getEntityMetadata(RefToIntegerKeyed.class).manyToOneProperties().get(0);
+        assertSame(Integer.class, fk.javaType());
+        assertSame(Integer.class, fk.columnType());
+    }
+
+    @Test
+    void manyToOneFkColumnTypeReflectsShortTargetId() {
+        PersistentProperty fk = factory.getEntityMetadata(RefToShortKeyed.class).manyToOneProperties().get(0);
+        assertSame(Short.class, fk.javaType());
+        assertSame(Short.class, fk.columnType());
+    }
+
+    @Test
+    void manyToOneFkColumnTypeStaysLongForLongTargetIdWithoutRegression() {
+        // 현행 다수 케이스(Long @Id): FK는 bigint(Long)를 그대로 유지하고 converter가 없다.
+        PersistentProperty fk = factory.getEntityMetadata(BookWithAuthorAnnotated.class).manyToOneProperties().get(0);
+        assertSame(Long.class, fk.javaType());
+        assertSame(Long.class, fk.columnType());
+        Long id = 7L;
+        assertSame(id, fk.toColumnValue(id), "Long FK는 converter 없이 값을 그대로 바인딩한다");
+    }
+
+    @Test
+    void owningOneToOneFkColumnTypeReflectsUuidTargetId() {
+        PersistentProperty fk = factory.getEntityMetadata(OwningOneToOneToUuidKeyed.class).manyToOneProperties().get(0);
+        assertTrue(fk.manyToOne(), "owning @OneToOne은 @ManyToOne과 동일하게 모델링된다");
+        assertSame(UUID.class, fk.javaType());
+        assertSame(String.class, fk.columnType());
+    }
+
     @Entity
     static class BookWithDefaultFkName {
         @Id
@@ -222,6 +278,108 @@ class EntityMetadataFactoryRelationTest {
         private Object bad;
 
         BothRelationsEntity() {
+        }
+    }
+
+    @Entity
+    static class UuidKeyedTarget {
+        @Id
+        private UUID id;
+        private String name;
+
+        UuidKeyedTarget() {
+        }
+    }
+
+    @Entity
+    static class StringKeyedTarget {
+        @Id
+        private String code;
+
+        StringKeyedTarget() {
+        }
+    }
+
+    @Entity
+    static class IntegerKeyedTarget {
+        @Id
+        private Integer id;
+
+        IntegerKeyedTarget() {
+        }
+    }
+
+    @Entity
+    static class ShortKeyedTarget {
+        @Id
+        private Short id;
+
+        ShortKeyedTarget() {
+        }
+    }
+
+    @Entity
+    static class RefToUuidKeyed {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = UuidKeyedTarget.class)
+        @JoinColumn(name = "target_id")
+        private UuidKeyedTarget target;
+
+        RefToUuidKeyed() {
+        }
+    }
+
+    @Entity
+    static class RefToStringKeyed {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = StringKeyedTarget.class)
+        @JoinColumn(name = "target_id")
+        private StringKeyedTarget target;
+
+        RefToStringKeyed() {
+        }
+    }
+
+    @Entity
+    static class RefToIntegerKeyed {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = IntegerKeyedTarget.class)
+        @JoinColumn(name = "target_id")
+        private IntegerKeyedTarget target;
+
+        RefToIntegerKeyed() {
+        }
+    }
+
+    @Entity
+    static class RefToShortKeyed {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = ShortKeyedTarget.class)
+        @JoinColumn(name = "target_id")
+        private ShortKeyedTarget target;
+
+        RefToShortKeyed() {
+        }
+    }
+
+    @Entity
+    static class OwningOneToOneToUuidKeyed {
+        @Id
+        private Long id;
+
+        @OneToOne(targetEntity = UuidKeyedTarget.class)
+        @JoinColumn(name = "target_id")
+        private UuidKeyedTarget target;
+
+        OwningOneToOneToUuidKeyed() {
         }
     }
 

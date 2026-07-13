@@ -2516,6 +2516,65 @@ public final class EntityMetadataFactory {
         return "";
     }
 
+    /**
+     * to-one FK({@code @ManyToOne} / owning {@code @OneToOne}) 컬럼이 참조 대상의 <em>단일 {@code @Id} 저장 표현</em>을
+     * 그대로 반영하도록 FK property의 javaType/converter/converterColumnType/length를 해석한다. 전체 대상
+     * 메타데이터를 빌드하지 않고(빌드 순서/순환 회피) 대상 클래스 계층에서 단일 {@code @Id} 필드를 리플렉션으로
+     * 찾아 스칼라 저장타입 규칙을 그대로 재사용한다:
+     * <ul>
+     *   <li>{@code @Id}에 {@code @Convert}가 있으면 그 converter/저장타입(Y)을 반영</li>
+     *   <li>{@code @Id}에 {@code @Enumerated}가 있으면 STRING→{@link String}/ORDINAL→{@link Integer} 저장타입 반영</li>
+     *   <li>그 외 순수 기본 타입은 {@link #resolveBasicStorageMapping}과 동일 규칙
+     *       (UUID→varchar(String) via {@link UuidStringConverter}, Integer→integer, String→varchar, Short→smallint 등)</li>
+     * </ul>
+     * 단일 {@code @Id}가 아니면(복합키 {@code @EmbeddedId}/{@code @IdClass}) {@code null}을 돌려주고 호출부가 기존
+     * {@link Long} 기본값을 유지한다 — 복합키 to-one 참조는 확장하지 않고 기존 동작/실패 경로를 보존한다.
+     */
+    private static ForeignKeyStorage resolveToOneForeignKeyStorage(Class<?> targetType) {
+        Field idField = null;
+        int idCount = 0;
+        for (Field candidate : mappedFields(targetType)) {
+            if (candidate.isAnnotationPresent(Id.class)) {
+                idCount++;
+                idField = candidate;
+            }
+        }
+        if (idCount != 1) {
+            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지 — 기존 Long 기본값을 유지한다(무리한 확장 금지).
+            return null;
+        }
+        Class<?> domainType = wrapPrimitiveType(idField.getType());
+        Column column = idField.getAnnotation(Column.class);
+        int length = column != null ? column.length() : 255;
+        Convert convert = idField.getAnnotation(Convert.class);
+        if (convert != null && !convert.disableConversion()) {
+            Class<?>[] attributeAndColumn =
+                    resolveJpaConverterTypeArguments(targetType, idField, convert.converter());
+            AttributeConverter<Object, Object> converter =
+                    new JpaAttributeConverterAdapter<>(instantiateJpaConverter(convert.converter()));
+            return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1], length);
+        }
+        Enumerated enumerated = idField.getAnnotation(Enumerated.class);
+        if (enumerated != null) {
+            EnumType enumType = enumerated.value();
+            Class<?> converterColumnType = enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ForeignKeyStorage(domainType,
+                    castConverter(createEnumConverter(idField.getType(), enumType)), converterColumnType, length);
+        }
+        ElementValueMapping basic = resolveBasicStorageMapping(domainType);
+        return new ForeignKeyStorage(domainType, basic.converter(),
+                basic.converter() == null ? null : basic.columnType(), length);
+    }
+
+    /**
+     * to-one FK property의 저장 표현 해석 결과. {@code javaType}은 참조 {@code @Id}의 도메인 타입,
+     * {@code converter}/{@code converterColumnType}은 저장 표현(널이면 도메인 타입을 그대로 저장), {@code length}는
+     * varchar 계열 컬럼 길이(참조 {@code @Id}의 {@code @Column(length)}, 기본 255)다.
+     */
+    private record ForeignKeyStorage(Class<?> javaType, AttributeConverter<Object, Object> converter,
+            Class<?> converterColumnType, int length) {
+    }
+
     private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {
         // 한계(문서화): 관계 property는 항상 FIELD access로 읽고/쓴다. 클래스 레벨 @Access(PROPERTY) 엔티티라도
         // @ManyToOne/@OneToOne FK는 backing field로 접근한다. Nova는 backing field를 요구하므로 setter가
@@ -2544,20 +2603,26 @@ public final class EntityMetadataFactory {
         boolean fkUpdatable = joinColumn == null || joinColumn.updatable();
         boolean fkUnique = joinColumn != null && joinColumn.unique();
         String fkColumnDefinition = joinColumn == null ? "" : joinColumn.columnDefinition();
+        // FK 컬럼 타입/값 인코딩을 참조 대상의 단일 @Id 저장 표현에 맞춘다. 해석 불가(복합키 등)면 기존 Long 기본값.
+        ForeignKeyStorage fkStorage = resolveToOneForeignKeyStorage(targetType);
+        Class<?> fkJavaType = fkStorage != null ? fkStorage.javaType() : Long.class;
+        AttributeConverter<Object, Object> fkConverter = fkStorage != null ? fkStorage.converter() : null;
+        Class<?> fkConverterColumnType = fkStorage != null ? fkStorage.converterColumnType() : null;
+        int fkLength = fkStorage != null ? fkStorage.length() : 255;
         return new PersistentProperty(
                 field,
                 field.getName(),
                 columnName,
-                Long.class,
+                fkJavaType,
                 false,
                 false,
                 nullable,
-                255,
+                fkLength,
                 0,
                 0,
                 null,
                 "",
-                null,
+                fkConverter,
                 false,
                 false,
                 false,
@@ -2577,7 +2642,7 @@ public final class EntityMetadataFactory {
                 fkUnique,
                 fkColumnDefinition,
                 false,
-                null,
+                fkConverterColumnType,
                 false,
                 null,
                 null,
@@ -2684,20 +2749,26 @@ public final class EntityMetadataFactory {
         boolean fkUnique = true;
         String fkColumnDefinition = joinColumn == null ? "" : joinColumn.columnDefinition();
         String mapsIdMarker = resolveMapsIdMarker(entityType, field);
+        // owning @OneToOne FK도 @ManyToOne과 동일하게 참조 대상의 단일 @Id 저장 표현에 맞춘다(해석 불가면 Long).
+        ForeignKeyStorage fkStorage = resolveToOneForeignKeyStorage(targetType);
+        Class<?> fkJavaType = fkStorage != null ? fkStorage.javaType() : Long.class;
+        AttributeConverter<Object, Object> fkConverter = fkStorage != null ? fkStorage.converter() : null;
+        Class<?> fkConverterColumnType = fkStorage != null ? fkStorage.converterColumnType() : null;
+        int fkLength = fkStorage != null ? fkStorage.length() : 255;
         return new PersistentProperty(
                 field,
                 field.getName(),
                 columnName,
-                Long.class,
+                fkJavaType,
                 false,
                 false,
                 nullable,
-                255,
+                fkLength,
                 0,
                 0,
                 null,
                 "",
-                null,
+                fkConverter,
                 false,
                 false,
                 false,
@@ -2717,7 +2788,7 @@ public final class EntityMetadataFactory {
                 fkUnique,
                 fkColumnDefinition,
                 false,
-                null,
+                fkConverterColumnType,
                 false,
                 null,
                 null,

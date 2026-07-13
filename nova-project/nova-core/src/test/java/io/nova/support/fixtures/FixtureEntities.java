@@ -2062,6 +2062,72 @@ public final class FixtureEntities {
         }
     }
 
+    /** to-one FK 타입 정렬 fixture: UUID @Id를 갖는 참조 대상(FK는 varchar 저장타입이어야 한다). */
+    @Entity
+    @Table(name = "fk_uuid_target")
+    public static class ForeignKeyUuidTarget {
+        @Id
+        private UUID id;
+
+        private String name;
+
+        public ForeignKeyUuidTarget() {
+        }
+    }
+
+    /** to-one FK 타입 정렬 fixture: String @Id를 갖는 참조 대상(FK는 varchar). */
+    @Entity
+    @Table(name = "fk_string_target")
+    public static class ForeignKeyStringTarget {
+        @Id
+        private String code;
+
+        public ForeignKeyStringTarget() {
+        }
+    }
+
+    /** to-one FK 타입 정렬 fixture: Integer @Id를 갖는 참조 대상(FK는 integer). */
+    @Entity
+    @Table(name = "fk_integer_target")
+    public static class ForeignKeyIntegerTarget {
+        @Id
+        private Integer id;
+
+        public ForeignKeyIntegerTarget() {
+        }
+    }
+
+    /**
+     * to-one FK 타입 정렬 fixture: 서로 다른 @Id 타입(UUID/String/Integer/Long)을 참조하는 @ManyToOne을 한 테이블에
+     * 모은 referrer. createTable DDL이 각 FK 컬럼을 참조 @Id 저장타입(varchar/varchar/integer/bigint)으로 emit하는지
+     * 한 번에 검증한다.
+     */
+    @Entity
+    @Table(name = "fk_type_referrer")
+    public static class ForeignKeyTypeReferrer {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = ForeignKeyUuidTarget.class)
+        @JoinColumn(name = "uuid_ref")
+        private ForeignKeyUuidTarget uuidRef;
+
+        @ManyToOne(targetEntity = ForeignKeyStringTarget.class)
+        @JoinColumn(name = "string_ref")
+        private ForeignKeyStringTarget stringRef;
+
+        @ManyToOne(targetEntity = ForeignKeyIntegerTarget.class)
+        @JoinColumn(name = "int_ref")
+        private ForeignKeyIntegerTarget intRef;
+
+        @ManyToOne(targetEntity = AuthorWithBooksAnnotated.class)
+        @JoinColumn(name = "long_ref")
+        private AuthorWithBooksAnnotated longRef;
+
+        public ForeignKeyTypeReferrer() {
+        }
+    }
+
     /**
      * {@code @Json} 컬럼 타입 검증과 라운드트립 테스트에 사용하는 entity. {@code prefs}는 단순한
      * value object 필드로, 등록된 {@link io.nova.json.JsonCodec}이 JSON 문자열로 직렬화한다.
