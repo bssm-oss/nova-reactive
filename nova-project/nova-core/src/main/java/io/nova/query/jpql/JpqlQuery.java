@@ -189,6 +189,14 @@ public final class JpqlQuery<T> {
      * 필터용 non-fetch JOIN이 있는 엔티티 반환 SELECT를 2단계로 실행한다. 먼저 조인/WHERE로 매칭되는 루트 id를
      * {@code DISTINCT} 스칼라 투영으로 뽑고, 그 id 집합을 {@code IN} 조건으로 기존 하이드레이션 경로에 위임한다.
      * 이렇게 하면 컨버터/연관 로딩 등 엔티티 하이드레이션을 그대로 재사용하면서 코어 오퍼레이션을 건드리지 않는다.
+     * <p>
+     * <b>혼합(mixed) JOIN FETCH + non-fetch JOIN 의미:</b> 한 쿼리에 {@code JOIN FETCH}와 필터용 non-fetch
+     * JOIN이 함께 있으면 이 2단계 경로로 라우팅된다({@link JpqlEntityQueryPlanner#isJoinedEntitySelect}).
+     * 이때 id 투영({@link #rootIdProjection})은 <em>non-fetch JOIN만</em> 유지하고 {@code JOIN FETCH} 절은
+     * 제외한다 — Nova는 매핑 연관을 always-eager로 로드하므로 {@code JOIN FETCH}는 fetch plan을 바꾸지 않는
+     * <b>no-op(명시적 의도 표현)</b>이며, 지정된 연관은 뒤이은 배치 hydration({@code findAll})이 어차피 로드한다.
+     * 즉 {@code JOIN FETCH}를 id 투영에서 빼도 결과 엔티티 그래프는 동일하고 cartesian 중복도 없다
+     * ({@link JpqlEntityQueryPlanner#validateFetchJoins}의 always-eager passthrough와 동일 정합).
      */
     @SuppressWarnings("unchecked")
     private Flux<T> executeJoinedEntity(JpqlStatement.Select select) {
@@ -238,7 +246,13 @@ public final class JpqlQuery<T> {
                 .map(e -> (T) e);
     }
 
-    /** id 투영용 합성 SELECT: {@code SELECT DISTINCT root.id FROM ... [non-fetch joins] WHERE ...}. */
+    /**
+     * id 투영용 합성 SELECT: {@code SELECT DISTINCT root.id FROM ... [non-fetch joins] WHERE ...}.
+     * <p>
+     * {@code JOIN FETCH} 절은 의도적으로 제외한다 — always-eager 모델에서 fetch join은 fetch plan을 바꾸지
+     * 않는 no-op이고, 지정된 연관은 뒤이은 hydration이 로드하므로 id 필터링에는 필터용 non-fetch JOIN만
+     * 필요하다. fetch join을 id 투영에 넣으면(특히 to-many) cartesian 곱으로 id가 중복될 뿐이다.
+     */
     private static JpqlStatement.Select rootIdProjection(JpqlStatement.Select select, String idProperty) {
         List<io.nova.query.jpql.ast.JoinClause> filterJoins = new ArrayList<>();
         for (io.nova.query.jpql.ast.JoinClause join : select.joins()) {
