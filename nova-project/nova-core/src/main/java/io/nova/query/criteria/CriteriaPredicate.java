@@ -14,7 +14,17 @@ import java.util.List;
  */
 class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements Predicate {
 
-    enum Kind { AND, OR, NOT, COMPARISON, LIKE, BETWEEN, IN, NULL }
+    enum Kind {
+        AND, OR, NOT, COMPARISON, LIKE, BETWEEN, IN, NULL,
+        /** {@code EXISTS (subquery)} / {@code NOT EXISTS (subquery)}. join/subquery SQL 경로 전용. */
+        EXISTS,
+        /** {@code column IN (subquery)} / {@code NOT IN (subquery)}. join/subquery SQL 경로 전용. */
+        IN_SUBQUERY,
+        /** {@code column <op> (subquery)}(스칼라 서브쿼리 비교). join/subquery SQL 경로 전용. */
+        COMPARISON_SUBQUERY,
+        /** {@code leftColumn <op> rightColumn}(컬럼 대 컬럼 비교, 상관 서브쿼리 correlation 등). alias SQL 경로 전용. */
+        COMPARISON_COLUMN
+    }
 
     private final Kind kind;
     private final CriteriaColumnPath path;
@@ -26,6 +36,8 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
     private final List<CriteriaPredicate> children;
     private final CriteriaPredicate inner;
     private final boolean negated;
+    private final CriteriaSubquery<?> subquery;
+    private final CriteriaColumnPath rightPath;
 
     CriteriaPredicate(
             Kind kind,
@@ -38,6 +50,37 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
             List<CriteriaPredicate> children,
             CriteriaPredicate inner,
             boolean negated) {
+        this(kind, path, op, value, low, high, inValues, children, inner, negated, null, null);
+    }
+
+    CriteriaPredicate(
+            Kind kind,
+            CriteriaColumnPath path,
+            CompareOp op,
+            Object value,
+            Object low,
+            Object high,
+            List<Object> inValues,
+            List<CriteriaPredicate> children,
+            CriteriaPredicate inner,
+            boolean negated,
+            CriteriaSubquery<?> subquery) {
+        this(kind, path, op, value, low, high, inValues, children, inner, negated, subquery, null);
+    }
+
+    CriteriaPredicate(
+            Kind kind,
+            CriteriaColumnPath path,
+            CompareOp op,
+            Object value,
+            Object low,
+            Object high,
+            List<Object> inValues,
+            List<CriteriaPredicate> children,
+            CriteriaPredicate inner,
+            boolean negated,
+            CriteriaSubquery<?> subquery,
+            CriteriaColumnPath rightPath) {
         super(Boolean.class);
         this.kind = kind;
         this.path = path;
@@ -49,6 +92,8 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
         this.children = children;
         this.inner = inner;
         this.negated = negated;
+        this.subquery = subquery;
+        this.rightPath = rightPath;
     }
 
     // --- factories ----------------------------------------------------------------------------
@@ -83,6 +128,22 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
 
     static CriteriaPredicate negate(CriteriaPredicate inner) {
         return new CriteriaPredicate(Kind.NOT, null, null, null, null, null, null, null, inner, true);
+    }
+
+    static CriteriaPredicate exists(CriteriaSubquery<?> subquery, boolean negated) {
+        return new CriteriaPredicate(Kind.EXISTS, null, null, null, null, null, null, null, null, negated, subquery);
+    }
+
+    static CriteriaPredicate inSubquery(CriteriaColumnPath path, CriteriaSubquery<?> subquery, boolean negated) {
+        return new CriteriaPredicate(Kind.IN_SUBQUERY, path, null, null, null, null, null, null, null, negated, subquery);
+    }
+
+    static CriteriaPredicate comparisonSubquery(CriteriaColumnPath path, CompareOp op, CriteriaSubquery<?> subquery) {
+        return new CriteriaPredicate(Kind.COMPARISON_SUBQUERY, path, op, null, null, null, null, null, null, false, subquery);
+    }
+
+    static CriteriaPredicate comparisonColumn(CriteriaColumnPath left, CompareOp op, CriteriaColumnPath right) {
+        return new CriteriaPredicate(Kind.COMPARISON_COLUMN, left, op, null, null, null, null, null, null, false, null, right);
     }
 
     // --- structural accessors -----------------------------------------------------------------
@@ -125,6 +186,14 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
 
     boolean negated() {
         return negated;
+    }
+
+    CriteriaSubquery<?> subquery() {
+        return subquery;
+    }
+
+    CriteriaColumnPath rightPath() {
+        return rightPath;
     }
 
     // --- jakarta Predicate --------------------------------------------------------------------

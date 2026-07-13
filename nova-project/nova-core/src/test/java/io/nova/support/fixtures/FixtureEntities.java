@@ -587,6 +587,85 @@ public final class FixtureEntities {
         }
     }
 
+    /**
+     * {@code java.time.LocalDateTime} {@code @Version} — 드라이버 실증(r2dbc-h2)으로 timestamp 컬럼 왕복이
+     * 확인된 시간 버전 타입. save 시 현재 시각으로 초기화하고 update 시 현재 시각으로 갱신하는 낙관락을 건다.
+     */
+    @Entity
+    @Table(name = "timestamp_versioned_accounts")
+    public static class LocalDateTimeVersionedAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "email_address")
+        private String email;
+
+        @Version
+        private LocalDateTime version;
+
+        public LocalDateTimeVersionedAccount() {
+        }
+
+        public LocalDateTimeVersionedAccount(String email) {
+            this.email = email;
+        }
+
+        public LocalDateTimeVersionedAccount(Long id, String email, LocalDateTime version) {
+            this.id = id;
+            this.email = email;
+            this.version = version;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setEmail(String email) {
+            this.email = email;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public LocalDateTime getVersion() {
+            return version;
+        }
+    }
+
+    /**
+     * {@code java.time.Instant} {@code @Version} — 드라이버 실증에서 plain timestamp 컬럼 decode에 실패하고
+     * 스키마 생성기가 timestamp-with-time-zone 컬럼을 emit하지 않아 <em>미지원(거부)</em>으로 유지되는 타입.
+     */
+    @Entity
+    public static class InstantVersionedEntity {
+        @Id
+        private Long id;
+
+        @Version
+        private Instant version;
+
+        public InstantVersionedEntity() {
+        }
+    }
+
+    /**
+     * {@code java.sql.Timestamp} {@code @Version} — 드라이버가 파라미터 인코딩 자체를 거부해 <em>미지원(거부)</em>으로
+     * 유지되는 타입.
+     */
+    @Entity
+    public static class SqlTimestampVersionedEntity {
+        @Id
+        private Long id;
+
+        @Version
+        private java.sql.Timestamp version;
+
+        public SqlTimestampVersionedEntity() {
+        }
+    }
+
     @Entity
     public static class DuplicateVersionEntity {
         @Id

@@ -1,6 +1,7 @@
 package io.nova.core;
 
 import jakarta.persistence.EnumType;
+import jakarta.persistence.FlushModeType;
 import jakarta.persistence.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.fetch.AnnotationFetchGroupBuilder;
@@ -65,6 +66,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * nova-core가 소유하므로 어떤 트랜잭션 배선에서도 세션이 올바르게 얹힌다.
      */
     static final String SESSION_KEY = "io.nova.core.session";
+
+    /**
+     * 활성 {@link jakarta.persistence.FlushModeType}를 Reactor {@code Context}에 보관하는 키
+     * ({@link ReactiveEntityManager#setFlushMode}가 세션 스코프에 심는다). {@link jakarta.persistence.FlushModeType#COMMIT}이면
+     * 세션이 있어도 쿼리 전 auto-flush를 억제하고 commit 시에만 flush한다. 키가 없으면
+     * {@link jakarta.persistence.FlushModeType#AUTO}(기본, 쿼리 전 auto-flush)로 동작한다 — operations를 EM 없이
+     * 직접 쓰는 기존 경로의 하위호환을 보존한다.
+     */
+    static final String FLUSH_MODE_KEY = "io.nova.core.flushMode";
 
     private final EntityMetadataFactory metadataFactory;
     private final Dialect dialect;
@@ -648,7 +658,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     /**
      * Map key를 저장 표현으로 인코딩한다 — enum key는 {@code @MapKeyEnumerated}에 따라 이름(STRING) 또는
-     * ordinal(ORDINAL)로, 기본 타입 key는 그대로 둔다.
+     * ordinal(ORDINAL)로, {@code UUID} 등 저장타입 분리 key는 {@code MapKeyInfo.keyConverter}로(문자열 등),
+     * 저장타입=도메인타입인 순수 기본 타입은 그대로 둔다.
      */
     private static Object encodeMapKey(ElementCollectionInfo info, Object key) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
@@ -656,18 +667,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Enum<?> enumKey = (Enum<?>) key;
             return mapKey.keyEnumType() == EnumType.STRING ? enumKey.name() : enumKey.ordinal();
         }
-        return key;
+        return mapKey.encodeKey(key);
     }
 
     /**
      * collection table에서 읽은 저장 표현을 도메인 Map key로 디코딩한다 — enum key는 이름/ordinal에서 enum
-     * 상수로, 기본 타입 key는 그대로 둔다.
+     * 상수로, {@code UUID} 등 저장타입 분리 key는 {@code MapKeyInfo.keyConverter}로 저장타입(varchar 등)에서
+     * 도메인 타입으로, 저장타입=도메인타입인 순수 기본 타입은 그대로 둔다(non-String map key 디코딩 함정 회피).
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static Object decodeMapKey(ElementCollectionInfo info, Object stored) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
         if (!mapKey.enumKey()) {
-            return stored;
+            return mapKey.decodeKey(stored);
         }
         Class<?> keyType = mapKey.keyType();
         if (mapKey.keyEnumType() == EnumType.STRING) {
@@ -1236,12 +1248,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private <T> Mono<T> updatePrimaryRow(EntityMetadata<T> metadata, T entity) {
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
-        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity);
         if (versionProperty == null) {
-            return sqlExecutor.execute(statement).thenReturn(entity);
+            return sqlExecutor.execute(dialect.sqlRenderer().update(metadata, entity)).thenReturn(entity);
         }
         Object current = versionProperty.read(entity);
+        // 다음 버전 값을 한 번만 계산해 SQL SET 바인딩과 아래 in-memory writeback에 동일 객체를 쓴다(single-read).
         Object next = nextVersionValue(versionProperty, current);
+        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, next);
         return sqlExecutor.execute(statement)
                 .flatMap(affected -> {
                     if (affected == 0L) {
@@ -1406,9 +1419,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
             primaryUpdate = sqlExecutor.execute(statement).thenReturn(entity);
         } else {
-            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
             Object current = versionProperty.read(entity);
+            // single-read: 다음 버전 값을 한 번만 계산해 SET 바인딩과 writeback에 동일 객체를 쓴다.
             Object next = nextVersionValue(versionProperty, current);
+            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields, next);
             primaryUpdate = sqlExecutor.execute(statement)
                     .flatMap(affected -> {
                         if (affected == 0L) {
@@ -1453,7 +1467,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // 세션이 있으면 SELECT 전 auto-flush(읽기 일관성)하고, 결과를 identity map에 편입(같은 PK=같은 인스턴스).
             Mono<T> base = session.isEmpty()
                     ? findByIdInternal(metadata, id)
-                    : autoFlushIfSession(session)
+                    : autoFlushIfSession(ctx, session)
                             .then(findByIdInternal(metadata, id).map(entity -> manage(session, entity)));
             if (!metadata.hasRelationProperties()) {
                 return base;
@@ -1475,7 +1489,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Optional<PersistenceSession> session = currentSession(ctx);
             Flux<T> base = session.isEmpty()
                     ? findAllInternal(metadata, querySpec)
-                    : autoFlushIfSession(session)
+                    : autoFlushIfSession(ctx, session)
                             .thenMany(findAllInternal(metadata, querySpec).map(entity -> manage(session, entity)));
             if (!metadata.hasRelationProperties()) {
                 return base;
@@ -1493,10 +1507,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
-     * 세션이 있으면 flush를, 없으면 no-op({@link Mono#empty()})을 반환한다. SELECT 전 auto-flush 진입점.
+     * 세션이 있고 FlushMode가 AUTO이면 flush를, 아니면 no-op({@link Mono#empty()})을 반환한다. SELECT 전
+     * auto-flush 진입점. FlushMode.COMMIT이 컨텍스트에 있으면 세션이 있어도 쿼리 전 flush를 억제한다
+     * (commit 시점 flush는 별도 경로가 담당하므로 보류 변경은 유실되지 않는다).
      */
-    private Mono<Void> autoFlushIfSession(Optional<PersistenceSession> session) {
-        return session.map(this::flush).orElseGet(Mono::empty);
+    private Mono<Void> autoFlushIfSession(ContextView ctx, Optional<PersistenceSession> session) {
+        if (session.isEmpty()) {
+            return Mono.empty();
+        }
+        FlushModeType flushMode = ctx.getOrDefault(FLUSH_MODE_KEY, FlushModeType.AUTO);
+        if (flushMode == FlushModeType.COMMIT) {
+            return Mono.empty();
+        }
+        return flush(session.get());
     }
 
     /**
@@ -1570,9 +1593,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
                 primaryUpdate = sqlExecutor.execute(statement).then();
             } else {
-                SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
                 Object current = versionProperty.read(entity);
+                // single-read: 다음 버전 값을 한 번만 계산해 SET 바인딩과 writeback에 동일 객체를 쓴다.
                 Object next = nextVersionValue(versionProperty, current);
+                SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields, next);
                 primaryUpdate = sqlExecutor.execute(statement)
                         .flatMap(affected -> {
                             if (affected == 0L) {
@@ -2388,8 +2412,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object deletedAt = currentTimeFor(softDelete.get());
             PersistentProperty versionProperty = version.get();
             Object currentVersion = versionProperty.read(entity);
+            // single-read: 같은 next 값을 soft-delete SQL SET과 아래 writeback에 쓴다.
             Object nextVersion = nextVersionValue(versionProperty, currentVersion);
-            SqlStatement statement = dialect.sqlRenderer().softDeleteByEntity(metadata, entity, deletedAt);
+            SqlStatement statement =
+                    dialect.sqlRenderer().softDeleteByEntity(metadata, entity, deletedAt, nextVersion);
             return sqlExecutor.execute(statement)
                     .flatMap(affected -> {
                         if (affected == 0L) {
@@ -3699,6 +3725,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (type == Short.class) {
             return (short) 0;
         }
+        if (type == java.time.LocalDateTime.class) {
+            // 시간 버전의 초기값: INSERT 시점의 현재 시각(정수 버전의 0에 대응). 저장 해상도(마이크로초)로 truncate해
+            // in-memory 값과 DB에 저장되는 값이 처음부터 일치하게 한다(이후 lock/delete의 WHERE version 매칭 안정).
+            return java.time.LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        }
         throw new IllegalStateException("Unsupported version type " + type.getName());
     }
 
@@ -3739,6 +3770,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (type == Short.class) {
             short value = current == null ? (short) 0 : ((Number) current).shortValue();
             return (short) (value + 1);
+        }
+        if (type == java.time.LocalDateTime.class) {
+            // 시간 버전의 다음 값. 이 값은 렌더러의 precomputed-version 오버로드로 SQL SET에 바인딩되고 동시에
+            // in-memory writeback에도 쓰이므로(single-read) SQL/DB/in-memory가 항상 일치한다.
+            // 저장 컬럼 해상도(H2 timestamp = 마이크로초)로 truncate하고, old보다 strictly 증가(monotonic)하게 만들어
+            // 같은 tick 안 동시 update의 lost-update 창을 없앤다: now()가 old 이하이면 old + 1μs를 쓴다.
+            java.time.LocalDateTime nowMicros =
+                    java.time.LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+            if (current == null) {
+                return nowMicros;
+            }
+            java.time.LocalDateTime oldMicros =
+                    ((java.time.LocalDateTime) current).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+            return nowMicros.isAfter(oldMicros)
+                    ? nowMicros
+                    : oldMicros.plus(1, java.time.temporal.ChronoUnit.MICROS);
         }
         throw new IllegalStateException("Unsupported version type " + type.getName());
     }

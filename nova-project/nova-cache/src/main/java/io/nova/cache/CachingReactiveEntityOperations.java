@@ -3,12 +3,14 @@ package io.nova.cache;
 import io.nova.cache.spi.CacheKey;
 import io.nova.cache.spi.ReactiveCache;
 import io.nova.cache.spi.ReactiveCacheProvider;
+import io.nova.cache.spi.ReactiveQueryCache;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
 import io.nova.fetch.FetchGroup;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
+import io.nova.query.LockMode;
 import io.nova.query.NativeQuery;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
@@ -23,6 +25,7 @@ import reactor.core.publisher.Mono;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Function;
 
 /**
@@ -37,6 +40,10 @@ import java.util.function.Function;
  *   <li><b>write invalidation</b>: {@code save}/{@code update}/{@code delete}(및 batch/변형)는 delegate 실행
  *       후 해당 엔티티 캐시 엔트리를 즉시 evict 한다. 대상 행을 특정할 수 없는 bulk update/delete와
  *       compiled/native write는 보수적으로 region(또는 전체)을 비운다.</li>
+ *   <li><b>query cache read-through(opt-in)</b>: {@link ReactiveQueryCache}를 주입하면
+ *       {@code findAll(Class, QuerySpec)} 결과를 정규화된 스펙 키로 캐시한다(히트 시 0 SQL). 어떤 write든 대상
+ *       엔티티 타입의 쿼리 결과를 <b>통째로 무효화</b>한다(보수적 정합성). 쿼리 캐시가 없으면(기본) 이 경로는
+ *       기존과 동일하게 delegate로 통과하고 조회 엔티티로 엔티티 캐시만 warming 한다 — 기본 동작 무변경.</li>
  * </ul>
  *
  * <h2>정합성 계약 (v1)</h2>
@@ -48,8 +55,10 @@ import java.util.function.Function;
  *       write는 즉시 evict 한다. 추가로 commit 성공 후 무효화를 재적용해(post-commit re-evict) 동시 reader가
  *       옛 값을 되채운 창을 좁힌다.</li>
  *   <li>알려진 한계: 단일 JVM in-process 캐시로, 동시 writer 간 완전한 트랜잭셔널 정합성(외부 post-commit
- *       broadcast)은 v2(외부 캐시 프로바이더)에서 다룬다. {@code findById(..., FetchGroup)}와 임의 쿼리
- *       결과는 v1에서 캐시하지 않는다(자식 hydration 편차 회피).</li>
+ *       broadcast)은 외부 캐시 프로바이더에서 다룬다. {@code findById(..., FetchGroup)}, projection/paged/slice
+ *       조회, count/exists 스칼라, native/compiled 조회 결과는 캐시하지 않는다(자식 hydration 편차·범위 위험
+ *       회피). 쿼리 캐시는 {@code findAll(Class, QuerySpec)} 엔티티 결과에만 적용되며, {@link ReactiveQueryCache}를
+ *       주입한 경우에만(opt-in) 활성화된다.</li>
  *   <li><b>배선 경계(EntityManager 결합):</b> {@code ReactiveEntityManager}는 반드시 이 캐시 데코레이터
  *       <b>위에</b> 얹어라(예: {@code new SimpleReactiveEntityManager(NovaCache.caching(base, ...), mf)}).
  *       그래야 EM의 persist/merge/remove가 이 데코레이터의 write invalidation 경로를 거친다. EM을 캐시되지
@@ -68,6 +77,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     private final EntityMetadataFactory metadataFactory;
     private final CacheConfigurationResolver resolver;
     private final ReactiveCacheProvider provider;
+    /** 쿼리 결과 캐시(opt-in). {@code null}이면 쿼리 캐싱 비활성 — {@code findAll(Class, QuerySpec)}은 기존 통과. */
+    private final ReactiveQueryCache queryCache;
     /** 읽기 결과를 캐시에 채울지 여부. 트랜잭션 스코프 내부에서는 {@code false}(미커밋 유출 방지). */
     private final boolean populateOnRead;
     /** 트랜잭션 스코프에서만 non-null. write 무효화를 기록해 commit 후 재적용한다. */
@@ -78,7 +89,20 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             EntityMetadataFactory metadataFactory,
             CacheConfigurationResolver resolver,
             ReactiveCacheProvider provider) {
-        this(delegate, metadataFactory, resolver, provider, true, null);
+        this(delegate, metadataFactory, resolver, provider, null, true, null);
+    }
+
+    /**
+     * 쿼리 결과 캐시를 함께 배선하는 생성자. {@code queryCache}가 {@code null}이면 4-인자 생성자와 동일하게
+     * 쿼리 캐싱을 비활성화한다(opt-in).
+     */
+    public CachingReactiveEntityOperations(
+            ReactiveEntityOperations delegate,
+            EntityMetadataFactory metadataFactory,
+            CacheConfigurationResolver resolver,
+            ReactiveCacheProvider provider,
+            ReactiveQueryCache queryCache) {
+        this(delegate, metadataFactory, resolver, provider, queryCache, true, null);
     }
 
     private CachingReactiveEntityOperations(
@@ -86,19 +110,22 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             EntityMetadataFactory metadataFactory,
             CacheConfigurationResolver resolver,
             ReactiveCacheProvider provider,
+            ReactiveQueryCache queryCache,
             boolean populateOnRead,
             TransactionEvictionBuffer evictionBuffer) {
         this.delegate = Objects.requireNonNull(delegate, "delegate must not be null");
         this.metadataFactory = Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
         this.resolver = Objects.requireNonNull(resolver, "resolver must not be null");
         this.provider = Objects.requireNonNull(provider, "provider must not be null");
+        this.queryCache = queryCache; // nullable — opt-in
         this.populateOnRead = populateOnRead;
         this.evictionBuffer = evictionBuffer;
     }
 
     private CachingReactiveEntityOperations withDelegate(
             ReactiveEntityOperations inner, boolean populate, TransactionEvictionBuffer buffer) {
-        return new CachingReactiveEntityOperations(inner, metadataFactory, resolver, provider, populate, buffer);
+        return new CachingReactiveEntityOperations(
+                inner, metadataFactory, resolver, provider, queryCache, populate, buffer);
     }
 
     // --- read-through ------------------------------------------------------
@@ -145,11 +172,37 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @Override
     public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
         CacheConfiguration config = resolver.resolve(entityType);
+        boolean warmEntityCache = config.cacheable() && populateOnRead;
+        // 쿼리 캐시 read-through: opt-in(queryCache != null) + cacheable + 트랜잭션 밖(populateOnRead)
+        // + 잠금 없는 쿼리만. 잠금(FOR UPDATE/SHARE)은 항상 DB를 쳐야 하므로 캐시하지 않는다.
+        if (queryCache != null && warmEntityCache && querySpec.lockMode() == LockMode.NONE) {
+            // 무효화 파티션은 canonical keyType(subtype write가 base-type query까지 통째 무효화 — over-invalidation,
+            // 안전). 그러나 캐시 키 문자열은 <b>실제 쿼리 타입(entityType)</b>으로 만든다. 상속 계층에서
+            // findAll(Base, spec)과 findAll(Sub, spec)은 delegate가 서로 다른 결과셋(전체 vs isInstance 부분집합)을
+            // 내므로, 둘이 같은 canonical keyType으로 키를 공유하면 교차 서빙되어 잘못된 결과/ClassCastException을
+            // 낸다. QuerySpecCacheKey가 타입명을 키 선두에 넣으므로 root/subtype 키가 확실히 구분된다.
+            Class<?> partition = config.keyType();
+            String key = QuerySpecCacheKey.of(entityType, querySpec);
+            Flux<T> onMiss = Flux.defer(() -> delegate.findAll(entityType, querySpec)
+                    .collectList()
+                    .flatMapMany(list -> queryCache.put(partition, key, new ArrayList<Object>(list))
+                            // 결과를 쿼리 캐시에 저장 + 엔티티 캐시도 warming(이후 findById 히트).
+                            .thenMany(Flux.fromIterable(list))
+                            .concatMap(entity -> putEntity(entity).thenReturn(entity))));
+            // 빈 리스트도 히트로 취급해야 하므로 Mono 존재 여부로 hit/miss를 판별한다(빈 Flux를
+            // switchIfEmpty로 miss 처리하면 빈 결과가 매번 재실행됨).
+            return queryCache.get(partition, key)
+                    .map(Optional::of)
+                    .defaultIfEmpty(Optional.empty())
+                    .flatMapMany(hit -> hit.isPresent()
+                            ? Flux.fromIterable(hit.get()).map(CachingReactiveEntityOperations::castEntity)
+                            : onMiss);
+        }
         Flux<T> result = delegate.findAll(entityType, querySpec);
-        if (!config.cacheable() || !populateOnRead) {
+        if (!warmEntityCache) {
             return result;
         }
-        // 조회된 엔티티를 캐시에 채워 이후 findById가 히트하도록 한다(임의 쿼리 자체는 캐시하지 않는다).
+        // 조회된 엔티티를 캐시에 채워 이후 findById가 히트하도록 한다(쿼리 캐시 미배선 시 결과 자체는 캐시 안 함).
         return result.concatMap(entity -> putEntity(entity).thenReturn(entity));
     }
 
@@ -260,12 +313,14 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
 
     @Override
     public Mono<Long> executeNative(NativeQuery query) {
-        return delegate.executeNative(query).flatMap(count -> provider.clearAll().thenReturn(count));
+        return delegate.executeNative(query)
+                .flatMap(count -> provider.clearAll().then(clearQueries()).thenReturn(count));
     }
 
     @Override
     public Mono<Long> execute(CompiledQuery query, Object... bindings) {
-        return delegate.execute(query, bindings).flatMap(count -> provider.clearAll().thenReturn(count));
+        return delegate.execute(query, bindings)
+                .flatMap(count -> provider.clearAll().then(clearQueries()).thenReturn(count));
     }
 
     @Override
@@ -307,8 +362,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         TransactionEvictionBuffer buffer = new TransactionEvictionBuffer();
         Mono<R> body = delegate.inTransaction(inner -> callback.apply(withDelegate(inner, false, buffer)));
         // commit 성공 후 무효화 재적용(post-commit re-evict). 값이 없거나 있어도 반드시 한 번 flush.
-        return body.flatMap(result -> buffer.flush(provider).thenReturn(result))
-                .switchIfEmpty(Mono.defer(() -> buffer.flush(provider).then(Mono.empty())));
+        return body.flatMap(result -> buffer.flush(provider, queryCache).thenReturn(result))
+                .switchIfEmpty(Mono.defer(() -> buffer.flush(provider, queryCache).then(Mono.empty())));
     }
 
     @Override
@@ -363,7 +418,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (evictionBuffer != null) {
             evictionBuffer.recordKey(key);
         }
-        return evict;
+        // 엔티티 캐시 키 evict에 더해, 이 타입의 쿼리 결과도 통째 무효화(어떤 write든 결과 집합을 바꿀 수 있음).
+        return evict.then(invalidateQueries(key.entityType()));
     }
 
     private Mono<Void> invalidateRegion(Class<?> entityType) {
@@ -375,12 +431,46 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (evictionBuffer != null) {
             evictionBuffer.recordRegionClear(config.region());
         }
+        return clear.then(invalidateQueries(config.keyType()));
+    }
+
+    /**
+     * 한 canonical 엔티티 타입의 쿼리 캐시 결과를 무효화한다. 쿼리 캐시 미배선이면 no-op. 트랜잭션 스코프에서는
+     * 즉시 무효화하고 버퍼에 기록해 commit 후 재적용한다(엔티티 캐시와 동일한 정합성 패턴).
+     */
+    private Mono<Void> invalidateQueries(Class<?> canonicalType) {
+        if (queryCache == null) {
+            return Mono.empty();
+        }
+        Mono<Void> evict = queryCache.invalidate(canonicalType);
+        if (evictionBuffer != null) {
+            evictionBuffer.recordQueryInvalidate(canonicalType);
+        }
+        return evict;
+    }
+
+    /**
+     * 대상 타입을 특정할 수 없는 native/compiled write 후 쿼리 캐시 전역 clear. 쿼리 캐시 미배선이면 no-op.
+     */
+    private Mono<Void> clearQueries() {
+        if (queryCache == null) {
+            return Mono.empty();
+        }
+        Mono<Void> clear = queryCache.clear();
+        if (evictionBuffer != null) {
+            evictionBuffer.recordQueryClearAll();
+        }
         return clear;
     }
 
     @SuppressWarnings("unchecked")
     private static <T> Class<T> cast(Class<?> type) {
         return (Class<T>) type;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T castEntity(Object value) {
+        return (T) value;
     }
 
     private static <E> List<E> toList(Iterable<E> iterable) {

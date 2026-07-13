@@ -12,6 +12,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 
@@ -31,7 +32,7 @@ class JpqlSqlBuilderTest {
     private final Dialect dialect = new TestDialect();
     private final EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
     private final JpqlEntityResolver resolver =
-            new JpqlEntityResolver(metadataFactory, List.of(Employee.class, Department.class));
+            new JpqlEntityResolver(metadataFactory, List.of(Employee.class, Department.class, Company.class));
     private final JpqlSqlBuilder builder = new JpqlSqlBuilder(dialect, resolver);
 
     private TranslatedSql scalar(String jpql) {
@@ -143,6 +144,81 @@ class JpqlSqlBuilderTest {
     }
 
     @Test
+    void rendersImplicitJoinForMultiSegmentPathInWhereAndSelect() {
+        TranslatedSql t = scalar(
+                "SELECT e.department.name FROM Employee e WHERE e.department.name = :n ORDER BY e.department.name");
+        // 같은 (e, department) 경로는 하나의 묵시 조인으로 dedupe되어야 한다.
+        assertEquals(
+                "select j0.\"name\" as \"c0\" from \"employee\" e "
+                        + "join \"department\" j0 on e.\"dept_id\" = j0.\"id\" "
+                        + "where j0.\"name\" = ? order by j0.\"name\" asc",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Named("n")), t.bindings());
+    }
+
+    @Test
+    void rendersChainedImplicitJoinsForDeepPath() {
+        TranslatedSql t = scalar("SELECT e.department.company.name FROM Employee e");
+        assertEquals(
+                "select j1.\"name\" as \"c0\" from \"employee\" e "
+                        + "join \"department\" j0 on e.\"dept_id\" = j0.\"id\" "
+                        + "join \"company\" j1 on j0.\"company_id\" = j1.\"id\"",
+                t.sql());
+    }
+
+    @Test
+    void rendersCastFunction() {
+        TranslatedSql t = scalar("SELECT CAST(e.age AS string) FROM Employee e");
+        assertEquals("select cast(e.\"age\" as varchar) as \"c0\" from \"employee\" e", t.sql());
+    }
+
+    @Test
+    void rendersLocateAndNativeFunction() {
+        TranslatedSql locate = scalar("SELECT LOCATE('a', e.name) FROM Employee e");
+        assertEquals("select locate(?, e.\"name\") as \"c0\" from \"employee\" e", locate.sql());
+
+        TranslatedSql fn = scalar("SELECT FUNCTION('soundex', e.name) FROM Employee e");
+        assertEquals("select soundex(e.\"name\") as \"c0\" from \"employee\" e", fn.sql());
+    }
+
+    @Test
+    void rendersSizeAsCorrelatedCountSubquery() {
+        TranslatedSql t = scalar("SELECT SIZE(d.employees) FROM Department d");
+        assertEquals(
+                "select (select count(*) from \"employee\" j0 where j0.\"dept_id\" = d.\"id\") as \"c0\" "
+                        + "from \"department\" d",
+                t.sql());
+    }
+
+    @Test
+    void rendersConstructorProjectionAsScalarColumns() {
+        TranslatedSql t = scalar("SELECT NEW com.x.Dto(e.name, e.age, COUNT(e)) FROM Employee e GROUP BY e.name, e.age");
+        assertEquals(
+                "select e.\"name\" as \"c0\", e.\"age\" as \"c1\", count(e.\"id\") as \"c2\" "
+                        + "from \"employee\" e group by e.\"name\", e.\"age\"",
+                t.sql());
+        assertEquals(3, t.selectionCount());
+    }
+
+    @Test
+    void rejectsNativeFunctionNameWithUnsafeCharacters() {
+        assertThrows(JpqlException.class,
+                () -> scalar("SELECT FUNCTION('drop table x;--', e.name) FROM Employee e"));
+    }
+
+    @Test
+    void rejectsUnknownCastType() {
+        assertThrows(JpqlException.class, () -> scalar("SELECT CAST(e.name AS geometry) FROM Employee e"));
+    }
+
+    @Test
+    void rejectsMultiSegmentPathInBulkUpdate() {
+        JpqlStatement.Update update = (JpqlStatement.Update) new JpqlParser(
+                "UPDATE Employee e SET e.name = :n WHERE e.department.name = :d").parse();
+        assertThrows(JpqlException.class, () -> builder.buildUpdate(update));
+    }
+
+    @Test
     void failsFastOnUnknownEntity() {
         assertThrows(JpqlException.class, () -> scalar("SELECT x.id FROM Unknown x"));
     }
@@ -197,6 +273,21 @@ class JpqlSqlBuilderTest {
     @Entity
     @Table(name = "department")
     public static class Department {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+        @ManyToOne
+        @JoinColumn(name = "company_id")
+        private Company company;
+        @OneToMany(mappedBy = "department")
+        private java.util.List<Employee> employees;
+    }
+
+    @Entity
+    @Table(name = "company")
+    public static class Company {
         @Id
         @Column(name = "id")
         private Long id;

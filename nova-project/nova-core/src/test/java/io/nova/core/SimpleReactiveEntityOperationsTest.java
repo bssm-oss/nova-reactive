@@ -1516,7 +1516,8 @@ class SimpleReactiveEntityOperationsTest {
                 "insert into uuid_accounts (id, email_address) values (?, ?)",
                 statement.sql()
         );
-        assertEquals(List.of(assigned, "uuid@nova.io"), statement.bindings());
+        // UUID id는 스칼라 UUID 컬럼과 대칭으로 저장타입 String(varchar)으로 분리돼 바인딩된다(uniform varchar).
+        assertEquals(List.of(assigned.toString(), "uuid@nova.io"), statement.bindings());
         assertEquals(0, executor.generatedKeyCalls);
     }
 
@@ -1573,8 +1574,9 @@ class SimpleReactiveEntityOperationsTest {
         BatchCall call = executor.batchCalls.get(0);
         assertEquals("insert into uuid_accounts (id, email_address) values (?, ?)", call.sql());
         assertEquals(2, call.bindingsList().size());
-        assertEquals(accounts.get(0).getId(), call.bindingsList().get(0).get(0));
-        assertEquals(accounts.get(1).getId(), call.bindingsList().get(1).get(0));
+        // UUID id는 저장타입 String(varchar)으로 분리돼 바인딩된다(스칼라 UUID 컬럼과 대칭).
+        assertEquals(accounts.get(0).getId().toString(), call.bindingsList().get(0).get(0));
+        assertEquals(accounts.get(1).getId().toString(), call.bindingsList().get(1).get(0));
     }
 
     @Test

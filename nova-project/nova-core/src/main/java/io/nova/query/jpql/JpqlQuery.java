@@ -3,13 +3,21 @@ package io.nova.query.jpql;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
 import io.nova.metadata.EntityMetadata;
+import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
+import io.nova.query.Sort;
+import io.nova.query.jpql.ast.ConstructorCall;
+import io.nova.query.jpql.ast.Expression;
+import io.nova.query.jpql.ast.SelectItem;
 import io.nova.query.jpql.ast.JpqlStatement;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.lang.reflect.Constructor;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
@@ -35,6 +43,7 @@ public final class JpqlQuery<T> {
 
     private Integer firstResult;
     private Integer maxResults;
+    private Constructor<?> resolvedConstructor;
 
     JpqlQuery(
             JpqlStatement statement,
@@ -136,20 +145,146 @@ public final class JpqlQuery<T> {
         if (entityPlanner.isEntitySelect(select) && !isForcedScalar()) {
             return executeEntity(select);
         }
-        // 스칼라/집계 경로는 페이지 창을 v1에서 지원하지 않는다.
+        if (entityPlanner.isJoinedEntitySelect(select) && joinedEntityMatches(select)) {
+            return executeJoinedEntity(select);
+        }
+        // 스칼라/집계/DTO 투영 경로는 페이지 창을 v1에서 지원하지 않는다.
         if (firstResult != null || maxResults != null) {
             return Flux.error(new JpqlException(
                     "setFirstResult/setMaxResults is only supported for entity-returning SELECT queries in v1"));
         }
         TranslatedSql translated;
+        Function<RowAccessor, T> mapper;
         try {
             translated = sqlBuilder.buildScalarSelect(select);
+            int columns = translated.selectionCount();
+            ConstructorCall ctor = constructorProjection(select);
+            mapper = ctor != null
+                    ? constructorMapper(ctor, columns)
+                    : row -> (T) mapScalarRow(row, columns);
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
-        int columns = translated.selectionCount();
-        Function<RowAccessor, T> mapper = row -> (T) mapScalarRow(row, columns);
         return operations.queryNative(toNativeQuery(translated), mapper);
+    }
+
+    /** {@code SELECT NEW ...} 단일 생성자 프로젝션이면 그 {@link ConstructorCall}, 아니면 {@code null}. */
+    private static ConstructorCall constructorProjection(JpqlStatement.Select select) {
+        List<SelectItem> items = select.selectItems();
+        if (items.size() == 1 && items.get(0).isConstructor()) {
+            return items.get(0).constructorCall();
+        }
+        return null;
+    }
+
+    /** {@code resultType}이 조인된 엔티티 반환의 루트 엔티티 타입과 호환되는지(Object면 자동 허용). */
+    private boolean joinedEntityMatches(JpqlStatement.Select select) {
+        if (resultType == Object.class) {
+            return true;
+        }
+        return resultType.isAssignableFrom(entityPlanner.rootMetadata(select).entityType());
+    }
+
+    /**
+     * 필터용 non-fetch JOIN이 있는 엔티티 반환 SELECT를 2단계로 실행한다. 먼저 조인/WHERE로 매칭되는 루트 id를
+     * {@code DISTINCT} 스칼라 투영으로 뽑고, 그 id 집합을 {@code IN} 조건으로 기존 하이드레이션 경로에 위임한다.
+     * 이렇게 하면 컨버터/연관 로딩 등 엔티티 하이드레이션을 그대로 재사용하면서 코어 오퍼레이션을 건드리지 않는다.
+     * <p>
+     * <b>혼합(mixed) JOIN FETCH + non-fetch JOIN 의미:</b> 한 쿼리에 {@code JOIN FETCH}와 필터용 non-fetch
+     * JOIN이 함께 있으면 이 2단계 경로로 라우팅된다({@link JpqlEntityQueryPlanner#isJoinedEntitySelect}).
+     * 이때 id 투영({@link #rootIdProjection})은 <em>non-fetch JOIN만</em> 유지하고 {@code JOIN FETCH} 절은
+     * 제외한다 — Nova는 매핑 연관을 always-eager로 로드하므로 {@code JOIN FETCH}는 fetch plan을 바꾸지 않는
+     * <b>no-op(명시적 의도 표현)</b>이며, 지정된 연관은 뒤이은 배치 hydration({@code findAll})이 어차피 로드한다.
+     * 즉 {@code JOIN FETCH}를 id 투영에서 빼도 결과 엔티티 그래프는 동일하고 cartesian 중복도 없다
+     * ({@link JpqlEntityQueryPlanner#validateFetchJoins}의 always-eager passthrough와 동일 정합).
+     */
+    @SuppressWarnings("unchecked")
+    private Flux<T> executeJoinedEntity(JpqlStatement.Select select) {
+        EntityMetadata<?> metadata = entityPlanner.rootMetadata(select);
+        if (resultType != Object.class && !resultType.isAssignableFrom(metadata.entityType())) {
+            return Flux.error(new JpqlException("Query returns entity " + metadata.entityType().getName()
+                    + " which is not assignable to requested result type " + resultType.getName()));
+        }
+        if (metadata.hasCompositeId()) {
+            return Flux.error(new JpqlException(
+                    "Entity-returning JPQL with a filtering JOIN is not supported for composite-id entity "
+                            + metadata.entityType().getSimpleName()));
+        }
+        if (maxResults != null && maxResults == 0) {
+            return Flux.empty();
+        }
+        String idProperty = metadata.idProperty().propertyName();
+
+        TranslatedSql idProjection;
+        Sort sort;
+        Pageable page;
+        try {
+            idProjection = sqlBuilder.buildScalarSelect(rootIdProjection(select, idProperty));
+            sort = entityPlanner.translateRootOrderBy(select.orderBy(), select.rootAlias());
+            page = pageWindow();
+        } catch (RuntimeException e) {
+            return Flux.error(e);
+        }
+
+        Class<Object> entityType = (Class<Object>) metadata.entityType();
+        Function<RowAccessor, Object> idMapper = row -> row.get(JpqlQuery.columnLabel(0), Object.class);
+        return operations.queryNative(toNativeQuery(idProjection), idMapper)
+                .collectList()
+                .flatMapMany(ids -> {
+                    if (ids.isEmpty()) {
+                        return Flux.<Object>empty();
+                    }
+                    QuerySpec spec = QuerySpec.empty().where(Criteria.in(idProperty, ids));
+                    if (sort != null) {
+                        spec = spec.orderBy(sort);
+                    }
+                    if (page != null) {
+                        spec = spec.page(page);
+                    }
+                    return operations.findAll(entityType, spec);
+                })
+                .map(e -> (T) e);
+    }
+
+    /**
+     * id 투영용 합성 SELECT: {@code SELECT DISTINCT root.id FROM ... [non-fetch joins] WHERE ...}.
+     * <p>
+     * {@code JOIN FETCH} 절은 의도적으로 제외한다 — always-eager 모델에서 fetch join은 fetch plan을 바꾸지
+     * 않는 no-op이고, 지정된 연관은 뒤이은 hydration이 로드하므로 id 필터링에는 필터용 non-fetch JOIN만
+     * 필요하다. fetch join을 id 투영에 넣으면(특히 to-many) cartesian 곱으로 id가 중복될 뿐이다.
+     */
+    private static JpqlStatement.Select rootIdProjection(JpqlStatement.Select select, String idProperty) {
+        List<io.nova.query.jpql.ast.JoinClause> filterJoins = new ArrayList<>();
+        for (io.nova.query.jpql.ast.JoinClause join : select.joins()) {
+            if (!join.fetch()) {
+                filterJoins.add(join);
+            }
+        }
+        SelectItem idItem = SelectItem.of(
+                new Expression.Path(select.rootAlias(), List.of(idProperty)), null);
+        return new JpqlStatement.Select(
+                true,
+                List.of(idItem),
+                select.rootEntity(),
+                select.rootAlias(),
+                filterJoins,
+                select.where(),
+                List.of(),
+                null,
+                List.of());
+    }
+
+    /** {@code firstResult}/{@code maxResults}를 {@link Pageable}로. 둘 다 없으면 {@code null}. */
+    private Pageable pageWindow() {
+        if (maxResults == null) {
+            if (firstResult != null) {
+                throw new JpqlException(
+                        "setFirstResult without setMaxResults is not supported; provide a page size");
+            }
+            return null;
+        }
+        long offset = firstResult == null ? 0L : firstResult.longValue();
+        return Pageable.of(maxResults.intValue(), offset);
     }
 
     /** {@code resultType}이 엔티티 타입이 아니면(스칼라 강제) 엔티티 경로를 우회한다. */
@@ -193,6 +328,108 @@ public final class JpqlQuery<T> {
         }
         Class<Object> entityType = (Class<Object>) metadata.entityType();
         return (Flux<T>) operations.findAll(entityType, spec);
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // SELECT NEW ... DTO projection
+    // ----------------------------------------------------------------------------------------
+
+    private Function<RowAccessor, T> constructorMapper(ConstructorCall call, int columns) {
+        Constructor<?> ctor = resolveConstructor(call, columns);
+        Class<?>[] paramTypes = ctor.getParameterTypes();
+        return row -> {
+            Object[] args = new Object[columns];
+            for (int i = 0; i < columns; i++) {
+                Object raw = row.get(columnLabel(i), Object.class);
+                args[i] = coerce(raw, paramTypes[i], call.className(), i);
+            }
+            try {
+                @SuppressWarnings("unchecked")
+                T instance = (T) ctor.newInstance(args);
+                return instance;
+            } catch (ReflectiveOperationException e) {
+                throw new JpqlException("Failed to instantiate SELECT NEW target " + call.className()
+                        + ": " + e.getMessage());
+            }
+        };
+    }
+
+    /** {@code className}의 public 생성자 중 인자 개수가 컬럼 수와 일치하는 하나를 리플렉션으로 찾는다(캐시). */
+    private Constructor<?> resolveConstructor(ConstructorCall call, int columns) {
+        if (resolvedConstructor != null) {
+            return resolvedConstructor;
+        }
+        Class<?> dtoClass;
+        try {
+            dtoClass = Class.forName(call.className());
+        } catch (ClassNotFoundException e) {
+            throw new JpqlException("SELECT NEW target class not found: " + call.className());
+        }
+        Constructor<?> match = null;
+        for (Constructor<?> candidate : dtoClass.getConstructors()) {
+            if (candidate.getParameterCount() == columns) {
+                if (match != null) {
+                    throw new JpqlException("Ambiguous constructor: " + call.className() + " has more than one "
+                            + "public constructor with " + columns + " parameters; SELECT NEW cannot disambiguate");
+                }
+                match = candidate;
+            }
+        }
+        if (match == null) {
+            throw new JpqlException("No public constructor of " + call.className() + " accepts " + columns
+                    + " argument(s) for the SELECT NEW projection");
+        }
+        resolvedConstructor = match;
+        return match;
+    }
+
+    /** 스칼라 컬럼 값을 생성자 파라미터 타입으로 강제 변환한다. 변환 불가면 fail-fast. */
+    private static Object coerce(Object value, Class<?> target, String className, int index) {
+        if (value == null) {
+            if (target.isPrimitive()) {
+                throw new JpqlException("SELECT NEW " + className + ": null cannot be assigned to primitive "
+                        + "parameter " + index + " of type " + target.getName());
+            }
+            return null;
+        }
+        if (target.isInstance(value)) {
+            return value;
+        }
+        if (value instanceof Number n) {
+            if (target == int.class || target == Integer.class) {
+                return n.intValue();
+            }
+            if (target == long.class || target == Long.class) {
+                return n.longValue();
+            }
+            if (target == double.class || target == Double.class) {
+                return n.doubleValue();
+            }
+            if (target == float.class || target == Float.class) {
+                return n.floatValue();
+            }
+            if (target == short.class || target == Short.class) {
+                return n.shortValue();
+            }
+            if (target == byte.class || target == Byte.class) {
+                return n.byteValue();
+            }
+            if (target == BigDecimal.class) {
+                return n instanceof BigDecimal bd ? bd : new BigDecimal(n.toString());
+            }
+            if (target == BigInteger.class) {
+                return n instanceof BigInteger bi ? bi : BigInteger.valueOf(n.longValue());
+            }
+        }
+        if ((target == boolean.class || target == Boolean.class) && value instanceof Boolean b) {
+            return b;
+        }
+        if (target == String.class) {
+            return value.toString();
+        }
+        throw new JpqlException("SELECT NEW " + className + ": cannot convert value of type "
+                + value.getClass().getName() + " to constructor parameter " + index + " of type "
+                + target.getName());
     }
 
     private Object mapScalarRow(RowAccessor row, int columns) {

@@ -4,6 +4,7 @@ import io.nova.query.jpql.ast.AggregateOp;
 import io.nova.query.jpql.ast.ArithmeticOp;
 import io.nova.query.jpql.ast.Assignment;
 import io.nova.query.jpql.ast.ComparisonOp;
+import io.nova.query.jpql.ast.ConstructorCall;
 import io.nova.query.jpql.ast.Expression;
 import io.nova.query.jpql.ast.JoinClause;
 import io.nova.query.jpql.ast.JpqlStatement;
@@ -88,7 +89,7 @@ public final class JpqlParser {
 
     private SelectItem parseSelectItem() {
         if (isKeyword("NEW")) {
-            throw syntax("JPQL constructor expression (SELECT NEW ...) is not supported in v1");
+            return parseConstructor();
         }
         Expression expr = parseExpression();
         String alias = null;
@@ -102,6 +103,26 @@ public final class JpqlParser {
             return SelectItem.entity(p.alias());
         }
         return SelectItem.of(expr, alias);
+    }
+
+    /**
+     * {@code NEW com.pkg.Dto(arg, arg, ...)} 생성자 프로젝션을 파싱한다. 클래스명은 점(.)으로 이어진
+     * 식별자 경로이고, 인자는 콤마로 구분된 스칼라 식이다.
+     */
+    private SelectItem parseConstructor() {
+        expectKeyword("NEW");
+        StringBuilder className = new StringBuilder(expectIdentifier("constructor class name"));
+        while (consumeOperator(".")) {
+            className.append('.').append(expectIdentifier("constructor class name segment"));
+        }
+        expectOperator("(");
+        List<Expression> args = new ArrayList<>();
+        args.add(parseExpression());
+        while (consumeOperator(",")) {
+            args.add(parseExpression());
+        }
+        expectOperator(")");
+        return SelectItem.constructor(new ConstructorCall(className.toString(), args));
     }
 
     private List<JoinClause> parseJoins() {
@@ -432,6 +453,10 @@ public final class JpqlParser {
         if (NO_ARG_FUNCTIONS.contains(upper) && !isOperator("(")) {
             return new Expression.FunctionCall(upper, List.of());
         }
+        // CAST(expr AS type) — 내부에 AS 키워드가 있어 일반 인자 파싱과 다르게 처리한다.
+        if (upper.equals("CAST") && isOperator("(")) {
+            return parseCast();
+        }
         // 일반 함수 호출
         if (isOperator("(")) {
             return parseFunctionCall(upper);
@@ -456,6 +481,15 @@ public final class JpqlParser {
         }
         expectOperator(")");
         return new Expression.Aggregate(op, distinct, arg);
+    }
+
+    private Expression parseCast() {
+        expectOperator("(");
+        Expression value = parseExpression();
+        expectKeyword("AS");
+        String type = expectIdentifier("CAST target type");
+        expectOperator(")");
+        return new Expression.Cast(value, type.toUpperCase(Locale.ROOT));
     }
 
     private Expression parseFunctionCall(String name) {

@@ -4,7 +4,11 @@ import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
+import jakarta.persistence.ColumnResult;
 import jakarta.persistence.ConstraintMode;
+import jakarta.persistence.ConstructorResult;
+import jakarta.persistence.EntityResult;
+import jakarta.persistence.FieldResult;
 import io.nova.annotation.CreatedAt;
 import jakarta.persistence.Convert;
 import jakarta.persistence.DiscriminatorColumn;
@@ -55,6 +59,7 @@ import jakarta.persistence.PreRemove;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.SecondaryTable;
 import jakarta.persistence.SecondaryTables;
+import jakarta.persistence.SqlResultSetMapping;
 import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.TableGenerator;
 import jakarta.persistence.Temporal;
@@ -106,8 +111,14 @@ public final class EntityMetadataFactory {
     private static final Set<Class<?>> SUPPORTED_SOFT_DELETE_TYPES =
             Set.of(Instant.class, LocalDateTime.class, OffsetDateTime.class);
 
+    // @Version 지원 타입. 정수 타입(Long/Integer/Short)은 +1 증분, 시간 타입(LocalDateTime)은 update 시 현재
+    // 시각으로 갱신하는 방식으로 낙관락을 건다. 시간 타입은 드라이버 실증(r2dbc-h2)으로 선별했다:
+    //   - LocalDateTime → SQL timestamp 컬럼으로 bind/decode/WHERE-equality 왕복 성공 → 지원.
+    //   - Instant → plain timestamp 컬럼 decode 실패("Cannot decode value of type java.time.Instant"),
+    //     timestamp with time zone 컬럼에서만 왕복 성공하나 스키마 생성기가 그 컬럼 타입을 emit하지 않아 거부.
+    //   - java.sql.Timestamp → 드라이버가 파라미터 인코딩 자체를 거부("Cannot encode parameter ...") → 거부.
     private static final Set<Class<?>> SUPPORTED_VERSION_TYPES =
-            Set.of(Long.class, Integer.class, Short.class);
+            Set.of(Long.class, Integer.class, Short.class, LocalDateTime.class);
 
     private static final Set<Class<?>> SUPPORTED_UUID_ID_TYPES =
             Set.of(UUID.class, String.class);
@@ -158,6 +169,13 @@ public final class EntityMetadataFactory {
      * 다른 메타데이터 스캔 로직과 독립적이다.
      */
     private final Map<Class<?>, List<NamedQueryDefinition>> namedQueryDefinitionsCache = new ConcurrentHashMap<>();
+    /**
+     * 클래스별 {@code @SqlResultSetMapping} 정의 캐시. 애너테이션 파싱은 리플렉션이므로 타입당 1회만 수행해
+     * 재사용한다. Batch E(native 결과 매핑) 전용 마커 네임스페이스({@code resultSetMapping*})로, 다른
+     * 메타데이터 스캔 로직 및 {@code namedQuery*} 마커와 독립적이다.
+     */
+    private final Map<Class<?>, List<SqlResultSetMappingDefinition>> resultSetMappingDefinitionsCache =
+            new ConcurrentHashMap<>();
 
     /**
      * {@link JsonCodec} 없이 factory를 만든다 — {@code @Json} 필드가 없는 엔티티만 다룰 때 사용한다.
@@ -207,8 +225,10 @@ public final class EntityMetadataFactory {
      * 파싱해 {@link NamedQueryDefinition} 목록으로 반환한다. 결과는 타입별로 캐시되며 immutable이다.
      * <p>
      * 기존 메타데이터 파싱 흐름과 독립적인 추가 스캔 진입점으로, {@link #createMetadata(Class)}를 변경하지
-     * 않는다. 미지원 요소({@code lockMode != NONE}, query hint, {@code resultSetMapping})는 조용히 무시하지
-     * 않고 {@link IllegalStateException}으로 fail-fast 한다.
+     * 않는다. 미지원 요소({@code lockMode != NONE}, query hint)는 조용히 무시하지 않고
+     * {@link IllegalStateException}으로 fail-fast 한다. {@code @NamedNativeQuery(resultSetMapping=...)}는
+     * {@link NamedQueryDefinition#resultSetMapping()}에 담기며, 실제 결과 매핑은
+     * {@link #sqlResultSetMappings(Class)}가 노출하는 정의를 사용해 별도 registry가 실행한다.
      *
      * @param type 스캔 대상 엔티티 또는 {@code @MappedSuperclass}
      * @return 선언 순서를 보존한 명명 쿼리 정의 목록(없으면 빈 목록)
@@ -256,15 +276,126 @@ public final class EntityMetadataFactory {
                     throw new IllegalStateException("@NamedNativeQuery '" + nnq.name() + "' on " + source.getName()
                             + " declares query hints which are not supported");
                 }
-                if (!nnq.resultSetMapping().isBlank()) {
-                    throw new IllegalStateException("@NamedNativeQuery '" + nnq.name() + "' on " + source.getName()
-                            + " declares resultSetMapping '" + nnq.resultSetMapping() + "' which is not supported");
-                }
                 Class<?> resultClass = nnq.resultClass() == void.class ? null : nnq.resultClass();
-                definitions.add(new NamedQueryDefinition(nnq.name(), nnq.query(), true, resultClass));
+                String resultSetMapping = nnq.resultSetMapping().isBlank() ? null : nnq.resultSetMapping();
+                if (resultClass != null && resultSetMapping != null) {
+                    throw new IllegalStateException("@NamedNativeQuery '" + nnq.name() + "' on " + source.getName()
+                            + " declares both resultClass and resultSetMapping; use exactly one result mapping");
+                }
+                definitions.add(new NamedQueryDefinition(
+                        nnq.name(), nnq.query(), true, resultClass, resultSetMapping));
             }
         }
         return definitions;
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // SQL result set mappings (Batch E) — 마커 네임스페이스: resultSetMapping*
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * 주어진 타입과 그 매핑 조상({@code @MappedSuperclass}/상위 {@code @Entity})에 선언된
+     * {@code @SqlResultSetMapping}/{@code @SqlResultSetMappings}를 파싱해
+     * {@link SqlResultSetMappingDefinition} 목록으로 반환한다. 결과는 타입별로 캐시되며 immutable이다.
+     * <p>
+     * {@link #createMetadata(Class)}와 독립적인 추가 스캔 진입점으로 hub 생성자를 건드리지 않는다. 구조적
+     * 미지원 요소는 {@link IllegalStateException}으로 fail-fast 한다: {@code @EntityResult}의 non-blank
+     * {@code discriminatorColumn}, blank {@code @FieldResult}/{@code @ColumnResult} name·column, 그리고
+     * entities/classes/columns가 모두 비어 있는 매핑. {@code @EntityResult}의 {@code lockMode}는 native 결과
+     * 매핑이 잠금을 적용하지 않는 detached read-only projection이므로 <b>의도적으로 무시</b>한다(jakarta 3.2
+     * 기본값이 {@code OPTIMISTIC}이라 non-NONE fail-fast로 해석하면 모든 {@code @EntityResult}가 거부됨).
+     * {@code @FieldResult} 속성명이 실제 엔티티 property인지, {@code @ConstructorResult} 인자 개수가 생성자와
+     * 맞는지 같은 <b>의미적</b> 검증은 매핑을 실행하는 registry의 컴파일 단계에서 수행한다.
+     *
+     * @param type 스캔 대상 엔티티 또는 {@code @MappedSuperclass}
+     * @return 선언 순서를 보존한 결과셋 매핑 정의 목록(없으면 빈 목록)
+     */
+    public List<SqlResultSetMappingDefinition> sqlResultSetMappings(Class<?> type) {
+        Objects.requireNonNull(type, "type must not be null");
+        List<SqlResultSetMappingDefinition> cached = resultSetMappingDefinitionsCache.get(type);
+        if (cached != null) {
+            return cached;
+        }
+        List<SqlResultSetMappingDefinition> immutable = List.copyOf(collectSqlResultSetMappings(type));
+        resultSetMappingDefinitionsCache.put(type, immutable);
+        return immutable;
+    }
+
+    private List<SqlResultSetMappingDefinition> collectSqlResultSetMappings(Class<?> type) {
+        List<Class<?>> chain = new ArrayList<>();
+        chain.add(type);
+        Class<?> ancestor = type.getSuperclass();
+        while (ancestor != null && ancestor != Object.class
+                && (ancestor.isAnnotationPresent(MappedSuperclass.class)
+                || ancestor.isAnnotationPresent(Entity.class))) {
+            chain.add(ancestor);
+            ancestor = ancestor.getSuperclass();
+        }
+        List<SqlResultSetMappingDefinition> definitions = new ArrayList<>();
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            Class<?> source = chain.get(i);
+            for (SqlResultSetMapping mapping : source.getAnnotationsByType(SqlResultSetMapping.class)) {
+                definitions.add(parseSqlResultSetMapping(mapping, source));
+            }
+        }
+        return definitions;
+    }
+
+    private static SqlResultSetMappingDefinition parseSqlResultSetMapping(SqlResultSetMapping mapping, Class<?> source) {
+        String name = mapping.name();
+        if (name == null || name.isBlank()) {
+            throw new IllegalStateException("@SqlResultSetMapping on " + source.getName() + " must declare a name");
+        }
+        List<SqlResultSetMappingDefinition.EntityMapping> entities = new ArrayList<>();
+        for (EntityResult entityResult : mapping.entities()) {
+            // @EntityResult.lockMode()의 애너테이션 default는 OPTIMISTIC이지만 native 결과 매핑은 잠금을
+            // 적용하지 않으므로(읽기 전용 매핑) lockMode는 의도적으로 무시한다.
+            if (!entityResult.discriminatorColumn().isBlank()) {
+                throw new IllegalStateException("@SqlResultSetMapping '" + name + "' on " + source.getName()
+                        + " declares @EntityResult discriminatorColumn which is not supported");
+            }
+            Map<String, String> fieldAliases = new LinkedHashMap<>();
+            for (FieldResult fieldResult : entityResult.fields()) {
+                if (fieldResult.name().isBlank() || fieldResult.column().isBlank()) {
+                    throw new IllegalStateException("@SqlResultSetMapping '" + name + "' on " + source.getName()
+                            + " declares a @FieldResult with a blank name or column");
+                }
+                String previous = fieldAliases.put(fieldResult.name(), fieldResult.column());
+                if (previous != null) {
+                    throw new IllegalStateException("@SqlResultSetMapping '" + name + "' on " + source.getName()
+                            + " declares duplicate @FieldResult for attribute '" + fieldResult.name() + "'");
+                }
+            }
+            entities.add(new SqlResultSetMappingDefinition.EntityMapping(entityResult.entityClass(), fieldAliases));
+        }
+        List<SqlResultSetMappingDefinition.ConstructorMapping> classes = new ArrayList<>();
+        for (ConstructorResult constructorResult : mapping.classes()) {
+            List<SqlResultSetMappingDefinition.ColumnMapping> columns =
+                    parseColumnResults(constructorResult.columns(), name, source);
+            if (columns.isEmpty()) {
+                throw new IllegalStateException("@SqlResultSetMapping '" + name + "' on " + source.getName()
+                        + " declares a @ConstructorResult with no @ColumnResult columns");
+            }
+            classes.add(new SqlResultSetMappingDefinition.ConstructorMapping(
+                    constructorResult.targetClass(), columns));
+        }
+        List<SqlResultSetMappingDefinition.ColumnMapping> columns =
+                parseColumnResults(mapping.columns(), name, source);
+        return new SqlResultSetMappingDefinition(name, entities, classes, columns);
+    }
+
+    private static List<SqlResultSetMappingDefinition.ColumnMapping> parseColumnResults(
+            ColumnResult[] columnResults, String mappingName, Class<?> source) {
+        List<SqlResultSetMappingDefinition.ColumnMapping> columns = new ArrayList<>();
+        for (ColumnResult columnResult : columnResults) {
+            if (columnResult.name().isBlank()) {
+                throw new IllegalStateException("@SqlResultSetMapping '" + mappingName + "' on " + source.getName()
+                        + " declares a @ColumnResult with a blank name");
+            }
+            Class<?> type = columnResult.type() == void.class ? null : columnResult.type();
+            columns.add(new SqlResultSetMappingDefinition.ColumnMapping(columnResult.name(), type));
+        }
+        return columns;
     }
 
     /**
@@ -1657,7 +1788,7 @@ public final class EntityMetadataFactory {
                 throw new IllegalArgumentException(
                         "Unsupported version type " + field.getType().getName() + " on "
                                 + declaringType.getName() + "." + field.getName()
-                                + "; supported types are Long, Integer, Short");
+                                + "; supported types are Long, Integer, Short, java.time.LocalDateTime");
             }
         }
         GenerationType generationType = generatedValue == null ? null : generatedValue.strategy();
@@ -1866,6 +1997,18 @@ public final class EntityMetadataFactory {
                             + " maps " + field.getType().getName()
                             + " but is missing @Temporal(TemporalType.DATE|TIME|TIMESTAMP);"
                             + " java.util.Date/Calendar mapping is ambiguous without it");
+        }
+
+        // @Enumerated/@Json/@Convert/@Temporal/등록 converter가 없는 순수 스칼라 타입의 저장타입 분리를 EC 원소와
+        // 대칭으로 적용한다 — 현재 UUID만 해당(varchar(String) via UuidStringConverter). 드라이버가 varchar→UUID를
+        // 직접 디코딩하지 못하므로 columnType()을 String으로 분리해 schema DDL과 row 디코딩을 저장타입에 통일한다.
+        // Float/Short 등 드라이버 네이티브 기본 타입은 converter 없이 sqlType이 도메인 타입에서 직접 유도한다.
+        if (converter == null) {
+            ElementValueMapping basicStorage = resolveBasicStorageMapping(wrapPrimitiveType(field.getType()));
+            if (basicStorage.converter() != null) {
+                converter = basicStorage.converter();
+                converterColumnType = basicStorage.columnType();
+            }
         }
 
         boolean embedded = hostPath != null && !hostPath.isEmpty();
@@ -3057,7 +3200,11 @@ public final class EntityMetadataFactory {
                             + " is not supported; supported key types: String, Integer, Long, Short, Boolean, UUID,"
                             + " or an enum");
         }
-        return new ElementCollectionInfo.MapKeyInfo(keyColumnName, wrapped, wrapped, null);
+        // 기본 타입 key의 저장타입 분리를 스칼라/EC value와 동일 규칙으로 해석한다 — UUID key는 varchar(String) +
+        // UuidStringConverter로 저장타입을 분리해 non-String map key 디코딩 함정(varchar→UUID 직접 디코드 불가)을 피한다.
+        ElementValueMapping keyStorage = resolveBasicStorageMapping(wrapped);
+        return new ElementCollectionInfo.MapKeyInfo(
+                keyColumnName, wrapped, keyStorage.columnType(), null, keyStorage.converter());
     }
 
     /**
@@ -3260,13 +3407,30 @@ public final class EntityMetadataFactory {
                     + " maps a java.util.Date/Calendar @ElementCollection element but is missing"
                     + " @Temporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
         }
-        if (wrapped == UUID.class) {
-            // 저장타입은 varchar. R2DBC 드라이버가 varchar→UUID를 직접 디코딩하지 못하므로(H2 등) 문자열 경유로
-            // 인코드/디코드해 converter read-source-type 함정을 피한다.
+        // @Enumerated/@Convert/@Temporal이 없는 순수 기본 타입(UUID 포함)은 스칼라 프로퍼티/ map key와 동일한
+        // 저장타입 분리 규칙을 공유한다(중복 구현 금지).
+        return resolveBasicStorageMapping(wrapped);
+    }
+
+    /**
+     * {@code @Enumerated}/{@code @Convert}/{@code @Temporal}/등록 converter가 없는 순수 기본 타입의 저장 표현
+     * 컬럼 타입과 (선택적) converter를 결정한다 — 스칼라 {@code @Column} 프로퍼티, {@code @ElementCollection}
+     * 원소, {@code Map} key가 모두 이 한 자리를 공유해 대칭을 보장한다.
+     * <ul>
+     *   <li>{@code UUID} — 저장타입 {@link String}(varchar) + {@link UuidStringConverter}. R2DBC 드라이버가
+     *       {@code varchar}→{@code UUID} 직접 디코딩을 못 하므로(H2 등) 문자열 경유로 인코드/디코드해
+     *       converter read-source-type 함정을 피한다.</li>
+     *   <li>그 외 순수 기본 타입(String/Long/Integer/Short/Float/Double/Boolean/BigDecimal 등) — 저장타입=
+     *       도메인 타입, converter 없음({@code null}). 실제 SQL 컬럼 타입은 스칼라 {@code sqlType}/EC
+     *       {@code elementColumnType}이 그 타입에서 유도한다(Short→smallint, Float→real 등).</li>
+     * </ul>
+     * {@code wrappedType}은 primitive가 wrapper로 정규화된 타입이어야 한다.
+     */
+    private static ElementValueMapping resolveBasicStorageMapping(Class<?> wrappedType) {
+        if (wrappedType == UUID.class) {
             return new ElementValueMapping(String.class, castConverter(new UuidStringConverter()));
         }
-        // 순수 기본 타입: 저장타입=도메인타입, converter 없음.
-        return new ElementValueMapping(wrapped, null);
+        return new ElementValueMapping(wrappedType, null);
     }
 
     @SuppressWarnings("unchecked")

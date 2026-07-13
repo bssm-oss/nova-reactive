@@ -456,7 +456,27 @@ class AbstractSchemaGeneratorTest {
         assertTrue(error.getMessage().contains("Unsupported @ElementCollection element type"), error.getMessage());
     }
 
+    @Test
+    void rendersScalarUuidFloatAndShortColumnsSymmetricWithElementCollections() {
+        String ddl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScalarTypeEntity.class));
+        // UUID 스칼라는 EC 원소와 대칭으로 저장타입이 String(varchar)으로 분리된다(UuidStringConverter).
+        assertTrue(ddl.contains("uid varchar(255)"), ddl);
+        // Float → real, Short → smallint (드라이버 네이티브, converter 없이 sqlType이 유도).
+        assertTrue(ddl.contains("ratio real"), ddl);
+        assertTrue(ddl.contains("level smallint"), ddl);
+    }
+
     enum Hue { RED, GREEN, BLUE }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "scalar_type")
+    static class ScalarTypeEntity {
+        @jakarta.persistence.Id
+        Long id;
+        java.util.UUID uid;
+        Float ratio;
+        Short level;
+    }
 
     static class Pojo {
         String value;

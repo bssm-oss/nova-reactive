@@ -106,7 +106,15 @@ abstract class AbstractCriteriaExpression<T> implements Expression<T> {
 
     @Override
     public Predicate in(Expression<?>... values) {
-        throw unsupported("in(Expression...)");
+        // path.in(subquery): 단일 서브쿼리 인자만 IN(subquery)로 지원한다. 스칼라 컬럼 경로와 owning
+        // to-one 연관(FK 컬럼) 모두 좌변으로 쓸 수 있다. 컬럼 대 컬럼 IN이나 다중 표현식 IN은 v1 미지원.
+        if (values != null && values.length == 1 && values[0] instanceof CriteriaSubquery<?> subquery) {
+            if (this instanceof CriteriaColumnPath columnPath) {
+                return CriteriaPredicate.inSubquery(columnPath, subquery, false);
+            }
+            throw new CriteriaException("in(subquery) requires an attribute or association path on the left");
+        }
+        throw unsupported("in(Expression...) other than in(subquery)");
     }
 
     @Override

@@ -229,9 +229,50 @@ class JpqlParserTest {
     }
 
     @Test
-    void rejectsConstructorExpression() {
-        assertThrows(JpqlSyntaxException.class,
-                () -> parse("SELECT NEW com.x.Dto(e.name) FROM Employee e"));
+    void parsesConstructorExpression() {
+        JpqlStatement.Select select = parseSelect(
+                "SELECT NEW com.x.Dto(e.name, e.age, COUNT(e)) FROM Employee e");
+        assertEquals(1, select.selectItems().size());
+        SelectItem item = select.selectItems().get(0);
+        assertTrue(item.isConstructor());
+        assertEquals("com.x.Dto", item.constructorCall().className());
+        assertEquals(3, item.constructorCall().arguments().size());
+        assertInstanceOf(Expression.Path.class, item.constructorCall().arguments().get(0));
+        assertInstanceOf(Expression.Aggregate.class, item.constructorCall().arguments().get(2));
+    }
+
+    @Test
+    void parsesMultiSegmentPathExpression() {
+        JpqlStatement.Select select = parseSelect("SELECT e.department.name FROM Employee e");
+        Expression.Path path = assertInstanceOf(Expression.Path.class,
+                select.selectItems().get(0).expression());
+        assertEquals("e", path.alias());
+        assertEquals(2, path.segments().size());
+        assertEquals("department", path.segments().get(0));
+        assertEquals("name", path.segments().get(1));
+    }
+
+    @Test
+    void parsesCastExpression() {
+        JpqlStatement.Select select = parseSelect("SELECT CAST(e.age AS string) FROM Employee e");
+        Expression.Cast cast = assertInstanceOf(Expression.Cast.class,
+                select.selectItems().get(0).expression());
+        assertEquals("STRING", cast.targetType());
+        assertInstanceOf(Expression.Path.class, cast.value());
+    }
+
+    @Test
+    void parsesLocateFunctionAndNativeFunction() {
+        Expression.FunctionCall locate = assertInstanceOf(Expression.FunctionCall.class,
+                parseSelect("SELECT LOCATE('a', e.name) FROM Employee e").selectItems().get(0).expression());
+        assertEquals("LOCATE", locate.name());
+        assertEquals(2, locate.arguments().size());
+
+        Expression.FunctionCall fn = assertInstanceOf(Expression.FunctionCall.class,
+                parseSelect("SELECT FUNCTION('date_trunc', 'month', e.name) FROM Employee e")
+                        .selectItems().get(0).expression());
+        assertEquals("FUNCTION", fn.name());
+        assertEquals(3, fn.arguments().size());
     }
 
     @Test

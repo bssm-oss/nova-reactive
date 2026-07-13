@@ -523,6 +523,12 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (type == Double.class || type == double.class) {
             return "double precision";
         }
+        if (type == Float.class || type == float.class) {
+            return "real";
+        }
+        if (type == Short.class || type == short.class) {
+            return "smallint";
+        }
         if (type == java.math.BigDecimal.class) {
             // precision이 지정되면 그대로 numeric(p, s)로, 미지정(0)이면 통화/금액류에 흔히 쓰는
             // numeric(19, 2)를 기본값으로 emit한다. row 디코딩은 columnType()=BigDecimal로 driver가 native 처리한다.
@@ -541,6 +547,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (type == java.time.LocalDateTime.class) {
             return dialect.timestampColumnType();
         }
+        // UUID 스칼라 컬럼은 여기 도달하지 않는다 — EntityMetadataFactory가 UUID property에 UuidStringConverter를
+        // 달아 columnType()을 String으로 분리하므로 위 varchar 분기로 처리된다(EC 원소와 대칭, 드라이버가
+        // varchar→UUID 직접 디코드를 못 하는 read-source-type 함정 회피). 저장타입이 String이 아닌 진짜 미지원
+        // 타입만 여기서 fail-fast 한다(broken DDL ship 금지).
         throw new IllegalArgumentException("Unsupported column type: " + type.getName());
     }
 }

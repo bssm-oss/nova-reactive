@@ -249,6 +249,27 @@ class MySqlDialectTest {
         assertTrue(refsDdl.contains("`refs` varchar(255)"), refsDdl);
     }
 
+    @Test
+    void rendersScalarUuidFloatAndShortColumnsByStorageType() {
+        EntityMetadata<ScalarHolder> holder = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(ScalarHolder.class);
+        String ddl = dialect.schemaGenerator().createTable(holder);
+        // UUID 스칼라는 저장타입 String → varchar (UuidStringConverter), Float → real, Short → smallint.
+        assertTrue(ddl.contains("`uid` varchar(255)"), ddl);
+        assertTrue(ddl.contains("`ratio` real"), ddl);
+        assertTrue(ddl.contains("`level` smallint"), ddl);
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "scalar_holder")
+    static class ScalarHolder {
+        @jakarta.persistence.Id
+        Long id;
+        java.util.UUID uid;
+        Float ratio;
+        Short level;
+    }
+
     enum Hue { RED, GREEN, BLUE }
 
     @jakarta.persistence.Entity
