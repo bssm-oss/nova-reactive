@@ -167,6 +167,37 @@ public record ElementCollectionInfo(
     }
 
     /**
+     * {@code valueConverter}는 저장 표현 인코딩/디코딩을 담당하는 전략 객체일 뿐 매핑 identity의 일부가 아니다.
+     * 동일한 원소 매핑이라도 converter 인스턴스가 다르면 record의 기본 equality가 unequal로 판정하므로,
+     * converter를 <em>제외한</em> 나머지 매핑 컴포넌트로만 동등성을 정의한다({@code valueColumnType}은 converter와
+     * 함께 결정되므로 포함해도 안전하고, 매핑을 구분하는 데 도움이 된다).
+     */
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof ElementCollectionInfo that)) {
+            return false;
+        }
+        return usesSet == that.usesSet
+                && java.util.Objects.equals(collectionTableName, that.collectionTableName)
+                && java.util.Objects.equals(ownerForeignKeyColumn, that.ownerForeignKeyColumn)
+                && java.util.Objects.equals(valueColumn, that.valueColumn)
+                && java.util.Objects.equals(valueType, that.valueType)
+                && java.util.Objects.equals(embeddableColumns, that.embeddableColumns)
+                && java.util.Objects.equals(orderColumn, that.orderColumn)
+                && java.util.Objects.equals(mapKey, that.mapKey)
+                && java.util.Objects.equals(valueColumnType, that.valueColumnType);
+    }
+
+    @Override
+    public int hashCode() {
+        return java.util.Objects.hash(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType,
+                usesSet, embeddableColumns, orderColumn, mapKey, valueColumnType);
+    }
+
+    /**
      * {@code @Embeddable} 원소의 영속 필드 하나를 collection table 컬럼으로 매핑한 정보. {@code field}는 원소
      * 인스턴스에서 값을 읽고/쓰기 위한 reflective handle이고, {@code columnName}은 (선택적 {@code @AttributeOverride}
      * 반영된) 물리 컬럼 이름, {@code columnType}은 저장 표현의 Java 타입(primitive는 wrapper로 정규화됨)이다.

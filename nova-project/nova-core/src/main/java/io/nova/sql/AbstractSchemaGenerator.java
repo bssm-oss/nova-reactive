@@ -129,17 +129,8 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (valueType == Short.class || valueType == short.class) {
             return "smallint";
         }
-        if (valueType == Byte.class || valueType == byte.class) {
-            return "smallint";
-        }
-        if (valueType == Character.class || valueType == char.class) {
-            return "char(1)";
-        }
         if (valueType == java.math.BigDecimal.class) {
             return "numeric(19, 2)";
-        }
-        if (valueType == java.math.BigInteger.class) {
-            return "numeric(38)";
         }
         if (valueType == java.util.UUID.class) {
             return "varchar(36)";

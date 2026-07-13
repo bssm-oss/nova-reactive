@@ -245,6 +245,44 @@ class SessionCollectionFlushIntegrationTest {
     }
 
     @Test
+    void uuidElementCollectionAddRemoveInSessionEmitsMinimalSql() {
+        // 세션 diff DELETE `WHERE value = ?`에서 encodeElementValue(UUID→문자열)가 load-bearing이다: 미encode UUID는
+        // 저장된 varchar와 매칭 실패해 stale row가 남는다. UUID 원소 in-session remove+add가 정확히 1 DELETE + 1 INSERT를
+        // 내고 commit 후 UUID로 정확 복원되는지 검증한다.
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(RefBag.class).block();
+
+        java.util.UUID keep = java.util.UUID.randomUUID();
+        java.util.UUID drop = java.util.UUID.randomUUID();
+        java.util.UUID add = java.util.UUID.randomUUID();
+        RefBag bag = new RefBag("b");
+        bag.getRefs().add(keep);
+        bag.getRefs().add(drop);
+        Long id = support.operations().save(bag).map(RefBag::getId).block();
+
+        listener.clear();
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(RefBag.class, id)
+                                .doOnNext(loaded -> {
+                                    loaded.getRefs().remove(drop);
+                                    loaded.getRefs().add(add);
+                                })
+                                .then()))
+                .verifyComplete();
+
+        assertEquals(1, listener.count("ref_bag_refs", "delete"),
+                "제거된 UUID 값 1건만 DELETE 되어야 한다: " + listener.statements());
+        assertEquals(1, listener.count("ref_bag_refs", "insert"),
+                "추가된 UUID 값 1건만 INSERT 되어야 한다: " + listener.statements());
+
+        // commit 후 fresh 조회: {keep, add} — stale drop row가 남지 않아야 한다(encode 매칭 검증).
+        StepVerifier.create(support.operations().findById(RefBag.class, id))
+                .assertNext(loaded -> assertEquals(Set.of(keep, add), loaded.getRefs()))
+                .verifyComplete();
+    }
+
+    @Test
     void collectionMutationIsFlushedAtCommit() {
         Post seeded = seedPostWithTwoTags();
         Tag c = support.operations().save(new Tag("c")).block();
@@ -429,6 +467,33 @@ class SessionCollectionFlushIntegrationTest {
 
         public Set<Skill> getSkills() {
             return skills;
+        }
+    }
+
+    @Entity
+    @Table(name = "ref_bag")
+    public static class RefBag {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String label;
+
+        @ElementCollection
+        private Set<java.util.UUID> refs = new LinkedHashSet<>();
+
+        public RefBag() {
+        }
+
+        public RefBag(String label) {
+            this.label = label;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public Set<java.util.UUID> getRefs() {
+            return refs;
         }
     }
 }

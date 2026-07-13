@@ -107,6 +107,45 @@ class EntityMetadataFactoryElementCollectionTypeTest {
         assertTrue(error.getMessage().contains("is not an enum"));
     }
 
+    @Test
+    void rejectsEnumeratedCombinedWithConvert() {
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> factory.getEntityMetadata(EnumeratedAndConvert.class));
+        assertTrue(error.getMessage().contains("cannot combine @Enumerated"));
+    }
+
+    @Test
+    void rejectsEnumeratedCombinedWithTemporal() {
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> factory.getEntityMetadata(EnumeratedAndTemporal.class));
+        assertTrue(error.getMessage().contains("cannot combine @Enumerated"));
+    }
+
+    @Test
+    void rejectsConvertCombinedWithTemporal() {
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> factory.getEntityMetadata(ConvertAndTemporal.class));
+        assertTrue(error.getMessage().contains("cannot combine @Convert with @Temporal"));
+    }
+
+    @Test
+    void rejectsUtilDateElementWithoutTemporal() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DateWithoutTemporal.class));
+        assertTrue(error.getMessage().contains("missing @Temporal"));
+    }
+
+    @Test
+    void equalityIgnoresConverterInstanceIdentity() {
+        // 동일 매핑을 별도 factory로 두 번 만들면 converter 인스턴스는 다르지만 매핑은 동등해야 한다.
+        ElementCollectionInfo a = info(Holder.class, "stringColors");
+        ElementCollectionInfo b = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(Holder.class).findProperty("stringColors").orElseThrow().elementCollectionInfo();
+        assertTrue(a.valueConverter() != b.valueConverter(), "서로 다른 converter 인스턴스여야 의미 있는 테스트");
+        assertEquals(a, b);
+        assertEquals(a.hashCode(), b.hashCode());
+    }
+
     // --- fixtures -----------------------------------------------------------
 
     enum Color { RED, GREEN, BLUE }
@@ -176,5 +215,51 @@ class EntityMetadataFactoryElementCollectionTypeTest {
         @ElementCollection
         @Enumerated(EnumType.STRING)
         Set<String> notAnEnum;
+    }
+
+    @Entity
+    @Table(name = "enumerated_and_convert")
+    static class EnumeratedAndConvert {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @Enumerated(EnumType.STRING)
+        @Convert(converter = ColorCodeConverter.class)
+        Set<Color> colors;
+    }
+
+    @Entity
+    @Table(name = "enumerated_and_temporal")
+    static class EnumeratedAndTemporal {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @Enumerated(EnumType.STRING)
+        @Temporal(TemporalType.TIMESTAMP)
+        Set<Color> colors;
+    }
+
+    @Entity
+    @Table(name = "convert_and_temporal")
+    static class ConvertAndTemporal {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @Convert(converter = ColorCodeConverter.class)
+        @Temporal(TemporalType.TIMESTAMP)
+        List<Color> colors;
+    }
+
+    @Entity
+    @Table(name = "date_without_temporal")
+    static class DateWithoutTemporal {
+        @Id
+        Long id;
+
+        @ElementCollection
+        List<java.util.Date> dates;
     }
 }

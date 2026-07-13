@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -90,6 +92,44 @@ class ElementCollectionTypeIntegrationTest {
     }
 
     @Test
+    void floatElementsRoundTrip() {
+        // 스칼라 sqlType이 지원하지 않는 타입이지만 H2 R2DBC driver가 real ↔ Float 왕복을 수용함을 실측으로 보증.
+        Palette p = new Palette();
+        p.getScales().add(1.5f);
+        p.getScales().add(2.25f);
+        Long id = support.operations().save(p).map(Palette::getId).block();
+
+        StepVerifier.create(support.operations().findById(Palette.class, id))
+                .assertNext(loaded -> assertEquals(List.of(1.5f, 2.25f), loaded.getScales()))
+                .verifyComplete();
+    }
+
+    @Test
+    void localTimeElementsRoundTrip() {
+        Palette p = new Palette();
+        p.getTimes().add(LocalTime.of(1, 2, 3));
+        p.getTimes().add(LocalTime.of(23, 59, 0));
+        Long id = support.operations().save(p).map(Palette::getId).block();
+
+        StepVerifier.create(support.operations().findById(Palette.class, id))
+                .assertNext(loaded -> assertEquals(
+                        List.of(LocalTime.of(1, 2, 3), LocalTime.of(23, 59, 0)), loaded.getTimes()))
+                .verifyComplete();
+    }
+
+    @Test
+    void localDateTimeElementsRoundTrip() {
+        Palette p = new Palette();
+        p.getTimestamps().add(LocalDateTime.of(2020, 1, 2, 3, 4, 5));
+        Long id = support.operations().save(p).map(Palette::getId).block();
+
+        StepVerifier.create(support.operations().findById(Palette.class, id))
+                .assertNext(loaded -> assertEquals(
+                        List.of(LocalDateTime.of(2020, 1, 2, 3, 4, 5)), loaded.getTimestamps()))
+                .verifyComplete();
+    }
+
+    @Test
     void reSaveFullReplacesEnumElements() {
         Palette p = new Palette();
         p.getStringColors().add(Color.RED);
@@ -129,6 +169,15 @@ class ElementCollectionTypeIntegrationTest {
         @ElementCollection
         private List<LocalDate> dates = new java.util.ArrayList<>();
 
+        @ElementCollection
+        private List<Float> scales = new java.util.ArrayList<>();
+
+        @ElementCollection
+        private List<LocalTime> times = new java.util.ArrayList<>();
+
+        @ElementCollection
+        private List<LocalDateTime> timestamps = new java.util.ArrayList<>();
+
         public Palette() {
         }
 
@@ -150,6 +199,18 @@ class ElementCollectionTypeIntegrationTest {
 
         public List<LocalDate> getDates() {
             return dates;
+        }
+
+        public List<Float> getScales() {
+            return scales;
+        }
+
+        public List<LocalTime> getTimes() {
+            return times;
+        }
+
+        public List<LocalDateTime> getTimestamps() {
+            return timestamps;
         }
     }
 }
