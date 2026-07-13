@@ -319,6 +319,11 @@ public interface ReactiveEntityOperations {
      * 식별자로 단건 parent 엔티티를 조회한 뒤 {@link FetchGroup}으로 선언된 child들을 batch로 hydrate한다.
      * 각 child spec은 한 번의 IN 절 쿼리로 묶이므로 spec이 K개면 child query는 K개로 N+1과 무관하다.
      * <p>
+     * <b>v1 의미(always-eager):</b> Nova는 blocking lazy proxy가 없어(AGENTS.md #4) {@code @ManyToMany}/
+     * {@code @ElementCollection} 연관은 FetchGroup에 선언 여부와 <b>무관하게 항상 hydrate</b>된다. FetchGroup은
+     * 선언된 child의 <b>배치 로드(no N+1)를 보장</b>할 뿐 미선언 M2M/EC를 제외하지 않으므로, 결과는 default
+     * eager 조회와 최소 동등 이상이다.
+     * <p>
      * 기본 구현은 외부 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
      * {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
      */
@@ -330,6 +335,11 @@ public interface ReactiveEntityOperations {
     /**
      * 주어진 parent 타입의 모든 엔티티를 조회한 뒤 {@link FetchGroup}으로 선언된 child들을 batch로 hydrate한다.
      * 각 child spec은 한 번의 IN 절 쿼리로 묶이므로 spec이 K개면 child query는 K개로 parent 수와 무관하다.
+     * <p>
+     * <b>v1 의미(always-eager):</b> Nova는 blocking lazy proxy가 없어(AGENTS.md #4) {@code @ManyToMany}/
+     * {@code @ElementCollection} 연관은 FetchGroup에 선언 여부와 <b>무관하게 항상 hydrate</b>된다. FetchGroup은
+     * 선언된 child의 <b>배치 로드(no N+1)를 보장</b>할 뿐 미선언 M2M/EC를 제외하지 않으므로, 결과는 default
+     * eager 조회와 최소 동등 이상이다.
      * <p>
      * 기본 구현은 외부 직접 구현자가 자동으로 깨지지 않도록 명시적 예외를 던지며,
      * {@link SimpleReactiveEntityOperations}는 이 메서드를 override한다.
