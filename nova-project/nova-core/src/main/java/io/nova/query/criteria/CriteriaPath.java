@@ -10,31 +10,37 @@ import jakarta.persistence.metamodel.PluralAttribute;
 import jakarta.persistence.metamodel.SingularAttribute;
 
 /**
- * {@code root.get("attr")}로 얻는 단일 세그먼트 속성 경로. 대응하는 {@link PersistentProperty}를 미리
- * 해석해 두므로 미존재 필드는 조립 시점에 fail-fast한다. v1은 다중 세그먼트/연관 경로 탐색을 지원하지
- * 않으므로 이 경로에서 다시 {@link #get(String)}을 호출하면 거부한다.
+ * FROM 소스({@link CriteriaFrom} = 루트 또는 join)의 스칼라 속성을 가리키는 단말 컬럼 경로. 대응하는
+ * {@link PersistentProperty}를 미리 해석해 두므로 미존재 필드는 조립 시점에 fail-fast한다. 스칼라 컬럼은
+ * 더 이상 탐색할 수 없으므로 여기서 {@link #get(String)}을 호출하면 거부한다(연관 탐색은
+ * {@link CriteriaAssociationPath}가 담당한다).
  *
  * @param <X> 속성의 Java 타입
  */
 final class CriteriaPath<X> extends AbstractCriteriaExpression<X> implements Path<X>, CriteriaColumnPath {
 
-    private final CriteriaRoot<?> root;
+    private final CriteriaFrom source;
     private final PersistentProperty property;
 
-    CriteriaPath(CriteriaRoot<?> root, PersistentProperty property, Class<X> javaType) {
+    CriteriaPath(CriteriaFrom source, PersistentProperty property, Class<X> javaType) {
         super(javaType);
-        this.root = root;
+        this.source = source;
         this.property = property;
     }
 
     @Override
     public EntityMetadata<?> ownerMetadata() {
-        return root.ownerMetadata();
+        return source.metadata();
     }
 
     @Override
     public PersistentProperty property() {
         return property;
+    }
+
+    @Override
+    public CriteriaFrom source() {
+        return source;
     }
 
     // --- Path -----------------------------------------------------------------------------------
@@ -46,7 +52,10 @@ final class CriteriaPath<X> extends AbstractCriteriaExpression<X> implements Pat
 
     @Override
     public Path<?> getParentPath() {
-        return root;
+        if (source instanceof Path<?> path) {
+            return path;
+        }
+        throw unsupported("Path.getParentPath()");
     }
 
     @Override
@@ -71,7 +80,7 @@ final class CriteriaPath<X> extends AbstractCriteriaExpression<X> implements Pat
 
     @Override
     public <Y> Path<Y> get(String attributeName) {
-        throw new CriteriaException("Nested/multi-segment path '" + property.propertyName() + "." + attributeName
-                + "' is not supported in v1; only single-segment root attributes are available");
+        throw new CriteriaException("Cannot navigate '" + attributeName + "' from scalar attribute '"
+                + property.propertyName() + "'; only association paths can be navigated further");
     }
 }

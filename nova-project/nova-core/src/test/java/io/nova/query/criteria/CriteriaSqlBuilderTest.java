@@ -36,10 +36,15 @@ class CriteriaSqlBuilderTest {
     private final EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
     private final CriteriaMetamodel metamodel = new CriteriaMetamodel(metadataFactory);
     private final CriteriaSqlBuilder builder = new CriteriaSqlBuilder(dialect);
+    private final AliasedCriteriaSqlBuilder aliasedBuilder = new AliasedCriteriaSqlBuilder(dialect);
     private final CriteriaBuilder cb = new SimpleCriteriaBuilder(metamodel);
 
     private CriteriaSql scalar(CriteriaQuery<?> query) {
         return builder.build((CriteriaQueryImpl<?>) query);
+    }
+
+    private CriteriaSql aliased(CriteriaQuery<?> query) {
+        return aliasedBuilder.buildScalar((CriteriaQueryImpl<?>) query);
     }
 
     @Test
@@ -166,30 +171,133 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
-    void failsFastOnAssociationPath() {
+    void rendersInnerJoinWithQualifiedColumns() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);
-        assertThrows(CriteriaException.class, () -> e.get("department"));
+        jakarta.persistence.criteria.Join<Employee, Department> d = e.join("department");
+        cq.multiselect(e.<String>get("name"))
+                .where(cb.equal(d.<String>get("name"), "Sales"));
+
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\" from \"employee\" \"t0\" "
+                        + "inner join \"department\" \"t1\" on \"t0\".\"dept_id\" = \"t1\".\"id\" "
+                        + "where \"t1\".\"name\" = ?",
+                aliased(cq).sql());
     }
 
     @Test
-    void failsFastOnJoin() {
+    void rendersLeftJoin() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);
-        assertThrows(CriteriaException.class, () -> e.join("department"));
+        jakarta.persistence.criteria.Join<Employee, Department> d =
+                e.join("department", jakarta.persistence.criteria.JoinType.LEFT);
+        cq.multiselect(e.<String>get("name"), d.<String>get("name"));
+
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\", \"t1\".\"name\" as \"c1\" from \"employee\" \"t0\" "
+                        + "left join \"department\" \"t1\" on \"t0\".\"dept_id\" = \"t1\".\"id\"",
+                aliased(cq).sql());
     }
 
     @Test
-    void failsFastOnColumnToColumnComparison() {
+    void rendersMultiSegmentPathAsImplicitInnerJoin() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);
-        // Object-rhs overload with an Expression value is rejected by the value guard.
+        cq.multiselect(e.<Long>get("id"))
+                .where(cb.equal(e.get("department").<String>get("name"), "Sales"))
+                .orderBy(cb.asc(e.get("department").<String>get("name")));
+
+        // 두 번의 department 탐색이 하나의 묵시적 INNER join(t1)을 공유해야 한다.
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"employee\" \"t0\" "
+                        + "inner join \"department\" \"t1\" on \"t0\".\"dept_id\" = \"t1\".\"id\" "
+                        + "where \"t1\".\"name\" = ? order by \"t1\".\"name\" asc",
+                aliased(cq).sql());
+    }
+
+    @Test
+    void rendersExistsSubquery() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        jakarta.persistence.criteria.Subquery<Long> sub = cq.subquery(Long.class);
+        Root<Department> d = sub.from(Department.class);
+        sub.select(d.<Long>get("id")).where(cb.equal(d.<String>get("name"), "Sales"));
+        cq.multiselect(e.<String>get("name")).where(cb.exists(sub));
+
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\" from \"employee\" \"t0\" "
+                        + "where exists (select 1 from \"department\" \"t1\" where \"t1\".\"name\" = ?)",
+                aliased(cq).sql());
+    }
+
+    @Test
+    void rendersInSubquery() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        jakarta.persistence.criteria.Subquery<Long> sub = cq.subquery(Long.class);
+        Root<Department> d = sub.from(Department.class);
+        sub.select(d.<Long>get("id")).where(cb.equal(d.<String>get("name"), "Sales"));
+        cq.multiselect(e.<String>get("name")).where((Predicate) e.get("department").in(sub));
+
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\" from \"employee\" \"t0\" "
+                        + "where \"t0\".\"dept_id\" in (select \"t1\".\"id\" from \"department\" \"t1\" "
+                        + "where \"t1\".\"name\" = ?)",
+                aliased(cq).sql());
+    }
+
+    @Test
+    void rendersScalarSubqueryComparison() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        jakarta.persistence.criteria.Subquery<Double> sub = cq.subquery(Double.class);
+        Root<Employee> e2 = sub.from(Employee.class);
+        sub.select(cb.avg(e2.<BigDecimal>get("salary")));
+        cq.multiselect(e.<String>get("name")).where(cb.gt(e.<BigDecimal>get("salary"), sub));
+
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\" from \"employee\" \"t0\" "
+                        + "where \"t0\".\"salary\" > (select avg(\"t1\".\"salary\") from \"employee\" \"t1\")",
+                aliased(cq).sql());
+    }
+
+    @Test
+    void failsFastOnManyToManyJoin() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        // department는 지원되는 @ManyToOne이므로 여기선 미존재 연관 대신 RIGHT join 미지원을 확인한다.
+        assertThrows(CriteriaException.class,
+                () -> e.join("department", jakarta.persistence.criteria.JoinType.RIGHT));
+    }
+
+    @Test
+    void failsFastOnScalarPathFurtherNavigation() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        assertThrows(CriteriaException.class, () -> e.<String>get("name").get("length"));
+    }
+
+    @Test
+    void objectRhsExpressionComparisonStillRejected() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        // Object-rhs overload with an Expression value is still rejected by the value guard
+        // (컬럼 대 컬럼은 Expression-rhs 오버로드로만 명시적으로 표현해야 한다).
         Object columnValue = e.get("id");
         CriteriaException ex = assertThrows(CriteriaException.class,
                 () -> cb.equal(e.get("name"), columnValue));
         assertTrue(ex.getMessage().contains("column-to-column"));
-        // The Expression-rhs overload is likewise rejected (unsupported stub).
-        assertThrows(CriteriaException.class, () -> cb.equal(e.get("name"), e.get("id")));
+    }
+
+    @Test
+    void rendersColumnToColumnComparisonWithAliases() {
+        // Expression-rhs 오버로드의 컬럼 대 컬럼 비교는 이제 alias 한정 SQL로 렌더된다(상관 서브쿼리 등).
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        cq.multiselect(e.<String>get("name")).where(cb.equal(e.get("name"), e.get("id")));
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\" from \"employee\" \"t0\" where \"t0\".\"name\" = \"t0\".\"id\"",
+                aliased(cq).sql());
     }
 
     @Test

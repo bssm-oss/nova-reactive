@@ -5,6 +5,7 @@ import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Order;
 import jakarta.persistence.criteria.Predicate;
+import jakarta.persistence.criteria.Subquery;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -235,6 +236,84 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     @Override
     public <T> CriteriaBuilder.In<T> in(Expression<? extends T> expression) {
         return new CriteriaInPredicate<>(path(expression, "in"), expression);
+    }
+
+    // --- subquery predicates --------------------------------------------------------------------
+
+    @Override
+    public Predicate exists(Subquery<?> subquery) {
+        return CriteriaPredicate.exists(requireSubquery(subquery, "exists"), false);
+    }
+
+    @Override
+    public Predicate equal(Expression<?> x, Expression<?> y) {
+        return subqueryCompare(x, y, CompareOp.EQ, "equal");
+    }
+
+    @Override
+    public Predicate notEqual(Expression<?> x, Expression<?> y) {
+        return subqueryCompare(x, y, CompareOp.NE, "notEqual");
+    }
+
+    @Override
+    public <Y extends Comparable<? super Y>> Predicate greaterThan(Expression<? extends Y> x, Expression<? extends Y> y) {
+        return subqueryCompare(x, y, CompareOp.GT, "greaterThan");
+    }
+
+    @Override
+    public <Y extends Comparable<? super Y>> Predicate greaterThanOrEqualTo(Expression<? extends Y> x, Expression<? extends Y> y) {
+        return subqueryCompare(x, y, CompareOp.GE, "greaterThanOrEqualTo");
+    }
+
+    @Override
+    public <Y extends Comparable<? super Y>> Predicate lessThan(Expression<? extends Y> x, Expression<? extends Y> y) {
+        return subqueryCompare(x, y, CompareOp.LT, "lessThan");
+    }
+
+    @Override
+    public <Y extends Comparable<? super Y>> Predicate lessThanOrEqualTo(Expression<? extends Y> x, Expression<? extends Y> y) {
+        return subqueryCompare(x, y, CompareOp.LE, "lessThanOrEqualTo");
+    }
+
+    @Override
+    public Predicate gt(Expression<? extends Number> x, Expression<? extends Number> y) {
+        return subqueryCompare(x, y, CompareOp.GT, "gt");
+    }
+
+    @Override
+    public Predicate ge(Expression<? extends Number> x, Expression<? extends Number> y) {
+        return subqueryCompare(x, y, CompareOp.GE, "ge");
+    }
+
+    @Override
+    public Predicate lt(Expression<? extends Number> x, Expression<? extends Number> y) {
+        return subqueryCompare(x, y, CompareOp.LT, "lt");
+    }
+
+    @Override
+    public Predicate le(Expression<? extends Number> x, Expression<? extends Number> y) {
+        return subqueryCompare(x, y, CompareOp.LE, "le");
+    }
+
+    private static Predicate subqueryCompare(Expression<?> left, Expression<?> right, CompareOp op, String name) {
+        CriteriaColumnPath leftPath = path(left, name);
+        if (right instanceof CriteriaSubquery<?> subquery) {
+            return CriteriaPredicate.comparisonSubquery(leftPath, op, subquery);
+        }
+        if (right instanceof CriteriaColumnPath rightPath) {
+            // 컬럼 대 컬럼 비교: join/상관 서브쿼리에서만 의미가 있으며 alias 한정 SQL 경로로 렌더된다.
+            return CriteriaPredicate.comparisonColumn(leftPath, op, rightPath);
+        }
+        throw new CriteriaException("CriteriaBuilder." + name
+                + " requires a scalar subquery or another attribute path as the right-hand side");
+    }
+
+    private static CriteriaSubquery<?> requireSubquery(Subquery<?> subquery, String name) {
+        if (subquery instanceof CriteriaSubquery<?> impl) {
+            return impl;
+        }
+        throw new CriteriaException("CriteriaBuilder." + name
+                + " requires a Subquery built by this CriteriaBuilder");
     }
 
     // --- helpers --------------------------------------------------------------------------------

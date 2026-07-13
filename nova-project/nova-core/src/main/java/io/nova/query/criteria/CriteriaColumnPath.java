@@ -17,4 +17,11 @@ interface CriteriaColumnPath {
      * 엔티티의 대표 id 프로퍼티로 해석된다.
      */
     PersistentProperty property();
+
+    /**
+     * 이 컬럼이 속한 FROM 소스(루트 또는 join). alias 기반 SQL 렌더에서 {@code alias.column}으로
+     * 한정할 때 사용한다. join/subquery가 없는 단일 루트 스칼라 경로에서는 alias 없이 unqualified로
+     * 렌더되므로 이 값을 무시한다.
+     */
+    CriteriaFrom source();
 }

@@ -19,7 +19,9 @@ import java.util.Set;
 /**
  * {@code jakarta.persistence.criteria.CriteriaQuery} 구현. 단일 루트 SELECT를 조립한다 — 선택 목록,
  * WHERE 술어, GROUP BY, HAVING, ORDER BY, DISTINCT를 담아 {@link ReactiveCriteriaQuery}가 실행 시
- * 엔티티/스칼라 경로로 변환한다. 다중 루트/서브쿼리/파라미터 표현식은 v1 미지원으로 fail-fast한다.
+ * 엔티티/스칼라 경로로 변환한다. {@code subquery(Class)}로 서브쿼리를 만들 수 있으며, join/서브쿼리를
+ * 포함한 쿼리는 {@link #requiresAliasedSql()}로 판별해 alias 한정 SQL 경로로 실행된다. 다중 루트/파라미터
+ * 표현식은 v1 미지원으로 fail-fast한다.
  *
  * <p><b>v1 제약</b>:
  * <ul>
@@ -36,6 +38,7 @@ final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {
 
     private final Class<T> resultType;
     private final CriteriaMetamodel metamodel;
+    private final CriteriaContext context;
 
     private CriteriaRoot<?> root;
     private final List<Selection<?>> selections = new ArrayList<>();
@@ -48,6 +51,7 @@ final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {
     CriteriaQueryImpl(Class<T> resultType, CriteriaMetamodel metamodel) {
         this.resultType = Objects.requireNonNull(resultType, "resultType must not be null");
         this.metamodel = metamodel;
+        this.context = new CriteriaContext(metamodel);
     }
 
     // --- structural accessors for the executor ------------------------------------------------
@@ -88,7 +92,7 @@ final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {
                     + "the query already has root " + root.entityType().getSimpleName());
         }
         EntityMetadata<X> metadata = metamodel.resolve(entityClass);
-        CriteriaRoot<X> created = new CriteriaRoot<>(entityClass, metadata);
+        CriteriaRoot<X> created = new CriteriaRoot<>(entityClass, metadata, context);
         this.root = created;
         return created;
     }
@@ -253,12 +257,44 @@ final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {
 
     @Override
     public <U> Subquery<U> subquery(Class<U> type) {
-        throw new CriteriaException("Criteria subqueries are not supported in v1");
+        return new CriteriaSubquery<>(type, context.child(), this);
     }
 
     @Override
     public <U> Subquery<U> subquery(EntityType<U> type) {
-        throw new CriteriaException("Criteria subqueries are not supported in v1");
+        throw new CriteriaException("subquery(EntityType) is not supported in v1; use subquery(Class)");
+    }
+
+    /**
+     * 이 쿼리가 join(명시적/묵시적) 또는 서브쿼리 술어를 포함해 alias 한정 SQL 경로로 실행돼야 하는지.
+     * {@code false}이면 기존 단일 루트 경로(엔티티 QuerySpec / unqualified 스칼라 SQL)로 실행된다.
+     */
+    boolean requiresAliasedSql() {
+        if (root != null && !root.joins().isEmpty()) {
+            return true;
+        }
+        return usesAliasedPredicate(restriction) || usesAliasedPredicate(having);
+    }
+
+    private static boolean usesAliasedPredicate(CriteriaPredicate predicate) {
+        if (predicate == null) {
+            return false;
+        }
+        switch (predicate.kind()) {
+            case EXISTS, IN_SUBQUERY, COMPARISON_SUBQUERY, COMPARISON_COLUMN:
+                return true;
+            case NOT:
+                return usesAliasedPredicate(predicate.inner());
+            case AND, OR:
+                for (CriteriaPredicate child : predicate.children()) {
+                    if (usesAliasedPredicate(child)) {
+                        return true;
+                    }
+                }
+                return false;
+            default:
+                return false;
+        }
     }
 
     // --- helpers --------------------------------------------------------------------------------

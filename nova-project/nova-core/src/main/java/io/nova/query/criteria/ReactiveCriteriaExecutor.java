@@ -30,6 +30,7 @@ public final class ReactiveCriteriaExecutor {
     private final ReactiveEntityOperations operations;
     private final CriteriaMetamodel metamodel;
     private final CriteriaSqlBuilder sqlBuilder;
+    private final AliasedCriteriaSqlBuilder aliasedSqlBuilder;
 
     /**
      * @param operations      기존 리액티브 엔티티 오퍼레이션(위임 대상)
@@ -44,6 +45,7 @@ public final class ReactiveCriteriaExecutor {
         Objects.requireNonNull(dialect, "dialect must not be null");
         this.metamodel = new CriteriaMetamodel(metadataFactory);
         this.sqlBuilder = new CriteriaSqlBuilder(dialect);
+        this.aliasedSqlBuilder = new AliasedCriteriaSqlBuilder(dialect);
     }
 
     /**
@@ -65,6 +67,6 @@ public final class ReactiveCriteriaExecutor {
                     "CriteriaQuery was not created by this executor's CriteriaBuilder; "
                             + "use getCriteriaBuilder().createQuery(...)");
         }
-        return new ReactiveCriteriaQuery<>(impl, operations, sqlBuilder);
+        return new ReactiveCriteriaQuery<>(impl, operations, sqlBuilder, aliasedSqlBuilder);
     }
 }
