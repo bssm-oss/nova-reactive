@@ -66,6 +66,19 @@ public final class SimpleReactiveRepository implements InvocationHandler {
         int argCount = method.getParameterCount();
         Class<?>[] paramTypes = method.getParameterTypes();
 
+        // Spring Data 표준 브릿지 오버로드(파라미터가 org.springframework.data.domain.Pageable/Sort)는
+        // 전용 dispatcher로 위임한다. 여기서는 파라미터 타입의 이름 문자열만 비교하므로(클래스 리터럴
+        // 없음) Spring 타입/브릿지 클래스를 로드하지 않는다 — Spring Data 표준 타입을 쓰지 않는
+        // 소비자의 경로에서는 spring-data-commons가 클래스패스에 없어도 안전하다.
+        for (Class<?> paramType : paramTypes) {
+            String paramName = paramType.getName();
+            if (paramName.equals("org.springframework.data.domain.Pageable")
+                    || paramName.equals("org.springframework.data.domain.Sort")) {
+                return io.nova.spring.data.springdata.SpringDataDispatch.dispatch(
+                        entityType, entityOperations, method, args);
+            }
+        }
+
         switch (name) {
             case "save" -> {
                 if (argCount == 1) {

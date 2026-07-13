@@ -34,8 +34,17 @@ public final class RepositoryScanner {
     }
 
     /**
+     * 프레임워크가 제공하는 base repository 인터페이스들. 이들은 구체 엔티티 타입 인자가 없는
+     * 제네릭 계약이므로 스캔 결과에서 제외한다(엔티티 타입 resolve 불가 → 잘못 등록 시 부팅 실패).
+     */
+    private static final Set<String> FRAMEWORK_BASE_INTERFACES = Set.of(
+            ReactiveCrudRepository.class.getName(),
+            SpringDataReactiveCrudRepository.class.getName());
+
+    /**
      * 주어진 base 패키지 트리에서 {@link ReactiveCrudRepository}의 서브 인터페이스를 찾아
-     * {@link BeanDefinition} 집합으로 반환한다. {@link ReactiveCrudRepository} 자체는 결과에서 제외된다.
+     * {@link BeanDefinition} 집합으로 반환한다. {@link ReactiveCrudRepository}와
+     * {@link SpringDataReactiveCrudRepository} 같은 프레임워크 base 인터페이스는 결과에서 제외된다.
      */
     public Set<BeanDefinition> scan(String basePackage) {
         Set<BeanDefinition> candidates = provider.findCandidateComponents(basePackage);
@@ -43,7 +52,7 @@ public final class RepositoryScanner {
             String beanClassName = (definition instanceof AbstractBeanDefinition abd && abd.hasBeanClass())
                     ? abd.getBeanClass().getName()
                     : definition.getBeanClassName();
-            return ReactiveCrudRepository.class.getName().equals(beanClassName);
+            return FRAMEWORK_BASE_INTERFACES.contains(beanClassName);
         });
         return candidates;
     }
