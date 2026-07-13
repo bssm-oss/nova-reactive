@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * {@code @Query} 지원의 외부 진입점. {@link AnnotatedQueryMethod} 파싱과 실행을 캡슐화해 호출자
@@ -31,20 +33,44 @@ import java.util.Optional;
  * <p><b>optionality:</b> {@code jpqlExecutor}/{@code dialect}는 nullable이다. 이 클래스는 Spring Data
  * 타입을 자신의 bytecode에 직접 참조하지 않고 {@link SpringDataQuerySupport}(Object 시그니처)로만
  * 다룬다. {@code @Query}를 쓰지 않는 repository는 이 경로에 진입하지 않는다.
+ *
+ * <p>{@link JpqlExecutor}는 <b>lazy</b> supplier로 받는다 — {@link JpqlExecutor} 생성은 등록 엔티티
+ * 메타데이터를 eager 해석하므로, 스캔되었지만 실제로 JPQL {@code @Query}를 호출하지 않는 repository의
+ * 부팅을 깨지 않도록 첫 JPQL {@code @Query} 실행 시점에만 (한 번) 해석한다.
  */
 public final class AnnotatedQueries {
 
     private final Class<?> entityType;
     private final ReactiveEntityOperations operations;
-    private final JpqlExecutor jpqlExecutor;
+    private final Supplier<JpqlExecutor> jpqlExecutorSupplier;
     private final Dialect dialect;
+    // per-Method 메모이즈: 프록시 핫패스(save/findById 등 비-@Query 포함)에서 매 호출 리플렉션+검증
+    // 재실행을 피한다. 비-@Query 메서드는 Optional.empty()로 캐시해 getAnnotation 반복도 없앤다.
+    private final ConcurrentHashMap<Method, Optional<AnnotatedQueryMethod>> parseCache =
+            new ConcurrentHashMap<>();
+    private volatile boolean jpqlResolved;
+    private volatile JpqlExecutor jpqlExecutor;
 
     public AnnotatedQueries(Class<?> entityType, ReactiveEntityOperations operations,
-                            JpqlExecutor jpqlExecutor, Dialect dialect) {
+                            Supplier<JpqlExecutor> jpqlExecutorSupplier, Dialect dialect) {
         this.entityType = Objects.requireNonNull(entityType, "entityType");
         this.operations = Objects.requireNonNull(operations, "operations");
-        this.jpqlExecutor = jpqlExecutor;
+        this.jpqlExecutorSupplier = jpqlExecutorSupplier;
         this.dialect = dialect;
+    }
+
+    /** 첫 호출에만 supplier로 {@link JpqlExecutor}를 해석하고 이후 캐시한다. supplier가 null이면 null. */
+    private JpqlExecutor jpqlExecutor() {
+        if (jpqlResolved) {
+            return jpqlExecutor;
+        }
+        synchronized (this) {
+            if (!jpqlResolved) {
+                jpqlExecutor = jpqlExecutorSupplier == null ? null : jpqlExecutorSupplier.get();
+                jpqlResolved = true;
+            }
+        }
+        return jpqlExecutor;
     }
 
     /**
@@ -54,10 +80,14 @@ public final class AnnotatedQueries {
      * onError 신호로 전파된다.
      */
     public Optional<Object> tryDispatch(Method method, Object[] args) {
-        AnnotatedQueryMethod meta = AnnotatedQueryMethod.parse(method, entityType);
-        if (meta == null) {
+        // 유효한 @Query와 비-@Query(null→empty)만 캐시된다. 정의 오류(AnnotatedQueryException)는
+        // computeIfAbsent 밖으로 전파되어 캐시되지 않으므로 매번 동일하게 fail-fast한다.
+        Optional<AnnotatedQueryMethod> parsed = parseCache.computeIfAbsent(
+                method, m -> Optional.ofNullable(AnnotatedQueryMethod.parse(m, entityType)));
+        if (parsed.isEmpty()) {
             return Optional.empty();
         }
+        AnnotatedQueryMethod meta = parsed.get();
         Object[] safeArgs = args == null ? new Object[0] : args;
         return Optional.of(meta.nativeQuery() ? executeNative(meta, safeArgs) : executeJpql(meta, safeArgs));
     }
@@ -67,7 +97,7 @@ public final class AnnotatedQueries {
     // ---------------------------------------------------------------------------------------------
 
     private Object executeJpql(AnnotatedQueryMethod meta, Object[] args) {
-        if (jpqlExecutor == null) {
+        if (jpqlExecutorSupplier == null) {
             return failMissingJpql(meta);
         }
         return switch (meta.shape()) {
@@ -126,7 +156,7 @@ public final class AnnotatedQueries {
 
     private Mono<Long> totalCount(AnnotatedQueryMethod meta, Object[] args) {
         if (!meta.countQuery().isBlank()) {
-            return bindParameters(jpqlExecutor.createQuery(meta.countQuery()), meta, args)
+            return bindParameters(jpqlExecutor().createQuery(meta.countQuery()), meta, args)
                     .getSingleResult()
                     .map(value -> ((Number) value).longValue());
         }
@@ -148,8 +178,8 @@ public final class AnnotatedQueries {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private JpqlQuery jpqlQuery(AnnotatedQueryMethod meta, Object[] args, Class<?> resultType) {
         JpqlQuery query = resultType == null
-                ? jpqlExecutor.createQuery(meta.query())
-                : jpqlExecutor.createQuery(meta.query(), resultType);
+                ? jpqlExecutor().createQuery(meta.query())
+                : jpqlExecutor().createQuery(meta.query(), resultType);
         return bindParameters(query, meta, args);
     }
 

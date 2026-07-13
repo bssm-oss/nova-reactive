@@ -13,6 +13,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * {@link ReactiveCrudRepository} 메서드를 {@link ReactiveEntityOperations}로 위임하는 invocation
@@ -35,7 +36,7 @@ public final class SimpleReactiveRepository implements InvocationHandler {
             Class<?> idType,
             ReactiveEntityOperations entityOperations
     ) {
-        this(entityType, idType, entityOperations, null, null);
+        this(entityType, idType, entityOperations, (Supplier<JpqlExecutor>) null, null);
     }
 
     /**
@@ -56,11 +57,35 @@ public final class SimpleReactiveRepository implements InvocationHandler {
             JpqlExecutor jpqlExecutor,
             Dialect dialect
     ) {
+        this(entityType, idType, entityOperations,
+                jpqlExecutor == null ? null : () -> jpqlExecutor, dialect);
+    }
+
+    /**
+     * {@link JpqlExecutor}를 <b>lazy</b> supplier로 받는 생성자다. {@link NovaRepositoryFactoryBean}이
+     * 사용하며, {@link JpqlExecutor} 생성(등록 엔티티 메타데이터 eager 해석)을 첫 JPQL {@code @Query}
+     * 실행 시점까지 미룬다 — 스캔되었지만 JPQL {@code @Query}를 호출하지 않는 repository의 부팅을
+     * 깨지 않기 위함이다.
+     *
+     * @param entityType           repository 엔티티 타입
+     * @param idType               repository 식별자 타입
+     * @param entityOperations     위임 대상 reactive 오퍼레이션
+     * @param jpqlExecutorSupplier JPQL {@code @Query} 실행기 lazy supplier(nullable)
+     * @param dialect              native {@code @Query} bind marker 렌더링용 dialect(nullable)
+     */
+    public SimpleReactiveRepository(
+            Class<?> entityType,
+            Class<?> idType,
+            ReactiveEntityOperations entityOperations,
+            Supplier<JpqlExecutor> jpqlExecutorSupplier,
+            Dialect dialect
+    ) {
         this.entityType = Objects.requireNonNull(entityType, "entityType");
         this.idType = Objects.requireNonNull(idType, "idType");
         this.entityOperations = Objects.requireNonNull(entityOperations, "entityOperations");
         this.derivedQueries = new DerivedQueries(entityType, entityOperations);
-        this.annotatedQueries = new AnnotatedQueries(entityType, entityOperations, jpqlExecutor, dialect);
+        this.annotatedQueries =
+                new AnnotatedQueries(entityType, entityOperations, jpqlExecutorSupplier, dialect);
     }
 
     /**

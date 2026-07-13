@@ -35,6 +35,10 @@ public final class NovaRepositoriesRegistrar implements ImportBeanDefinitionRegi
         if (!StringUtils.hasText(entityOperationsRef)) {
             entityOperationsRef = "novaEntityOperations";
         }
+        // dialect/entityMetadataFactory ref는 선택이다. 지정되면 이름으로 배선하고, 비어 있으면 factory
+        // bean이 컨테이너에서 타입 기준으로 자동 해석한다(@Query 자동 배선, optionality 보존).
+        String dialectRef = attributes.getString("dialectRef");
+        String entityMetadataFactoryRef = attributes.getString("entityMetadataFactoryRef");
 
         RepositoryScanner scanner = new RepositoryScanner();
         ClassLoader classLoader = resolveClassLoader(importingClassMetadata);
@@ -63,6 +67,13 @@ public final class NovaRepositoriesRegistrar implements ImportBeanDefinitionRegi
                         .genericBeanDefinition(NovaRepositoryFactoryBean.class)
                         .addConstructorArgValue(repositoryInterface)
                         .addPropertyValue("entityOperations", new RuntimeBeanReference(entityOperationsRef));
+                if (StringUtils.hasText(dialectRef)) {
+                    builder.addPropertyValue("dialect", new RuntimeBeanReference(dialectRef));
+                }
+                if (StringUtils.hasText(entityMetadataFactoryRef)) {
+                    builder.addPropertyValue("entityMetadataFactory",
+                            new RuntimeBeanReference(entityMetadataFactoryRef));
+                }
                 String beanName = defaultBeanName(repositoryInterface);
                 registry.registerBeanDefinition(beanName, builder.getBeanDefinition());
             }
