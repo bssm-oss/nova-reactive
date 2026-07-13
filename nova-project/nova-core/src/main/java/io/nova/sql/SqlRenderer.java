@@ -31,6 +31,26 @@ public interface SqlRenderer {
                 "SqlRenderer.update(metadata, entity, fields) must be overridden by the implementation");
     }
 
+    /**
+     * {@link #update(EntityMetadata, Object)}와 동일하되, {@code @Version} 컬럼의 SET 값으로 렌더러가 내부에서
+     * 계산한 다음 버전 대신 호출부가 미리 계산한 {@code precomputedVersion}을 바인딩한다(WHERE의 버전 비교는
+     * 그대로 entity의 현재=old 값). 호출부가 SQL 바인딩과 in-memory writeback에 동일 값을 쓰도록 해(single-read)
+     * 시간 {@code @Version}의 in-memory/DB 불일치(false-positive 낙관락 실패)를 제거한다. 기본 구현은 precomputed
+     * 값을 무시하고 위임하며(비-Abstract 구현체 하위호환), {@link AbstractSqlRenderer}가 override해 실제로 바인딩한다.
+     */
+    default SqlStatement update(EntityMetadata<?> metadata, Object entity, Object precomputedVersion) {
+        return update(metadata, entity);
+    }
+
+    /**
+     * {@link #update(EntityMetadata, Object, Iterable)}의 single-read 변형. 위 오버로드와 동일한 계약으로 partial
+     * UPDATE의 {@code @Version} SET 값을 호출부의 precomputed 값으로 바인딩한다.
+     */
+    default SqlStatement update(
+            EntityMetadata<?> metadata, Object entity, Iterable<String> fields, Object precomputedVersion) {
+        return update(metadata, entity, fields);
+    }
+
     SqlStatement deleteById(EntityMetadata<?> metadata, Object id);
 
     SqlStatement selectById(EntityMetadata<?> metadata, Object id);
@@ -141,6 +161,16 @@ public interface SqlRenderer {
     default SqlStatement softDeleteByEntity(EntityMetadata<?> metadata, Object entity, Object deletedAt) {
         throw new UnsupportedOperationException(
                 "SqlRenderer.softDeleteByEntity must be overridden by the implementation");
+    }
+
+    /**
+     * {@link #softDeleteByEntity(EntityMetadata, Object, Object)}의 single-read 변형. soft-delete UPDATE의
+     * {@code @Version} SET 값을 호출부가 미리 계산한 {@code precomputedVersion}으로 바인딩한다. 기본 구현은
+     * precomputed 값을 무시하고 위임하며 {@link AbstractSqlRenderer}가 override한다.
+     */
+    default SqlStatement softDeleteByEntity(
+            EntityMetadata<?> metadata, Object entity, Object deletedAt, Object precomputedVersion) {
+        return softDeleteByEntity(metadata, entity, deletedAt);
     }
 
     /**

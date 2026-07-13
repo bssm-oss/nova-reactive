@@ -3,10 +3,22 @@ package io.nova.core;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.PersistentProperty;
+import io.nova.query.Criteria;
+import io.nova.query.LockMode;
+import io.nova.query.LockModeTranslator;
+import io.nova.query.LogicalOperator;
+import io.nova.query.Predicate;
+import io.nova.query.QuerySpec;
+import io.nova.query.CompoundPredicate;
+import io.nova.exception.OptimisticLockingFailureException;
 import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.FlushModeType;
+import jakarta.persistence.LockModeType;
 import reactor.core.publisher.Mono;
 import reactor.util.context.ContextView;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
@@ -24,11 +36,24 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
 
     private final ReactiveEntityOperations operations;
     private final EntityMetadataFactory metadataFactory;
+    /**
+     * 이 매니저 인스턴스의 {@link FlushModeType}. 공유 매니저의 가변 상태를 피하려고 immutable하게 두며,
+     * {@link #setFlushMode(FlushModeType)}는 mutate 대신 이 값을 바꾼 새 인스턴스를 돌려준다(functional).
+     * {@link #inTransaction}/{@link #inReadSession}가 이 값을 세션 컨텍스트({@link SimpleReactiveEntityOperations#FLUSH_MODE_KEY})에
+     * 심어 operations의 쿼리 전 auto-flush 동작을 제어한다.
+     */
+    private final FlushModeType flushMode;
 
     public SimpleReactiveEntityManager(
             ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory) {
+        this(operations, metadataFactory, FlushModeType.AUTO);
+    }
+
+    private SimpleReactiveEntityManager(
+            ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory, FlushModeType flushMode) {
         this.operations = Objects.requireNonNull(operations, "operations must not be null");
         this.metadataFactory = Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
+        this.flushMode = Objects.requireNonNull(flushMode, "flushMode must not be null");
     }
 
     @Override
@@ -134,13 +159,168 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
     @Override
     public <R> Mono<R> inTransaction(Function<ReactiveEntityManager, Mono<R>> work) {
         Objects.requireNonNull(work, "work must not be null");
-        return operations.inTransaction(ignored -> work.apply(this));
+        // 이 매니저의 FlushMode를 세션 컨텍스트에 심어, 콜백 안의 쿼리(operations.findById/findAll)가
+        // COMMIT일 때 쿼리 전 auto-flush를 억제하도록 한다. 콜백에는 this를 전달해 동일 세션을 공유한다.
+        return operations.inTransaction(ignored -> work.apply(this))
+                .contextWrite(ctx -> ctx.put(SimpleReactiveEntityOperations.FLUSH_MODE_KEY, flushMode));
     }
 
     @Override
     public <R> Mono<R> inReadSession(Function<ReactiveEntityManager, Mono<R>> work) {
         Objects.requireNonNull(work, "work must not be null");
-        return operations.inReadSession(ignored -> work.apply(this));
+        return operations.inReadSession(ignored -> work.apply(this))
+                .contextWrite(ctx -> ctx.put(SimpleReactiveEntityOperations.FLUSH_MODE_KEY, flushMode));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // FlushMode (JPA setFlushMode/getFlushMode)
+    // ---------------------------------------------------------------------------------------------
+
+    @Override
+    public ReactiveEntityManager setFlushMode(FlushModeType flushMode) {
+        Objects.requireNonNull(flushMode, "flushMode must not be null");
+        if (flushMode == this.flushMode) {
+            return this;
+        }
+        return new SimpleReactiveEntityManager(operations, metadataFactory, flushMode);
+    }
+
+    @Override
+    public FlushModeType getFlushMode() {
+        return flushMode;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // JPA 잠금(LockModeType) + find 오버로드
+    // ---------------------------------------------------------------------------------------------
+
+    @Override
+    public <T> Mono<T> find(Class<T> entityType, Object id, LockModeType lockMode) {
+        Objects.requireNonNull(entityType, "entityType must not be null");
+        Objects.requireNonNull(id, "id must not be null");
+        Objects.requireNonNull(lockMode, "lockMode must not be null");
+        return Mono.defer(() -> {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+            LockModeTranslator.ResolvedLock resolved = LockModeTranslator.resolve(lockMode);
+            if (resolved.versionCheck() || resolved.forceIncrement()) {
+                if (metadata.versionProperty().isEmpty()) {
+                    return Mono.error(new IllegalArgumentException(
+                            "Lock mode " + lockMode + " requires a @Version property on " + entityType.getName()));
+                }
+            }
+            // PESSIMISTIC_*: FOR UPDATE/SHARE로 잠긴 SELECT. OPTIMISTIC/NONE: 일반 findById(버전 검증은 이미
+            // 로드한 값이 곧 현재 값이므로 별도 SQL 없이 성립; 강제 증분만 추가 UPDATE 발행).
+            Mono<T> found = resolved.lockMode() == LockMode.NONE
+                    ? operations.findById(entityType, id)
+                    : operations.findAll(entityType, idQuerySpec(metadata, id).lockMode(resolved.lockMode())).next();
+            if (resolved.forceIncrement()) {
+                PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
+                return found.flatMap(entity -> operations.update(entity, List.of(versionProperty.propertyName())));
+            }
+            return found;
+        });
+    }
+
+    @Override
+    public Mono<Void> lock(Object entity, LockModeType lockMode) {
+        Objects.requireNonNull(entity, "entity must not be null");
+        Objects.requireNonNull(lockMode, "lockMode must not be null");
+        return Mono.defer(() -> {
+            EntityMetadata<?> metadata = metadataFor(entity);
+            LockModeTranslator.ResolvedLock resolved = LockModeTranslator.resolve(lockMode);
+            if ((resolved.versionCheck() || resolved.forceIncrement()) && metadata.versionProperty().isEmpty()) {
+                return Mono.error(new IllegalArgumentException(
+                        "Lock mode " + lockMode + " requires a @Version property on "
+                                + metadata.entityType().getName()));
+            }
+            Mono<Void> chain = Mono.empty();
+            if (resolved.lockMode() != LockMode.NONE) {
+                // PESSIMISTIC_*: 해당 행을 FOR UPDATE/SHARE로 재조회해 DB 잠금을 획득한다.
+                chain = chain.then(lockedReselect(metadata, entity, resolved.lockMode()));
+            }
+            if (resolved.forceIncrement()) {
+                // *_FORCE_INCREMENT: 버전을 강제 증분하는 UPDATE 발행(낙관락 검증 포함).
+                PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
+                chain = chain.then(operations.update(entity, List.of(versionProperty.propertyName())).then());
+            } else if (resolved.versionCheck()) {
+                // OPTIMISTIC/READ: 현재 버전이 DB와 일치하는지 검증한다.
+                chain = chain.then(verifyVersion(metadata, entity));
+            }
+            return chain;
+        });
+    }
+
+    @Override
+    public Mono<LockModeType> getLockMode(Object entity) {
+        Objects.requireNonNull(entity, "entity must not be null");
+        return Mono.deferContextual(ctx -> {
+            EntityMetadata<?> metadata = metadataFor(entity);
+            boolean managed = currentSession(ctx)
+                    .map(session -> session.isManaged(metadata, entity))
+                    .orElse(Boolean.FALSE);
+            // Nova는 per-entity 잠금 상태를 추적하지 않는다. 관리 중이고 @Version이 있으면 OPTIMISTIC, 그 외 NONE.
+            return Mono.just(managed && metadata.versionProperty().isPresent()
+                    ? LockModeType.OPTIMISTIC
+                    : LockModeType.NONE);
+        });
+    }
+
+    @Override
+    public <T> Mono<T> refresh(T entity, LockModeType lockMode) {
+        Objects.requireNonNull(entity, "entity must not be null");
+        Objects.requireNonNull(lockMode, "lockMode must not be null");
+        return refresh(entity).flatMap(refreshed -> lock(refreshed, lockMode).thenReturn(refreshed));
+    }
+
+    /**
+     * 단일 {@code @Id} 엔티티에 대해 {@code id = ?} 술어를 가진 {@link QuerySpec}을 만든다. 복합키
+     * ({@code @EmbeddedId}/{@code @IdClass})는 잠금 재조회 술어 구성이 복잡하므로 현재 미지원으로 거부한다.
+     */
+    private QuerySpec idQuerySpec(EntityMetadata<?> metadata, Object id) {
+        if (metadata.hasCompositeId()) {
+            throw new UnsupportedOperationException(
+                    "Locked/versioned lookup is not supported for composite-id entity "
+                            + metadata.entityType().getName());
+        }
+        return QuerySpec.empty().where(Criteria.eq(metadata.idProperty().propertyName(), id));
+    }
+
+    /**
+     * 엔티티 행을 {@code FOR UPDATE}/{@code FOR SHARE}로 재조회해 DB 잠금을 획득한다. 행이 사라졌으면
+     * {@link OptimisticLockingFailureException}으로 실패한다.
+     */
+    private Mono<Void> lockedReselect(EntityMetadata<?> metadata, Object entity, LockMode lockMode) {
+        Object idValue = metadata.readIdValue(entity);
+        QuerySpec spec = idQuerySpec(metadata, idValue).lockMode(lockMode);
+        return operations.findAll(metadata.entityType(), spec).next()
+                .switchIfEmpty(Mono.error(() -> new OptimisticLockingFailureException(
+                        "Cannot acquire lock; row no longer exists for "
+                                + metadata.entityType().getName() + " id=" + idValue)))
+                .then();
+    }
+
+    /**
+     * OPTIMISTIC 잠금 검증: DB의 현재 행 버전이 엔티티가 들고 있는 버전과 일치하는지 존재 쿼리로 확인한다.
+     * 불일치(다른 트랜잭션이 이미 갱신)면 {@link OptimisticLockingFailureException}.
+     */
+    private Mono<Void> verifyVersion(EntityMetadata<?> metadata, Object entity) {
+        if (metadata.hasCompositeId()) {
+            return Mono.error(new UnsupportedOperationException(
+                    "Optimistic lock verification is not supported for composite-id entity "
+                            + metadata.entityType().getName()));
+        }
+        PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
+        Object idValue = metadata.readIdValue(entity);
+        Object currentVersion = versionProperty.read(entity);
+        Predicate predicate = new CompoundPredicate(LogicalOperator.AND, List.of(
+                Criteria.eq(metadata.idProperty().propertyName(), idValue),
+                Criteria.eq(versionProperty.propertyName(), currentVersion)));
+        return operations.exists(metadata.entityType(), QuerySpec.empty().where(predicate))
+                .flatMap(exists -> exists
+                        ? Mono.empty()
+                        : Mono.error(new OptimisticLockingFailureException(
+                                "Optimistic lock verification failed for " + metadata.entityType().getName()
+                                        + " id=" + idValue + " version=" + currentVersion)));
     }
 
     /**

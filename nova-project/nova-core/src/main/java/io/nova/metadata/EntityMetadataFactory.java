@@ -111,8 +111,14 @@ public final class EntityMetadataFactory {
     private static final Set<Class<?>> SUPPORTED_SOFT_DELETE_TYPES =
             Set.of(Instant.class, LocalDateTime.class, OffsetDateTime.class);
 
+    // @Version 지원 타입. 정수 타입(Long/Integer/Short)은 +1 증분, 시간 타입(LocalDateTime)은 update 시 현재
+    // 시각으로 갱신하는 방식으로 낙관락을 건다. 시간 타입은 드라이버 실증(r2dbc-h2)으로 선별했다:
+    //   - LocalDateTime → SQL timestamp 컬럼으로 bind/decode/WHERE-equality 왕복 성공 → 지원.
+    //   - Instant → plain timestamp 컬럼 decode 실패("Cannot decode value of type java.time.Instant"),
+    //     timestamp with time zone 컬럼에서만 왕복 성공하나 스키마 생성기가 그 컬럼 타입을 emit하지 않아 거부.
+    //   - java.sql.Timestamp → 드라이버가 파라미터 인코딩 자체를 거부("Cannot encode parameter ...") → 거부.
     private static final Set<Class<?>> SUPPORTED_VERSION_TYPES =
-            Set.of(Long.class, Integer.class, Short.class);
+            Set.of(Long.class, Integer.class, Short.class, LocalDateTime.class);
 
     private static final Set<Class<?>> SUPPORTED_UUID_ID_TYPES =
             Set.of(UUID.class, String.class);
@@ -1782,7 +1788,7 @@ public final class EntityMetadataFactory {
                 throw new IllegalArgumentException(
                         "Unsupported version type " + field.getType().getName() + " on "
                                 + declaringType.getName() + "." + field.getName()
-                                + "; supported types are Long, Integer, Short");
+                                + "; supported types are Long, Integer, Short, java.time.LocalDateTime");
             }
         }
         GenerationType generationType = generatedValue == null ? null : generatedValue.strategy();

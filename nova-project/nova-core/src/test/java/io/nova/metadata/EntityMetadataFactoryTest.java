@@ -308,6 +308,43 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
+    void recognizesLocalDateTimeVersionProperty() {
+        // 드라이버 실증으로 왕복이 확인된 시간 버전 타입(LocalDateTime)은 @Version으로 허용된다.
+        EntityMetadata<io.nova.support.fixtures.FixtureEntities.LocalDateTimeVersionedAccount> metadata =
+                factory.getEntityMetadata(
+                        io.nova.support.fixtures.FixtureEntities.LocalDateTimeVersionedAccount.class);
+
+        assertTrue(metadata.versionProperty().isPresent());
+        assertEquals(java.time.LocalDateTime.class, metadata.versionProperty().get().javaType());
+        assertTrue(metadata.versionProperty().get().version());
+        assertFalse(metadata.versionProperty().get().id());
+    }
+
+    @Test
+    void rejectsInstantVersionType() {
+        // Instant는 plain timestamp 컬럼 decode 실패 + 스키마 생성기 미지원으로 거부 유지.
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(
+                        io.nova.support.fixtures.FixtureEntities.InstantVersionedEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("Unsupported version type"));
+        assertTrue(exception.getMessage().contains("java.time.Instant"));
+    }
+
+    @Test
+    void rejectsSqlTimestampVersionType() {
+        // java.sql.Timestamp는 드라이버 파라미터 인코딩 거부로 거부 유지.
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(
+                        io.nova.support.fixtures.FixtureEntities.SqlTimestampVersionedEntity.class)
+        );
+        assertTrue(exception.getMessage().contains("Unsupported version type"));
+        assertTrue(exception.getMessage().contains("java.sql.Timestamp"));
+    }
+
+    @Test
     void recognizesBothSoftDeleteAndVersionOnSameEntity() {
         EntityMetadata<VersionedSoftDeletableAccount> metadata =
                 factory.getEntityMetadata(VersionedSoftDeletableAccount.class);
