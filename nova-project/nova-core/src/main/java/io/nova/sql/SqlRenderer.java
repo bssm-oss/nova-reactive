@@ -197,6 +197,15 @@ public interface SqlRenderer {
     }
 
     /**
+     * link table에서 (owner, target) link row 1건만 삭제하는 구문 — 세션 flush의 최소 diff 동기화가 baseline
+     * 대비 제거된 대상만 지울 때 쓴다(full-replace {@link #deleteJoinRows}와 대비). 기본 구현은 미지원이므로
+     * dialect base({@link AbstractSqlRenderer})가 override 한다.
+     */
+    default SqlStatement deleteJoinRow(JoinTableDefinition definition, Object ownerId, Object targetId) {
+        throw new UnsupportedOperationException("deleteJoinRow is not supported by this SqlRenderer");
+    }
+
+    /**
      * 주어진 owner id들에 대한 link row(owner FK, target FK)를 조회하는 구문(2-hop hydration의 1단계).
      */
     default SqlStatement selectJoinRows(JoinTableDefinition definition, List<Object> ownerIds) {
@@ -208,6 +217,15 @@ public interface SqlRenderer {
      */
     default SqlStatement deleteCollectionRows(CollectionTableDefinition definition, Object ownerId) {
         throw new UnsupportedOperationException("deleteCollectionRows is not supported by this SqlRenderer");
+    }
+
+    /**
+     * collection table에서 (owner, value) row 1건만 삭제하는 구문(기본 타입 원소) — 세션 flush의 최소 diff
+     * 동기화가 baseline 대비 제거된 값만 지울 때 쓴다(full-replace {@link #deleteCollectionRows}와 대비).
+     * Set 의미(중복 없음)에서만 안전하므로 ops 레이어가 중복 원소가 없을 때만 호출한다.
+     */
+    default SqlStatement deleteCollectionRow(CollectionTableDefinition definition, Object ownerId, Object value) {
+        throw new UnsupportedOperationException("deleteCollectionRow is not supported by this SqlRenderer");
     }
 
     /**
