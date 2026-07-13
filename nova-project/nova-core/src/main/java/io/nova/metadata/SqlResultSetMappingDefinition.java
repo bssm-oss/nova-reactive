@@ -47,6 +47,10 @@ public record SqlResultSetMappingDefinition(
      * {@code @EntityResult} 한 건. row를 {@code entityClass}로 매핑하며, {@code fieldAliases}는
      * {@code @FieldResult}로 지정된 엔티티 속성명 → 컬럼 별칭 매핑이다. 지정되지 않은 속성은 엔티티의 기본
      * 컬럼명을 별칭으로 사용한다.
+     * <p>
+     * native SELECT는 엔티티의 <b>모든 매핑 컬럼</b>을 (기본 컬럼명 또는 {@code @FieldResult} 별칭으로)
+     * projection해야 한다 — 누락된 컬럼은 row에서 조회되지 않아 매핑이 실패한다. registry는 이 경우 컬럼명과
+     * 매핑 이름을 담은 {@link IllegalStateException}으로 rethrow해 opaque 드라이버 에러를 방지한다.
      *
      * @param entityClass  매핑 대상 엔티티 타입
      * @param fieldAliases 엔티티 속성명 → 컬럼 별칭(선언 순서 보존, 없으면 빈 맵)

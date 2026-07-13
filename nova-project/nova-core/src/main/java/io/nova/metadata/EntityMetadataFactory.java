@@ -293,10 +293,13 @@ public final class EntityMetadataFactory {
      * {@link SqlResultSetMappingDefinition} 목록으로 반환한다. 결과는 타입별로 캐시되며 immutable이다.
      * <p>
      * {@link #createMetadata(Class)}와 독립적인 추가 스캔 진입점으로 hub 생성자를 건드리지 않는다. 구조적
-     * 미지원 요소는 {@link IllegalStateException}으로 fail-fast 한다: {@code @EntityResult}의
-     * {@code lockMode != NONE}, non-blank {@code discriminatorColumn}, 그리고 entities/classes/columns가
-     * 모두 비어 있는 매핑. {@code @FieldResult} 속성명이 실제 엔티티 property인지, {@code @ConstructorResult}
-     * 인자 개수가 생성자와 맞는지 같은 <b>의미적</b> 검증은 매핑을 실행하는 registry의 컴파일 단계에서 수행한다.
+     * 미지원 요소는 {@link IllegalStateException}으로 fail-fast 한다: {@code @EntityResult}의 non-blank
+     * {@code discriminatorColumn}, blank {@code @FieldResult}/{@code @ColumnResult} name·column, 그리고
+     * entities/classes/columns가 모두 비어 있는 매핑. {@code @EntityResult}의 {@code lockMode}는 native 결과
+     * 매핑이 잠금을 적용하지 않는 detached read-only projection이므로 <b>의도적으로 무시</b>한다(jakarta 3.2
+     * 기본값이 {@code OPTIMISTIC}이라 non-NONE fail-fast로 해석하면 모든 {@code @EntityResult}가 거부됨).
+     * {@code @FieldResult} 속성명이 실제 엔티티 property인지, {@code @ConstructorResult} 인자 개수가 생성자와
+     * 맞는지 같은 <b>의미적</b> 검증은 매핑을 실행하는 registry의 컴파일 단계에서 수행한다.
      *
      * @param type 스캔 대상 엔티티 또는 {@code @MappedSuperclass}
      * @return 선언 순서를 보존한 결과셋 매핑 정의 목록(없으면 빈 목록)

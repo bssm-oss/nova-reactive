@@ -102,6 +102,13 @@ class EntityMetadataFactoryNamedQueryTest {
     }
 
     @Test
+    void rejectsBothResultClassAndResultSetMapping() {
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> factory.namedQueryDefinitions(WithBothResults.class));
+        assertTrue(ex.getMessage().contains("both resultClass and resultSetMapping"));
+    }
+
+    @Test
     void returnsEmptyForEntityWithoutNamedQueries() {
         assertTrue(factory.namedQueryDefinitions(SubEntity.Plain.class).isEmpty());
     }
@@ -177,6 +184,15 @@ class EntityMetadataFactoryNamedQueryTest {
     @NamedNativeQuery(name = "WithResultSetMapping.mapped",
             query = "SELECT * FROM with_result_set_mapping", resultSetMapping = "someMapping")
     static class WithResultSetMapping {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @NamedNativeQuery(name = "WithBothResults.conflict",
+            query = "SELECT * FROM with_both_results",
+            resultClass = WithBothResults.class, resultSetMapping = "someMapping")
+    static class WithBothResults {
         @Id
         Long id;
     }

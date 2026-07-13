@@ -106,6 +106,19 @@ class SqlResultSetMappingRegistryTest {
     }
 
     @Test
+    void columnResultCoercesWhenDriverReturnsDifferentType() {
+        SqlResultSetMappingRegistry registry = registry(WidgetMappings.class);
+        // scalar 매핑은 type=Long을 선언하지만, driver가 Integer를 반환하는 상황을 모사한다.
+        operations.row = row(Map.of("total", Integer.valueOf(42)));
+        StepVerifier.create(registry.queryNative("SELECT count(*) AS total FROM widget", "scalar"))
+                .assertNext(result -> {
+                    assertTrue(result instanceof Long, "declared Long must be coerced from driver Integer");
+                    assertEquals(42L, result);
+                })
+                .verifyComplete();
+    }
+
+    @Test
     void unknownMappingFailsFast() {
         SqlResultSetMappingRegistry registry = registry(WidgetMappings.class);
         assertThrows(IllegalArgumentException.class, () -> registry.queryNative("SELECT 1", "nope"));

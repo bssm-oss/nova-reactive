@@ -100,6 +100,20 @@ class EntityMetadataFactorySqlResultSetMappingTest {
         assertThrows(IllegalStateException.class, () -> factory.sqlResultSetMappings(WithBlankName.class));
     }
 
+    @Test
+    void rejectsBlankFieldResult() {
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> factory.sqlResultSetMappings(WithBlankFieldResult.class));
+        assertTrue(ex.getMessage().contains("blank name or column"));
+    }
+
+    @Test
+    void rejectsDuplicateFieldResult() {
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> factory.sqlResultSetMappings(WithDuplicateFieldResult.class));
+        assertTrue(ex.getMessage().contains("duplicate @FieldResult"));
+    }
+
     // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------
@@ -185,6 +199,25 @@ class EntityMetadataFactorySqlResultSetMappingTest {
     @Entity
     @SqlResultSetMapping(name = "", columns = @ColumnResult(name = "c"))
     static class WithBlankName {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @SqlResultSetMapping(name = "blankField",
+            entities = @EntityResult(entityClass = Widget.class,
+                    fields = @FieldResult(name = "name", column = "")))
+    static class WithBlankFieldResult {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @SqlResultSetMapping(name = "dupField",
+            entities = @EntityResult(entityClass = Widget.class,
+                    fields = {@FieldResult(name = "name", column = "n1"),
+                            @FieldResult(name = "name", column = "n2")}))
+    static class WithDuplicateFieldResult {
         @Id
         Long id;
     }

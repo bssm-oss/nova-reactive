@@ -25,6 +25,7 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code @SqlResultSetMapping}(native 결과 매핑)이 H2 in-memory R2DBC driver와 end-to-end로 동작하는지 검증한다 —
@@ -92,6 +93,19 @@ class SqlResultSetMappingIntegrationTest {
     }
 
     @Test
+    void columnResultCoercesDeclaredType() {
+        // "price"는 DECIMAL 컬럼이라 SUM은 BigDecimal로 반환되지만, @ColumnResult가 Double을 선언하므로
+        // 결과는 Double로 강제 변환돼야 한다(declared type end-to-end 계약).
+        String sql = "SELECT SUM(\"price\") AS \"s\" FROM \"rsm_widget\"";
+        StepVerifier.create(mappings.queryNative(sql, "widgetSumPrice"))
+                .assertNext(sum -> {
+                    assertTrue(sum instanceof Double, "declared Double must be honored, was " + sum.getClass());
+                    assertEquals(60.0, (Double) sum, 0.0001);
+                })
+                .verifyComplete();
+    }
+
+    @Test
     void namedNativeQueryWithResultSetMappingRoundTrips() {
         StepVerifier.create(
                         mappings.createNativeQuery(namedQueries, "Widget.byNameMapped")
@@ -122,6 +136,7 @@ class SqlResultSetMappingIntegrationTest {
                     columns = {@ColumnResult(name = "dto_name"),
                             @ColumnResult(name = "dto_price", type = BigDecimal.class)}))
     @SqlResultSetMapping(name = "widgetCount", columns = @ColumnResult(name = "cnt", type = Long.class))
+    @SqlResultSetMapping(name = "widgetSumPrice", columns = @ColumnResult(name = "s", type = Double.class))
     @NamedNativeQuery(name = "Widget.byNameMapped",
             query = "SELECT \"id\", \"name\" AS \"w_name\", \"price\" FROM \"rsm_widget\" WHERE \"name\" = :name",
             resultSetMapping = "widgetEntity")

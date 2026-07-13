@@ -134,6 +134,10 @@ public final class SqlResultSetMappingRegistry {
      * <p>
      * 명명 쿼리가 {@code resultSetMapping}을 선언하지 않았거나(={@code resultClass} 기반) 참조하는 매핑이
      * 미등록이면 fail-fast 한다.
+     * <p>
+     * {@code namedRegistry}와 이 registry는 <b>같은 엔티티 클래스 집합으로 구성</b>돼야 한다 — 명명 쿼리는
+     * {@code namedRegistry}에, 그 쿼리가 참조하는 {@code @SqlResultSetMapping}은 이 registry에 각각 등록돼
+     * 있어야 lookup이 성립한다(둘 다 보통 같은 엔티티에 함께 선언된다).
      */
     public NamedNativeQuery<Object> createNativeQuery(NamedQueryRegistry namedRegistry, String queryName) {
         Objects.requireNonNull(namedRegistry, "namedRegistry must not be null");
@@ -167,7 +171,7 @@ public final class SqlResultSetMappingRegistry {
             parts.add(constructorMapper(definition.name(), constructor));
         }
         for (SqlResultSetMappingDefinition.ColumnMapping column : definition.columns()) {
-            parts.add(columnMapper(column));
+            parts.add(columnMapper(definition.name(), column));
         }
         if (parts.size() == 1) {
             return parts.get(0);
@@ -211,7 +215,15 @@ public final class SqlResultSetMappingRegistry {
             }
             for (PersistentProperty property : columns) {
                 String sourceColumn = fieldAliases.getOrDefault(property.propertyName(), property.columnName());
-                Object columnValue = row.get(sourceColumn, property.columnType());
+                Object columnValue;
+                try {
+                    columnValue = row.get(sourceColumn, property.columnType());
+                } catch (RuntimeException e) {
+                    throw new IllegalStateException("@SqlResultSetMapping '" + mappingName + "' @EntityResult "
+                            + entityClass.getName() + " could not read column '" + sourceColumn + "' for attribute '"
+                            + property.propertyName() + "'; the native SELECT must project every mapped column of the "
+                            + "entity (add the column or a @FieldResult alias)", e);
+                }
                 property.write(instance, property.toPropertyValue(columnValue));
             }
             return instance;
@@ -245,9 +257,12 @@ public final class SqlResultSetMappingRegistry {
             Object[] args = new Object[arity];
             for (int i = 0; i < arity; i++) {
                 SqlResultSetMappingDefinition.ColumnMapping column = columns.get(i);
-                Class<?> readType = column.type() != null ? column.type() : parameterTypes[i];
-                Object raw = row.get(column.column(), readType);
-                args[i] = coerce(raw, parameterTypes[i], target.getName(), i);
+                // driver의 native 타입으로 읽은 뒤 constructor 파라미터 타입으로 coerce한다. declared type을
+                // driver read 타입으로 넘기지 않는 이유는, 일부 driver(예: r2dbc-h2)가 DECIMAL→Double 같은
+                // 요청을 decode 단계에서 거부하기 때문이다 — coerce() net이 그 변환을 대칭적으로 담당한다.
+                Object raw = row.get(column.column(), Object.class);
+                args[i] = coerce(raw, parameterTypes[i],
+                        "@ConstructorResult " + target.getName() + " parameter " + i);
             }
             try {
                 return constructor.newInstance(args);
@@ -257,18 +272,31 @@ public final class SqlResultSetMappingRegistry {
         };
     }
 
-    private Function<RowAccessor, Object> columnMapper(SqlResultSetMappingDefinition.ColumnMapping column) {
-        Class<?> type = column.type() != null ? column.type() : Object.class;
+    private Function<RowAccessor, Object> columnMapper(
+            String mappingName, SqlResultSetMappingDefinition.ColumnMapping column) {
         String alias = column.column();
-        return row -> row.get(alias, type);
+        Class<?> declaredType = column.type();
+        if (declaredType == null) {
+            // 타입 미지정: driver가 반환하는 raw 타입을 그대로 노출한다.
+            return row -> row.get(alias, Object.class);
+        }
+        // 타입 지정: @ConstructorResult 컬럼과 동일하게 driver의 native 타입으로 읽은 뒤 coerce() net으로
+        // declared type에 맞춘다. driver가 declared type decode를 거부하거나(예: r2dbc-h2 DECIMAL→Double)
+        // 다른 타입을 반환하는(예: Integer where Long 선언) dialect에서도 대칭적으로 변환된다.
+        String label = "@ColumnResult '" + alias + "' of @SqlResultSetMapping '" + mappingName + "'";
+        return row -> coerce(row.get(alias, Object.class), declaredType, label);
     }
 
-    /** 스칼라 값을 생성자 파라미터 타입으로 강제 변환한다. 변환 불가면 fail-fast. */
-    private static Object coerce(Object value, Class<?> target, String className, int index) {
+    /**
+     * 스칼라 값을 대상 타입으로 강제 변환한다(Number widening/narrowing, {@code toString}). 변환 불가면
+     * fail-fast. {@code context}는 실패 메시지에 붙는 매핑 지점 설명이다({@code @ConstructorResult} 인자 또는
+     * 독립 {@code @ColumnResult}).
+     */
+    private static Object coerce(Object value, Class<?> target, String context) {
         if (value == null) {
             if (target.isPrimitive()) {
-                throw new IllegalStateException("@ConstructorResult " + className
-                        + ": null cannot be assigned to primitive parameter " + index + " of type " + target.getName());
+                throw new IllegalStateException(context
+                        + ": null cannot be assigned to primitive type " + target.getName());
             }
             return null;
         }
@@ -307,7 +335,7 @@ public final class SqlResultSetMappingRegistry {
         if (target == String.class) {
             return value.toString();
         }
-        throw new IllegalStateException("@ConstructorResult " + className + ": cannot convert value of type "
-                + value.getClass().getName() + " to constructor parameter " + index + " of type " + target.getName());
+        throw new IllegalStateException(context + ": cannot convert value of type "
+                + value.getClass().getName() + " to type " + target.getName());
     }
 }
