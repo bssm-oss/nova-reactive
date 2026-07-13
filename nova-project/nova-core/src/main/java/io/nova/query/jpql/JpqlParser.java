@@ -21,8 +21,9 @@ import java.util.Set;
 
 /**
  * 손으로 작성한 재귀 하강 파서다. {@link JpqlLexer}가 만든 토큰 스트림을 {@link JpqlStatement} AST로
- * 변환한다. 지원 문법을 벗어나거나 v1에서 명시적으로 거부하는 구문(JOIN FETCH, TREAT, TYPE,
- * simple CASE, NEW 생성자, MEMBER OF 등)은 조용히 무시하지 않고 {@link JpqlSyntaxException}으로 fail-fast한다.
+ * 변환한다. {@code JOIN FETCH}는 엔티티 반환 SELECT에서 지원한다(fetch join된 연관을 결과 hydration에 반영).
+ * 지원 문법을 벗어나거나 v1에서 명시적으로 거부하는 구문(TREAT, TYPE, simple CASE, NEW 생성자, MEMBER OF,
+ * 다단계 join path 등)은 조용히 무시하지 않고 {@link JpqlSyntaxException}으로 fail-fast한다.
  */
 public final class JpqlParser {
 
@@ -119,10 +120,6 @@ public final class JpqlParser {
             }
             expectKeyword("JOIN");
             boolean fetch = consumeKeyword("FETCH");
-            if (fetch) {
-                throw syntax("JOIN FETCH is not supported in v1 (deferred to Wave2 W3); "
-                        + "use an explicit fetch plan or a non-fetch join");
-            }
             String ownerAlias = expectIdentifier("join path owner alias");
             expectOperator(".");
             String relation = expectIdentifier("join relation field");
@@ -131,13 +128,14 @@ public final class JpqlParser {
                         + ". ...) is not supported in v1");
             }
             String alias = parseAlias("join");
-            if (alias == null) {
+            // JOIN FETCH는 별칭이 선택이다(JPA: JOIN FETCH a.books). 일반 조인은 별칭이 필수다.
+            if (alias == null && !fetch) {
                 throw syntax("JOIN " + ownerAlias + "." + relation + " requires an alias");
             }
             if (consumeKeyword("ON")) {
                 throw syntax("JOIN ... ON custom condition is not supported in v1");
             }
-            joins.add(new JoinClause(inner, false, ownerAlias, relation, alias));
+            joins.add(new JoinClause(inner, fetch, ownerAlias, relation, alias));
         }
         return joins;
     }

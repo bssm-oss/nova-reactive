@@ -159,6 +159,14 @@ class JpqlSqlBuilderTest {
     }
 
     @Test
+    void failsFastOnJoinFetchInScalarProjection() {
+        // JOIN FETCH 는 엔티티 반환 SELECT에서만 유효하다. 스칼라 투영 경로로 새면 fail-fast.
+        JpqlException ex = assertThrows(JpqlException.class,
+                () -> scalar("SELECT e.name FROM Employee e JOIN FETCH e.department d"));
+        assertTrue(ex.getMessage().contains("JOIN FETCH"));
+    }
+
+    @Test
     void failsFastOnBulkUpdateWithoutAlias() {
         JpqlStatement.Update update =
                 (JpqlStatement.Update) new JpqlParser("UPDATE Employee SET name = :n").parse();

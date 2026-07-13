@@ -138,6 +138,10 @@ public final class JpqlSqlBuilder {
 
     private void bindJoins(Scope scope, List<JoinClause> joins) {
         for (JoinClause join : joins) {
+            if (join.fetch()) {
+                throw new JpqlException("JOIN FETCH is only valid in an entity-returning SELECT; "
+                        + "it cannot be used with a scalar/aggregate projection or inside a subquery");
+            }
             EntityMetadata<?> owner = scope.resolve(join.ownerAlias());
             PersistentProperty relation = owner.findProperty(join.relation())
                     .orElseThrow(() -> new JpqlException("Unknown relation '" + join.ownerAlias() + "."
