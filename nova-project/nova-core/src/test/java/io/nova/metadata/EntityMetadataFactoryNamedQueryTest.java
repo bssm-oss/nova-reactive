@@ -92,10 +92,13 @@ class EntityMetadataFactoryNamedQueryTest {
     }
 
     @Test
-    void rejectsUnsupportedResultSetMapping() {
-        IllegalStateException ex = assertThrows(IllegalStateException.class,
-                () -> factory.namedQueryDefinitions(WithResultSetMapping.class));
-        assertTrue(ex.getMessage().contains("resultSetMapping"));
+    void capturesResultSetMapping() {
+        List<NamedQueryDefinition> definitions = factory.namedQueryDefinitions(WithResultSetMapping.class);
+        assertEquals(1, definitions.size());
+        NamedQueryDefinition definition = definitions.get(0);
+        assertTrue(definition.nativeQuery());
+        assertNull(definition.resultClass());
+        assertEquals("someMapping", definition.resultSetMapping());
     }
 
     @Test
