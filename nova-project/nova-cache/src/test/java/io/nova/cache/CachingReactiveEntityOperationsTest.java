@@ -3,7 +3,9 @@ package io.nova.cache;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.query.NativeQuery;
 import io.nova.query.QuerySpec;
+import io.nova.query.Updater;
 import jakarta.persistence.Cacheable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -20,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link CachingReactiveEntityOperations} 데코레이터의 read-through 히트와 write invalidation을,
@@ -34,6 +37,11 @@ class CachingReactiveEntityOperationsTest {
     private ReactiveEntityOperations caching(CountingOps delegate) {
         return new CachingReactiveEntityOperations(
                 delegate, metadataFactory, new CacheConfigurationResolver(), new SimpleReactiveCacheProvider());
+    }
+
+    private ReactiveEntityOperations caching(CountingOps delegate, SimpleReactiveCacheProvider provider) {
+        return new CachingReactiveEntityOperations(
+                delegate, metadataFactory, new CacheConfigurationResolver(), provider);
     }
 
     @Test
@@ -116,6 +124,105 @@ class CachingReactiveEntityOperationsTest {
         assertEquals(2, delegate.findByIdCalls.get());
     }
 
+    @Test
+    void polymorphicWriteInvalidatesBaseTypeCacheKey() {
+        // findById(Animal.class, 1)이 런타임 Dog를 로드해 캐시하고, save(dog)/delete(dog)가 런타임 타입으로
+        // evict 해도 canonical 키 정규화 덕분에 같은 엔트리를 무효화해야 한다(다형 stale read 방지).
+        CountingOps delegate = new CountingOps(metadataFactory);
+        delegate.seed(new Dog(1L, "rex")); // store[1] = Dog 인스턴스
+        ReactiveEntityOperations ops = caching(delegate);
+
+        Animal loaded = ops.findById(Animal.class, 1L).block(); // 선언 타입 Animal → delegate #1 + 캐시(canonical 키)
+        assertTrue(loaded instanceof Dog);
+        ops.findById(Animal.class, 1L).block();                 // 캐시 히트(여전히 #1)
+
+        ops.save(new Dog(1L, "max")).block();                    // 런타임 타입 write → canonical 키로 evict
+        ops.findById(Animal.class, 1L).block();                 // 무효화되어 delegate #2
+
+        assertEquals(2, delegate.findByIdCalls.get(),
+                "다형 write는 base-type findById가 심은 canonical 키를 무효화해야 한다");
+    }
+
+    @Test
+    void polymorphicDeleteInvalidatesBaseTypeCacheKey() {
+        CountingOps delegate = new CountingOps(metadataFactory);
+        Dog dog = new Dog(1L, "rex");
+        delegate.seed(dog);
+        ReactiveEntityOperations ops = caching(delegate);
+
+        ops.findById(Animal.class, 1L).block();  // delegate #1 + 캐시
+        ops.delete(dog).block();                 // 런타임 타입 delete → canonical 키 evict
+        ops.findById(Animal.class, 1L).block();  // delegate #2
+
+        assertEquals(2, delegate.findByIdCalls.get());
+    }
+
+    @Test
+    void inTransactionReadDoesNotPopulateSharedCache() {
+        // 트랜잭션 안 findById는 미커밋 읽기 유출 방지를 위해 공유 캐시를 채우지 않아야 한다.
+        CountingOps delegate = new CountingOps(metadataFactory);
+        delegate.seed(new Product(1L, "keyboard"));
+        ReactiveEntityOperations ops = caching(delegate);
+
+        ops.inTransaction(tx -> tx.findById(Product.class, 1L)).block(); // delegate #1, 캐시 미채움
+        ops.findById(Product.class, 1L).block();  // 캐시에 없으므로 delegate #2 (그리고 채움)
+        ops.findById(Product.class, 1L).block();  // 이제 히트, delegate 호출 없음
+
+        assertEquals(2, delegate.findByIdCalls.get(),
+                "in-tx 읽기가 캐시를 채웠다면 첫 non-tx findById가 히트해 총 1이었을 것");
+    }
+
+    @Test
+    void bulkDeleteByQueryClearsRegion() {
+        CountingOps delegate = new CountingOps(metadataFactory);
+        delegate.seed(new Product(1L, "keyboard"));
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        ReactiveEntityOperations ops = caching(delegate, provider);
+        String region = new CacheConfigurationResolver().resolve(Product.class).region();
+
+        ops.findById(Product.class, 1L).block();  // 캐시 채움
+        assertEquals(1, provider.getCache(region).size());
+
+        ops.deleteAll(Product.class, QuerySpec.empty()).block(); // bulk delete → region clear
+        assertEquals(0, provider.getCache(region).size(), "bulk delete는 대상 region을 비워야 한다");
+    }
+
+    @Test
+    void bulkUpdateByUpdaterClearsRegion() {
+        CountingOps delegate = new CountingOps(metadataFactory);
+        delegate.seed(new Product(1L, "keyboard"));
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        ReactiveEntityOperations ops = caching(delegate, provider);
+        String region = new CacheConfigurationResolver().resolve(Product.class).region();
+
+        ops.findById(Product.class, 1L).block();
+        assertEquals(1, provider.getCache(region).size());
+
+        ops.update(Product.class, (Updater<Product>) null).block(); // bulk update → region clear (fake는 인자 무시)
+        assertEquals(0, provider.getCache(region).size(), "bulk update는 대상 region을 비워야 한다");
+    }
+
+    @Test
+    void nativeExecuteClearsAllRegions() {
+        CountingOps delegate = new CountingOps(metadataFactory);
+        delegate.seed(new Product(1L, "keyboard"));
+        delegate.seed(new Animal(2L, "generic"));
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        ReactiveEntityOperations ops = caching(delegate, provider);
+        CacheConfigurationResolver r = new CacheConfigurationResolver();
+        String productRegion = r.resolve(Product.class).region();
+        String animalRegion = r.resolve(Animal.class).region();
+
+        ops.findById(Product.class, 1L).block();
+        ops.findById(Animal.class, 2L).block();
+        assertEquals(1, provider.getCache(productRegion).size());
+        assertEquals(1, provider.getCache(animalRegion).size());
+
+        ops.executeNative(NativeQuery.of("delete from cache_product")).block(); // 대상 불명 → 전역 clear
+        assertEquals(0, provider.getCache(productRegion).size());
+        assertEquals(0, provider.getCache(animalRegion).size());
+    }
+
     // --- fake delegate ------------------------------------------------------
 
     /**
@@ -187,6 +294,22 @@ class CachingReactiveEntityOperationsTest {
         public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
             return callback.apply(this);
         }
+
+        // bulk/native 경로: 실제 DB 없이 count만 돌려준다(인자는 무시). 데코레이터의 무효화 side-effect만 검증한다.
+        @Override
+        public <T> Mono<Long> deleteAll(Class<T> entityType, QuerySpec querySpec) {
+            return Mono.just(0L);
+        }
+
+        @Override
+        public <T> Mono<Long> update(Class<T> entityType, Updater<T> updater) {
+            return Mono.just(0L);
+        }
+
+        @Override
+        public Mono<Long> executeNative(NativeQuery query) {
+            return Mono.just(0L);
+        }
     }
 
     // --- fixtures ----------------------------------------------------------
@@ -223,6 +346,39 @@ class CachingReactiveEntityOperationsTest {
         Ledger(Long id, String owner) {
             this.id = id;
             this.owner = owner;
+        }
+    }
+
+    /**
+     * 다형 캐시 키 정규화 검증용 base 타입. {@code @Cacheable}은 여기(root)에만 선언되므로 canonical keyType은
+     * 항상 {@code Animal}이다.
+     */
+    @Entity
+    @Table(name = "cache_animal")
+    @Cacheable
+    static class Animal {
+        @Id
+        private Long id;
+        @Column(name = "species")
+        private String species;
+
+        Animal() {
+        }
+
+        Animal(Long id, String species) {
+            this.id = id;
+            this.species = species;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_animal")
+    static class Dog extends Animal {
+        Dog() {
+        }
+
+        Dog(Long id, String species) {
+            super(id, species);
         }
     }
 }

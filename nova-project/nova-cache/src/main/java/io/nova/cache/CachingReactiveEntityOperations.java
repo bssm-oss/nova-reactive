@@ -102,7 +102,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (!config.cacheable() || id == null) {
             return delegate.findById(entityType, id);
         }
-        CacheKey key = new CacheKey(config.region(), entityType, id);
+        // 키 타입은 canonical(정규) 타입으로 — 다형 findById(base)와 save(subtype)가 같은 키를 공유하게 한다.
+        CacheKey key = new CacheKey(config.region(), config.keyType(), id);
         ReactiveCache cache = provider.getCache(config.region());
         Mono<T> load = delegate.findById(entityType, id)
                 .flatMap(loaded -> populateOnRead
@@ -117,7 +118,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (!config.cacheable() || id == null) {
             return delegate.existsById(entityType, id);
         }
-        CacheKey key = new CacheKey(config.region(), entityType, id);
+        CacheKey key = new CacheKey(config.region(), config.keyType(), id);
         return provider.getCache(config.region()).get(key)
                 .map(value -> Boolean.TRUE)
                 .switchIfEmpty(delegate.existsById(entityType, id));
@@ -305,7 +306,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (id == null) {
             return Mono.empty();
         }
-        return invalidate(new CacheKey(config.region(), entity.getClass(), id));
+        // canonical 키 타입으로 evict — findById(base)가 심은 키와 일치시켜 다형 stale read를 막는다.
+        return invalidate(new CacheKey(config.region(), config.keyType(), id));
     }
 
     private Mono<Void> putEntity(Object entity) {
@@ -320,7 +322,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (id == null) {
             return Mono.empty();
         }
-        return provider.getCache(config.region()).put(new CacheKey(config.region(), entity.getClass(), id), entity);
+        return provider.getCache(config.region()).put(new CacheKey(config.region(), config.keyType(), id), entity);
     }
 
     private Mono<Void> invalidateKey(Class<?> entityType, Object id) {
@@ -328,7 +330,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (!config.cacheable() || id == null) {
             return Mono.empty();
         }
-        return invalidate(new CacheKey(config.region(), entityType, id));
+        return invalidate(new CacheKey(config.region(), config.keyType(), id));
     }
 
     private Mono<Void> invalidate(CacheKey key) {

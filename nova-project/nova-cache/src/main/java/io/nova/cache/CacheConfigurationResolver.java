@@ -44,27 +44,29 @@ public final class CacheConfigurationResolver {
     }
 
     private CacheConfiguration compute(Class<?> entityType) {
-        jakarta.persistence.Cacheable cacheable = findAnnotation(entityType, jakarta.persistence.Cacheable.class);
-        Cache cacheAnn = findAnnotation(entityType, Cache.class);
+        Class<?> cacheableDecl = findDeclaringClass(entityType, jakarta.persistence.Cacheable.class);
+        Class<?> cacheDecl = findDeclaringClass(entityType, Cache.class);
+        jakarta.persistence.Cacheable cacheable =
+                cacheableDecl == null ? null : cacheableDecl.getDeclaredAnnotation(jakarta.persistence.Cacheable.class);
+        Cache cacheAnn = cacheDecl == null ? null : cacheDecl.getDeclaredAnnotation(Cache.class);
 
-        boolean isCacheable;
-        if (cacheable != null) {
-            isCacheable = cacheable.value();
-        } else {
-            isCacheable = cacheAnn != null;
-        }
-
+        boolean isCacheable = cacheable != null ? cacheable.value() : cacheAnn != null;
         if (!isCacheable) {
             return CacheConfiguration.notCacheable();
         }
 
+        // canonical 타입 = 캐시 애너테이션을 선언한 조상 중 root-most(Object에 가장 가까운) 클래스.
+        // 계층 어느 진입점(base findById, subtype save)에서 resolve 하든 같은 조상 선언 클래스를 찾으므로
+        // 그중 상위 클래스를 canonical로 고정하면 read/write 키가 동일해진다.
+        Class<?> canonicalType = higher(cacheableDecl, cacheDecl);
+
         String region;
         CacheConcurrencyStrategy usage;
         if (cacheAnn != null) {
-            region = cacheAnn.region().isBlank() ? entityType.getName() : cacheAnn.region();
+            region = cacheAnn.region().isBlank() ? canonicalType.getName() : cacheAnn.region();
             usage = cacheAnn.usage();
         } else {
-            region = entityType.getName();
+            region = canonicalType.getName();
             usage = CacheConcurrencyStrategy.READ_WRITE;
         }
 
@@ -74,14 +76,28 @@ public final class CacheConfigurationResolver {
                             + " (Nova v1 supports READ_ONLY and READ_WRITE only)");
         }
 
-        return new CacheConfiguration(true, region, usage);
+        return new CacheConfiguration(true, canonicalType, region, usage);
     }
 
-    private static <A extends java.lang.annotation.Annotation> A findAnnotation(Class<?> type, Class<A> annotationType) {
+    /**
+     * 두 선언 클래스 중 상위(root-most) 클래스를 반환한다. 하나가 {@code null}이면 다른 하나를 반환한다.
+     * 단일 상속 체인에서 두 조상은 항상 비교 가능하므로 {@link Class#isAssignableFrom(Class)}로 상하 판단한다.
+     */
+    private static Class<?> higher(Class<?> a, Class<?> b) {
+        if (a == null) {
+            return b;
+        }
+        if (b == null) {
+            return a;
+        }
+        // a가 b의 상위(또는 동일)면 a가 root-most.
+        return a.isAssignableFrom(b) ? a : b;
+    }
+
+    private static Class<?> findDeclaringClass(Class<?> type, Class<? extends java.lang.annotation.Annotation> annotationType) {
         for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
-            A found = current.getDeclaredAnnotation(annotationType);
-            if (found != null) {
-                return found;
+            if (current.getDeclaredAnnotation(annotationType) != null) {
+                return current;
             }
         }
         return null;

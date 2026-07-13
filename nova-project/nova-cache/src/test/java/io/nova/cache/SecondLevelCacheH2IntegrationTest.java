@@ -22,6 +22,8 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -114,6 +116,47 @@ class SecondLevelCacheH2IntegrationTest {
 
         Widget afterDelete = w.cached().findById(Widget.class, id).block();
         assertNull(afterDelete, "삭제 후에는 stale 캐시가 아니라 DB를 조회해 없음을 확인해야 한다");
+    }
+
+    @Test
+    void rollbackLeavesNoStaleCache() {
+        // 트랜잭션 안 write는 즉시 evict 되고, 롤백되면 DB는 원본으로 되돌아간다. 이후 조회는 캐시 미스로
+        // 원본(alpha)을 DB에서 읽어야 하며, 롤백된 미커밋 값(beta)이 캐시에 남아선 안 된다.
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block(); // 캐시 채움(alpha)
+
+        StepVerifier.create(
+                w.cached().inTransaction(tx ->
+                        tx.save(new Widget(id, "beta"))
+                                .then(Mono.error(new RuntimeException("boom"))))
+        ).verifyErrorMessage("boom");
+
+        Widget after = w.cached().findById(Widget.class, id).block();
+        assertEquals("alpha", after.name(),
+                "롤백 후 조회는 캐시된 미커밋 beta가 아니라 DB의 원본 alpha를 반환해야 한다");
+    }
+
+    @Test
+    void inTransactionReadIsNotPopulatedToSharedCache() {
+        // 트랜잭션 안 findById는 미커밋 읽기 유출을 막기 위해 공유 캐시를 채우지 않아야 한다 →
+        // 이후 non-tx findById는 여전히 DB SELECT를 발행한다.
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+
+        w.cached().inTransaction(tx -> tx.findById(Widget.class, id)).block(); // in-tx 읽기(캐시 미채움)
+
+        long before = w.listener().selects();
+        Widget reloaded = w.cached().findById(Widget.class, id).block();
+        assertTrue(w.listener().selects() > before,
+                "in-tx 읽기가 캐시를 채웠다면 이 findById가 히트해 SELECT가 없었을 것");
+        assertEquals("alpha", reloaded.name());
     }
 
     // --- SQL 실행 카운터 -----------------------------------------------------

@@ -59,6 +59,24 @@ class CacheConfigurationResolverTest {
     }
 
     @Test
+    void baseAndSubtypeShareCanonicalKeyTypeAndRegion() {
+        // 다형 findById(base)와 save(subtype)가 같은 캐시 키를 쓰도록 keyType/region이 root로 정규화되어야 한다.
+        CacheConfiguration base = resolver.resolve(PlainCacheable.class);
+        CacheConfiguration sub = resolver.resolve(SubOfCacheable.class);
+
+        assertEquals(PlainCacheable.class, base.keyType());
+        assertEquals(PlainCacheable.class, sub.keyType(), "subtype resolve도 root canonical keyType을 써야 한다");
+        assertEquals(base.region(), sub.region(), "subtype과 base는 동일 region이어야 다형 stale이 없다");
+    }
+
+    @Test
+    void nonCacheableConfigExposesNeutralKeyType() {
+        CacheConfiguration config = resolver.resolve(NotAnnotated.class);
+        assertFalse(config.cacheable());
+        assertEquals(Object.class, config.keyType());
+    }
+
+    @Test
     void unsupportedConcurrencyStrategyFailsFast() {
         IllegalStateException nonstrict = assertThrows(IllegalStateException.class,
                 () -> resolver.resolve(NonstrictStrategy.class));

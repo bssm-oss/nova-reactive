@@ -18,6 +18,14 @@ import java.util.Objects;
  *
  * <p>{@code @Cacheable}(또는 Nova {@link io.nova.cache.annotation.Cache})이 붙은 엔티티만 캐시되며, 그 외
  * 타입은 캐시 없이 그대로 통과한다.
+ *
+ * <p><b>주의(커스텀 컨버터):</b> 무효화 경로는 write 성공 <i>후</i> {@link EntityMetadataFactory}로 엔티티의
+ * id를 읽는다. 기본 factory 오버로드는 {@code Nova.create}의 기본과 동일한 미설정 {@code JsonCodec}을 쓰므로
+ * {@code @Json} 엔티티도 안전하다(id 추출은 JSON 인코딩을 트리거하지 않는다). 그러나 delegate 배선에서
+ * {@code EntityMetadataFactory.registerConverter(...)}로 커스텀 {@code @Convert} 컨버터를 등록했다면, 그 factory를
+ * {@link #caching(ReactiveEntityOperations, io.nova.cache.spi.ReactiveCacheProvider, EntityMetadataFactory)}
+ * 오버로드로 <b>동일하게</b> 넘겨야 한다. 그러지 않으면 metadata 빌드가 write 성공 후에 실패해 "행은 이미
+ * 써졌는데 save()가 error"인 혼란을 유발할 수 있다.
  */
 public final class NovaCache {
 
@@ -40,8 +48,10 @@ public final class NovaCache {
 
     /**
      * 사용자 지정 {@link io.nova.cache.spi.ReactiveCacheProvider}로 캐싱 operations를 만든다.
-     * id 추출용 {@link EntityMetadataFactory}는 기본({@link DefaultNamingStrategy}, codec 미설정)으로 생성된다 —
-     * {@code @Json}/커스텀 컨버터 엔티티를 캐시하려면 configured factory를 받는 오버로드를 사용하라.
+     * id 추출용 {@link EntityMetadataFactory}는 기본({@link DefaultNamingStrategy}, {@code Nova.create}와 동일한
+     * 미설정 codec)으로 생성된다. delegate에 <b>커스텀 {@code @Convert} 컨버터를 registerConverter로 등록</b>했다면
+     * 무효화 시 metadata 빌드가 깨질 수 있으므로 factory를 명시하는 3-인자 오버로드를 사용하라(클래스 javadoc의
+     * 커스텀 컨버터 주의 참고).
      */
     public static ReactiveEntityOperations caching(
             ReactiveEntityOperations delegate, io.nova.cache.spi.ReactiveCacheProvider provider) {
