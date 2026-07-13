@@ -59,6 +59,36 @@ public final class JpqlEntityQueryPlanner {
     }
 
     /**
+     * 엔티티 자체를 반환하지만 필터 목적의 non-fetch JOIN이 있는 SELECT 형태인지. 이런 쿼리는 Nova의
+     * {@link QuerySpec}(조인 미지원)으로 직접 표현할 수 없으므로, 실행 계층이 조인/WHERE를 스칼라 id 투영으로
+     * 먼저 뽑고 그 id 집합을 IN 조건으로 하이드레이션하는 2단계 경로로 처리한다. group/having/집계는 제외한다.
+     */
+    public boolean isJoinedEntitySelect(JpqlStatement.Select select) {
+        if (select.selectItems().size() != 1) {
+            return false;
+        }
+        SelectItem only = select.selectItems().get(0);
+        if (!only.isEntity() || !only.entityAlias().equals(select.rootAlias())) {
+            return false;
+        }
+        return !select.joins().isEmpty()
+                && !allFetchJoins(select.joins())
+                && select.groupBy().isEmpty()
+                && select.having() == null;
+    }
+
+    /**
+     * 엔티티 반환 ORDER BY를 루트 필드 한정 {@link Sort}로 변환한다. 조인 별칭/다세그먼트 경로 정렬은 IN
+     * 하이드레이션 후 재현할 수 없으므로 fail-fast한다. 비어 있으면 {@code null}.
+     */
+    public Sort translateRootOrderBy(List<OrderItem> orderBy, String rootAlias) {
+        if (orderBy.isEmpty()) {
+            return null;
+        }
+        return translateSort(orderBy, rootAlias);
+    }
+
+    /**
      * 엔티티 반환 SELECT의 {@code JOIN FETCH} 절들을 검증한다. fetch join의 owner는 루트 별칭이어야 하고
      * relation은 루트 엔티티의 알려진 연관 property여야 한다. 위반 시 fail-fast한다.
      * <p>
