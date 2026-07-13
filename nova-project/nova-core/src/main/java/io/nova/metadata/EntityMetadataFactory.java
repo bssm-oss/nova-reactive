@@ -71,6 +71,7 @@ import io.nova.convert.EnumStringConverter;
 import io.nova.convert.JpaAttributeConverterAdapter;
 import io.nova.convert.JsonAttributeConverter;
 import io.nova.convert.TemporalAttributeConverter;
+import io.nova.convert.UuidStringConverter;
 import io.nova.json.JsonCodec;
 
 import java.lang.annotation.Annotation;
@@ -2842,9 +2843,12 @@ public final class EntityMetadataFactory {
                     : namingStrategy.columnName(field.getName());
             rejectOrderColumnCollision(orderColumn, ownerForeignKeyColumn, List.of(valueColumn), location);
             rejectMapKeyCollision(mapKey, ownerForeignKeyColumn, List.of(valueColumn), location);
+            // 기본 타입 원소(List/Set 원소 또는 Map value)의 저장타입/컨버터를 스칼라 프로퍼티와 동일한 규칙으로
+            // 해석한다 — enum(@Enumerated)/UUID/@Convert/@Temporal은 저장 표현으로, 순수 기본 타입은 그대로.
+            ElementValueMapping valueMapping = resolveBasicElementValueMapping(entityType, field, elementType, location);
             info = new ElementCollectionInfo(
                     tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet,
-                    List.of(), orderColumn, mapKey);
+                    List.of(), orderColumn, mapKey, valueMapping.columnType(), valueMapping.converter());
         }
         return new PersistentProperty(
                 field, field.getName(), "", fieldType,
@@ -3182,6 +3186,99 @@ public final class EntityMetadataFactory {
         throw new IllegalArgumentException(
                 entityType.getName() + "." + field.getName()
                         + " @ElementCollection cannot infer the element type from a raw collection; specify targetClass");
+    }
+
+    /**
+     * 기본 타입 {@code @ElementCollection} 원소(List/Set 원소 또는 Map value)의 저장 표현 타입과 converter를
+     * 스칼라 프로퍼티와 동일한 규칙으로 해석한다. {@code @Enumerated} enum, {@code java.util.UUID},
+     * {@code @Convert}, {@code @Temporal}은 저장 표현으로 매핑하고, 그 외 순수 기본 타입은 저장타입=도메인타입
+     * 이며 converter가 없다. 조합 불가 어노테이션(@Enumerated+@Convert 등)은 fail-fast로 거부한다. 임의 POJO
+     * 등 진짜 미지원 타입은 converter 없이 통과시켜 schema 컬럼 타입 유도({@code elementColumnType})의
+     * fail-fast에 맡긴다.
+     */
+    private ElementValueMapping resolveBasicElementValueMapping(
+            Class<?> entityType, Field field, Class<?> elementType, String location) {
+        Class<?> wrapped = wrapPrimitiveType(elementType);
+        Enumerated enumerated = field.getAnnotation(Enumerated.class);
+        Convert convert = field.getAnnotation(Convert.class);
+        Temporal temporal = field.getAnnotation(Temporal.class);
+        boolean hasConvert = convert != null && !convert.disableConversion();
+
+        if (enumerated != null) {
+            if (!elementType.isEnum()) {
+                throw new IllegalArgumentException(location
+                        + " is annotated with @Enumerated but its @ElementCollection element type "
+                        + elementType.getName() + " is not an enum");
+            }
+            if (hasConvert || temporal != null) {
+                throw new IllegalStateException(location
+                        + " cannot combine @Enumerated with @Convert/@Temporal on an @ElementCollection element");
+            }
+            EnumType enumType = enumerated.value();
+            Class<?> columnType = enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ElementValueMapping(columnType, castConverter(createEnumConverter(elementType, enumType)));
+        }
+        if (hasConvert) {
+            if (temporal != null) {
+                throw new IllegalStateException(location
+                        + " cannot combine @Convert with @Temporal on an @ElementCollection element");
+            }
+            Class<?> converterClass = convert.converter();
+            if (converterClass == void.class || converterClass == Void.class) {
+                throw new IllegalArgumentException(location + " @Convert requires a converter class");
+            }
+            Class<?>[] attributeAndColumn = resolveJpaConverterTypeArguments(entityType, field, converterClass);
+            Class<?> attributeType = attributeAndColumn[0];
+            if (!attributeType.isAssignableFrom(wrapped) && !wrapped.isAssignableFrom(attributeType)) {
+                throw new IllegalArgumentException(location + " @Convert converter " + converterClass.getName()
+                        + " expects attribute type " + attributeType.getName()
+                        + " but the @ElementCollection element is " + elementType.getName());
+            }
+            AttributeConverter<Object, Object> converter =
+                    castConverter(new JpaAttributeConverterAdapter<>(instantiateJpaConverter(converterClass)));
+            return new ElementValueMapping(attributeAndColumn[1], converter);
+        }
+        boolean isUtilDate = elementType == java.util.Date.class;
+        boolean isCalendar = java.util.Calendar.class.isAssignableFrom(elementType);
+        if (temporal != null) {
+            if (!isUtilDate && !isCalendar) {
+                throw new IllegalArgumentException(location
+                        + " is annotated with @Temporal but its @ElementCollection element type "
+                        + elementType.getName() + " is not java.util.Date or java.util.Calendar");
+            }
+            TemporalType temporalType = temporal.value();
+            Class<?> columnType = switch (temporalType) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+            return new ElementValueMapping(columnType,
+                    castConverter(new TemporalAttributeConverter(elementType, temporalType)));
+        }
+        if (isUtilDate || isCalendar) {
+            throw new IllegalArgumentException(location
+                    + " maps a java.util.Date/Calendar @ElementCollection element but is missing"
+                    + " @Temporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
+        }
+        if (wrapped == UUID.class) {
+            // 저장타입은 varchar. R2DBC 드라이버가 varchar→UUID를 직접 디코딩하지 못하므로(H2 등) 문자열 경유로
+            // 인코드/디코드해 converter read-source-type 함정을 피한다.
+            return new ElementValueMapping(String.class, castConverter(new UuidStringConverter()));
+        }
+        // 순수 기본 타입: 저장타입=도메인타입, converter 없음.
+        return new ElementValueMapping(wrapped, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static AttributeConverter<Object, Object> castConverter(AttributeConverter<?, ?> converter) {
+        return (AttributeConverter<Object, Object>) converter;
+    }
+
+    /**
+     * 기본 타입 {@code @ElementCollection} 원소의 저장 표현 컬럼 타입과 (선택적) converter. converter가
+     * {@code null}이면 순수 기본 타입으로 값을 그대로 저장/복원한다.
+     */
+    private record ElementValueMapping(Class<?> columnType, AttributeConverter<Object, Object> converter) {
     }
 
     private static AttributeConverter<?, ?> createEnumConverter(Class<?> enumClass, EnumType enumType) {
