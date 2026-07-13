@@ -211,19 +211,73 @@ public record ElementCollectionInfo(
      * <ul>
      *   <li>{@code keyType} — 도메인 key 타입(enum 클래스 또는 String/Integer/Long 등 기본 타입).</li>
      *   <li>{@code keyColumnType} — key 컬럼의 저장 표현 Java 타입. enum key는 {@code @MapKeyEnumerated}에 따라
-     *       {@link String}(STRING) 또는 {@link Integer}(ORDINAL)로, 기본 타입 key는 자기 자신(wrapper 정규화)으로
-     *       저장된다. DDL/SQL 컬럼 타입 유도에 쓴다.</li>
+     *       {@link String}(STRING) 또는 {@link Integer}(ORDINAL)로, {@code UUID} key는 {@link String}(varchar)으로,
+     *       그 외 기본 타입 key는 자기 자신(wrapper 정규화)으로 저장된다. DDL/SQL 컬럼 타입 유도에 쓴다.</li>
      *   <li>{@code keyEnumType} — enum key의 저장 전략({@code STRING}/{@code ORDINAL}). enum key가 아니면 {@code null}.</li>
+     *   <li>{@code keyConverter} — 저장 표현 인코딩/디코딩 converter. 저장타입이 도메인 타입과 다른 non-String
+     *       key(예: {@code UUID}→varchar via {@link io.nova.convert.UuidStringConverter})에 설정되며, 저장타입=도메인
+     *       타입인 순수 기본 타입과 enum key(operations가 이름/ordinal로 직접 처리)는 {@code null}이다. R2DBC 드라이버가
+     *       {@code varchar}→{@code UUID} 직접 디코딩을 못 하는 read-source-type 함정을 EC value와 대칭으로 피한다.</li>
      * </ul>
      * {@code @MapKey}(엔티티 property를 key로) 및 {@code @Embeddable} key는 v1 범위 밖이며
      * {@link EntityMetadataFactory}가 fail-fast로 거부한다.
      */
-    public record MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType) {
+    public record MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType,
+            AttributeConverter<Object, Object> keyConverter) {
+        /**
+         * enum/순수 기본 타입 key용 — 저장 표현 converter 없이({@code null}) 만든다.
+         */
+        public MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType) {
+            this(keyColumn, keyType, keyColumnType, keyEnumType, null);
+        }
+
         /**
          * key가 enum이면 {@code true}({@link #keyEnumType()}이 {@code STRING}/{@code ORDINAL}).
          */
         public boolean enumKey() {
             return keyEnumType != null;
+        }
+
+        /**
+         * 도메인 map key를 collection table 바인딩용 저장 표현으로 인코딩한다({@code UUID}→문자열 등). converter가
+         * 없으면(순수 기본 타입) 값을 그대로 통과시킨다. enum key는 operations가 이름/ordinal로 별도 처리하므로
+         * 여기서는 관여하지 않는다. {@code null}은 그대로 둔다.
+         */
+        public Object encodeKey(Object key) {
+            return (key == null || keyConverter == null) ? key : keyConverter.write(key);
+        }
+
+        /**
+         * collection table에서 읽은 저장 표현({@link #keyColumnType()} 타입)을 도메인 map key로 디코딩한다 —
+         * {@link #encodeKey(Object)}와 대칭. converter가 없으면 값을 그대로 통과시킨다. {@code null}은 그대로 둔다.
+         */
+        public Object decodeKey(Object stored) {
+            return (stored == null || keyConverter == null) ? stored : keyConverter.read(stored);
+        }
+
+        /**
+         * {@code keyConverter}는 저장 표현 인코딩/디코딩 전략일 뿐 매핑 identity의 일부가 아니다({@link ElementCollectionInfo}의
+         * {@code valueConverter} 취급과 동일). 동일한 key 매핑이라도 converter 인스턴스가 다르면 record 기본 equality가
+         * unequal로 판정하므로, converter를 제외한 나머지 컴포넌트로만 동등성을 정의한다({@code keyColumnType}은 converter와
+         * 함께 결정되므로 포함해도 안전하다).
+         */
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            if (!(other instanceof MapKeyInfo that)) {
+                return false;
+            }
+            return java.util.Objects.equals(keyColumn, that.keyColumn)
+                    && java.util.Objects.equals(keyType, that.keyType)
+                    && java.util.Objects.equals(keyColumnType, that.keyColumnType)
+                    && keyEnumType == that.keyEnumType;
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(keyColumn, keyType, keyColumnType, keyEnumType);
         }
     }
 }

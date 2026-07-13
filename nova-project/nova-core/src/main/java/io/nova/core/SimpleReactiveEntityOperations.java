@@ -648,7 +648,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     /**
      * Map key를 저장 표현으로 인코딩한다 — enum key는 {@code @MapKeyEnumerated}에 따라 이름(STRING) 또는
-     * ordinal(ORDINAL)로, 기본 타입 key는 그대로 둔다.
+     * ordinal(ORDINAL)로, {@code UUID} 등 저장타입 분리 key는 {@code MapKeyInfo.keyConverter}로(문자열 등),
+     * 저장타입=도메인타입인 순수 기본 타입은 그대로 둔다.
      */
     private static Object encodeMapKey(ElementCollectionInfo info, Object key) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
@@ -656,18 +657,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Enum<?> enumKey = (Enum<?>) key;
             return mapKey.keyEnumType() == EnumType.STRING ? enumKey.name() : enumKey.ordinal();
         }
-        return key;
+        return mapKey.encodeKey(key);
     }
 
     /**
      * collection table에서 읽은 저장 표현을 도메인 Map key로 디코딩한다 — enum key는 이름/ordinal에서 enum
-     * 상수로, 기본 타입 key는 그대로 둔다.
+     * 상수로, {@code UUID} 등 저장타입 분리 key는 {@code MapKeyInfo.keyConverter}로 저장타입(varchar 등)에서
+     * 도메인 타입으로, 저장타입=도메인타입인 순수 기본 타입은 그대로 둔다(non-String map key 디코딩 함정 회피).
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static Object decodeMapKey(ElementCollectionInfo info, Object stored) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
         if (!mapKey.enumKey()) {
-            return stored;
+            return mapKey.decodeKey(stored);
         }
         Class<?> keyType = mapKey.keyType();
         if (mapKey.keyEnumType() == EnumType.STRING) {

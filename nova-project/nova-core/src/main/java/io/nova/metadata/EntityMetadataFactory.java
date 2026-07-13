@@ -1868,6 +1868,18 @@ public final class EntityMetadataFactory {
                             + " java.util.Date/Calendar mapping is ambiguous without it");
         }
 
+        // @Enumerated/@Json/@Convert/@Temporal/등록 converter가 없는 순수 스칼라 타입의 저장타입 분리를 EC 원소와
+        // 대칭으로 적용한다 — 현재 UUID만 해당(varchar(String) via UuidStringConverter). 드라이버가 varchar→UUID를
+        // 직접 디코딩하지 못하므로 columnType()을 String으로 분리해 schema DDL과 row 디코딩을 저장타입에 통일한다.
+        // Float/Short 등 드라이버 네이티브 기본 타입은 converter 없이 sqlType이 도메인 타입에서 직접 유도한다.
+        if (converter == null) {
+            ElementValueMapping basicStorage = resolveBasicStorageMapping(wrapPrimitiveType(field.getType()));
+            if (basicStorage.converter() != null) {
+                converter = basicStorage.converter();
+                converterColumnType = basicStorage.columnType();
+            }
+        }
+
         boolean embedded = hostPath != null && !hostPath.isEmpty();
         // @Column(table="...")는 이 컬럼을 @SecondaryTable 보조 테이블 행으로 라우팅한다. 보조 테이블 이름이
         // 실제로 선언됐는지는 resolveSecondaryTables가 검증한다(조용한 무시 금지). v1은 top-level 컬럼만 보조
@@ -3057,7 +3069,11 @@ public final class EntityMetadataFactory {
                             + " is not supported; supported key types: String, Integer, Long, Short, Boolean, UUID,"
                             + " or an enum");
         }
-        return new ElementCollectionInfo.MapKeyInfo(keyColumnName, wrapped, wrapped, null);
+        // 기본 타입 key의 저장타입 분리를 스칼라/EC value와 동일 규칙으로 해석한다 — UUID key는 varchar(String) +
+        // UuidStringConverter로 저장타입을 분리해 non-String map key 디코딩 함정(varchar→UUID 직접 디코드 불가)을 피한다.
+        ElementValueMapping keyStorage = resolveBasicStorageMapping(wrapped);
+        return new ElementCollectionInfo.MapKeyInfo(
+                keyColumnName, wrapped, keyStorage.columnType(), null, keyStorage.converter());
     }
 
     /**
@@ -3260,13 +3276,30 @@ public final class EntityMetadataFactory {
                     + " maps a java.util.Date/Calendar @ElementCollection element but is missing"
                     + " @Temporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
         }
-        if (wrapped == UUID.class) {
-            // 저장타입은 varchar. R2DBC 드라이버가 varchar→UUID를 직접 디코딩하지 못하므로(H2 등) 문자열 경유로
-            // 인코드/디코드해 converter read-source-type 함정을 피한다.
+        // @Enumerated/@Convert/@Temporal이 없는 순수 기본 타입(UUID 포함)은 스칼라 프로퍼티/ map key와 동일한
+        // 저장타입 분리 규칙을 공유한다(중복 구현 금지).
+        return resolveBasicStorageMapping(wrapped);
+    }
+
+    /**
+     * {@code @Enumerated}/{@code @Convert}/{@code @Temporal}/등록 converter가 없는 순수 기본 타입의 저장 표현
+     * 컬럼 타입과 (선택적) converter를 결정한다 — 스칼라 {@code @Column} 프로퍼티, {@code @ElementCollection}
+     * 원소, {@code Map} key가 모두 이 한 자리를 공유해 대칭을 보장한다.
+     * <ul>
+     *   <li>{@code UUID} — 저장타입 {@link String}(varchar) + {@link UuidStringConverter}. R2DBC 드라이버가
+     *       {@code varchar}→{@code UUID} 직접 디코딩을 못 하므로(H2 등) 문자열 경유로 인코드/디코드해
+     *       converter read-source-type 함정을 피한다.</li>
+     *   <li>그 외 순수 기본 타입(String/Long/Integer/Short/Float/Double/Boolean/BigDecimal 등) — 저장타입=
+     *       도메인 타입, converter 없음({@code null}). 실제 SQL 컬럼 타입은 스칼라 {@code sqlType}/EC
+     *       {@code elementColumnType}이 그 타입에서 유도한다(Short→smallint, Float→real 등).</li>
+     * </ul>
+     * {@code wrappedType}은 primitive가 wrapper로 정규화된 타입이어야 한다.
+     */
+    private static ElementValueMapping resolveBasicStorageMapping(Class<?> wrappedType) {
+        if (wrappedType == UUID.class) {
             return new ElementValueMapping(String.class, castConverter(new UuidStringConverter()));
         }
-        // 순수 기본 타입: 저장타입=도메인타입, converter 없음.
-        return new ElementValueMapping(wrapped, null);
+        return new ElementValueMapping(wrappedType, null);
     }
 
     @SuppressWarnings("unchecked")
