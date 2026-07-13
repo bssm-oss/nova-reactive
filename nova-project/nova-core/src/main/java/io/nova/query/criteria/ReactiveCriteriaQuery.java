@@ -3,6 +3,7 @@ package io.nova.query.criteria;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
 import io.nova.metadata.EntityMetadata;
+import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
@@ -10,7 +11,10 @@ import io.nova.query.Sort;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -28,6 +32,7 @@ public final class ReactiveCriteriaQuery<T> {
     private final CriteriaQueryImpl<T> query;
     private final ReactiveEntityOperations operations;
     private final CriteriaSqlBuilder sqlBuilder;
+    private final AliasedCriteriaSqlBuilder aliasedSqlBuilder;
 
     private Integer firstResult;
     private Integer maxResults;
@@ -35,10 +40,12 @@ public final class ReactiveCriteriaQuery<T> {
     ReactiveCriteriaQuery(
             CriteriaQueryImpl<T> query,
             ReactiveEntityOperations operations,
-            CriteriaSqlBuilder sqlBuilder) {
+            CriteriaSqlBuilder sqlBuilder,
+            AliasedCriteriaSqlBuilder aliasedSqlBuilder) {
         this.query = query;
         this.operations = operations;
         this.sqlBuilder = sqlBuilder;
+        this.aliasedSqlBuilder = aliasedSqlBuilder;
     }
 
     /** JPA {@code setFirstResult} 등가(0-기반 offset). 엔티티 반환 쿼리에서만 지원. */
@@ -84,6 +91,11 @@ public final class ReactiveCriteriaQuery<T> {
 
     private Flux<T> execute() {
         try {
+            if (query.requiresAliasedSql()) {
+                // join/서브쿼리를 포함하면 alias 한정 SQL 경로로 실행한다. 엔티티 반환은 루트 id를
+                // 순서대로 투영한 뒤 기존 하이드레이션에 위임하는 2단계, 스칼라/집계는 native SQL이다.
+                return isEntitySelect() ? executeEntityWithJoins() : executeScalarAliased();
+            }
             if (isEntitySelect()) {
                 return executeEntity();
             }
@@ -152,6 +164,112 @@ public final class ReactiveCriteriaQuery<T> {
         int columns = translated.selectionCount();
         Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
         return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);
+    }
+
+    /** join/서브쿼리를 포함한 스칼라/집계 SELECT: alias 한정 SQL을 native로 실행한다. */
+    private Flux<T> executeScalarAliased() {
+        if (firstResult != null || maxResults != null) {
+            return Flux.error(new CriteriaException(
+                    "setFirstResult/setMaxResults is only supported for entity-returning Criteria queries in v1"));
+        }
+        CriteriaSql translated = aliasedSqlBuilder.buildScalar(query);
+        int columns = translated.selectionCount();
+        Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
+        return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);
+    }
+
+    /**
+     * join/서브쿼리를 포함한 엔티티 반환 쿼리의 2단계 실행. (1) alias 한정 SQL로 루트 id를 순서대로
+     * 투영해 중복 제거(to-many join의 카티전 중복 흡수)하고 페이지 창을 적용한 뒤, (2) 그 id들로 기존
+     * 하이드레이션 경로({@code findAll(Class, IN 절)})에 위임해 연관까지 완전한 엔티티를 로드하고 1단계
+     * 순서로 재배열한다. 항상-eager 모델과 정합한다.
+     * <p>
+     * 전제/한계: 루트는 단일 컬럼 {@code @Id}여야 한다(복합키 루트는 id 투영 시점에 거부됨). 중복 제거와
+     * 재배열은 id 값의 {@code equals}/{@code hashCode}에 의존하므로 스칼라 단일 키를 가정한다. 또한
+     * 2단계 {@code IN (id...)}은 한 문장에 매치된 루트 개수만큼 bind 파라미터를 싣는다 — 매우 큰 결과
+     * (드라이버별 파라미터 한계, 예: PostgreSQL ~65535)에서는 {@code setMaxResults}로 페이지를 제한하는
+     * 것을 권장한다(청크 분할은 v1 범위 밖).
+     */
+    @SuppressWarnings("unchecked")
+    private Flux<T> executeEntityWithJoins() {
+        CriteriaRoot<?> root = query.root();
+        EntityMetadata<?> metadata = root.ownerMetadata();
+        if (query.isDistinct()) {
+            // 루트 id 투영이 이미 중복을 제거하므로 distinct(true)는 무의미하며, 조용한 무시 대신 명시 거부한다.
+            return Flux.error(new CriteriaException(
+                    "distinct(true) is redundant for entity-returning join queries (root ids are de-duplicated); "
+                            + "remove distinct(true)"));
+        }
+        Class<T> resultType = query.getResultType();
+        if (resultType != Object.class && !resultType.isAssignableFrom(metadata.entityType())) {
+            return Flux.error(new CriteriaException("Query returns entity " + metadata.entityType().getName()
+                    + " which is not assignable to requested result type " + resultType.getName()));
+        }
+        if (maxResults != null && maxResults == 0) {
+            return Flux.empty();
+        }
+        if (maxResults == null && firstResult != null) {
+            return Flux.error(new CriteriaException(
+                    "setFirstResult without setMaxResults is not supported; provide a page size"));
+        }
+
+        CriteriaSql idSql = aliasedSqlBuilder.buildRootIdProjection(query);
+        String idColumn = CriteriaSqlBuilder.columnLabel(0);
+        Class<Object> entityType = (Class<Object>) metadata.entityType();
+        String idPropertyName = metadata.idProperty().propertyName();
+
+        return operations.queryNative(new NativeQuery(idSql.sql(), idSql.bindings()),
+                        row -> row.get(idColumn, Object.class))
+                .collectList()
+                .flatMapMany(rawIds -> {
+                    List<Object> ordered = window(dedupe(rawIds));
+                    if (ordered.isEmpty()) {
+                        return Flux.empty();
+                    }
+                    QuerySpec spec = QuerySpec.empty().where(Criteria.in(idPropertyName, ordered));
+                    return operations.findAll(entityType, spec)
+                            .collectList()
+                            .flatMapMany(loaded -> Flux.fromIterable(reorder(loaded, ordered, metadata)));
+                })
+                .map(entity -> (T) entity);
+    }
+
+    /** 등장 순서를 보존하며 중복 id를 제거한다(to-many join으로 생긴 중복 행 흡수). */
+    private static List<Object> dedupe(List<Object> ids) {
+        List<Object> result = new ArrayList<>(ids.size());
+        java.util.HashSet<Object> seen = new java.util.HashSet<>();
+        for (Object id : ids) {
+            if (id != null && seen.add(id)) {
+                result.add(id);
+            }
+        }
+        return result;
+    }
+
+    /** setFirstResult/setMaxResults 페이지 창을 정렬된 id 목록에 적용한다. */
+    private List<Object> window(List<Object> ids) {
+        int from = firstResult == null ? 0 : firstResult;
+        if (from >= ids.size()) {
+            return List.of();
+        }
+        int to = maxResults == null ? ids.size() : Math.min(ids.size(), from + maxResults);
+        return new ArrayList<>(ids.subList(from, to));
+    }
+
+    /** 하이드레이션 결과를 1단계 id 순서로 재배열한다(DB가 IN 절 순서를 보장하지 않으므로). */
+    private static List<Object> reorder(List<Object> loaded, List<Object> orderedIds, EntityMetadata<?> metadata) {
+        Map<Object, Object> byId = new LinkedHashMap<>();
+        for (Object entity : loaded) {
+            byId.put(metadata.idProperty().read(entity), entity);
+        }
+        List<Object> result = new ArrayList<>(orderedIds.size());
+        for (Object id : orderedIds) {
+            Object entity = byId.get(id);
+            if (entity != null) {
+                result.add(entity);
+            }
+        }
+        return result;
     }
 
     @SuppressWarnings("unchecked")

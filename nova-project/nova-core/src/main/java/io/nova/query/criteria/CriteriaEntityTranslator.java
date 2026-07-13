@@ -34,6 +34,9 @@ final class CriteriaEntityTranslator {
             case NULL -> predicate.negated()
                     ? Criteria.isNotNull(name(predicate))
                     : Criteria.isNull(name(predicate));
+            case EXISTS, IN_SUBQUERY, COMPARISON_SUBQUERY, COMPARISON_COLUMN -> throw new CriteriaException(
+                    "Subquery/column-to-column predicates are not supported on the entity QuerySpec path; "
+                            + "queries using them are executed via the aliased SQL path");
         };
     }
 

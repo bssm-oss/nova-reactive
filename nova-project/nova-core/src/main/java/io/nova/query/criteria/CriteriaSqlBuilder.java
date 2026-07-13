@@ -135,6 +135,8 @@ final class CriteriaSqlBuilder {
             case IN -> renderIn(ctx, predicate);
             case NULL -> ctx.sql.append(column(predicate.path()))
                     .append(predicate.negated() ? " is not null" : " is null");
+            case EXISTS, IN_SUBQUERY, COMPARISON_SUBQUERY, COMPARISON_COLUMN -> throw new CriteriaException(
+                    "Subquery/column-to-column predicates require the aliased Criteria SQL path");
         }
     }
 
