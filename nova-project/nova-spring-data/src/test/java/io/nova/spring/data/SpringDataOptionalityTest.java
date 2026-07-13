@@ -83,6 +83,58 @@ class SpringDataOptionalityTest {
                 "failure must be caused by the missing Spring Data type, got: " + trace);
     }
 
+    @Test
+    @DisplayName("spring-data 부재 하에서도 nova-only @Query(JPQL 엔티티+Nova Pageable / 스칼라) 디스패치가 Spring 로드 없이 fail-fast")
+    void novaOnlyAtQueryDispatchesWithoutSpringDataOnClasspath() throws Exception {
+        SpringHidingClassLoader loader = new SpringHidingClassLoader(
+                SpringDataOptionalityTest.class.getClassLoader());
+        assertThrows(ClassNotFoundException.class,
+                () -> loader.loadClass("org.springframework.data.domain.Pageable"));
+
+        // handler + AnnotatedQueries/AnnotatedQueryMethod/springdata/derived 를 모두 이 loader로 정의한다.
+        Class<?> entityClass = loader.loadClass(
+                "io.nova.spring.data.SpringDataOptionalityTest$QueryAccount");
+        Class<?> repoClass = loader.loadClass(
+                "io.nova.spring.data.SpringDataOptionalityTest$QueryRepo");
+        Class<?> handlerClass = loader.loadClass("io.nova.spring.data.SimpleReactiveRepository");
+
+        StubOperations ops = new StubOperations();
+        // JpqlExecutor/Dialect 미구성(3-arg) — @Query는 명확한 예외로 fail-fast해야 하고, 그 경로가
+        // org.springframework.data.* 를 로드하지 않아야 한다.
+        Object handler = handlerClass
+                .getConstructor(Class.class, Class.class, ReactiveEntityOperations.class)
+                .newInstance(entityClass, Long.class, ops);
+        Object proxy = Proxy.newProxyInstance(loader, new Class<?>[]{repoClass},
+                (java.lang.reflect.InvocationHandler) handler);
+
+        // (1) JPQL 엔티티 + Nova Pageable → Mono<Page<T>> 형태
+        java.lang.reflect.Method paged = repoClass.getMethod("pagedByEmail", io.nova.query.Pageable.class);
+        Object pagedResult = paged.invoke(proxy, io.nova.query.Pageable.of(10, 0));
+        StepVerifier.create((Mono<?>) pagedResult)
+                .expectErrorMatches(SpringDataOptionalityTest::isNovaQueryFailFast)
+                .verify();
+
+        // (2) JPQL 스칼라 SELECT → Flux<String>
+        java.lang.reflect.Method names = repoClass.getMethod("emails");
+        Object namesResult = names.invoke(proxy);
+        StepVerifier.create((Flux<?>) namesResult)
+                .expectErrorMatches(SpringDataOptionalityTest::isNovaQueryFailFast)
+                .verify();
+    }
+
+    /**
+     * @Query 경로가 spring-data 부재 하에서 낸 오류가 예상된 fail-fast(AnnotatedQueryException, JpqlExecutor
+     * 안내)이며, Spring 클래스 로드 실패(ClassNotFound/NoClassDefFound/springframework)가 아님을 확인한다.
+     */
+    private static boolean isNovaQueryFailFast(Throwable t) {
+        String trace = stringify(t);
+        return t.getClass().getName().equals("io.nova.spring.data.query.AnnotatedQueryException")
+                && t.getMessage() != null && t.getMessage().contains("JpqlExecutor")
+                && !trace.contains("springframework")
+                && !trace.contains("ClassNotFound")
+                && !trace.contains("NoClassDefFound");
+    }
+
     private static String stringify(Throwable t) {
         StringBuilder sb = new StringBuilder();
         for (Throwable c = t; c != null; c = c.getCause()) {
@@ -123,6 +175,12 @@ class SpringDataOptionalityTest {
         private boolean childFirst(String name) {
             return name.equals("io.nova.spring.data.ReactiveCrudRepository")
                     || name.equals("io.nova.spring.data.SpringDataReactiveCrudRepository")
+                    || name.equals("io.nova.spring.data.SimpleReactiveRepository")
+                    // @Query dispatch 구현부를 이 loader로 재정의해, 그 링크/실행이 spring-data 부재
+                    // 하에서 일어나도록 한다(Spring 클래스 리터럴 누출 시 여기서 NoClassDefFoundError로 노출).
+                    || name.startsWith("io.nova.spring.data.query.")
+                    || name.startsWith("io.nova.spring.data.springdata.")
+                    || name.startsWith("io.nova.spring.data.derived.")
                     || name.startsWith("io.nova.spring.data.SpringDataOptionalityTest$");
         }
 
@@ -158,6 +216,22 @@ class SpringDataOptionalityTest {
 
     /** Spring 타입 브릿지를 opt-in한 repository 인터페이스(대조군). */
     interface SpringAccountRepository extends SpringDataReactiveCrudRepository<Account, Long> {
+    }
+
+    /** @Query 디스패치 optionality 검증용 엔티티 POJO(메타데이터 해석 없이 parse만 검증하므로 @Entity 불필요). */
+    public static class QueryAccount {
+        Long id;
+        String email;
+    }
+
+    /** Spring 타입을 전혀 참조하지 않는 nova-only @Query repository(JPQL 엔티티+Nova Pageable / 스칼라). */
+    public interface QueryRepo extends ReactiveCrudRepository<QueryAccount, Long> {
+
+        @Query("SELECT a FROM QueryAccount a ORDER BY a.email")
+        Mono<io.nova.query.Page<QueryAccount>> pagedByEmail(io.nova.query.Pageable pageable);
+
+        @Query("SELECT a.email FROM QueryAccount a")
+        Flux<String> emails();
     }
 
     /** findAll(Class, QuerySpec)만 의미 있게 구현하는 최소 stub. */

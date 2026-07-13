@@ -39,4 +39,17 @@ public @interface EnableNovaRepositories {
      * {@code novaEntityOperations}.
      */
     String entityOperationsRef() default "novaEntityOperations";
+
+    /**
+     * (선택) {@code @Query}(JPQL/native)에 사용할 {@link io.nova.sql.Dialect} 빈 이름을 명시한다.
+     * 비우면(기본) 컨테이너에서 타입 기준 유일 {@code Dialect} 빈을 자동 해석한다. 후보가 여러 개라
+     * 모호하면 이 속성으로 지정한다.
+     */
+    String dialectRef() default "";
+
+    /**
+     * (선택) JPQL {@code @Query} 실행에 사용할 {@link io.nova.metadata.EntityMetadataFactory} 빈 이름을
+     * 명시한다. 비우면(기본) 컨테이너에서 타입 기준 유일 빈을 자동 해석한다.
+     */
+    String entityMetadataFactoryRef() default "";
 }
