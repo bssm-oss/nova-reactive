@@ -37,14 +37,29 @@ public final class AnnotationFetchGroupBuilder {
      * 주어진 parent entity 타입의 모든 {@code @ManyToOne}/{@code @OneToMany} property를 spec으로 변환해
      * {@link FetchGroup}을 만든다. 관계가 하나도 없으면 빈 spec 리스트를 가진 FetchGroup이 반환된다.
      */
-    @SuppressWarnings({"unchecked", "rawtypes"})
     public <P> FetchGroup<P> buildFor(Class<P> parentType) {
+        return buildFor(parentType, null);
+    }
+
+    /**
+     * {@link #buildFor(Class)}의 필터링 변형 — {@code includedAttributeNames}에 포함된 property 이름만 spec으로
+     * 변환한다. {@code null}이면 모든 관계 property를 포함한다(= {@link #buildFor(Class)}와 동일). EntityGraph가
+     * 지정한 연관만 배치 fetch하는 fetch plan을 만들 때 쓴다.
+     *
+     * @param parentType            parent 엔티티 타입
+     * @param includedAttributeNames 포함할 관계 property 이름 집합({@code null}=전부 포함)
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public <P> FetchGroup<P> buildFor(Class<P> parentType, java.util.Set<String> includedAttributeNames) {
         Objects.requireNonNull(parentType, "parentType must not be null");
         EntityMetadata<P> parentMetadata = metadataFactory.getEntityMetadata(parentType);
         FetchGroup.Builder<P> builder = FetchGroup.forParents(parentType);
         PersistentProperty idProperty = parentMetadata.idProperty();
         // @OneToMany — child 측 ManyToOne property의 FK column으로 IN-query를 발행한다.
         for (PersistentProperty oneToMany : parentMetadata.oneToManyProperties()) {
+            if (!included(includedAttributeNames, oneToMany)) {
+                continue;
+            }
             Class<?> childType = oneToMany.oneToManyTargetType();
             if (childType == null) {
                 throw new IllegalStateException(
@@ -70,6 +85,9 @@ public final class AnnotationFetchGroupBuilder {
         }
         // @ManyToOne — child 측 PK column으로 IN-query를 발행한다. parent에서 FK 값을 꺼내 IN 키로 사용.
         for (PersistentProperty manyToOne : parentMetadata.manyToOneProperties()) {
+            if (!included(includedAttributeNames, manyToOne)) {
+                continue;
+            }
             Class<?> childType = manyToOne.manyToOneTargetType();
             if (childType == null) {
                 throw new IllegalStateException(
@@ -90,6 +108,9 @@ public final class AnnotationFetchGroupBuilder {
         }
         // inverse @OneToOne — 소유 측(반대편)이 FK를 가지므로 child 측 FK column으로 IN-query를 발행하고 단건만 주입한다.
         for (PersistentProperty oneToOne : parentMetadata.oneToOneInverseProperties()) {
+            if (!included(includedAttributeNames, oneToOne)) {
+                continue;
+            }
             Class<?> childType = oneToOne.oneToManyTargetType();
             if (childType == null) {
                 throw new IllegalStateException(
@@ -155,6 +176,11 @@ public final class AnnotationFetchGroupBuilder {
                             + childType.getName());
         }
         return owning.columnName();
+    }
+
+    /** 필터가 {@code null}이면 전부 포함, 아니면 property 이름이 필터에 있을 때만 포함한다. */
+    private static boolean included(java.util.Set<String> includedAttributeNames, PersistentProperty property) {
+        return includedAttributeNames == null || includedAttributeNames.contains(property.propertyName());
     }
 
     private static void writeField(Object instance, Field field, Object value) {

@@ -6,6 +6,7 @@ import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
 import io.nova.query.jpql.ast.Expression;
+import io.nova.query.jpql.ast.JoinClause;
 import io.nova.query.jpql.ast.JpqlStatement;
 import io.nova.query.jpql.ast.OrderItem;
 import io.nova.query.jpql.ast.SelectItem;
@@ -29,7 +30,11 @@ public final class JpqlEntityQueryPlanner {
         this.resolver = resolver;
     }
 
-    /** 엔티티 반환 SELECT 형태인지(단일 엔티티 항목 + 조인/그룹/having/집계 없음). */
+    /**
+     * 엔티티 반환 SELECT 형태인지(단일 엔티티 항목 + group/having/집계 없음). 조인은 모두 {@code JOIN FETCH}일
+     * 때만 허용한다 — fetch join은 투영을 바꾸지 않고 fetch plan만 더하므로 엔티티 경로로 라우팅하고, 지정된
+     * 연관은 기존 배치 hydration으로 로드된다. 일반(non-fetch) 조인이 하나라도 있으면 엔티티 경로가 아니다.
+     */
     public boolean isEntitySelect(JpqlStatement.Select select) {
         if (select.selectItems().size() != 1) {
             return false;
@@ -38,10 +43,45 @@ public final class JpqlEntityQueryPlanner {
         if (!only.isEntity()) {
             return false;
         }
-        return select.joins().isEmpty()
+        return allFetchJoins(select.joins())
                 && select.groupBy().isEmpty()
                 && select.having() == null
                 && only.entityAlias().equals(select.rootAlias());
+    }
+
+    private static boolean allFetchJoins(List<JoinClause> joins) {
+        for (JoinClause join : joins) {
+            if (!join.fetch()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 엔티티 반환 SELECT의 {@code JOIN FETCH} 절들을 검증한다. fetch join의 owner는 루트 별칭이어야 하고
+     * relation은 루트 엔티티의 알려진 연관 property여야 한다. 위반 시 fail-fast한다. 검증만 하고 SQL에는
+     * 조인을 내보내지 않는다 — 지정 연관은 루트 조회 후 기존 배치 IN-query hydration으로 로드된다.
+     */
+    private void validateFetchJoins(JpqlStatement.Select select, EntityMetadata<?> rootMetadata) {
+        for (JoinClause join : select.joins()) {
+            if (!join.fetch()) {
+                throw unsupported("a non-fetch JOIN in an entity-returning query");
+            }
+            if (!join.ownerAlias().equals(select.rootAlias())) {
+                throw new JpqlException("JOIN FETCH off a non-root alias ('" + join.ownerAlias()
+                        + "') is not supported in v1; fetch joins must originate from the root alias '"
+                        + select.rootAlias() + "'");
+            }
+            io.nova.metadata.PersistentProperty property = rootMetadata.findProperty(join.relation())
+                    .orElseThrow(() -> new JpqlException("JOIN FETCH " + join.ownerAlias() + "."
+                            + join.relation() + " refers to an unknown field on entity "
+                            + rootMetadata.entityType().getSimpleName()));
+            if (!property.isRelation()) {
+                throw new JpqlException("JOIN FETCH " + join.ownerAlias() + "." + join.relation()
+                        + " is not an association on entity " + rootMetadata.entityType().getSimpleName());
+            }
+        }
     }
 
     public record EntityPlan(EntityMetadata<?> metadata, QuerySpec spec) {
@@ -55,6 +95,7 @@ public final class JpqlEntityQueryPlanner {
     public EntityPlan plan(JpqlStatement.Select select, JpqlParameters parameters) {
         EntityMetadata<?> metadata = resolver.resolve(select.rootEntity());
         String alias = select.rootAlias();
+        validateFetchJoins(select, metadata);
 
         QuerySpec spec = QuerySpec.empty();
         if (select.where() != null) {

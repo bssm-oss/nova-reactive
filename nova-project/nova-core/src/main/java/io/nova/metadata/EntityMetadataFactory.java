@@ -188,6 +188,16 @@ public final class EntityMetadataFactory {
     }
 
     /**
+     * 엔티티 클래스(및 상위 클래스)에 선언된 {@code @NamedEntityGraph}/{@code @NamedEntityGraphs}를 읽어
+     * {@code entityGraph*} 마커 네임스페이스의 선언 모델로 반환한다. C2 라운드의 {@code namedQuery*} 마커와
+     * 충돌하지 않도록 hub 생성자를 건드리지 않고 클래스 애너테이션에서 on-demand로 파싱한다 —
+     * {@link io.nova.graph.NamedEntityGraphReader}에 얇게 위임한다.
+     */
+    public java.util.List<io.nova.graph.NamedEntityGraphDefinition> entityGraphDefinitions(Class<?> entityType) {
+        return io.nova.graph.NamedEntityGraphReader.read(entityType);
+    }
+
+    /**
      * SINGLE_TABLE 상속 루트의 모든 서브타입 컬럼을 union한 병합 메타데이터를 반환한다. 단일 테이블이
      * 모든 서브타입 컬럼을 담도록 select-list와 CREATE TABLE을 만들 때 사용한다. 서브타입 전용 컬럼은
      * 다른 서브타입 row에서 비어 있어야 하므로 nullable로 낮춘다. 루트가 아니거나 상속이 아니면 입력

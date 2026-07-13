@@ -187,10 +187,37 @@ class JpqlParserTest {
     // ------------------------------------------------------------------------------------
 
     @Test
-    void rejectsJoinFetch() {
+    void parsesJoinFetchWithAlias() {
+        JpqlStatement.Select select = parseSelect("SELECT e FROM Employee e JOIN FETCH e.department d");
+        assertEquals(1, select.joins().size());
+        assertTrue(select.joins().get(0).fetch());
+        assertEquals("e", select.joins().get(0).ownerAlias());
+        assertEquals("department", select.joins().get(0).relation());
+        assertEquals("d", select.joins().get(0).alias());
+    }
+
+    @Test
+    void parsesJoinFetchWithoutAlias() {
+        JpqlStatement.Select select = parseSelect("SELECT a FROM Author a JOIN FETCH a.books");
+        assertEquals(1, select.joins().size());
+        assertTrue(select.joins().get(0).fetch());
+        assertEquals("books", select.joins().get(0).relation());
+        assertNull(select.joins().get(0).alias());
+    }
+
+    @Test
+    void parsesLeftJoinFetch() {
+        JpqlStatement.Select select = parseSelect("SELECT a FROM Author a LEFT JOIN FETCH a.books b");
+        assertEquals(1, select.joins().size());
+        assertTrue(select.joins().get(0).fetch());
+        assertFalse(select.joins().get(0).inner());
+    }
+
+    @Test
+    void rejectsMultiLevelJoinFetch() {
         JpqlSyntaxException ex = assertThrows(JpqlSyntaxException.class,
-                () -> parse("SELECT e FROM Employee e JOIN FETCH e.department d"));
-        assertTrue(ex.getMessage().contains("JOIN FETCH"));
+                () -> parse("SELECT a FROM Author a JOIN FETCH a.books.reviews r"));
+        assertTrue(ex.getMessage().contains("Multi-level"));
     }
 
     @Test

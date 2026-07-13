@@ -1,6 +1,7 @@
 package io.nova.core;
 
 import io.nova.fetch.FetchGroup;
+import io.nova.graph.EntityGraph;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.NativeQuery;
@@ -336,5 +337,33 @@ public interface ReactiveEntityOperations {
     default <P> Flux<P> findAll(Class<P> entityType, FetchGroup<P> fetchGroup) {
         return Flux.error(new UnsupportedOperationException(
                 "ReactiveEntityOperations.findAll(Class, FetchGroup) must be overridden by the implementation"));
+    }
+
+    /**
+     * {@link EntityGraph}(JPA {@code @NamedEntityGraph}/EntityGraph API의 리액티브 등가)로 지정된 연관을
+     * 배치 fetch하며 식별자로 단건 엔티티를 조회한다. EntityGraph는 이미 {@link FetchGroup}으로 해석돼 있으므로
+     * 이 default 메서드는 메타데이터 접근 없이 {@link #findById(Class, Object, FetchGroup)}에 위임한다 —
+     * 지정 연관은 부모당 IN-절 쿼리 한 번으로 로드돼 N+1이 없다.
+     * <p>
+     * Nova는 blocking lazy proxy가 없다(AGENTS.md #4). LAZY 등가는 이런 명시적 fetch plan으로 제공하며,
+     * 여기서 지정하지 않은 연관을 진짜 지연 로딩(필드 접근 시 동기 DB 호출)하는 semantics는 지원하지 않는다.
+     */
+    default <T, ID> Mono<T> findById(Class<T> entityType, ID id, EntityGraph<T> entityGraph) {
+        if (entityGraph == null) {
+            return Mono.error(new IllegalArgumentException("entityGraph must not be null"));
+        }
+        return findById(entityType, id, entityGraph.toFetchGroup());
+    }
+
+    /**
+     * {@link EntityGraph}로 지정된 연관을 배치 fetch하며 주어진 타입의 모든 엔티티를 조회한다. EntityGraph가
+     * 담고 있는 해석된 {@link FetchGroup}으로 {@link #findAll(Class, FetchGroup)}에 위임한다 — 지정 연관은
+     * IN-절 쿼리 한 번으로 배치 로드돼 N+1이 없다.
+     */
+    default <T> Flux<T> findAll(Class<T> entityType, EntityGraph<T> entityGraph) {
+        if (entityGraph == null) {
+            return Flux.error(new IllegalArgumentException("entityGraph must not be null"));
+        }
+        return findAll(entityType, entityGraph.toFetchGroup());
     }
 }
