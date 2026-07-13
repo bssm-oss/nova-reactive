@@ -92,10 +92,20 @@ class EntityMetadataFactoryNamedQueryTest {
     }
 
     @Test
-    void rejectsUnsupportedResultSetMapping() {
+    void capturesResultSetMapping() {
+        List<NamedQueryDefinition> definitions = factory.namedQueryDefinitions(WithResultSetMapping.class);
+        assertEquals(1, definitions.size());
+        NamedQueryDefinition definition = definitions.get(0);
+        assertTrue(definition.nativeQuery());
+        assertNull(definition.resultClass());
+        assertEquals("someMapping", definition.resultSetMapping());
+    }
+
+    @Test
+    void rejectsBothResultClassAndResultSetMapping() {
         IllegalStateException ex = assertThrows(IllegalStateException.class,
-                () -> factory.namedQueryDefinitions(WithResultSetMapping.class));
-        assertTrue(ex.getMessage().contains("resultSetMapping"));
+                () -> factory.namedQueryDefinitions(WithBothResults.class));
+        assertTrue(ex.getMessage().contains("both resultClass and resultSetMapping"));
     }
 
     @Test
@@ -174,6 +184,15 @@ class EntityMetadataFactoryNamedQueryTest {
     @NamedNativeQuery(name = "WithResultSetMapping.mapped",
             query = "SELECT * FROM with_result_set_mapping", resultSetMapping = "someMapping")
     static class WithResultSetMapping {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @NamedNativeQuery(name = "WithBothResults.conflict",
+            query = "SELECT * FROM with_both_results",
+            resultClass = WithBothResults.class, resultSetMapping = "someMapping")
+    static class WithBothResults {
         @Id
         Long id;
     }
