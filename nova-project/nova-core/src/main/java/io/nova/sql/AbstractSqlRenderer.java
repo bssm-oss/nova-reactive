@@ -71,6 +71,19 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
     @Override
     public SqlStatement update(EntityMetadata<?> metadata, Object entity) {
+        return renderFullUpdate(metadata, entity, false, null);
+    }
+
+    @Override
+    public SqlStatement update(EntityMetadata<?> metadata, Object entity, Object precomputedVersion) {
+        // 호출부(operations)가 미리 계산한 다음 버전 값을 SET에 바인딩한다(single-read). 렌더러가 독립적으로
+        // now()를 다시 읽지 않으므로, SQL에 저장되는 값과 호출부가 entity에 writeback하는 값이 반드시 일치한다
+        // — 시간 @Version의 in-memory/DB 불일치(false-positive 낙관락 실패)를 제거한다.
+        return renderFullUpdate(metadata, entity, true, precomputedVersion);
+    }
+
+    private SqlStatement renderFullUpdate(
+            EntityMetadata<?> metadata, Object entity, boolean hasPrecomputedVersion, Object precomputedVersion) {
         // 보조 테이블 컬럼은 primary UPDATE에서 제외한다(별도 updateSecondary 경로).
         List<PersistentProperty> properties = metadata.updatableProperties().stream()
                 .filter(property -> !property.secondary())
@@ -82,8 +95,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         for (PersistentProperty property : properties) {
             assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index++));
             if (versionProperty != null && property.equals(versionProperty)) {
-                Object current = property.read(entity);
-                Object next = nextVersion(property, current);
+                Object next = hasPrecomputedVersion
+                        ? precomputedVersion
+                        : nextVersion(property, property.read(entity));
                 bindings.add(property.toColumnValue(next));
             } else {
                 bindings.add(property.toColumnValue(property.read(entity)));
@@ -107,6 +121,19 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
     @Override
     public SqlStatement update(EntityMetadata<?> metadata, Object entity, Iterable<String> fields) {
+        return renderPartialUpdate(metadata, entity, fields, false, null);
+    }
+
+    @Override
+    public SqlStatement update(
+            EntityMetadata<?> metadata, Object entity, Iterable<String> fields, Object precomputedVersion) {
+        // full update 오버로드와 동일한 single-read 계약: SET의 @Version 값을 호출부가 미리 계산한 값으로 바인딩.
+        return renderPartialUpdate(metadata, entity, fields, true, precomputedVersion);
+    }
+
+    private SqlStatement renderPartialUpdate(
+            EntityMetadata<?> metadata, Object entity, Iterable<String> fields,
+            boolean hasPrecomputedVersion, Object precomputedVersion) {
         Objects.requireNonNull(entity, "entity must not be null");
         Objects.requireNonNull(fields, "fields must not be null");
 
@@ -144,8 +171,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         for (PersistentProperty property : properties) {
             assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index++));
             if (versionProperty != null && property.equals(versionProperty)) {
-                Object current = property.read(entity);
-                Object next = nextVersion(property, current);
+                Object next = hasPrecomputedVersion
+                        ? precomputedVersion
+                        : nextVersion(property, property.read(entity));
                 bindings.add(property.toColumnValue(next));
             } else {
                 bindings.add(property.toColumnValue(property.read(entity)));
@@ -214,9 +242,10 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             return (short) (value + 1);
         }
         if (type == java.time.LocalDateTime.class) {
-            // 시간 버전: update 시 현재 시각으로 갱신한다. SET에 now를 바인딩하고, WHERE는 호출부가 old를
-            // 비교하므로 동시 update 충돌을 감지한다.
-            return java.time.LocalDateTime.now();
+            // 시간 버전 fallback(precomputed 오버로드를 쓰지 않는 직접 호출 경로용): update 시 현재 시각(저장
+            // 해상도=마이크로초로 truncate)으로 갱신한다. 프로덕션 UPDATE/soft-delete는 operations가 precomputed
+            // 오버로드로 single-read+monotonic 값을 주입하므로 이 분기를 타지 않는다.
+            return java.time.LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         }
         throw new IllegalStateException("Unsupported version type " + type.getName());
     }
@@ -577,6 +606,19 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
     @Override
     public SqlStatement softDeleteByEntity(EntityMetadata<?> metadata, Object entity, Object deletedAt) {
+        return renderSoftDeleteByEntity(metadata, entity, deletedAt, false, null);
+    }
+
+    @Override
+    public SqlStatement softDeleteByEntity(
+            EntityMetadata<?> metadata, Object entity, Object deletedAt, Object precomputedVersion) {
+        // single-read: soft-delete UPDATE의 @Version SET 값을 호출부가 미리 계산한 값으로 바인딩.
+        return renderSoftDeleteByEntity(metadata, entity, deletedAt, true, precomputedVersion);
+    }
+
+    private SqlStatement renderSoftDeleteByEntity(
+            EntityMetadata<?> metadata, Object entity, Object deletedAt,
+            boolean hasPrecomputedVersion, Object precomputedVersion) {
         PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteByEntity");
         rejectCompositeId(metadata, "softDeleteByEntity");
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
@@ -590,7 +632,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 .append(dialect.bindMarkers().marker(context.nextIndex()));
         context.addBinding(softDeleteProperty.toColumnValue(deletedAt));
         Object currentVersion = versionProperty.read(entity);
-        Object nextVersionValue = nextVersion(versionProperty, currentVersion);
+        Object nextVersionValue = hasPrecomputedVersion
+                ? precomputedVersion
+                : nextVersion(versionProperty, currentVersion);
         sql.append(", ").append(column(versionProperty)).append(" = ")
                 .append(dialect.bindMarkers().marker(context.nextIndex()));
         context.addBinding(versionProperty.toColumnValue(nextVersionValue));

@@ -1248,12 +1248,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private <T> Mono<T> updatePrimaryRow(EntityMetadata<T> metadata, T entity) {
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
-        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity);
         if (versionProperty == null) {
-            return sqlExecutor.execute(statement).thenReturn(entity);
+            return sqlExecutor.execute(dialect.sqlRenderer().update(metadata, entity)).thenReturn(entity);
         }
         Object current = versionProperty.read(entity);
+        // 다음 버전 값을 한 번만 계산해 SQL SET 바인딩과 아래 in-memory writeback에 동일 객체를 쓴다(single-read).
         Object next = nextVersionValue(versionProperty, current);
+        SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, next);
         return sqlExecutor.execute(statement)
                 .flatMap(affected -> {
                     if (affected == 0L) {
@@ -1418,9 +1419,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
             primaryUpdate = sqlExecutor.execute(statement).thenReturn(entity);
         } else {
-            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
             Object current = versionProperty.read(entity);
+            // single-read: 다음 버전 값을 한 번만 계산해 SET 바인딩과 writeback에 동일 객체를 쓴다.
             Object next = nextVersionValue(versionProperty, current);
+            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields, next);
             primaryUpdate = sqlExecutor.execute(statement)
                     .flatMap(affected -> {
                         if (affected == 0L) {
@@ -1591,9 +1593,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
                 primaryUpdate = sqlExecutor.execute(statement).then();
             } else {
-                SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields);
                 Object current = versionProperty.read(entity);
+                // single-read: 다음 버전 값을 한 번만 계산해 SET 바인딩과 writeback에 동일 객체를 쓴다.
                 Object next = nextVersionValue(versionProperty, current);
+                SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, fields, next);
                 primaryUpdate = sqlExecutor.execute(statement)
                         .flatMap(affected -> {
                             if (affected == 0L) {
@@ -2409,8 +2412,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object deletedAt = currentTimeFor(softDelete.get());
             PersistentProperty versionProperty = version.get();
             Object currentVersion = versionProperty.read(entity);
+            // single-read: 같은 next 값을 soft-delete SQL SET과 아래 writeback에 쓴다.
             Object nextVersion = nextVersionValue(versionProperty, currentVersion);
-            SqlStatement statement = dialect.sqlRenderer().softDeleteByEntity(metadata, entity, deletedAt);
+            SqlStatement statement =
+                    dialect.sqlRenderer().softDeleteByEntity(metadata, entity, deletedAt, nextVersion);
             return sqlExecutor.execute(statement)
                     .flatMap(affected -> {
                         if (affected == 0L) {
@@ -3721,8 +3726,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return (short) 0;
         }
         if (type == java.time.LocalDateTime.class) {
-            // 시간 버전의 초기값: INSERT 시점의 현재 시각(정수 버전의 0에 대응).
-            return java.time.LocalDateTime.now();
+            // 시간 버전의 초기값: INSERT 시점의 현재 시각(정수 버전의 0에 대응). 저장 해상도(마이크로초)로 truncate해
+            // in-memory 값과 DB에 저장되는 값이 처음부터 일치하게 한다(이후 lock/delete의 WHERE version 매칭 안정).
+            return java.time.LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         }
         throw new IllegalStateException("Unsupported version type " + type.getName());
     }
@@ -3766,11 +3772,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return (short) (value + 1);
         }
         if (type == java.time.LocalDateTime.class) {
-            // 시간 버전: UPDATE 성공 후 in-memory entity의 version을 현재 시각으로 갱신한다. 낙관락 충돌 감지는
-            // SQL WHERE가 old(current) 값으로 비교하므로 정확하다. 이 writeback 값은 렌더러가 SET에 바인딩한
-            // now()와 마이크로초 단위로 다를 수 있으나, 충돌 감지가 old 기준이라 동시성 정확성에는 영향이 없다
-            // (같은 인스턴스를 reload 없이 연속 update하면 두 번째 update가 안전하게 실패할 수 있다).
-            return java.time.LocalDateTime.now();
+            // 시간 버전의 다음 값. 이 값은 렌더러의 precomputed-version 오버로드로 SQL SET에 바인딩되고 동시에
+            // in-memory writeback에도 쓰이므로(single-read) SQL/DB/in-memory가 항상 일치한다.
+            // 저장 컬럼 해상도(H2 timestamp = 마이크로초)로 truncate하고, old보다 strictly 증가(monotonic)하게 만들어
+            // 같은 tick 안 동시 update의 lost-update 창을 없앤다: now()가 old 이하이면 old + 1μs를 쓴다.
+            java.time.LocalDateTime nowMicros =
+                    java.time.LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+            if (current == null) {
+                return nowMicros;
+            }
+            java.time.LocalDateTime oldMicros =
+                    ((java.time.LocalDateTime) current).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+            return nowMicros.isAfter(oldMicros)
+                    ? nowMicros
+                    : oldMicros.plus(1, java.time.temporal.ChronoUnit.MICROS);
         }
         throw new IllegalStateException("Unsupported version type " + type.getName());
     }

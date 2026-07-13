@@ -126,6 +126,9 @@ public interface ReactiveEntityManager {
      * PESSIMISTIC_WRITE/READ는 {@code FOR UPDATE}/{@code FOR SHARE} SELECT를, OPTIMISTIC 계열은 버전 검증
      * (필요 시 강제 증분)을 적용한다. 버전 의미가 필요한 모드를 {@code @Version} 없는 엔티티에 요청하면
      * {@link IllegalArgumentException}으로 fail-fast한다. 존재하지 않으면 빈 {@link Mono}.
+     * <p><b>OPTIMISTIC 의미(설계상 의도):</b> {@code find}의 OPTIMISTIC은 별도 검증 쿼리를 발행하지 않는다 —
+     * 방금 로드한 행의 버전이 곧 현재 값이므로, 검증은 이후 write(낙관락 UPDATE)나 명시적
+     * {@link #lock(Object, LockModeType)}에서 이뤄진다. 이미 로드한 엔티티를 즉시 검증하려면 {@code lock}을 쓴다.
      */
     default <T> Mono<T> find(Class<T> entityType, Object id, LockModeType lockMode) {
         return Mono.error(new UnsupportedOperationException(
@@ -156,6 +159,8 @@ public interface ReactiveEntityManager {
      * 엔티티의 현재 잠금 모드를 반환한다(JPA {@code getLockMode}). Nova는 per-entity 잠금 상태를 추적하지
      * 않으므로, 세션에서 관리 중이고 {@code @Version}을 가진 엔티티는 {@link LockModeType#OPTIMISTIC},
      * 그 외에는 {@link LockModeType#NONE}으로 보고한다.
+     * <p><b>계약 차이(기록):</b> JPA는 detached/비관리 엔티티에 대해 예외를 던지지만, Nova는 세션이 없거나
+     * 관리 중이 아니면 예외 대신 {@link LockModeType#NONE}을 반환한다(리액티브 no-throw 등가).
      */
     default Mono<LockModeType> getLockMode(Object entity) {
         return Mono.error(new UnsupportedOperationException(
@@ -165,6 +170,8 @@ public interface ReactiveEntityManager {
     /**
      * DB 재조회로 엔티티를 재적재({@link #refresh(Object)})한 뒤 주어진 {@link LockModeType}를 적용한다
      * (JPA {@code refresh(Object, LockModeType)}).
+     * <p><b>기록:</b> PESSIMISTIC_* 모드는 refresh reload SELECT 후 잠금 재조회 SELECT가 이어져 SELECT를 두 번
+     * 발행한다(refresh SELECT 안에서 바로 잠그는 최적화는 후속 과제).
      */
     default <T> Mono<T> refresh(T entity, LockModeType lockMode) {
         return Mono.error(new UnsupportedOperationException(
