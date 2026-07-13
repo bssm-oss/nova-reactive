@@ -201,6 +201,17 @@ class CriteriaIntegrationTest {
     }
 
     @Test
+    void entityDistinctFailsFast() {
+        CriteriaBuilder cb = cb();
+        CriteriaQuery<Employee> cq = cb.createQuery(Employee.class);
+        Root<Employee> e = cq.from(Employee.class);
+        cq.select(e).distinct(true);
+
+        StepVerifier.create(criteria.createQuery(cq).getResultList())
+                .verifyError();
+    }
+
+    @Test
     void selectingEntityAmongScalarsFailsFast() {
         CriteriaBuilder cb = cb();
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);

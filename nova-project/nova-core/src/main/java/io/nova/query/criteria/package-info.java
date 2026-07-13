@@ -15,5 +15,9 @@
  * {@code CriteriaSqlBuilder}가 dialect SQL로 렌더해 {@code queryNative}로 실행한다. JPA 인터페이스의
  * 미지원 구성(join/fetch/subquery/함수/산술 등)은 조용히 무시하지 않고
  * {@link io.nova.query.criteria.CriteriaException}으로 fail-fast한다.
+ *
+ * <p>v1 caveat: HAVING은 grouping 컬럼 술어만 지원하고 집계 피연산자
+ * ({@code having(cb.gt(cb.count(root), n))})는 미지원이며, {@code distinct(true)}는 스칼라/집계 경로에서만
+ * 반영되고 엔티티 반환 경로에서는 fail-fast한다.
  */
 package io.nova.query.criteria;

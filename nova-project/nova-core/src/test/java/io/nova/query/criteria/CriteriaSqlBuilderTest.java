@@ -124,6 +124,41 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void pathLevelEqualToNullBecomesIsNull() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        cq.multiselect(e.<Long>get("id")).where((Predicate) e.<String>get("name").equalTo((Object) null));
+        assertEquals("select \"id\" as \"c0\" from \"employee\" where \"name\" is null", scalar(cq).sql());
+    }
+
+    @Test
+    void pathLevelNotEqualToNullBecomesIsNotNull() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        cq.multiselect(e.<Long>get("id")).where((Predicate) e.<String>get("name").notEqualTo((Object) null));
+        assertEquals("select \"id\" as \"c0\" from \"employee\" where \"name\" is not null", scalar(cq).sql());
+    }
+
+    @Test
+    void pathLevelEqualToExpressionRejected() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Object columnValue = e.get("id");
+        CriteriaException ex = assertThrows(CriteriaException.class,
+                () -> e.<String>get("name").equalTo(columnValue));
+        assertTrue(ex.getMessage().contains("column-to-column"));
+    }
+
+    @Test
+    void pathLevelInRejectsExpressionAndNullElements() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Object columnValue = e.get("id");
+        assertThrows(CriteriaException.class, () -> e.<Long>get("id").in(columnValue));
+        assertThrows(CriteriaException.class, () -> e.<Long>get("id").in((Object) null));
+    }
+
+    @Test
     void failsFastOnUnknownAttribute() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);

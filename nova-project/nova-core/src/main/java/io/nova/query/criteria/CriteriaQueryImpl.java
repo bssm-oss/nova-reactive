@@ -21,6 +21,15 @@ import java.util.Set;
  * WHERE 술어, GROUP BY, HAVING, ORDER BY, DISTINCT를 담아 {@link ReactiveCriteriaQuery}가 실행 시
  * 엔티티/스칼라 경로로 변환한다. 다중 루트/서브쿼리/파라미터 표현식은 v1 미지원으로 fail-fast한다.
  *
+ * <p><b>v1 제약</b>:
+ * <ul>
+ *   <li>HAVING은 grouping 컬럼에 대한 술어만 지원한다. 집계 함수 피연산자를 쓰는 대표 용례
+ *       (예: {@code having(cb.gt(cb.count(root), 5L))})는 v1 미지원이며 조립 시점에 fail-fast한다
+ *       — Criteria 술어 모델이 컬럼 경로 피연산자만 받기 때문이다.
+ *   <li>{@code distinct(true)}는 스칼라/집계 경로에서만 반영된다. 엔티티 반환 경로는 {@code QuerySpec}에
+ *       DISTINCT 표현 수단이 없어 실행 시 fail-fast한다(조용한 무시 금지).
+ * </ul>
+ *
  * @param <T> 쿼리 결과 타입
  */
 final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {

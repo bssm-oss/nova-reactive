@@ -4,6 +4,8 @@ import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Selection;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
@@ -74,7 +76,12 @@ abstract class AbstractCriteriaExpression<T> implements Expression<T> {
 
     @Override
     public Predicate equalTo(Object value) {
-        return CriteriaPredicate.comparison(requirePath("equalTo"), CompareOp.EQ, value);
+        CriteriaPath path = requirePath("equalTo");
+        if (value == null) {
+            return CriteriaPredicate.isNull(path);
+        }
+        CriteriaGuards.rejectExpressionValue(value, "Expression.equalTo");
+        return CriteriaPredicate.comparison(path, CompareOp.EQ, value);
     }
 
     @Override
@@ -84,12 +91,17 @@ abstract class AbstractCriteriaExpression<T> implements Expression<T> {
 
     @Override
     public Predicate notEqualTo(Object value) {
-        return CriteriaPredicate.comparison(requirePath("notEqualTo"), CompareOp.NE, value);
+        CriteriaPath path = requirePath("notEqualTo");
+        if (value == null) {
+            return CriteriaPredicate.isNotNull(path);
+        }
+        CriteriaGuards.rejectExpressionValue(value, "Expression.notEqualTo");
+        return CriteriaPredicate.comparison(path, CompareOp.NE, value);
     }
 
     @Override
     public Predicate in(Object... values) {
-        return CriteriaPredicate.in(requirePath("in"), List.of(values), false);
+        return inPredicate(requirePath("in"), Arrays.asList(values));
     }
 
     @Override
@@ -99,7 +111,15 @@ abstract class AbstractCriteriaExpression<T> implements Expression<T> {
 
     @Override
     public Predicate in(Collection<?> values) {
-        return CriteriaPredicate.in(requirePath("in"), List.copyOf(values), false);
+        return inPredicate(requirePath("in"), new ArrayList<>(values));
+    }
+
+    private static Predicate inPredicate(CriteriaPath path, List<?> values) {
+        // null/Expression 원소를 먼저 거부하므로(List.of/copyOf가 아닌 raw 순회) silent 잘못된 IN을 막는다.
+        for (Object value : values) {
+            CriteriaGuards.rejectInElement(value, "Expression.in");
+        }
+        return CriteriaPredicate.in(path, List.copyOf(values), false);
     }
 
     @Override

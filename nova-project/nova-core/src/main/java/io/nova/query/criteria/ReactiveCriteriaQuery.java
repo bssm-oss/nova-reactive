@@ -108,6 +108,12 @@ public final class ReactiveCriteriaQuery<T> {
     private Flux<T> executeEntity() {
         CriteriaRoot<?> root = query.root();
         EntityMetadata<?> metadata = root.ownerMetadata();
+        if (query.isDistinct()) {
+            // QuerySpec에는 DISTINCT 표현 수단이 없어 엔티티 경로에서 조용히 무시되므로 명시 플래그는 거부한다.
+            return Flux.error(new CriteriaException(
+                    "distinct(true) is not supported for entity-returning Criteria queries in v1; "
+                            + "project scalar columns (multiselect) if you need SELECT DISTINCT"));
+        }
         Class<T> resultType = query.getResultType();
         if (resultType != Object.class && !resultType.isAssignableFrom(metadata.entityType())) {
             return Flux.error(new CriteriaException("Query returns entity " + metadata.entityType().getName()

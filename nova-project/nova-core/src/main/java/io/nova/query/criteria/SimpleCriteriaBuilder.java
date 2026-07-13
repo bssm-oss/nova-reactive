@@ -153,7 +153,7 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         if (value == null) {
             return CriteriaPredicate.isNull(path);
         }
-        rejectExpressionValue(value, "equal");
+        CriteriaGuards.rejectExpressionValue(value, "CriteriaBuilder.equal");
         return CriteriaPredicate.comparison(path, CompareOp.EQ, value);
     }
 
@@ -163,7 +163,7 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         if (value == null) {
             return CriteriaPredicate.isNotNull(path);
         }
-        rejectExpressionValue(value, "notEqual");
+        CriteriaGuards.rejectExpressionValue(value, "CriteriaBuilder.notEqual");
         return CriteriaPredicate.comparison(path, CompareOp.NE, value);
     }
 
@@ -241,7 +241,7 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
 
     private Predicate compare(Expression<?> expression, CompareOp op, Object value, String op2) {
         Objects.requireNonNull(value, op2 + " value must not be null");
-        rejectExpressionValue(value, op2);
+        CriteriaGuards.rejectExpressionValue(value, "CriteriaBuilder." + op2);
         return CriteriaPredicate.comparison(path(expression, op2), op, value);
     }
 
@@ -268,12 +268,5 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         }
         throw new CriteriaException("CriteriaBuilder." + op
                 + " requires Predicate operands built by this CriteriaBuilder");
-    }
-
-    private static void rejectExpressionValue(Object value, String op) {
-        if (value instanceof Expression) {
-            throw new CriteriaException("CriteriaBuilder." + op
-                    + " with an Expression right-hand side (column-to-column comparison) is not supported in v1");
-        }
     }
 }
