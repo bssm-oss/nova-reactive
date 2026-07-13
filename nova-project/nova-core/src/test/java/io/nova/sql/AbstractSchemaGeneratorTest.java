@@ -13,6 +13,7 @@ import io.nova.support.fixtures.FixtureEntities.ColumnUniqueEntity;
 import io.nova.support.fixtures.FixtureEntities.ColumnDefinitionEntity;
 import io.nova.support.fixtures.FixtureEntities.SchemaQualifiedEntity;
 import io.nova.support.fixtures.FixtureEntities.LobEntity;
+import io.nova.support.fixtures.FixtureEntities.ForeignKeyTypeReferrer;
 import io.nova.support.fixtures.FixtureEntities.EnumOrdinalAccount;
 import io.nova.support.fixtures.FixtureEntities.EnumStringAccount;
 import io.nova.support.fixtures.FixtureEntities.JsonAccount;
@@ -96,6 +97,20 @@ class AbstractSchemaGeneratorTest {
         assertEquals(
                 "create table annotated_books (id bigint primary key, title varchar(255), author_id bigint)",
                 child
+        );
+    }
+
+    @Test
+    void toOneForeignKeyColumnsUseReferencedIdStorageType() {
+        // to-one FK 컬럼 DDL은 참조 @Id 저장타입을 따른다: UUID/String→varchar, Integer→integer, Long→bigint.
+        String ddl = dialect.schemaGenerator().createTable(
+                factory.getEntityMetadata(ForeignKeyTypeReferrer.class)
+        );
+
+        assertEquals(
+                "create table fk_type_referrer (id bigint primary key, uuid_ref varchar(255), "
+                        + "string_ref varchar(255), int_ref integer, long_ref bigint)",
+                ddl
         );
     }
 

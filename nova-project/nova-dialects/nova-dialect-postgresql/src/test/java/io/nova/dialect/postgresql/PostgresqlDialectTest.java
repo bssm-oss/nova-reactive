@@ -262,6 +262,56 @@ class PostgresqlDialectTest {
         assertTrue(ddl.contains("\"level\" smallint"), ddl);
     }
 
+    @Test
+    void rendersToOneForeignKeyColumnsByReferencedIdStorageType() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        String ddl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(FkChild.class));
+        // to-one FK 컬럼은 참조 @Id 저장타입을 따른다: UUID→varchar, Integer→integer, Long→bigint.
+        assertTrue(ddl.contains("\"uuid_ref\" varchar(255)"), ddl);
+        assertTrue(ddl.contains("\"int_ref\" integer"), ddl);
+        assertTrue(ddl.contains("\"long_ref\" bigint"), ddl);
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "fk_uuid_parent")
+    static class FkUuidParent {
+        @jakarta.persistence.Id
+        java.util.UUID id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "fk_integer_parent")
+    static class FkIntegerParent {
+        @jakarta.persistence.Id
+        Integer id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "fk_long_parent")
+    static class FkLongParent {
+        @jakarta.persistence.Id
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "fk_child")
+    static class FkChild {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.ManyToOne(targetEntity = FkUuidParent.class)
+        @jakarta.persistence.JoinColumn(name = "uuid_ref")
+        FkUuidParent uuidRef;
+
+        @jakarta.persistence.ManyToOne(targetEntity = FkIntegerParent.class)
+        @jakarta.persistence.JoinColumn(name = "int_ref")
+        FkIntegerParent intRef;
+
+        @jakarta.persistence.ManyToOne(targetEntity = FkLongParent.class)
+        @jakarta.persistence.JoinColumn(name = "long_ref")
+        FkLongParent longRef;
+    }
+
     @jakarta.persistence.Entity
     @jakarta.persistence.Table(name = "scalar_holder")
     static class ScalarHolder {
