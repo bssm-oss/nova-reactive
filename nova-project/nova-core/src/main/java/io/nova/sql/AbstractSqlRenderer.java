@@ -257,6 +257,20 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement deleteJoinRow(io.nova.metadata.JoinTableDefinition definition, Object ownerId, Object targetId) {
+        // 세션 최소 diff: 제거된 (owner, target) link 1건만 지운다.
+        RenderContext context = new RenderContext();
+        String ownerMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(ownerId);
+        String targetMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(targetId);
+        String sql = "delete from " + dialect.quote(definition.tableName())
+                + " where " + dialect.quote(definition.ownerForeignKeyColumn()) + " = " + ownerMarker
+                + " and " + dialect.quote(definition.targetForeignKeyColumn()) + " = " + targetMarker;
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
     public SqlStatement selectJoinRows(io.nova.metadata.JoinTableDefinition definition, List<Object> ownerIds) {
         if (ownerIds.isEmpty()) {
             throw new IllegalArgumentException("selectJoinRows requires at least one owner id");
@@ -284,6 +298,20 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 + " where " + dialect.quote(definition.ownerForeignKeyColumn())
                 + " = " + dialect.bindMarkers().marker(1);
         return new SqlStatement(sql, List.of(ownerId));
+    }
+
+    @Override
+    public SqlStatement deleteCollectionRow(io.nova.metadata.CollectionTableDefinition definition, Object ownerId, Object value) {
+        // 세션 최소 diff: 제거된 (owner, value) 기본 타입 원소 1건만 지운다(Set 의미에서만 안전).
+        RenderContext context = new RenderContext();
+        String ownerMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(ownerId);
+        String valueMarker = dialect.bindMarkers().marker(context.nextIndex());
+        context.addBinding(value);
+        String sql = "delete from " + dialect.quote(definition.tableName())
+                + " where " + dialect.quote(definition.ownerForeignKeyColumn()) + " = " + ownerMarker
+                + " and " + dialect.quote(definition.valueColumn()) + " = " + valueMarker;
+        return new SqlStatement(sql, context.bindings());
     }
 
     @Override
