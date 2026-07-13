@@ -8,7 +8,7 @@ import java.util.List;
 public sealed interface Expression
         permits Expression.Path, Expression.Literal, Expression.NamedParameter, Expression.PositionalParameter,
         Expression.FunctionCall, Expression.Aggregate, Expression.Arithmetic, Expression.Case,
-        Expression.ScalarSubquery {
+        Expression.ScalarSubquery, Expression.Cast {
 
     /** {@code alias.field.subfield} 경로 식. 첫 세그먼트는 별칭, 나머지는 필드 경로다. */
     record Path(String alias, List<String> segments) implements Expression {
@@ -56,5 +56,13 @@ public sealed interface Expression
 
     /** where/having 피연산자로 쓰이는 스칼라 서브쿼리(단일 컬럼 SELECT). */
     record ScalarSubquery(Subquery subquery) implements Expression {
+    }
+
+    /**
+     * {@code CAST(value AS type)} 형변환식. {@code targetType}은 파서가 대문자로 정규화한 JPQL 타입 토큰
+     * (예 {@code STRING}, {@code INTEGER})이며, SQL 렌더 단계에서 안전한 표준 SQL 타입으로 화이트리스트
+     * 매핑된다(임의 문자열이 SQL에 삽입되지 않는다).
+     */
+    record Cast(Expression value, String targetType) implements Expression {
     }
 }
