@@ -2418,6 +2418,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         });
     }
 
+    /**
+     * 현재 Context에 세션이 있으면 기존 dirty-diff flush를 발행하고, 없으면 no-op으로 완료한다. 세션 flush의
+     * 내부 알고리즘({@link #flush(PersistenceSession)})과 세션 조회({@link #currentSession(ContextView)})를
+     * 그대로 재사용하는 얇은 공개 진입점이다 — {@link ReactiveEntityManager#flush()}가 이 메서드로 위임한다.
+     */
+    @Override
+    public Mono<Void> flush() {
+        return Mono.deferContextual(ctx -> currentSession(ctx).map(this::flush).orElseGet(Mono::empty));
+    }
+
     @Override
     public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
         return transactionOperations.inTransaction(ignored -> Mono.deferContextual(ctx -> {

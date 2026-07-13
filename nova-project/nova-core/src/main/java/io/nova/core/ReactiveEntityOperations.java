@@ -27,6 +27,19 @@ public interface ReactiveEntityOperations {
     <T> Mono<T> save(T entity);
 
     /**
+     * 현재 Reactor {@code Context}에 바인딩된 영속성 세션의 보류 변경을 즉시 DB로 밀어낸다
+     * (JPA {@code EntityManager.flush()} 등가). 세션이 없으면(트랜잭션 밖 등) 밀어낼 상태가 없으므로
+     * no-op으로 완료한다. 이 메서드는 세션을 새로 만들지 않는다 — 세션은 {@link #inTransaction(Function)}
+     * 스코프 안에서만 존재한다.
+     * <p>
+     * 기본 구현은 세션을 알지 못하는 외부 구현체에서 안전한 no-op이며, {@link SimpleReactiveEntityOperations}가
+     * 활성 세션을 flush하도록 override한다.
+     */
+    default Mono<Void> flush() {
+        return Mono.empty();
+    }
+
+    /**
      * 명시한 property 컬럼만 update한다. {@code save(T)}와 달리 SET 절에 빠진 컬럼은 건드리지 않으므로
      * 다중 사용자가 같은 행의 서로 다른 컬럼을 수정하는 환경에서 lost update를 줄일 수 있다.
      * <p>

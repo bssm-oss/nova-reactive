@@ -1,7 +1,9 @@
 package io.nova;
 
 import io.nova.core.EntityStateDetector;
+import io.nova.core.ReactiveEntityManager;
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.core.SimpleReactiveEntityManager;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.dialect.mariadb.MariaDbDialect;
@@ -51,6 +53,33 @@ public final class Nova {
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
         return new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
+    }
+
+    /**
+     * JPA {@code EntityManager}의 리액티브 등가인 {@link ReactiveEntityManager} 진입점. dialect를 자동 감지해
+     * {@link #create(ConnectionFactory)}와 동일한 배선(managed transaction) 위에 매니저를 얹는다.
+     */
+    public static ReactiveEntityManager entityManager(ConnectionFactory connectionFactory) {
+        return entityManager(connectionFactory, resolveDialect(connectionFactory));
+    }
+
+    public static ReactiveEntityManager entityManager(ConnectionFactory connectionFactory, Dialect dialect) {
+        return entityManager(connectionFactory, dialect, JsonCodec.unconfigured());
+    }
+
+    /**
+     * {@code @Json} 직렬화 codec을 명시해 {@link ReactiveEntityManager}를 조립한다. operations와 매니저는
+     * 동일한 {@link EntityMetadataFactory}(메타데이터 캐시)를 공유한다.
+     */
+    public static ReactiveEntityManager entityManager(
+            ConnectionFactory connectionFactory, Dialect dialect, JsonCodec jsonCodec) {
+        EntityMetadataFactory metadataFactory =
+                new EntityMetadataFactory(new DefaultNamingStrategy(), jsonCodec);
+        R2dbcSqlExecutor executor = new R2dbcSqlExecutor(connectionFactory, dialect);
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
+        ReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
+                metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
+        return new SimpleReactiveEntityManager(operations, metadataFactory);
     }
 
     /**
