@@ -1,5 +1,6 @@
 package io.nova.cache;
 
+import io.nova.cache.spi.ReactiveQueryCache;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
@@ -71,5 +72,40 @@ public final class NovaCache {
         Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
         return new CachingReactiveEntityOperations(
                 delegate, metadataFactory, new CacheConfigurationResolver(), provider);
+    }
+
+    /**
+     * 엔티티 캐시에 더해 <b>쿼리 결과 캐시</b>(2차 query cache)까지 배선한다. 기본 in-process 프로바이더 +
+     * {@link SimpleReactiveQueryCache}를 사용하며, {@code findAll(Class, QuerySpec)} 결과를 정규화된 스펙 키로
+     * 캐시한다(히트 시 0 SQL). 쿼리 캐시는 <b>정합성 리스크상 opt-in</b>이며, 이 오버로드를 쓰지 않으면
+     * 기본 동작(쿼리 캐싱 없음)이 그대로 유지된다.
+     *
+     * <p>무효화 계약: 어떤 write든(save/update/delete/bulk/native) 대상 엔티티 타입의 쿼리 결과를 통째로
+     * 무효화한다. 트랜잭션은 commit 후 재무효화되고 rollback 시 stale을 남기지 않는다({@link ReactiveQueryCache}
+     * javadoc 참고).
+     */
+    public static ReactiveEntityOperations cachingWithQueryCache(ReactiveEntityOperations delegate) {
+        return cachingWithQueryCache(
+                delegate,
+                new SimpleReactiveCacheProvider(),
+                new EntityMetadataFactory(new DefaultNamingStrategy()),
+                new SimpleReactiveQueryCache());
+    }
+
+    /**
+     * 모든 협력자(엔티티 캐시 프로바이더 + metadata factory + {@link ReactiveQueryCache})를 명시해 엔티티 캐시와
+     * 쿼리 결과 캐시를 함께 배선한다. {@code queryCache}가 {@code null}이면 쿼리 캐싱만 비활성화되고 엔티티
+     * 캐시는 그대로 동작한다(opt-in).
+     */
+    public static ReactiveEntityOperations cachingWithQueryCache(
+            ReactiveEntityOperations delegate,
+            io.nova.cache.spi.ReactiveCacheProvider provider,
+            EntityMetadataFactory metadataFactory,
+            ReactiveQueryCache queryCache) {
+        Objects.requireNonNull(delegate, "delegate must not be null");
+        Objects.requireNonNull(provider, "provider must not be null");
+        Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
+        return new CachingReactiveEntityOperations(
+                delegate, metadataFactory, new CacheConfigurationResolver(), provider, queryCache);
     }
 }
