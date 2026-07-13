@@ -1,7 +1,11 @@
 package io.nova.r2dbc.integration;
 
+import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -14,6 +18,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
+import java.util.Objects;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -47,6 +52,9 @@ class ToOneForeignKeyTypeIntegrationTest {
                 UuidParent.class, UuidChild.class,
                 StringParent.class, StringChild.class,
                 IntegerParent.class, IntegerChild.class,
+                ShortParent.class, ShortChild.class,
+                EnumParent.class, EnumChild.class,
+                ConvertParent.class, ConvertChild.class,
                 LongParent.class, LongChild.class).block();
     }
 
@@ -130,6 +138,68 @@ class ToOneForeignKeyTypeIntegrationTest {
                     assertNotNull(loaded.getParent());
                     assertNotNull(loaded.getParent().getId());
                     assertEquals("legacy", loaded.getParent().getName());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void manyToOneToShortKeyedParentRoundTripsForeignKeyAsSmallint() {
+        support.execute("insert into \"fk_short_parent\" (\"id\", \"label\") values (7, 'tier')");
+
+        ShortParent parentRef = new ShortParent();
+        parentRef.setId((short) 7);
+        ShortChild child = new ShortChild();
+        child.setName("short-child");
+        child.setParent(parentRef);
+
+        StepVerifier.create(support.operations().save(child)
+                        .flatMap(saved -> support.operations().findById(ShortChild.class, saved.getId())))
+                .assertNext(loaded -> {
+                    assertNotNull(loaded.getParent());
+                    assertEquals((short) 7, loaded.getParent().getId());
+                    assertEquals("tier", loaded.getParent().getLabel());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void manyToOneToEnumeratedStringKeyedParentRoundTripsForeignKeyAsVarchar() {
+        // @Enumerated(STRING) @Id: FK는 enum 이름을 varchar로 저장/복원해야 한다.
+        support.execute("insert into \"fk_enum_parent\" (\"id\", \"label\") values ('HIGH', 'top')");
+
+        EnumParent parentRef = new EnumParent();
+        parentRef.setId(Priority.HIGH);
+        EnumChild child = new EnumChild();
+        child.setName("enum-child");
+        child.setParent(parentRef);
+
+        StepVerifier.create(support.operations().save(child)
+                        .flatMap(saved -> support.operations().findById(EnumChild.class, saved.getId())))
+                .assertNext(loaded -> {
+                    assertNotNull(loaded.getParent(), "@Enumerated @Id 연관이 하이드레이션돼야 한다");
+                    assertEquals(Priority.HIGH, loaded.getParent().getId(), "FK가 enum으로 라운드트립돼야 한다");
+                    assertEquals("top", loaded.getParent().getLabel());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void manyToOneToConvertKeyedParentRoundTripsForeignKeyAsVarchar() {
+        // @Convert @Id: FK는 converter 저장타입(varchar)으로 인코딩/디코딩돼야 한다.
+        support.execute("insert into \"fk_convert_parent\" (\"id\", \"label\") values ('SKU-9', 'gadget')");
+
+        ConvertParent parentRef = new ConvertParent();
+        parentRef.setId(new Sku("SKU-9"));
+        ConvertChild child = new ConvertChild();
+        child.setName("convert-child");
+        child.setParent(parentRef);
+
+        StepVerifier.create(support.operations().save(child)
+                        .flatMap(saved -> support.operations().findById(ConvertChild.class, saved.getId())))
+                .assertNext(loaded -> {
+                    assertNotNull(loaded.getParent(), "@Convert @Id 연관이 하이드레이션돼야 한다");
+                    assertEquals(new Sku("SKU-9"), loaded.getParent().getId(), "FK가 @Convert 도메인 타입으로 라운드트립돼야 한다");
+                    assertEquals("gadget", loaded.getParent().getLabel());
                 })
                 .verifyComplete();
     }
@@ -383,6 +453,239 @@ class ToOneForeignKeyTypeIntegrationTest {
         }
 
         public void setParent(LongParent parent) {
+            this.parent = parent;
+        }
+    }
+
+    // --- Short @Id ---------------------------------------------------------
+
+    @Entity
+    @Table(name = "fk_short_parent")
+    public static class ShortParent {
+        @Id
+        @Column(name = "id")
+        private Short id;
+
+        @Column(name = "label")
+        private String label;
+
+        public ShortParent() {
+        }
+
+        public Short getId() {
+            return id;
+        }
+
+        public void setId(Short id) {
+            this.id = id;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_short_child")
+    public static class ShortChild {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @Column(name = "name")
+        private String name;
+
+        @ManyToOne(targetEntity = ShortParent.class)
+        @JoinColumn(name = "parent_id")
+        private ShortParent parent;
+
+        public ShortChild() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public ShortParent getParent() {
+            return parent;
+        }
+
+        public void setParent(ShortParent parent) {
+            this.parent = parent;
+        }
+    }
+
+    // --- @Enumerated(STRING) @Id -------------------------------------------
+
+    public enum Priority {
+        HIGH, LOW
+    }
+
+    @Entity
+    @Table(name = "fk_enum_parent")
+    public static class EnumParent {
+        @Id
+        @Enumerated(EnumType.STRING)
+        @Column(name = "id")
+        private Priority id;
+
+        @Column(name = "label")
+        private String label;
+
+        public EnumParent() {
+        }
+
+        public Priority getId() {
+            return id;
+        }
+
+        public void setId(Priority id) {
+            this.id = id;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_enum_child")
+    public static class EnumChild {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @Column(name = "name")
+        private String name;
+
+        @ManyToOne(targetEntity = EnumParent.class)
+        @JoinColumn(name = "parent_id")
+        private EnumParent parent;
+
+        public EnumChild() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public EnumParent getParent() {
+            return parent;
+        }
+
+        public void setParent(EnumParent parent) {
+            this.parent = parent;
+        }
+    }
+
+    // --- @Convert @Id ------------------------------------------------------
+
+    /** {@code @Convert} @Id 검증용 값 타입. FK 라운드트립 매칭을 위해 value 기반 equals/hashCode를 제공한다. */
+    public static final class Sku {
+        private final String value;
+
+        public Sku(String value) {
+            this.value = value;
+        }
+
+        public String value() {
+            return value;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Sku sku && Objects.equals(value, sku.value);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hashCode(value);
+        }
+    }
+
+    public static final class SkuConverter implements AttributeConverter<Sku, String> {
+        public SkuConverter() {
+        }
+
+        @Override
+        public String convertToDatabaseColumn(Sku attribute) {
+            return attribute == null ? null : attribute.value();
+        }
+
+        @Override
+        public Sku convertToEntityAttribute(String dbData) {
+            return dbData == null ? null : new Sku(dbData);
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_convert_parent")
+    public static class ConvertParent {
+        @Id
+        @Convert(converter = SkuConverter.class)
+        @Column(name = "id")
+        private Sku id;
+
+        @Column(name = "label")
+        private String label;
+
+        public ConvertParent() {
+        }
+
+        public Sku getId() {
+            return id;
+        }
+
+        public void setId(Sku id) {
+            this.id = id;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_convert_child")
+    public static class ConvertChild {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @Column(name = "name")
+        private String name;
+
+        @ManyToOne(targetEntity = ConvertParent.class)
+        @JoinColumn(name = "parent_id")
+        private ConvertParent parent;
+
+        public ConvertChild() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public ConvertParent getParent() {
+            return parent;
+        }
+
+        public void setParent(ConvertParent parent) {
             this.parent = parent;
         }
     }

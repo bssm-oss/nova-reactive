@@ -2519,7 +2519,7 @@ public final class EntityMetadataFactory {
     /**
      * to-one FK({@code @ManyToOne} / owning {@code @OneToOne}) 컬럼이 참조 대상의 <em>단일 {@code @Id} 저장 표현</em>을
      * 그대로 반영하도록 FK property의 javaType/converter/converterColumnType/length를 해석한다. 전체 대상
-     * 메타데이터를 빌드하지 않고(빌드 순서/순환 회피) 대상 클래스 계층에서 단일 {@code @Id} 필드를 리플렉션으로
+     * 메타데이터를 빌드하지 않고(빌드 순서/순환 회피) 대상 클래스에서 단일 {@code @Id} 필드를 리플렉션으로
      * 찾아 스칼라 저장타입 규칙을 그대로 재사용한다:
      * <ul>
      *   <li>{@code @Id}에 {@code @Convert}가 있으면 그 converter/저장타입(Y)을 반영</li>
@@ -2529,18 +2529,24 @@ public final class EntityMetadataFactory {
      * </ul>
      * 단일 {@code @Id}가 아니면(복합키 {@code @EmbeddedId}/{@code @IdClass}) {@code null}을 돌려주고 호출부가 기존
      * {@link Long} 기본값을 유지한다 — 복합키 to-one 참조는 확장하지 않고 기존 동작/실패 경로를 보존한다.
+     * <p>
+     * {@code @Id} 탐색은 read/write 경로({@link PersistentProperty#writeManyToOneStub}의 {@code findIdField},
+     * {@code extractReferencedId})와 <b>동일하게 {@code getDeclaredFields()}만</b> 본다(조상 walk 없음). 이렇게
+     * 해야 helper가 non-Long으로 해석한 FK 타입을 read-path가 반드시 바인딩/디코드할 수 있어, {@code @Id}가
+     * {@code @MappedSuperclass}에서 상속된 경우 양쪽이 함께 "미탐지"로 떨어져 {@code Long} 폴백으로 일치한다.
      */
     private static ForeignKeyStorage resolveToOneForeignKeyStorage(Class<?> targetType) {
         Field idField = null;
         int idCount = 0;
-        for (Field candidate : mappedFields(targetType)) {
+        for (Field candidate : targetType.getDeclaredFields()) {
             if (candidate.isAnnotationPresent(Id.class)) {
                 idCount++;
                 idField = candidate;
             }
         }
         if (idCount != 1) {
-            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지 — 기존 Long 기본값을 유지한다(무리한 확장 금지).
+            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지(조상 상속 포함) — read-path와 동일하게 못 찾으면
+            // 기존 Long 기본값을 유지한다(무리한 확장 금지, read-path 바인딩 가능성 보장).
             return null;
         }
         Class<?> domainType = wrapPrimitiveType(idField.getType());

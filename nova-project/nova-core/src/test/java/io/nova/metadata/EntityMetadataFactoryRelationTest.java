@@ -9,6 +9,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OneToOne;
 import io.nova.annotation.SoftDelete;
@@ -230,6 +231,17 @@ class EntityMetadataFactoryRelationTest {
         assertSame(String.class, fk.columnType());
     }
 
+    @Test
+    void manyToOneToInheritedIdTargetFallsBackToLongMatchingReadPath() {
+        // read/write 경로(findIdField/extractReferencedId)는 getDeclaredFields()만 보고 조상 @Id를 못 찾는다.
+        // FK 타입 해석도 동일 규칙을 써야 하므로, @Id가 @MappedSuperclass에서 상속된 대상은 non-Long으로 해석하지
+        // 않고 Long(bigint)로 폴백한다 — helper가 해석한 타입은 read-path가 반드시 바인딩/디코드 가능해야 한다.
+        PersistentProperty fk =
+                factory.getEntityMetadata(RefToInheritedUuidKeyed.class).manyToOneProperties().get(0);
+        assertSame(Long.class, fk.javaType());
+        assertSame(Long.class, fk.columnType());
+    }
+
     @Entity
     static class BookWithDefaultFkName {
         @Id
@@ -380,6 +392,33 @@ class EntityMetadataFactoryRelationTest {
         private UuidKeyedTarget target;
 
         OwningOneToOneToUuidKeyed() {
+        }
+    }
+
+    @MappedSuperclass
+    static class UuidIdBase {
+        @Id
+        private UUID id;
+    }
+
+    @Entity
+    static class InheritedUuidKeyedTarget extends UuidIdBase {
+        private String name;
+
+        InheritedUuidKeyedTarget() {
+        }
+    }
+
+    @Entity
+    static class RefToInheritedUuidKeyed {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = InheritedUuidKeyedTarget.class)
+        @JoinColumn(name = "target_id")
+        private InheritedUuidKeyedTarget target;
+
+        RefToInheritedUuidKeyed() {
         }
     }
 
