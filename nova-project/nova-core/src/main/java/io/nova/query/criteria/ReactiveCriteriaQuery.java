@@ -1,0 +1,162 @@
+package io.nova.query.criteria;
+
+import io.nova.core.ReactiveEntityOperations;
+import io.nova.core.RowAccessor;
+import io.nova.metadata.EntityMetadata;
+import io.nova.query.NativeQuery;
+import io.nova.query.Pageable;
+import io.nova.query.QuerySpec;
+import io.nova.query.Sort;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.util.List;
+import java.util.function.Function;
+
+/**
+ * 조립된 {@link CriteriaQueryImpl}에 페이지 창을 바인딩해 리액티브로 실행하는 쿼리 핸들. JPA
+ * {@code TypedQuery}의 리액티브 등가물로, {@code block()} 없이 {@link Flux}/{@link Mono}만 반환한다.
+ * <p>
+ * 선택 목록이 루트 엔티티(또는 기본값)이고 집계/GROUP BY가 없으면 {@link CriteriaEntityTranslator}로
+ * {@link QuerySpec}을 만들어 기존 엔티티 하이드레이션 경로({@code findAll(Class, QuerySpec)})에 위임한다.
+ * 그 외 스칼라/집계 SELECT는 {@link CriteriaSqlBuilder}가 만든 SQL을 {@code queryNative}로 실행한다.
+ *
+ * @param <T> 결과 원소 타입
+ */
+public final class ReactiveCriteriaQuery<T> {
+
+    private final CriteriaQueryImpl<T> query;
+    private final ReactiveEntityOperations operations;
+    private final CriteriaSqlBuilder sqlBuilder;
+
+    private Integer firstResult;
+    private Integer maxResults;
+
+    ReactiveCriteriaQuery(
+            CriteriaQueryImpl<T> query,
+            ReactiveEntityOperations operations,
+            CriteriaSqlBuilder sqlBuilder) {
+        this.query = query;
+        this.operations = operations;
+        this.sqlBuilder = sqlBuilder;
+    }
+
+    /** JPA {@code setFirstResult} 등가(0-기반 offset). 엔티티 반환 쿼리에서만 지원. */
+    public ReactiveCriteriaQuery<T> setFirstResult(int firstResult) {
+        if (firstResult < 0) {
+            throw new CriteriaException("firstResult must be >= 0");
+        }
+        this.firstResult = firstResult;
+        return this;
+    }
+
+    /** JPA {@code setMaxResults} 등가(limit). 엔티티 반환 쿼리에서만 지원. */
+    public ReactiveCriteriaQuery<T> setMaxResults(int maxResults) {
+        if (maxResults < 0) {
+            throw new CriteriaException("maxResults must be >= 0");
+        }
+        this.maxResults = maxResults;
+        return this;
+    }
+
+    /** SELECT 결과 목록을 발행한다. */
+    public Flux<T> getResultList() {
+        return Flux.defer(this::execute);
+    }
+
+    /**
+     * 정확히 한 건의 결과를 발행한다. 결과가 없으면 에러(JPA {@code NoResultException} 등가), 두 건 이상이면
+     * 에러(JPA {@code NonUniqueResultException} 등가)를 낸다.
+     */
+    public Mono<T> getSingleResult() {
+        return getResultList().take(2).collectList().flatMap(list -> {
+            if (list.isEmpty()) {
+                return Mono.error(new CriteriaException("getSingleResult() found no rows"));
+            }
+            if (list.size() > 1) {
+                return Mono.error(new CriteriaException("getSingleResult() found more than one row"));
+            }
+            return Mono.just(list.get(0));
+        });
+    }
+
+    // --- execution ------------------------------------------------------------------------------
+
+    private Flux<T> execute() {
+        try {
+            if (isEntitySelect()) {
+                return executeEntity();
+            }
+            return executeScalar();
+        } catch (RuntimeException e) {
+            return Flux.error(e);
+        }
+    }
+
+    private boolean isEntitySelect() {
+        if (!query.groupExpressions().isEmpty() || query.havingPredicate() != null) {
+            return false;
+        }
+        List<jakarta.persistence.criteria.Selection<?>> selections = query.selections();
+        if (selections.isEmpty()) {
+            return true;
+        }
+        return selections.size() == 1 && selections.get(0) instanceof CriteriaRoot<?>;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Flux<T> executeEntity() {
+        CriteriaRoot<?> root = query.root();
+        EntityMetadata<?> metadata = root.ownerMetadata();
+        Class<T> resultType = query.getResultType();
+        if (resultType != Object.class && !resultType.isAssignableFrom(metadata.entityType())) {
+            return Flux.error(new CriteriaException("Query returns entity " + metadata.entityType().getName()
+                    + " which is not assignable to requested result type " + resultType.getName()));
+        }
+
+        QuerySpec spec = QuerySpec.empty();
+        if (query.restriction() != null) {
+            spec = spec.where(CriteriaEntityTranslator.toPredicate(query.restriction()));
+        }
+        if (!query.orders().isEmpty()) {
+            Sort sort = CriteriaEntityTranslator.toSort(query.orders());
+            spec = spec.orderBy(sort);
+        }
+        if (maxResults != null) {
+            if (maxResults == 0) {
+                return Flux.empty();
+            }
+            long offset = firstResult == null ? 0L : firstResult.longValue();
+            spec = spec.page(Pageable.of(maxResults.intValue(), offset));
+        } else if (firstResult != null) {
+            return Flux.error(new CriteriaException(
+                    "setFirstResult without setMaxResults is not supported; provide a page size"));
+        }
+
+        Class<Object> entityType = (Class<Object>) metadata.entityType();
+        return (Flux<T>) operations.findAll(entityType, spec);
+    }
+
+    private Flux<T> executeScalar() {
+        if (firstResult != null || maxResults != null) {
+            return Flux.error(new CriteriaException(
+                    "setFirstResult/setMaxResults is only supported for entity-returning Criteria queries in v1"));
+        }
+        CriteriaSql translated = sqlBuilder.build(query);
+        int columns = translated.selectionCount();
+        Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
+        return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);
+    }
+
+    @SuppressWarnings("unchecked")
+    private T mapRow(RowAccessor row, int columns) {
+        if (columns == 1) {
+            return (T) row.get(CriteriaSqlBuilder.columnLabel(0), Object.class);
+        }
+        Object[] values = new Object[columns];
+        for (int i = 0; i < columns; i++) {
+            values[i] = row.get(CriteriaSqlBuilder.columnLabel(i), Object.class);
+        }
+        return (T) values;
+    }
+}
