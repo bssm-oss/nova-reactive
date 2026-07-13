@@ -209,6 +209,80 @@ class SessionCollectionFlushIntegrationTest {
     }
 
     @Test
+    void enumElementCollectionAddRemoveInSessionEmitsMinimalSql() {
+        // 세션 diff 경로가 enum 원소도 저장 표현(varchar 이름)으로 인코딩해 값 동등성 최소 diff를 내고, commit 후
+        // 조회가 원소를 enum 상수로 정확히 복원하는지 검증한다 — DELETE(WHERE value=?)/INSERT 바인딩과 decode 모두
+        // 도메인(enum) ↔ 저장(varchar) 왕복이 올바라야 한다.
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(Roster.class).block();
+
+        Roster roster = new Roster("r");
+        roster.getSkills().add(Skill.JAVA);
+        roster.getSkills().add(Skill.SQL);
+        Long id = support.operations().save(roster).map(Roster::getId).block();
+
+        listener.clear();
+        // 세션 안에서 JAVA 제거 + KOTLIN 추가 → 최소 diff(그대로 남은 SQL은 건드리지 않는다).
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(Roster.class, id)
+                                .doOnNext(loaded -> {
+                                    loaded.getSkills().remove(Skill.JAVA);
+                                    loaded.getSkills().add(Skill.KOTLIN);
+                                })
+                                .then()))
+                .verifyComplete();
+
+        assertEquals(1, listener.count("roster_skills", "delete"),
+                "제거된 enum 값 1건만 DELETE 되어야 한다: " + listener.statements());
+        assertEquals(1, listener.count("roster_skills", "insert"),
+                "추가된 enum 값 1건만 INSERT 되어야 한다: " + listener.statements());
+
+        // commit 후 fresh 조회: {SQL, KOTLIN} — 원소가 enum 상수로 정확히 복원돼야 한다.
+        StepVerifier.create(support.operations().findById(Roster.class, id))
+                .assertNext(loaded -> assertEquals(Set.of(Skill.SQL, Skill.KOTLIN), loaded.getSkills()))
+                .verifyComplete();
+    }
+
+    @Test
+    void uuidElementCollectionAddRemoveInSessionEmitsMinimalSql() {
+        // 세션 diff DELETE `WHERE value = ?`에서 encodeElementValue(UUID→문자열)가 load-bearing이다: 미encode UUID는
+        // 저장된 varchar와 매칭 실패해 stale row가 남는다. UUID 원소 in-session remove+add가 정확히 1 DELETE + 1 INSERT를
+        // 내고 commit 후 UUID로 정확 복원되는지 검증한다.
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(RefBag.class).block();
+
+        java.util.UUID keep = java.util.UUID.randomUUID();
+        java.util.UUID drop = java.util.UUID.randomUUID();
+        java.util.UUID add = java.util.UUID.randomUUID();
+        RefBag bag = new RefBag("b");
+        bag.getRefs().add(keep);
+        bag.getRefs().add(drop);
+        Long id = support.operations().save(bag).map(RefBag::getId).block();
+
+        listener.clear();
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(RefBag.class, id)
+                                .doOnNext(loaded -> {
+                                    loaded.getRefs().remove(drop);
+                                    loaded.getRefs().add(add);
+                                })
+                                .then()))
+                .verifyComplete();
+
+        assertEquals(1, listener.count("ref_bag_refs", "delete"),
+                "제거된 UUID 값 1건만 DELETE 되어야 한다: " + listener.statements());
+        assertEquals(1, listener.count("ref_bag_refs", "insert"),
+                "추가된 UUID 값 1건만 INSERT 되어야 한다: " + listener.statements());
+
+        // commit 후 fresh 조회: {keep, add} — stale drop row가 남지 않아야 한다(encode 매칭 검증).
+        StepVerifier.create(support.operations().findById(RefBag.class, id))
+                .assertNext(loaded -> assertEquals(Set.of(keep, add), loaded.getRefs()))
+                .verifyComplete();
+    }
+
+    @Test
     void collectionMutationIsFlushedAtCommit() {
         Post seeded = seedPostWithTwoTags();
         Tag c = support.operations().save(new Tag("c")).block();
@@ -363,6 +437,63 @@ class SessionCollectionFlushIntegrationTest {
 
         public Set<Integer> getScores() {
             return scores;
+        }
+    }
+
+    public enum Skill { JAVA, SQL, KOTLIN }
+
+    @Entity
+    @Table(name = "roster")
+    public static class Roster {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String label;
+
+        @ElementCollection
+        @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+        private Set<Skill> skills = new LinkedHashSet<>();
+
+        public Roster() {
+        }
+
+        public Roster(String label) {
+            this.label = label;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public Set<Skill> getSkills() {
+            return skills;
+        }
+    }
+
+    @Entity
+    @Table(name = "ref_bag")
+    public static class RefBag {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String label;
+
+        @ElementCollection
+        private Set<java.util.UUID> refs = new LinkedHashSet<>();
+
+        public RefBag() {
+        }
+
+        public RefBag(String label) {
+            this.label = label;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public Set<java.util.UUID> getRefs() {
+            return refs;
         }
     }
 }

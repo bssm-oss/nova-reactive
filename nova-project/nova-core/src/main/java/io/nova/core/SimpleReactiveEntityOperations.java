@@ -584,7 +584,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         return delete.thenMany(Flux.range(0, elements.size())
                         .concatMap(index -> {
-                            Object value = elements.get(index);
+                            // 도메인 원소 값을 저장 표현으로 인코딩한다(enum→이름/ordinal, UUID→문자열 등).
+                            Object value = info.encodeElementValue(elements.get(index));
                             SqlStatement statement = ordered
                                     ? renderer.insertCollectionRow(definition, ownerId, value, index)
                                     : renderer.insertCollectionRow(definition, ownerId, value);
@@ -636,7 +637,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                 List<Object> columnValues = readEmbeddableColumnValues(info, entry.getValue());
                                 statement = renderer.insertEmbeddableMapCollectionRow(definition, ownerId, key, columnValues);
                             } else {
-                                statement = renderer.insertMapCollectionRow(definition, ownerId, key, entry.getValue());
+                                // Map value(기본 타입/enum/UUID 등)도 원소와 동일하게 저장 표현으로 인코딩한다.
+                                Object value = info.encodeElementValue(entry.getValue());
+                                statement = renderer.insertMapCollectionRow(definition, ownerId, key, value);
                             }
                             return sqlExecutor.execute(statement);
                         }))
@@ -1761,12 +1764,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private Mono<Void> diffElementCollection(
             EntityMetadata<?> metadata, PersistentProperty property, Object ownerId,
             List<Object> removedValues, List<Object> addedValues) {
-        CollectionTableDefinition definition = collectionDefinition(metadata, property.elementCollectionInfo());
+        ElementCollectionInfo info = property.elementCollectionInfo();
+        CollectionTableDefinition definition = collectionDefinition(metadata, info);
         SqlRenderer renderer = dialect.sqlRenderer();
+        // baseline/current 표현은 도메인 값이므로 DELETE(WHERE value=?)와 INSERT 모두 저장 표현으로 인코딩한다.
         return Flux.fromIterable(removedValues)
-                .concatMap(value -> sqlExecutor.execute(renderer.deleteCollectionRow(definition, ownerId, value)))
+                .concatMap(value -> sqlExecutor.execute(
+                        renderer.deleteCollectionRow(definition, ownerId, info.encodeElementValue(value))))
                 .thenMany(Flux.fromIterable(addedValues)
-                        .concatMap(value -> sqlExecutor.execute(renderer.insertCollectionRow(definition, ownerId, value))))
+                        .concatMap(value -> sqlExecutor.execute(
+                                renderer.insertCollectionRow(definition, ownerId, info.encodeElementValue(value)))))
                 .then();
     }
 
@@ -3019,7 +3026,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         CollectionTableDefinition definition = collectionDefinition(metadata, info);
         PersistentProperty parentIdProperty = metadata.idProperty();
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
-        Class<?> valueType = info.valueType();
+        // 저장 표현 타입으로 디코딩을 요청한 뒤 도메인 값으로 복원한다(converter read-source-type 함정 회피).
+        Class<?> valueColumnType = wrapPrimitive(info.valueColumnType());
 
         LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
         for (P parent : parents) {
@@ -3041,7 +3049,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             Object ownerKey = row.get(info.ownerForeignKeyColumn(), ownerIdType);
                             Object element = embeddable
                                     ? instantiateEmbeddableElement(info, row)
-                                    : row.get(info.valueColumn(), valueType);
+                                    : info.decodeElementValue(row.get(info.valueColumn(), valueColumnType));
                             return new Object[]{ownerKey, element};
                         })
                 .collectList()
@@ -3071,7 +3079,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         CollectionTableDefinition definition = collectionDefinition(metadata, info);
         PersistentProperty parentIdProperty = metadata.idProperty();
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
-        Class<?> valueType = info.valueType();
+        // Map value도 저장 표현 타입으로 디코딩 요청 후 도메인으로 복원한다.
+        Class<?> valueColumnType = wrapPrimitive(info.valueColumnType());
         Class<?> keyColumnType = info.mapKey().keyColumnType();
 
         LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
@@ -3095,7 +3104,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             Object mapKey = decodeMapKey(info, row.get(info.mapKey().keyColumn(), keyColumnType));
                             Object element = embeddable
                                     ? instantiateEmbeddableElement(info, row)
-                                    : row.get(info.valueColumn(), valueType);
+                                    : info.decodeElementValue(row.get(info.valueColumn(), valueColumnType));
                             return new Object[]{ownerKey, mapKey, element};
                         })
                 .collectList()

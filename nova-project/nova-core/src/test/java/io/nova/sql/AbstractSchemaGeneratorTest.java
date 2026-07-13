@@ -410,6 +410,93 @@ class AbstractSchemaGeneratorTest {
         assertTrue(dialect.schemaGenerator().foreignKeyName(def).length() > 30);
     }
 
+    // --- @ElementCollection 원소 타입별 collection table DDL -----------------
+
+    private String collectionTableDdl(Class<?> entity, String property) {
+        io.nova.metadata.ElementCollectionInfo info = factory.getEntityMetadata(entity)
+                .findProperty(property).orElseThrow().elementCollectionInfo();
+        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(Long.class);
+        return dialect.schemaGenerator().createCollectionTable(definition);
+    }
+
+    @Test
+    void enumStringElementRendersVarcharValueColumn() {
+        String ddl = collectionTableDdl(EcTypeEntity.class, "stringColors");
+        assertTrue(ddl.contains("string_colors varchar(255)"), ddl);
+    }
+
+    @Test
+    void enumOrdinalElementRendersIntegerValueColumn() {
+        String ddl = collectionTableDdl(EcTypeEntity.class, "ordinalColors");
+        assertTrue(ddl.contains("ordinal_colors integer"), ddl);
+    }
+
+    @Test
+    void uuidElementRendersVarcharValueColumn() {
+        String ddl = collectionTableDdl(EcTypeEntity.class, "refs");
+        assertTrue(ddl.contains("refs varchar(255)"), ddl);
+    }
+
+    @Test
+    void bigDecimalElementRendersNumericValueColumn() {
+        String ddl = collectionTableDdl(EcTypeEntity.class, "amounts");
+        assertTrue(ddl.contains("amounts numeric(19, 2)"), ddl);
+    }
+
+    @Test
+    void localDateElementRendersDateValueColumn() {
+        String ddl = collectionTableDdl(EcTypeEntity.class, "dates");
+        assertTrue(ddl.contains("dates date"), ddl);
+    }
+
+    @Test
+    void unsupportedPojoElementFailsFastInSchema() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> collectionTableDdl(UnsupportedEcEntity.class, "pojos"));
+        assertTrue(error.getMessage().contains("Unsupported @ElementCollection element type"), error.getMessage());
+    }
+
+    enum Hue { RED, GREEN, BLUE }
+
+    static class Pojo {
+        String value;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "ec_type")
+    static class EcTypeEntity {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+        java.util.Set<Hue> stringColors;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.ORDINAL)
+        java.util.Set<Hue> ordinalColors;
+
+        @jakarta.persistence.ElementCollection
+        java.util.Set<java.util.UUID> refs;
+
+        @jakarta.persistence.ElementCollection
+        java.util.List<java.math.BigDecimal> amounts;
+
+        @jakarta.persistence.ElementCollection
+        java.util.List<java.time.LocalDate> dates;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "unsupported_ec")
+    static class UnsupportedEcEntity {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.ElementCollection(targetClass = Pojo.class)
+        @SuppressWarnings("rawtypes")
+        java.util.Set pojos;
+    }
+
     private static final class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
         private final SqlRenderer renderer = new AbstractSqlRenderer(this) {

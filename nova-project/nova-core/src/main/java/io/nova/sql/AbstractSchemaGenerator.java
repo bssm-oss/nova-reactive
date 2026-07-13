@@ -101,8 +101,11 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     }
 
     /**
-     * {@code @ElementCollection} 값 컬럼의 SQL 타입을 원소 Java 타입으로 결정한다. {@link #sqlType}의 스칼라
-     * 분기를 미러하되 property 없이 타입만으로 매핑한다(기본 타입 원소 지원).
+     * {@code @ElementCollection} 값/키 컬럼의 SQL 타입을 <em>저장 표현</em> Java 타입으로 결정한다.
+     * {@link #sqlType}의 스칼라 분기를 미러하되 property 없이 타입만으로 매핑한다. 호출자는 도메인 타입이
+     * 아니라 저장타입({@link io.nova.metadata.ElementCollectionInfo#valueColumnType()})을 넘긴다 —
+     * enum은 {@code varchar}/{@code integer}, {@code UUID}는 {@code varchar}, {@code @Convert}/{@code @Temporal}
+     * 원소는 각 converter 저장타입으로 이미 해석된 뒤 여기에 도달한다. 진짜 미지원 저장타입은 fail-fast.
      */
     protected String elementColumnType(Class<?> valueType) {
         if (valueType == String.class) {
@@ -120,6 +123,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (valueType == Double.class || valueType == double.class) {
             return "double precision";
         }
+        if (valueType == Float.class || valueType == float.class) {
+            return "real";
+        }
         if (valueType == Short.class || valueType == short.class) {
             return "smallint";
         }
@@ -128,6 +134,16 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         }
         if (valueType == java.util.UUID.class) {
             return "varchar(36)";
+        }
+        // @Temporal 원소의 저장타입(java.time.*). 실제 SQL 토큰은 dialect가 결정한다(스칼라 sqlType과 동일).
+        if (valueType == java.time.LocalDate.class) {
+            return dialect.dateColumnType();
+        }
+        if (valueType == java.time.LocalTime.class) {
+            return dialect.timeColumnType();
+        }
+        if (valueType == java.time.LocalDateTime.class) {
+            return dialect.timestampColumnType();
         }
         throw new IllegalArgumentException("Unsupported @ElementCollection element type: " + valueType.getName());
     }

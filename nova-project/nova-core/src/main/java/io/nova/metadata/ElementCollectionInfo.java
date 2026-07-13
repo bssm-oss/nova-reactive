@@ -1,6 +1,7 @@
 package io.nova.metadata;
 
 import jakarta.persistence.EnumType;
+import io.nova.convert.AttributeConverter;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
@@ -30,10 +31,14 @@ public record ElementCollectionInfo(
         boolean usesSet,
         List<EmbeddableColumn> embeddableColumns,
         OrderColumnInfo orderColumn,
-        MapKeyInfo mapKey
+        MapKeyInfo mapKey,
+        Class<?> valueColumnType,
+        AttributeConverter<Object, Object> valueConverter
 ) {
     public ElementCollectionInfo {
         embeddableColumns = embeddableColumns == null ? List.of() : List.copyOf(embeddableColumns);
+        // 저장 표현 컬럼 타입이 명시되지 않으면 도메인 타입을 그대로 저장타입으로 쓴다(기본 스칼라 원소).
+        valueColumnType = valueColumnType == null ? valueType : valueColumnType;
     }
 
     /**
@@ -45,7 +50,8 @@ public record ElementCollectionInfo(
             String valueColumn,
             Class<?> valueType,
             boolean usesSet) {
-        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet, List.of(), null, null);
+        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet,
+                List.of(), null, null, null, null);
     }
 
     /**
@@ -58,7 +64,8 @@ public record ElementCollectionInfo(
             Class<?> valueType,
             boolean usesSet,
             List<EmbeddableColumn> embeddableColumns) {
-        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet, embeddableColumns, null, null);
+        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet,
+                embeddableColumns, null, null, null, null);
     }
 
     /**
@@ -73,7 +80,25 @@ public record ElementCollectionInfo(
             List<EmbeddableColumn> embeddableColumns,
             OrderColumnInfo orderColumn) {
         this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet,
-                embeddableColumns, orderColumn, null);
+                embeddableColumns, orderColumn, null, null, null);
+    }
+
+    /**
+     * {@code @Embeddable}/{@code @OrderColumn}/{@code Map} key까지 받는 canonical 근접 생성자에서 원소
+     * 저장타입/컨버터를 생략한 형태 — 기본 스칼라 원소용. 저장타입은 {@link #valueType()}과 같고
+     * 컨버터는 없다({@code null}).
+     */
+    public ElementCollectionInfo(
+            String collectionTableName,
+            String ownerForeignKeyColumn,
+            String valueColumn,
+            Class<?> valueType,
+            boolean usesSet,
+            List<EmbeddableColumn> embeddableColumns,
+            OrderColumnInfo orderColumn,
+            MapKeyInfo mapKey) {
+        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet,
+                embeddableColumns, orderColumn, mapKey, null, null);
     }
 
     /**
@@ -101,6 +126,25 @@ public record ElementCollectionInfo(
     }
 
     /**
+     * 기본 타입 원소의 도메인 값을 collection table에 바인딩할 저장 표현으로 인코딩한다 — 스칼라 프로퍼티의
+     * {@link PersistentProperty#toColumnValue(Object)}와 동일한 converter 경로를 탄다. enum은 이름/ordinal로,
+     * {@code UUID}는 문자열로, {@code @Convert}/{@code @Temporal} 원소는 각 converter 저장 표현으로 바뀐다.
+     * 컨버터가 없는 순수 기본 타입(String/Long/...)은 값을 그대로 통과시킨다. {@code null}은 그대로 둔다.
+     */
+    public Object encodeElementValue(Object value) {
+        return (value == null || valueConverter == null) ? value : valueConverter.write(value);
+    }
+
+    /**
+     * collection table에서 읽은 저장 표현({@link #valueColumnType()} 타입)을 도메인 원소 값으로 디코딩한다 —
+     * 스칼라 프로퍼티의 {@link PersistentProperty#toPropertyValue(Object)}와 대칭이다. 컨버터가 없으면 값을
+     * 그대로 통과시킨다. {@code null}은 그대로 둔다.
+     */
+    public Object decodeElementValue(Object stored) {
+        return (stored == null || valueConverter == null) ? stored : valueConverter.read(stored);
+    }
+
+    /**
      * 이 매핑을 DDL/SQL 렌더링용 {@link CollectionTableDefinition}으로 변환한다 — schema 생성과 row 동기화가
      * 같은 정의를 공유하도록 한 자리에서 만든다. {@code ownerForeignKeyType}은 owner {@code @Id}의 Java 타입(호출자가
      * primitive wrap 여부를 결정해 넘긴다). {@code @Embeddable} 펼침 컬럼, {@code @OrderColumn}, {@code Map} key
@@ -114,9 +158,43 @@ public record ElementCollectionInfo(
         CollectionTableDefinition.MapKeyColumn keyColumn = mapKey == null
                 ? null
                 : new CollectionTableDefinition.MapKeyColumn(mapKey.keyColumn(), mapKey.keyColumnType());
+        // DDL/SQL 컬럼 타입은 도메인 타입(valueType)이 아니라 저장 표현 타입(valueColumnType)을 따라야 한다
+        // (enum→varchar/integer, UUID→varchar 등). @Embeddable 원소는 valueColumnType이 valueType과 같아
+        // (elementColumns가 실제 컬럼을 결정하므로) 무해하다.
         return new CollectionTableDefinition(
                 collectionTableName, ownerForeignKeyColumn, ownerForeignKeyType,
-                valueColumn, valueType, elementColumns, orderColumn, keyColumn);
+                valueColumn, valueColumnType, elementColumns, orderColumn, keyColumn);
+    }
+
+    /**
+     * {@code valueConverter}는 저장 표현 인코딩/디코딩을 담당하는 전략 객체일 뿐 매핑 identity의 일부가 아니다.
+     * 동일한 원소 매핑이라도 converter 인스턴스가 다르면 record의 기본 equality가 unequal로 판정하므로,
+     * converter를 <em>제외한</em> 나머지 매핑 컴포넌트로만 동등성을 정의한다({@code valueColumnType}은 converter와
+     * 함께 결정되므로 포함해도 안전하고, 매핑을 구분하는 데 도움이 된다).
+     */
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof ElementCollectionInfo that)) {
+            return false;
+        }
+        return usesSet == that.usesSet
+                && java.util.Objects.equals(collectionTableName, that.collectionTableName)
+                && java.util.Objects.equals(ownerForeignKeyColumn, that.ownerForeignKeyColumn)
+                && java.util.Objects.equals(valueColumn, that.valueColumn)
+                && java.util.Objects.equals(valueType, that.valueType)
+                && java.util.Objects.equals(embeddableColumns, that.embeddableColumns)
+                && java.util.Objects.equals(orderColumn, that.orderColumn)
+                && java.util.Objects.equals(mapKey, that.mapKey)
+                && java.util.Objects.equals(valueColumnType, that.valueColumnType);
+    }
+
+    @Override
+    public int hashCode() {
+        return java.util.Objects.hash(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType,
+                usesSet, embeddableColumns, orderColumn, mapKey, valueColumnType);
     }
 
     /**

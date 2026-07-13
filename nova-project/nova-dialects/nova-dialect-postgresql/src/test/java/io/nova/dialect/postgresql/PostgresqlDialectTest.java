@@ -12,6 +12,7 @@ import io.nova.sql.SqlStatement;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PostgresqlDialectTest {
     private final PostgresqlDialect dialect = new PostgresqlDialect();
@@ -227,5 +228,46 @@ class PostgresqlDialectTest {
                 "alter table \"fk_child\" add constraint \"fk_child_parent\""
                         + " foreign key (\"parent_id\") references \"fk_parent\" (\"id\")",
                 ddl);
+    }
+
+    @Test
+    void rendersElementCollectionValueColumnTypesByStorageType() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        EntityMetadata<EcHolder> holder = factory.getEntityMetadata(EcHolder.class);
+
+        String stringColorsDdl = dialect.schemaGenerator().createCollectionTable(
+                holder.findProperty("stringColors").orElseThrow()
+                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+        assertTrue(stringColorsDdl.contains("\"string_colors\" varchar(255)"), stringColorsDdl);
+
+        String ordinalColorsDdl = dialect.schemaGenerator().createCollectionTable(
+                holder.findProperty("ordinalColors").orElseThrow()
+                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+        assertTrue(ordinalColorsDdl.contains("\"ordinal_colors\" integer"), ordinalColorsDdl);
+
+        String refsDdl = dialect.schemaGenerator().createCollectionTable(
+                holder.findProperty("refs").orElseThrow()
+                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+        assertTrue(refsDdl.contains("\"refs\" varchar(255)"), refsDdl);
+    }
+
+    enum Hue { RED, GREEN, BLUE }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "ec_holder")
+    static class EcHolder {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+        java.util.Set<Hue> stringColors;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.ORDINAL)
+        java.util.Set<Hue> ordinalColors;
+
+        @jakarta.persistence.ElementCollection
+        java.util.Set<java.util.UUID> refs;
     }
 }
