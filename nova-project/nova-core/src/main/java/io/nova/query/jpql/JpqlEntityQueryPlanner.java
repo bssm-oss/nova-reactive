@@ -60,8 +60,12 @@ public final class JpqlEntityQueryPlanner {
 
     /**
      * 엔티티 반환 SELECT의 {@code JOIN FETCH} 절들을 검증한다. fetch join의 owner는 루트 별칭이어야 하고
-     * relation은 루트 엔티티의 알려진 연관 property여야 한다. 위반 시 fail-fast한다. 검증만 하고 SQL에는
-     * 조인을 내보내지 않는다 — 지정 연관은 루트 조회 후 기존 배치 IN-query hydration으로 로드된다.
+     * relation은 루트 엔티티의 알려진 연관 property여야 한다. 위반 시 fail-fast한다.
+     * <p>
+     * <b>v1 의미(always-eager passthrough):</b> Nova는 매핑 연관을 기본 eager 로드하므로, JOIN FETCH 절은
+     * SQL 조인을 만들지 않고 <b>검증 역할과 명시적 의도 표현</b>에 그친다 — 실제 연관 로드는 루트 조회 후
+     * 기존 배치 IN-query hydration({@code findAll(entityType, spec)})이 담당하며, 이는 JOIN FETCH 없이도
+     * 동일하게 동작한다(cartesian 중복도 없음). EntityGraph와 동일한 always-eager 정합이다.
      */
     private void validateFetchJoins(JpqlStatement.Select select, EntityMetadata<?> rootMetadata) {
         for (JoinClause join : select.joins()) {

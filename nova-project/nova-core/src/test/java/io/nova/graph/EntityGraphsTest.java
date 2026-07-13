@@ -17,16 +17,22 @@ import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link EntityGraphs}가 {@code @NamedEntityGraph}/프로그램적 그래프를 fetch plan({@link FetchGroup})으로
- * 해석하는지, 지정 연관만 spec으로 담기는지, 미지원 조합에 fail-fast하는지 검증한다.
+ * 해석하는지 검증한다.
+ *
+ * <p>v1 의미는 always-eager다: 그래프는 명명 연관의 <b>배치 로드를 보장</b>하되 미명명 연관을 <b>제외하지
+ * 않는다</b>(Nova는 매핑 연관을 기본 eager 로드, 제외할 lazy 수단 없음). 따라서 {@code books}만 명명해도
+ * 해석된 FetchGroup 은 루트의 모든 to-one/to-many 연관(books + awards)을 담는다.
  */
 class EntityGraphsTest {
 
@@ -34,30 +40,31 @@ class EntityGraphsTest {
     private final EntityGraphs graphs = new EntityGraphs(factory);
 
     @Test
-    void namedGraphResolvesToFetchGroupWithOnlyNamedAttribute() {
+    void namedGraphBatchLoadsAllRootRelationsNotOnlyNamed() {
+        // withBooks 는 books 만 명명하지만, always-eager 라 awards 도 fetch plan 에 포함돼야 한다.
         EntityGraph<GraphAuthor> graph = graphs.named(GraphAuthor.class, "GraphAuthor.withBooks");
         assertEquals("GraphAuthor.withBooks", graph.name());
         assertSame(GraphAuthor.class, graph.rootType());
-        assertEquals(List.of("books"), graph.attributeNames());
+        assertEquals(List.of("books"), graph.attributeNames(), "명명된 속성은 books 하나뿐");
 
         FetchGroup<GraphAuthor> group = graph.toFetchGroup();
-        assertEquals(1, group.specs().size());
-        FetchGroup.FetchSpec<GraphAuthor, ?> spec = group.specs().get(0);
-        assertSame(GraphBook.class, spec.childType());
-        assertEquals("author_id", spec.childForeignKeyColumn());
-        assertFalse(spec.single(), "@OneToMany 는 list-기반 spec");
+        Set<Class<?>> childTypes = group.specs().stream()
+                .map(FetchGroup.FetchSpec::childType).collect(Collectors.toSet());
+        assertEquals(Set.of(GraphBook.class, GraphAward.class), childTypes,
+                "그래프는 미명명 awards 도 제외하지 않는다(always-eager, graph ⊇ default)");
     }
 
     @Test
-    void programmaticBuilderResolvesNamedRelationOnly() {
-        // GraphAuthor 는 books(@OneToMany) 하나뿐이지만, 명시하지 않으면 spec 이 비어야 한다.
+    void programmaticGraphAlwaysCoversRootRelations() {
+        // 빈 그래프여도 always-eager 라 루트 연관 전체를 담는다(default eager 와 최소 동등).
         EntityGraph<GraphAuthor> empty = graphs.building(GraphAuthor.class).build();
-        assertTrue(empty.toFetchGroup().specs().isEmpty(),
-                "빈 그래프는 어떤 연관도 fetch spec 으로 담지 않는다");
+        assertEquals(2, empty.toFetchGroup().specs().size());
 
-        EntityGraph<GraphAuthor> withBooks =
+        EntityGraph<GraphAuthor> named =
                 graphs.building(GraphAuthor.class).addAttributeNodes("books").build();
-        assertEquals(1, withBooks.toFetchGroup().specs().size());
+        assertEquals(2, named.toFetchGroup().specs().size(),
+                "books 만 명명해도 awards 포함 — 명명이 로드를 축소하지 않는다");
+        assertEquals(List.of("books"), named.attributeNames());
     }
 
     @Test
@@ -76,10 +83,10 @@ class EntityGraphsTest {
     }
 
     @Test
-    void manyToManyAttributeFailsFast() {
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> graphs.building(FkStudent.class).addAttributeNodes("courses").build());
-        assertTrue(ex.getMessage().contains("@ManyToMany"));
+    void manyToManyAttributeIsAllowedForConsistencyWithJoinFetch() {
+        // JOIN FETCH 가 M2M 연관을 수용하므로 EntityGraph 도 거부하지 않는다(두 진입점 정합).
+        // M2M 로드는 findAll/findById(FetchGroup) 의 M2M hydration 이 담당한다.
+        assertDoesNotThrow(() -> graphs.building(FkStudent.class).addAttributeNodes("courses").build());
     }
 
     @Test
@@ -109,11 +116,23 @@ class EntityGraphsTest {
         private Long id;
         @OneToMany(targetEntity = GraphBook.class, mappedBy = "author")
         private List<GraphBook> books;
+        @OneToMany(targetEntity = GraphAward.class, mappedBy = "author")
+        private List<GraphAward> awards;
     }
 
     @Entity
     @Table(name = "graph_book")
     public static class GraphBook {
+        @Id
+        private Long id;
+        @ManyToOne(targetEntity = GraphAuthor.class)
+        @JoinColumn(name = "author_id")
+        private GraphAuthor author;
+    }
+
+    @Entity
+    @Table(name = "graph_award")
+    public static class GraphAward {
         @Id
         private Long id;
         @ManyToOne(targetEntity = GraphAuthor.class)

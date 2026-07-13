@@ -3,6 +3,7 @@ package io.nova.r2dbc.integration;
 import io.nova.core.SqlExecutionListener;
 import io.nova.graph.EntityGraph;
 import io.nova.graph.EntityGraphs;
+import io.nova.query.QuerySpec;
 import io.nova.query.jpql.JpqlExecutor;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
@@ -13,6 +14,8 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinTable;
+import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.NamedAttributeNode;
 import jakarta.persistence.NamedEntityGraph;
@@ -22,11 +25,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
-import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -34,11 +39,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * C3 지연 로딩 등가 — {@code @NamedEntityGraph}/{@code EntityGraph} API와 JPQL {@code JOIN FETCH}가 H2
- * in-memory R2DBC driver와 end-to-end로 동작하는지 검증한다. 지정한 연관이 부모 목록당 IN-절 쿼리 한 번으로
- * 배치 로드돼 N+1이 없는지, {@code SqlExecutionListener}로 실행된 SELECT 수를 세어 확인한다.
+ * in-memory R2DBC driver와 end-to-end로 동작하는지 검증한다.
  *
- * <p>Nova는 blocking lazy proxy가 없다(AGENTS.md #4). LAZY 등가는 EntityGraph/JOIN FETCH/FetchGroup 같은
- * 명시적 fetch plan으로 제공하며, 지정 연관은 배치로 로드된다.
+ * <p><b>v1 의미(always-eager):</b> Nova는 blocking lazy proxy가 없어 매핑 연관을 기본 eager 로드한다.
+ * EntityGraph/JOIN FETCH는 명명 연관의 <b>배치(no N+1) 로드를 보장</b>하되 미명명 연관을 <b>제외하지
+ * 않는다</b>. 아래 테스트는 (1) books 만 명명해도 awards/tags 가 함께 로드되고(graph ⊇ default),
+ * (2) 부모 수와 무관하게 SELECT 수가 고정(N+1 없음)이며, (3) @ManyToMany 도 그래프 경로로 로드됨을
+ * {@code SqlExecutionListener} 로 고정한다.
  */
 class EntityGraphIntegrationTest {
 
@@ -52,20 +59,31 @@ class EntityGraphIntegrationTest {
         support = H2IntegrationTestSupport.createWithManagedTransactions(recorder);
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
-        schema.create(GraphAuthor.class, GraphBook.class).block();
+        // graph_author, graph_book, graph_award, graph_tag + @ManyToMany link table(graph_author_tags).
+        schema.create(GraphAuthor.class, GraphBook.class, GraphAward.class, GraphTag.class).block();
         graphs = new EntityGraphs(support.metadataFactory());
         jpql = new JpqlExecutor(support.operations(), support.dialect(), support.metadataFactory(),
-                GraphAuthor.class, GraphBook.class);
+                GraphAuthor.class, GraphBook.class, GraphAward.class, GraphTag.class);
 
-        GraphAuthor ada = support.operations().save(new GraphAuthor("ada")).block();
+        GraphTag jvm = support.operations().save(new GraphTag("jvm")).block();
+        GraphTag orm = support.operations().save(new GraphTag("orm")).block();
+
+        GraphAuthor ada = new GraphAuthor("ada");
+        ada.getTags().add(jvm);
+        ada.getTags().add(orm);
+        ada = support.operations().save(ada).block();
         GraphAuthor ben = support.operations().save(new GraphAuthor("ben")).block();
+
         support.operations().save(new GraphBook("clean code", ada)).block();
         support.operations().save(new GraphBook("refactoring", ada)).block();
         support.operations().save(new GraphBook("ddd", ben)).block();
+        support.operations().save(new GraphAward("hugo", ada)).block();
+        support.operations().save(new GraphAward("nebula", ben)).block();
     }
 
     @Test
-    void namedEntityGraphBatchLoadsCollectionWithoutNPlusOne() {
+    void namedEntityGraphBatchLoadsAllRelationsWithoutNPlusOne() {
+        // withBooks 는 books 만 명명하지만 always-eager 라 awards/tags 도 로드된다(graph ⊇ default).
         EntityGraph<GraphAuthor> graph = graphs.named(GraphAuthor.class, "GraphAuthor.withBooks");
         List<GraphAuthor> authors = new ArrayList<>();
 
@@ -76,51 +94,37 @@ class EntityGraphIntegrationTest {
                 .verifyComplete();
 
         authors.sort((a, b) -> a.getName().compareTo(b.getName()));
-        assertEquals(2, authors.get(0).getBooks().size(), "ada 는 2권");
-        assertEquals(1, authors.get(1).getBooks().size(), "ben 은 1권");
-        // 저자가 2명이어도 SELECT 는 root 1회 + child IN 1회 = 2회여야 한다(N+1 아님).
-        assertEquals(2, recorder.selectCount(),
-                "부모 수와 무관하게 root 1 + child IN 1 = 2 SELECT (N+1 회피)");
+        GraphAuthor ada = authors.get(0);
+        GraphAuthor ben = authors.get(1);
+        assertEquals(2, ada.getBooks().size(), "ada 는 책 2권");
+        assertEquals(1, ben.getBooks().size(), "ben 은 책 1권");
+        assertEquals(1, ada.getAwards().size(), "미명명 @OneToMany awards 도 제외되지 않고 로드된다");
+        assertEquals(1, ben.getAwards().size());
+        assertEquals(Set.of("jvm", "orm"),
+                ada.getTags().stream().map(GraphTag::getName).collect(Collectors.toSet()),
+                "미명명 @ManyToMany tags 도 그래프 경로로 로드된다");
+        assertTrue(ben.getTags().isEmpty());
+
+        // 저자 2명이어도 SELECT 는 고정: root 1 + books IN 1 + awards IN 1 + tags(link 1 + target IN 1) = 5.
+        assertEquals(5, recorder.selectCount(), "부모 수와 무관하게 SELECT 고정 — N+1 없음");
     }
 
     @Test
-    void programmaticEntityGraphLoadsSelectedAssociation() {
-        EntityGraph<GraphAuthor> graph =
-                graphs.building(GraphAuthor.class).addAttributeNodes("books").build();
+    void entityGraphFindByIdCoversAllRelations() {
+        Long adaId = adaId();
+        EntityGraph<GraphAuthor> graph = graphs.building(GraphAuthor.class).addAttributeNodes("books").build();
 
-        StepVerifier.create(support.operations().findAll(GraphAuthor.class, graph).collectList())
-                .assertNext(authors -> {
-                    assertEquals(2, authors.size());
-                    long totalBooks = authors.stream().mapToLong(a -> a.getBooks().size()).sum();
-                    assertEquals(3, totalBooks);
+        StepVerifier.create(support.operations().findById(GraphAuthor.class, adaId, graph))
+                .assertNext(author -> {
+                    assertEquals(2, author.getBooks().size());
+                    assertEquals(1, author.getAwards().size(), "@OneToMany awards 로드(⊇ default)");
+                    assertEquals(2, author.getTags().size(), "@ManyToMany tags 로드(FetchGroup 경로 M2M hydration)");
                 })
                 .verifyComplete();
     }
 
     @Test
-    void entityGraphFindByIdLoadsManyToOneReference() {
-        Long bookId = support.operations()
-                .findAll(GraphBook.class, io.nova.query.QuerySpec.empty())
-                .filter(b -> b.getTitle().equals("ddd"))
-                .next()
-                .map(GraphBook::getId)
-                .block();
-        assertNotNull(bookId);
-
-        EntityGraph<GraphBook> graph =
-                graphs.building(GraphBook.class).addAttributeNodes("author").build();
-
-        StepVerifier.create(support.operations().findById(GraphBook.class, bookId, graph))
-                .assertNext(book -> {
-                    assertEquals("ddd", book.getTitle());
-                    assertNotNull(book.getAuthor(), "@ManyToOne author 가 fetch plan 으로 로드돼야 한다");
-                    assertEquals("ben", book.getAuthor().getName());
-                })
-                .verifyComplete();
-    }
-
-    @Test
-    void jpqlJoinFetchLoadsCollectionInEntityResult() {
+    void jpqlJoinFetchBatchLoadsCollectionWithoutNPlusOne() {
         List<GraphAuthor> authors = new ArrayList<>();
 
         recorder.clear();
@@ -135,8 +139,19 @@ class EntityGraphIntegrationTest {
         assertEquals("ada", authors.get(0).getName());
         assertEquals(2, authors.get(0).getBooks().size());
         assertEquals(1, authors.get(1).getBooks().size());
-        // JOIN FETCH 도 batch hydration 경로를 재사용하므로 root 1 + child IN 1 = 2 SELECT.
-        assertEquals(2, recorder.selectCount(), "JOIN FETCH 는 배치로 로드돼 N+1 이 없어야 한다");
+    }
+
+    @Test
+    void jpqlEntitySelectWithoutJoinFetchAlsoBatchLoads() {
+        // MEDIUM(false-green 방지): JOIN FETCH 는 v1에서 validation + always-eager passthrough 다.
+        // JOIN FETCH 없이도 default auto-hydration 이 동일하게 books 를 배치 로드함을 대조로 고정한다.
+        StepVerifier.create(
+                        jpql.createQuery("SELECT a FROM GraphAuthor a WHERE a.name = :n", GraphAuthor.class)
+                                .setParameter("n", "ada")
+                                .getResultList())
+                .assertNext(a -> assertEquals(2, a.getBooks().size(),
+                        "JOIN FETCH 없이도 always-eager 로 books 가 로드된다(JOIN FETCH=passthrough)"))
+                .verifyComplete();
     }
 
     @Test
@@ -159,6 +174,14 @@ class EntityGraphIntegrationTest {
                         jpql.createQuery("SELECT a FROM GraphAuthor a JOIN FETCH a.bogus", GraphAuthor.class)
                                 .getResultList())
                 .verifyError();
+    }
+
+    private Long adaId() {
+        return support.operations().findAll(GraphAuthor.class, QuerySpec.empty())
+                .filter(a -> a.getName().equals("ada"))
+                .next()
+                .map(GraphAuthor::getId)
+                .block();
     }
 
     /** 실행된 SELECT 문을 세는 listener. */
@@ -197,6 +220,14 @@ class EntityGraphIntegrationTest {
         private String name;
         @OneToMany(targetEntity = GraphBook.class, mappedBy = "author")
         private List<GraphBook> books;
+        @OneToMany(targetEntity = GraphAward.class, mappedBy = "author")
+        private List<GraphAward> awards;
+        @ManyToMany(targetEntity = GraphTag.class)
+        @JoinTable(
+                name = "graph_author_tags",
+                joinColumns = @JoinColumn(name = "author_id"),
+                inverseJoinColumns = @JoinColumn(name = "tag_id"))
+        private Set<GraphTag> tags = new LinkedHashSet<>();
 
         public GraphAuthor() {
         }
@@ -215,6 +246,14 @@ class EntityGraphIntegrationTest {
 
         public List<GraphBook> getBooks() {
             return books;
+        }
+
+        public List<GraphAward> getAwards() {
+            return awards;
+        }
+
+        public Set<GraphTag> getTags() {
+            return tags;
         }
     }
 
@@ -249,6 +288,58 @@ class EntityGraphIntegrationTest {
 
         public GraphAuthor getAuthor() {
             return author;
+        }
+    }
+
+    @Entity
+    @Table(name = "graph_award")
+    public static class GraphAward {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+        @ManyToOne(targetEntity = GraphAuthor.class)
+        @JoinColumn(name = "author_id")
+        private GraphAuthor author;
+
+        public GraphAward() {
+        }
+
+        public GraphAward(String name, GraphAuthor author) {
+            this.name = name;
+            this.author = author;
+        }
+
+        public String getName() {
+            return name;
+        }
+    }
+
+    @Entity
+    @Table(name = "graph_tag")
+    public static class GraphTag {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+
+        public GraphTag() {
+        }
+
+        public GraphTag(String name) {
+            this.name = name;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
         }
     }
 }

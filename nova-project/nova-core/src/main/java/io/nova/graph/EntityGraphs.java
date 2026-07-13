@@ -4,10 +4,8 @@ import io.nova.fetch.AnnotationFetchGroupBuilder;
 import io.nova.fetch.FetchGroup;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
-import io.nova.metadata.PersistentProperty;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 
@@ -15,13 +13,15 @@ import java.util.Objects;
  * {@link EntityGraph} 팩토리다. JPA의 {@code EntityManagerFactory.createEntityGraph(...)} /
  * {@code getEntityGraph(name)}에 해당하는 진입점을 리액티브 등가로 제공한다.
  *
- * <p>메타데이터를 알기 때문에 {@code @NamedEntityGraph} 또는 프로그램적으로 지정한 속성 이름을
- * {@link FetchGroup} spec으로 해석한다. 지원하는 연관은 {@link AnnotationFetchGroupBuilder}가 다루는
- * {@code @OneToMany}/{@code @ManyToOne}/inverse {@code @OneToOne}뿐이다. {@code @ManyToMany}/
- * {@code @ElementCollection}, 중첩 서브그래프(depth&gt;1), 미지의 속성은 조용히 무시하지 않고 fail-fast한다.
+ * <p><b>v1 의미(always-eager 정합):</b> Nova는 blocking lazy proxy가 없어 매핑 연관을 기본 eager 로드한다.
+ * 따라서 EntityGraph는 "명명 연관을 <b>제외</b>하고 나머지를 lazy로 남기는" JPA fetch-graph 의미가 아니라,
+ * "명명(및 매핑된 모든) 연관의 <b>배치(no N+1) 로드를 보장</b>하는" plan이다. 미명명 연관도 기본 eager라
+ * 함께 로드된다(제외할 lazy 수단이 없음). 즉 그래프로 조회한 결과는 default eager 조회와 최소 동등 이상이다.
  *
- * <p>기본 속성(non-relation)을 그래프에 지정하는 것은 허용하되 no-op이다 — 기본 컬럼은 루트 SELECT에서
- * 이미 로드되므로 별도 fetch가 필요 없다.
+ * <p>이 팩토리는 그래프에 명명된 속성이 실제로 존재하는지 검증(typo fail-fast)하고, 중첩 서브그래프
+ * (depth&gt;1)는 flat {@link FetchGroup} 경로로 표현할 수 없어 fail-fast한다. 기본 속성/연관 어느 쪽을
+ * 명명해도 허용한다 — 연관 fetch는 {@code findAll}/{@code findById}의 배치 hydration이 담당한다
+ * (JPQL {@code JOIN FETCH}가 연관을 수용하는 것과 정합).
  */
 public final class EntityGraphs {
 
@@ -39,7 +39,10 @@ public final class EntityGraphs {
     public <T> EntityGraph<T> named(Class<T> rootType, String graphName) {
         Objects.requireNonNull(rootType, "rootType must not be null");
         Objects.requireNonNull(graphName, "graphName must not be null");
-        NamedEntityGraphDefinition definition = NamedEntityGraphReader.find(rootType, graphName)
+        // hub factory를 실제 접근점으로 사용한다(@NamedEntityGraph 읽기는 factory가 노출).
+        NamedEntityGraphDefinition definition = metadataFactory.entityGraphDefinitions(rootType).stream()
+                .filter(g -> g.name().equals(graphName))
+                .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException(
                         "No @NamedEntityGraph named '" + graphName + "' declared on "
                                 + rootType.getName() + " (or its superclasses)"));
@@ -58,7 +61,6 @@ public final class EntityGraphs {
     private <T> EntityGraph<T> resolve(Class<T> rootType, String name, List<AttributeNode> nodes) {
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(rootType);
         List<String> attributeNames = new ArrayList<>(nodes.size());
-        LinkedHashSet<String> relationNames = new LinkedHashSet<>();
         for (AttributeNode node : nodes) {
             String attribute = node.attributeName();
             attributeNames.add(attribute);
@@ -68,22 +70,17 @@ public final class EntityGraphs {
                                 + node.subgraphName() + "') is not supported in v1; declare a flat EntityGraph. "
                                 + "Deeper fetch depth has no equivalent in Nova's flat FetchGroup batch path.");
             }
-            PersistentProperty property = metadata.findProperty(attribute)
+            // 존재 검증(typo fail-fast)만 하고 종류는 제한하지 않는다 — 기본/연관 어느 쪽이든 허용한다
+            // (@ManyToMany/@ElementCollection 포함, JOIN FETCH 수용과 정합). 연관 로드는 findAll/findById의
+            // 배치 hydration이 담당하며, Nova는 always-eager라 명명 연관을 배제하지 않는다.
+            metadata.findProperty(attribute)
                     .orElseThrow(() -> new IllegalArgumentException(
                             "EntityGraph attribute '" + attribute + "' does not exist on "
                                     + rootType.getName()));
-            if (property.manyToMany() || property.elementCollection()) {
-                throw new IllegalArgumentException(
-                        "EntityGraph attribute '" + attribute + "' maps a @ManyToMany/@ElementCollection which is "
-                                + "not supported by the EntityGraph fetch plan in v1 (use the collection hydration "
-                                + "path via findAll/findById instead)");
-            }
-            if (property.manyToOne() || property.oneToMany() || property.inverseToOne()) {
-                relationNames.add(attribute);
-            }
-            // 그 외(기본/임베디드 컬럼)는 루트 SELECT에서 이미 로드되므로 no-op.
         }
-        FetchGroup<T> fetchGroup = fetchGroupBuilder.buildFor(rootType, relationNames);
+        // always-eager: 매핑된 모든 to-one/to-many 연관을 배치 fetch하는 group을 담는다(명명 연관 ⊆ 이 group).
+        // @ManyToMany/@ElementCollection 은 findAll/findById(FetchGroup) 경로의 M2M/EC hydration 이 로드한다.
+        FetchGroup<T> fetchGroup = fetchGroupBuilder.buildFor(rootType);
         return new EntityGraph<>(rootType, name, attributeNames, fetchGroup);
     }
 

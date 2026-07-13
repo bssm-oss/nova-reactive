@@ -340,13 +340,15 @@ public interface ReactiveEntityOperations {
     }
 
     /**
-     * {@link EntityGraph}(JPA {@code @NamedEntityGraph}/EntityGraph API의 리액티브 등가)로 지정된 연관을
-     * 배치 fetch하며 식별자로 단건 엔티티를 조회한다. EntityGraph는 이미 {@link FetchGroup}으로 해석돼 있으므로
-     * 이 default 메서드는 메타데이터 접근 없이 {@link #findById(Class, Object, FetchGroup)}에 위임한다 —
-     * 지정 연관은 부모당 IN-절 쿼리 한 번으로 로드돼 N+1이 없다.
+     * {@link EntityGraph}(JPA {@code @NamedEntityGraph}/EntityGraph API의 리액티브 등가)로 명명된 연관의
+     * 배치 로드를 보장하며 식별자로 단건 엔티티를 조회한다. EntityGraph는 이미 {@link FetchGroup}으로 해석돼
+     * 있으므로 이 default 메서드는 메타데이터 접근 없이 {@link #findById(Class, Object, FetchGroup)}에 위임한다 —
+     * 명명 연관은 부모당 IN-절 쿼리 한 번으로 로드돼 N+1이 없다.
      * <p>
-     * Nova는 blocking lazy proxy가 없다(AGENTS.md #4). LAZY 등가는 이런 명시적 fetch plan으로 제공하며,
-     * 여기서 지정하지 않은 연관을 진짜 지연 로딩(필드 접근 시 동기 DB 호출)하는 semantics는 지원하지 않는다.
+     * <b>v1 의미(always-eager):</b> Nova는 blocking lazy proxy가 없다(AGENTS.md #4). LAZY 등가는 이런 명시적
+     * fetch plan(배치 로드 보장)으로 제공한다. Nova는 매핑 연관을 기본 eager 로드하므로 그래프는 미명명 연관을
+     * <b>제외하지 않으며</b>(제외할 lazy 수단 없음) 결과는 default eager 조회와 최소 동등 이상이다. 지정하지 않은
+     * 연관을 진짜 지연 로딩(필드 접근 시 동기 DB 호출)하는 semantics는 지원하지 않는다.
      */
     default <T, ID> Mono<T> findById(Class<T> entityType, ID id, EntityGraph<T> entityGraph) {
         if (entityGraph == null) {
@@ -356,9 +358,10 @@ public interface ReactiveEntityOperations {
     }
 
     /**
-     * {@link EntityGraph}로 지정된 연관을 배치 fetch하며 주어진 타입의 모든 엔티티를 조회한다. EntityGraph가
-     * 담고 있는 해석된 {@link FetchGroup}으로 {@link #findAll(Class, FetchGroup)}에 위임한다 — 지정 연관은
-     * IN-절 쿼리 한 번으로 배치 로드돼 N+1이 없다.
+     * {@link EntityGraph}로 명명된 연관의 배치 로드를 보장하며 주어진 타입의 모든 엔티티를 조회한다.
+     * EntityGraph가 담고 있는 해석된 {@link FetchGroup}으로 {@link #findAll(Class, FetchGroup)}에 위임한다 —
+     * 명명 연관은 IN-절 쿼리 한 번으로 배치 로드돼 N+1이 없다. always-eager라 미명명 연관도 함께 로드된다
+     * (default eager 조회와 최소 동등 이상).
      */
     default <T> Flux<T> findAll(Class<T> entityType, EntityGraph<T> entityGraph) {
         if (entityGraph == null) {

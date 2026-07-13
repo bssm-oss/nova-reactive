@@ -2772,8 +2772,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         EntityMetadata<P> metadata = metadataFactory.getEntityMetadata(entityType);
         FetchGroup<P> merged = mergeWithAnnotationGroup(entityType, fetchGroup, metadata);
+        // 기본 findById와 동일하게 @ManyToMany/@ElementCollection도 hydrate해 FetchGroup 경로가 default eager와
+        // 최소 동등(⊇)이 되게 한다 — EntityGraph/FetchGroup으로 조회 시 M2M/EC 미로드로 default보다 적게
+        // 가져오던 비일관을 제거한다.
         return findByIdInternal(metadata, id)
-                .flatMap(parent -> hydrateChildren(List.of(parent), merged).thenReturn(parent));
+                .flatMap(parent -> hydrateChildren(List.of(parent), merged)
+                        .then(hydrateManyToMany(List.of(parent), metadata))
+                        .then(hydrateElementCollections(List.of(parent), metadata))
+                        .thenReturn(parent));
     }
 
     @Override
@@ -2787,9 +2793,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         EntityMetadata<P> metadata = metadataFactory.getEntityMetadata(entityType);
         FetchGroup<P> merged = mergeWithAnnotationGroup(entityType, fetchGroup, metadata);
+        // 기본 findAll과 동일하게 @ManyToMany/@ElementCollection도 hydrate해 FetchGroup 경로가 default eager와
+        // 최소 동등(⊇)이 되게 한다(위 findById와 동일한 일관성 보정).
         return findAllInternal(metadata, QuerySpec.empty())
                 .collectList()
-                .flatMapMany(parents -> hydrateChildren(parents, merged).thenMany(Flux.fromIterable(parents)));
+                .flatMapMany(parents -> hydrateChildren(parents, merged)
+                        .then(hydrateManyToMany(parents, metadata))
+                        .then(hydrateElementCollections(parents, metadata))
+                        .thenMany(Flux.fromIterable(parents)));
     }
 
     /**
