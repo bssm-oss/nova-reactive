@@ -194,8 +194,10 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     /**
-     * 현재 버전 값에 1을 더한 다음 값을 계산한다. {@code Long}, {@code Integer}, {@code Short}만
-     * 지원하며 {@code null}은 0으로 간주해 1을 반환한다.
+     * 낙관락 UPDATE의 SET 절에 바인딩할 <em>다음</em> 버전 값을 계산한다. 정수 타입({@code Long},
+     * {@code Integer}, {@code Short})은 현재 값에 1을 더하며({@code null}은 0으로 간주해 1을 반환),
+     * 시간 타입({@code java.time.LocalDateTime})은 현재 시각으로 갱신한다(증분 대신 now()). WHERE 절은
+     * 호출부가 {@code current}(=old)로 비교하므로 정수/시간 모두 stale row를 정확히 걸러낸다.
      */
     protected Object nextVersion(PersistentProperty versionProperty, Object current) {
         Class<?> type = versionProperty.javaType();
@@ -210,6 +212,11 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         if (type == Short.class) {
             short value = current == null ? (short) 0 : ((Number) current).shortValue();
             return (short) (value + 1);
+        }
+        if (type == java.time.LocalDateTime.class) {
+            // 시간 버전: update 시 현재 시각으로 갱신한다. SET에 now를 바인딩하고, WHERE는 호출부가 old를
+            // 비교하므로 동시 update 충돌을 감지한다.
+            return java.time.LocalDateTime.now();
         }
         throw new IllegalStateException("Unsupported version type " + type.getName());
     }

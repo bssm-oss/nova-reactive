@@ -1,6 +1,7 @@
 package io.nova.core;
 
 import jakarta.persistence.EnumType;
+import jakarta.persistence.FlushModeType;
 import jakarta.persistence.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.fetch.AnnotationFetchGroupBuilder;
@@ -65,6 +66,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * nova-core가 소유하므로 어떤 트랜잭션 배선에서도 세션이 올바르게 얹힌다.
      */
     static final String SESSION_KEY = "io.nova.core.session";
+
+    /**
+     * 활성 {@link jakarta.persistence.FlushModeType}를 Reactor {@code Context}에 보관하는 키
+     * ({@link ReactiveEntityManager#setFlushMode}가 세션 스코프에 심는다). {@link jakarta.persistence.FlushModeType#COMMIT}이면
+     * 세션이 있어도 쿼리 전 auto-flush를 억제하고 commit 시에만 flush한다. 키가 없으면
+     * {@link jakarta.persistence.FlushModeType#AUTO}(기본, 쿼리 전 auto-flush)로 동작한다 — operations를 EM 없이
+     * 직접 쓰는 기존 경로의 하위호환을 보존한다.
+     */
+    static final String FLUSH_MODE_KEY = "io.nova.core.flushMode";
 
     private final EntityMetadataFactory metadataFactory;
     private final Dialect dialect;
@@ -1455,7 +1465,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // 세션이 있으면 SELECT 전 auto-flush(읽기 일관성)하고, 결과를 identity map에 편입(같은 PK=같은 인스턴스).
             Mono<T> base = session.isEmpty()
                     ? findByIdInternal(metadata, id)
-                    : autoFlushIfSession(session)
+                    : autoFlushIfSession(ctx, session)
                             .then(findByIdInternal(metadata, id).map(entity -> manage(session, entity)));
             if (!metadata.hasRelationProperties()) {
                 return base;
@@ -1477,7 +1487,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Optional<PersistenceSession> session = currentSession(ctx);
             Flux<T> base = session.isEmpty()
                     ? findAllInternal(metadata, querySpec)
-                    : autoFlushIfSession(session)
+                    : autoFlushIfSession(ctx, session)
                             .thenMany(findAllInternal(metadata, querySpec).map(entity -> manage(session, entity)));
             if (!metadata.hasRelationProperties()) {
                 return base;
@@ -1495,10 +1505,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
-     * 세션이 있으면 flush를, 없으면 no-op({@link Mono#empty()})을 반환한다. SELECT 전 auto-flush 진입점.
+     * 세션이 있고 FlushMode가 AUTO이면 flush를, 아니면 no-op({@link Mono#empty()})을 반환한다. SELECT 전
+     * auto-flush 진입점. FlushMode.COMMIT이 컨텍스트에 있으면 세션이 있어도 쿼리 전 flush를 억제한다
+     * (commit 시점 flush는 별도 경로가 담당하므로 보류 변경은 유실되지 않는다).
      */
-    private Mono<Void> autoFlushIfSession(Optional<PersistenceSession> session) {
-        return session.map(this::flush).orElseGet(Mono::empty);
+    private Mono<Void> autoFlushIfSession(ContextView ctx, Optional<PersistenceSession> session) {
+        if (session.isEmpty()) {
+            return Mono.empty();
+        }
+        FlushModeType flushMode = ctx.getOrDefault(FLUSH_MODE_KEY, FlushModeType.AUTO);
+        if (flushMode == FlushModeType.COMMIT) {
+            return Mono.empty();
+        }
+        return flush(session.get());
     }
 
     /**
@@ -3701,6 +3720,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (type == Short.class) {
             return (short) 0;
         }
+        if (type == java.time.LocalDateTime.class) {
+            // 시간 버전의 초기값: INSERT 시점의 현재 시각(정수 버전의 0에 대응).
+            return java.time.LocalDateTime.now();
+        }
         throw new IllegalStateException("Unsupported version type " + type.getName());
     }
 
@@ -3741,6 +3764,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (type == Short.class) {
             short value = current == null ? (short) 0 : ((Number) current).shortValue();
             return (short) (value + 1);
+        }
+        if (type == java.time.LocalDateTime.class) {
+            // 시간 버전: UPDATE 성공 후 in-memory entity의 version을 현재 시각으로 갱신한다. 낙관락 충돌 감지는
+            // SQL WHERE가 old(current) 값으로 비교하므로 정확하다. 이 writeback 값은 렌더러가 SET에 바인딩한
+            // now()와 마이크로초 단위로 다를 수 있으나, 충돌 감지가 old 기준이라 동시성 정확성에는 영향이 없다
+            // (같은 인스턴스를 reload 없이 연속 update하면 두 번째 update가 안전하게 실패할 수 있다).
+            return java.time.LocalDateTime.now();
         }
         throw new IllegalStateException("Unsupported version type " + type.getName());
     }

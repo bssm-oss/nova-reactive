@@ -10,6 +10,7 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 
 /**
  * H2 in-memory 통합 테스트에서 공용으로 사용하는 entity 정의 모음이다.
@@ -186,6 +187,54 @@ final class IntegrationFixtures {
         }
 
         Long getVersion() {
+            return version;
+        }
+    }
+
+    /**
+     * 시간 {@code @Version}(LocalDateTime) optimistic locking 검증용 entity. save 시 현재 시각으로
+     * 초기화하고 update 시 현재 시각으로 갱신하며, WHERE는 old 값을 비교해 동시 update 충돌을 감지한다.
+     * IDENTITY id로 INSERT 분기를 그대로 검증한다.
+     */
+    @Entity
+    @Table(name = "timestamp_versioned_accounts")
+    static class TimestampVersionedAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "email_address")
+        private String email;
+
+        @Version
+        private LocalDateTime version;
+
+        TimestampVersionedAccount() {
+        }
+
+        TimestampVersionedAccount(String email) {
+            this.email = email;
+        }
+
+        TimestampVersionedAccount(Long id, String email, LocalDateTime version) {
+            this.id = id;
+            this.email = email;
+            this.version = version;
+        }
+
+        Long getId() {
+            return id;
+        }
+
+        void setEmail(String email) {
+            this.email = email;
+        }
+
+        String getEmail() {
+            return email;
+        }
+
+        LocalDateTime getVersion() {
             return version;
         }
     }

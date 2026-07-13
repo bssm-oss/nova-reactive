@@ -1,7 +1,10 @@
 package io.nova.core;
 
+import jakarta.persistence.FlushModeType;
+import jakarta.persistence.LockModeType;
 import reactor.core.publisher.Mono;
 
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -111,4 +114,78 @@ public interface ReactiveEntityManager {
      * 콜백을 실행한다. 트랜잭션/영속성 세션은 켜지 않으므로 identity map/dirty 의미는 적용되지 않는다.
      */
     <R> Mono<R> inReadSession(Function<ReactiveEntityManager, Mono<R>> work);
+
+    // ---------------------------------------------------------------------------------------------
+    // JPA 잠금(LockModeType) / find 오버로드 / FlushMode 계층 (Batch D)
+    // 모두 additive default 메서드이며, 기본 구현은 관례에 따라 UnsupportedOperationException을 발행하거나
+    // 안전한 no-op으로 완료한다. {@link SimpleReactiveEntityManager}가 실제 동작을 override한다.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * {@link LockModeType}를 적용해 id 단건을 조회한다(JPA {@code find(Class, Object, LockModeType)}).
+     * PESSIMISTIC_WRITE/READ는 {@code FOR UPDATE}/{@code FOR SHARE} SELECT를, OPTIMISTIC 계열은 버전 검증
+     * (필요 시 강제 증분)을 적용한다. 버전 의미가 필요한 모드를 {@code @Version} 없는 엔티티에 요청하면
+     * {@link IllegalArgumentException}으로 fail-fast한다. 존재하지 않으면 빈 {@link Mono}.
+     */
+    default <T> Mono<T> find(Class<T> entityType, Object id, LockModeType lockMode) {
+        return Mono.error(new UnsupportedOperationException(
+                "find(Class, Object, LockModeType) is not supported by " + getClass().getName()));
+    }
+
+    /**
+     * properties 힌트를 받는 find 오버로드(JPA {@code find(Class, Object, Map)}). Nova는 현재 properties를
+     * <em>인식만 하고 무시</em>하며, 동작은 {@link #find(Class, Object)}와 동일하다. {@code null} properties도
+     * 허용한다(빈 맵과 동일 취급).
+     */
+    default <T> Mono<T> find(Class<T> entityType, Object id, Map<String, Object> properties) {
+        return find(entityType, id);
+    }
+
+    /**
+     * 이미 조회한(관리 중인) 엔티티에 주어진 {@link LockModeType}를 적용한다(JPA {@code lock}). OPTIMISTIC은
+     * 현재 버전이 DB와 일치하는지 검증하고, *_FORCE_INCREMENT는 버전을 강제 증분하며, PESSIMISTIC_*는 해당
+     * 행을 {@code FOR UPDATE}/{@code FOR SHARE}로 재조회해 잠근다. 버전 모드를 {@code @Version} 없는 엔티티에
+     * 요청하면 fail-fast한다. 세션 밖에서도 SQL 기반 잠금/검증은 발행되지만 identity/dirty 의미는 없다.
+     */
+    default Mono<Void> lock(Object entity, LockModeType lockMode) {
+        return Mono.error(new UnsupportedOperationException(
+                "lock(Object, LockModeType) is not supported by " + getClass().getName()));
+    }
+
+    /**
+     * 엔티티의 현재 잠금 모드를 반환한다(JPA {@code getLockMode}). Nova는 per-entity 잠금 상태를 추적하지
+     * 않으므로, 세션에서 관리 중이고 {@code @Version}을 가진 엔티티는 {@link LockModeType#OPTIMISTIC},
+     * 그 외에는 {@link LockModeType#NONE}으로 보고한다.
+     */
+    default Mono<LockModeType> getLockMode(Object entity) {
+        return Mono.error(new UnsupportedOperationException(
+                "getLockMode(Object) is not supported by " + getClass().getName()));
+    }
+
+    /**
+     * DB 재조회로 엔티티를 재적재({@link #refresh(Object)})한 뒤 주어진 {@link LockModeType}를 적용한다
+     * (JPA {@code refresh(Object, LockModeType)}).
+     */
+    default <T> Mono<T> refresh(T entity, LockModeType lockMode) {
+        return Mono.error(new UnsupportedOperationException(
+                "refresh(Object, LockModeType) is not supported by " + getClass().getName()));
+    }
+
+    /**
+     * 이 매니저의 {@link FlushModeType}를 설정한 매니저를 반환한다(JPA {@code setFlushMode}의 리액티브 등가).
+     * 리액티브 계약상 공유 매니저 인스턴스의 가변 상태를 피하기 위해, mutate 대신 지정한 모드를 가진 매니저를
+     * 돌려준다(functional). {@link FlushModeType#COMMIT}이면 세션 스코프 안에서 쿼리 전 auto-flush를 억제하고
+     * commit 시에만 flush한다. {@link FlushModeType#AUTO}(기본)는 쿼리 전 auto-flush를 유지한다.
+     */
+    default ReactiveEntityManager setFlushMode(FlushModeType flushMode) {
+        return this;
+    }
+
+    /**
+     * 이 매니저의 현재 {@link FlushModeType}를 반환한다(JPA {@code getFlushMode}). 기본은
+     * {@link FlushModeType#AUTO}.
+     */
+    default FlushModeType getFlushMode() {
+        return FlushModeType.AUTO;
+    }
 }
