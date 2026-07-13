@@ -11,6 +11,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
@@ -216,6 +218,36 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void rendersOneToManyJoinWithReversedOnOperands() {
+        // @OneToMany(mappedBy)는 parentPK = childFK 순서(@ManyToOne의 반대)로 ON을 렌더해야 한다.
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Department> d = cq.from(Department.class);
+        jakarta.persistence.criteria.Join<Department, Employee> emps = d.join("employees");
+        cq.multiselect(d.<String>get("name")).where(cb.gt(emps.<Integer>get("age"), 30));
+
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\" from \"department\" \"t0\" "
+                        + "inner join \"employee\" \"t1\" on \"t0\".\"id\" = \"t1\".\"dept_id\" "
+                        + "where \"t1\".\"age\" > ?",
+                aliased(cq).sql());
+    }
+
+    @Test
+    void rendersInverseOneToOneJoinResolvingFkByMappedBy() {
+        // inverse @OneToOne은 mappedBy로 owning FK(Profile.user_id)를 지목하고 parentPK = childFK로 렌더한다.
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<User> u = cq.from(User.class);
+        jakarta.persistence.criteria.Join<User, Profile> p = u.join("profile");
+        cq.multiselect(u.<String>get("name")).where(cb.equal(p.<String>get("bio"), "x"));
+
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\" from \"app_user\" \"t0\" "
+                        + "inner join \"profile\" \"t1\" on \"t0\".\"id\" = \"t1\".\"user_id\" "
+                        + "where \"t1\".\"bio\" = ?",
+                aliased(cq).sql());
+    }
+
+    @Test
     void rendersExistsSubquery() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);
@@ -341,6 +373,34 @@ class CriteriaSqlBuilderTest {
         private Long id;
         @Column(name = "name")
         private String name;
+        @OneToMany(targetEntity = Employee.class, mappedBy = "department")
+        private List<Employee> employees;
+    }
+
+    @Entity
+    @Table(name = "app_user")
+    public static class User {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+        // inverse @OneToOne — 컬럼 없는 마커, owning FK는 Profile.user(@JoinColumn user_id)에 있다.
+        @OneToOne(targetEntity = Profile.class, mappedBy = "user")
+        private Profile profile;
+    }
+
+    @Entity
+    @Table(name = "profile")
+    public static class Profile {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "bio")
+        private String bio;
+        @OneToOne(targetEntity = User.class)
+        @JoinColumn(name = "user_id")
+        private User user;
     }
 
     private static final class TestDialect implements Dialect {

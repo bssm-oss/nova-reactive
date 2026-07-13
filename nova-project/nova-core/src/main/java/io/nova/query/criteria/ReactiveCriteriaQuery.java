@@ -183,6 +183,12 @@ public final class ReactiveCriteriaQuery<T> {
      * 투영해 중복 제거(to-many join의 카티전 중복 흡수)하고 페이지 창을 적용한 뒤, (2) 그 id들로 기존
      * 하이드레이션 경로({@code findAll(Class, IN 절)})에 위임해 연관까지 완전한 엔티티를 로드하고 1단계
      * 순서로 재배열한다. 항상-eager 모델과 정합한다.
+     * <p>
+     * 전제/한계: 루트는 단일 컬럼 {@code @Id}여야 한다(복합키 루트는 id 투영 시점에 거부됨). 중복 제거와
+     * 재배열은 id 값의 {@code equals}/{@code hashCode}에 의존하므로 스칼라 단일 키를 가정한다. 또한
+     * 2단계 {@code IN (id...)}은 한 문장에 매치된 루트 개수만큼 bind 파라미터를 싣는다 — 매우 큰 결과
+     * (드라이버별 파라미터 한계, 예: PostgreSQL ~65535)에서는 {@code setMaxResults}로 페이지를 제한하는
+     * 것을 권장한다(청크 분할은 v1 범위 밖).
      */
     @SuppressWarnings("unchecked")
     private Flux<T> executeEntityWithJoins() {

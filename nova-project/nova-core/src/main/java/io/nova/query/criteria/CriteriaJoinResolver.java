@@ -49,7 +49,8 @@ final class CriteriaJoinResolver {
             return new JoinTarget(target, parentColumn, childColumn);
         }
         if (association.inverseToOne()) {
-            // inverse @OneToOne(mappedBy): 부모 PK → 대상 테이블의 owning FK 컬럼.
+            // inverse @OneToOne(mappedBy): 부모 PK → 대상 테이블의 owning FK 컬럼. mappedBy로 owning
+            // property를 정확히 지목한다(같은 owner 타입 참조가 여러 개여도 모호하지 않게).
             EntityMetadata<?> target = context.resolve(association.javaType());
             String parentColumn = singleIdColumn(ownerMetadata, association);
             String childColumn = owningFkColumnTo(target, ownerMetadata.entityType(), association);
@@ -81,13 +82,41 @@ final class CriteriaJoinResolver {
     }
 
     private static String owningFkColumnTo(EntityMetadata<?> targetMetadata, Class<?> ownerType, PersistentProperty association) {
+        // inverse @OneToOne은 mappedBy를 (oneToMany 필드 자리에) 보관한다. mappedBy로 owning property를
+        // 정확히 지목해 FK 컬럼을 얻는다 — 대상 엔티티가 같은 owner 타입으로 여러 owning 관계를 가져도
+        // 모호하지 않다.
+        String mappedBy = association.oneToManyMappedBy();
+        if (mappedBy != null && !mappedBy.isBlank()) {
+            PersistentProperty owning = targetMetadata.findProperty(mappedBy)
+                    .orElseThrow(() -> new CriteriaException("inverse @OneToOne '" + association.propertyName()
+                            + "' mappedBy='" + mappedBy + "' has no matching property on "
+                            + targetMetadata.entityType().getSimpleName()));
+            if (!owning.manyToOne()) {
+                throw new CriteriaException("inverse @OneToOne '" + association.propertyName()
+                        + "' mappedBy='" + mappedBy + "' does not point at an owning to-one FK on "
+                        + targetMetadata.entityType().getSimpleName());
+            }
+            return owning.columnName();
+        }
+        // mappedBy가 없는 경로(정상적인 inverse @OneToOne에서는 발생하지 않음)에서도 owner 타입 참조가
+        // 둘 이상이면 silent로 첫 매치를 고르지 않고 명시적으로 거부한다.
+        String resolved = null;
         for (PersistentProperty candidate : targetMetadata.manyToOneProperties()) {
             Class<?> referenced = candidate.manyToOneTargetType();
             if (referenced != null && referenced.isAssignableFrom(ownerType)) {
-                return candidate.columnName();
+                if (resolved != null) {
+                    throw new CriteriaException("inverse @OneToOne '" + association.propertyName()
+                            + "' is ambiguous: " + targetMetadata.entityType().getSimpleName()
+                            + " declares multiple owning to-one references to "
+                            + ownerType.getSimpleName() + "; specify mappedBy to disambiguate");
+                }
+                resolved = candidate.columnName();
             }
         }
-        throw new CriteriaException("inverse @OneToOne '" + association.propertyName()
-                + "' has no owning FK on " + targetMetadata.entityType().getSimpleName());
+        if (resolved == null) {
+            throw new CriteriaException("inverse @OneToOne '" + association.propertyName()
+                    + "' has no owning FK on " + targetMetadata.entityType().getSimpleName());
+        }
+        return resolved;
     }
 }
