@@ -620,30 +620,29 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             EntityMetadata<?> metadata, Object entity, Object deletedAt,
             boolean hasPrecomputedVersion, Object precomputedVersion) {
         PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteByEntity");
-        rejectCompositeId(metadata, "softDeleteByEntity");
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
-        if (versionProperty == null) {
-            return softDeleteById(metadata, metadata.idProperty().read(entity), deletedAt);
-        }
-        PersistentProperty idProperty = metadata.idProperty();
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("update ").append(table(metadata))
                 .append(" set ").append(column(softDeleteProperty)).append(" = ")
                 .append(dialect.bindMarkers().marker(context.nextIndex()));
         context.addBinding(softDeleteProperty.toColumnValue(deletedAt));
-        Object currentVersion = versionProperty.read(entity);
-        Object nextVersionValue = hasPrecomputedVersion
-                ? precomputedVersion
-                : nextVersion(versionProperty, currentVersion);
-        sql.append(", ").append(column(versionProperty)).append(" = ")
-                .append(dialect.bindMarkers().marker(context.nextIndex()));
-        context.addBinding(versionProperty.toColumnValue(nextVersionValue));
-        sql.append(" where ").append(column(idProperty)).append(" = ")
-                .append(dialect.bindMarkers().marker(context.nextIndex()));
-        context.addBinding(idProperty.toColumnValue(idProperty.read(entity)));
-        sql.append(" and ").append(column(versionProperty)).append(" = ")
-                .append(dialect.bindMarkers().marker(context.nextIndex()));
-        context.addBinding(versionProperty.toColumnValue(currentVersion));
+        Object currentVersion = null;
+        if (versionProperty != null) {
+            currentVersion = versionProperty.read(entity);
+            Object nextVersionValue = hasPrecomputedVersion
+                    ? precomputedVersion
+                    : nextVersion(versionProperty, currentVersion);
+            sql.append(", ").append(column(versionProperty)).append(" = ")
+                    .append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(versionProperty.toColumnValue(nextVersionValue));
+        }
+        // 단일 키는 c = ?, @EmbeddedId/@IdClass 복합키는 c1 = ? and c2 = ? — id 컴포넌트를 entity에서 직접 읽는다.
+        sql.append(" where ").append(idPredicateFromEntity(context, metadata, entity));
+        if (versionProperty != null) {
+            sql.append(" and ").append(column(versionProperty)).append(" = ")
+                    .append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(versionProperty.toColumnValue(currentVersion));
+        }
         sql.append(" and ").append(column(softDeleteProperty)).append(" is null");
         return new SqlStatement(sql.toString(), context.bindings());
     }
@@ -651,16 +650,13 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     @Override
     public SqlStatement softDeleteById(EntityMetadata<?> metadata, Object id, Object deletedAt) {
         PersistentProperty softDeleteProperty = requireSoftDeleteProperty(metadata, "softDeleteById");
-        rejectCompositeId(metadata, "softDeleteById");
-        PersistentProperty idProperty = metadata.idProperty();
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("update ").append(table(metadata))
                 .append(" set ").append(column(softDeleteProperty)).append(" = ")
                 .append(dialect.bindMarkers().marker(context.nextIndex()));
         context.addBinding(softDeleteProperty.toColumnValue(deletedAt));
-        sql.append(" where ").append(column(idProperty)).append(" = ")
-                .append(dialect.bindMarkers().marker(context.nextIndex()));
-        context.addBinding(idProperty.toColumnValue(id));
+        // 단일 키는 c = ?, @EmbeddedId/@IdClass 복합키는 c1 = ? and c2 = ? — id 값 객체에서 컴포넌트별로 꺼낸다.
+        sql.append(" where ").append(idPredicateFromIdObject(context, metadata, id));
         sql.append(" and ").append(column(softDeleteProperty)).append(" is null");
         return new SqlStatement(sql.toString(), context.bindings());
     }

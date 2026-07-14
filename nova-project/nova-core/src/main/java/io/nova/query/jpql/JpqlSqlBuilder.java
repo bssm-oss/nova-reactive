@@ -94,9 +94,14 @@ public final class JpqlSqlBuilder {
 
         // 각 절을 개별 버퍼로 렌더한다(묵시 조인은 렌더 중 수집된다). 최종 SQL 순서대로 렌더하므로 bind
         // 순서가 marker 위치와 정확히 일치한다.
+        // 상속 discriminator 제한(구체 서브타입 루트 + TREAT downcast)을 미리 수집해 WHERE에 병합한다.
+        // 렌더 순서(select → where → ...)를 유지하므로 bind marker 위치가 정확히 정렬된다.
+        List<DiscriminatorConstraint> constraints = collectDiscriminatorConstraints(ctx, select);
+
         int[] columns = {0};
         String selectSql = capture(ctx, () -> renderSelectionList(ctx, select.selectItems(), columns));
-        String whereSql = select.where() == null ? null : capture(ctx, () -> renderPredicate(ctx, select.where()));
+        String whereSql = (constraints.isEmpty() && select.where() == null)
+                ? null : capture(ctx, () -> renderWhereWithConstraints(ctx, constraints, select.where()));
         String groupSql = select.groupBy().isEmpty()
                 ? null : capture(ctx, () -> renderGroupByBody(ctx, select.groupBy()));
         String havingSql = select.having() == null
@@ -127,6 +132,7 @@ public final class JpqlSqlBuilder {
 
     public TranslatedSql buildUpdate(JpqlStatement.Update update) {
         EntityMetadata<?> metadata = resolver.resolve(update.rootEntity());
+        requireNoInheritanceForBulk(metadata, "UPDATE");
         String alias = requireBulkAlias(update.rootAlias(), update.rootEntity(), "UPDATE");
         // 벌크 UPDATE는 단일 테이블이므로 별칭을 SQL에 내보내지 않고 컬럼을 unqualified로 렌더한다
         // (표준 SQL/H2/PG/MySQL 모두 수용). 별칭은 필드 해석 목적으로만 스코프에 바인딩한다.
@@ -153,6 +159,7 @@ public final class JpqlSqlBuilder {
 
     public TranslatedSql buildDelete(JpqlStatement.Delete delete) {
         EntityMetadata<?> metadata = resolver.resolve(delete.rootEntity());
+        requireNoInheritanceForBulk(metadata, "DELETE");
         String alias = requireBulkAlias(delete.rootAlias(), delete.rootEntity(), "DELETE");
         Ctx ctx = new Ctx(new Scope(null));
         ctx.qualify = false;
@@ -164,6 +171,14 @@ public final class JpqlSqlBuilder {
             renderPredicate(ctx, delete.where());
         }
         return new TranslatedSql(ctx.sql.toString(), ctx.bindings, TranslatedSql.ResultKind.MUTATION, 0);
+    }
+
+    /** 벌크 UPDATE/DELETE는 discriminator 제한/다중 테이블을 v1에서 다루지 않으므로 상속 엔티티를 거부한다. */
+    private static void requireNoInheritanceForBulk(EntityMetadata<?> metadata, String kind) {
+        if (metadata.hasInheritance()) {
+            throw new JpqlException("Bulk " + kind + " over @Inheritance entity '"
+                    + metadata.entityType().getSimpleName() + "' is not supported in v1");
+        }
     }
 
     private static String requireBulkAlias(String alias, String entityName, String kind) {
@@ -412,6 +427,17 @@ public final class JpqlSqlBuilder {
                 renderSubquery(ctx, s.subquery());
                 ctx.sql.append(')');
             }
+            case Expression.Type t -> ctx.sql.append(discriminatorColumnRef(ctx, t.alias()));
+            case Expression.EntityTypeLiteral lit -> {
+                EntityMetadata<?> meta = resolver.resolve(lit.entityName());
+                if (!meta.hasInheritance()) {
+                    throw new JpqlException("TYPE(...) comparison against '" + lit.entityName()
+                            + "' requires an @Inheritance entity; it has no discriminator");
+                }
+                ctx.bind(new JpqlBinding.Literal(meta.inheritance().discriminatorBindValue()));
+                ctx.sql.append(marker(ctx));
+            }
+            case Expression.Treat tr -> ctx.sql.append(treatColumn(ctx, tr));
         }
     }
 
@@ -583,6 +609,22 @@ public final class JpqlSqlBuilder {
         child.bind(sub.rootAlias(), rootMeta);
         bindJoins(child, sub.joins());
 
+        // v1은 서브쿼리 안에 discriminator 제한을 주입하지 않는다(collectDiscriminatorConstraints는 outer
+        // SELECT에서만 돈다). 따라서 서브쿼리 root가 구체 서브타입이면 공유 물리 테이블이 필터 없이 풀려
+        // 다른 서브타입 행까지 매칭되고, 서브쿼리 안의 TYPE/TREAT도 discriminator 없이 downcast된다 —
+        // 조용한 오답 대신 명확히 fail-fast한다(Criteria join/subquery 경로와 동일한 정책).
+        if (rootMeta.hasInheritance() && !rootMeta.isInheritanceRoot()) {
+            throw new JpqlException("JPQL subquery over concrete subtype '"
+                    + rootMeta.entityType().getSimpleName() + "' is not supported in v1: the discriminator "
+                    + "restriction is not applied inside subqueries. Query the inheritance root in the subquery "
+                    + "and filter with TYPE(...) there, or restructure the query.");
+        }
+        if (usesPolymorphic(sub.selection()) || usesPolymorphic(sub.where()) || usesPolymorphic(sub.having())) {
+            throw new JpqlException("TYPE(...)/TREAT(...) inside a JPQL subquery is not supported in v1: the "
+                    + "discriminator restriction is not applied inside subqueries, so the downcast would silently "
+                    + "match other subtypes. Move the polymorphic condition to the top-level query.");
+        }
+
         Scope savedScope = ctx.scope;
         Block savedBlock = ctx.block;
         boolean savedQualify = ctx.qualify;
@@ -628,8 +670,12 @@ public final class JpqlSqlBuilder {
     // ----------------------------------------------------------------------------------------
 
     private String tableRef(EntityMetadata<?> metadata) {
-        if (metadata.hasInheritance() || metadata.hasSecondaryTables()) {
-            throw new JpqlException("JPQL over inheritance/secondary-table entity '"
+        // SINGLE_TABLE 상속은 모든 서브타입이 한 물리 테이블을 공유하므로 스칼라/집계 SELECT가 그 테이블을
+        // 직접 참조할 수 있다(구체 서브타입 루트/TREAT는 discriminator 제한을 별도로 붙인다). JOINED/
+        // TABLE_PER_CLASS(다중 테이블)와 @SecondaryTable은 단일 FROM으로 표현할 수 없어 v1에서 fail-fast한다.
+        if (metadata.hasSecondaryTables()
+                || (metadata.hasInheritance() && !metadata.inheritance().singleTable())) {
+            throw new JpqlException("JPQL over non-SINGLE_TABLE inheritance/secondary-table entity '"
                     + metadata.entityType().getSimpleName() + "' is not supported in v1 scalar/bulk queries");
         }
         String schema = metadata.schema();
@@ -719,6 +765,234 @@ public final class JpqlSqlBuilder {
             throw new JpqlException("Cannot assign the @Id field '" + field + "' in a bulk UPDATE");
         }
         return dialect.quote(property.columnName());
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Inheritance: TYPE / TREAT / discriminator
+    // ----------------------------------------------------------------------------------------
+
+    /** {@code TYPE(alias)} → 별칭 엔티티의 discriminator 컬럼 참조. SINGLE_TABLE 상속만 지원한다. */
+    private String discriminatorColumnRef(Ctx ctx, String alias) {
+        EntityMetadata<?> meta = ctx.scope.resolve(alias);
+        requireSingleTableInheritance(meta, "TYPE(" + alias + ")");
+        String col = dialect.quote(meta.inheritance().discriminatorColumn());
+        return ctx.qualify ? alias + "." + col : col;
+    }
+
+    /** {@code TREAT(alias AS Subtype).field} → 서브타입 속성 컬럼 참조(SINGLE_TABLE, 단일 세그먼트). */
+    private String treatColumn(Ctx ctx, Expression.Treat treat) {
+        EntityMetadata<?> baseMeta = ctx.scope.resolve(treat.alias());
+        EntityMetadata<?> subMeta = resolveTreatSubtype(baseMeta, treat.subtype());
+        if (treat.segments().isEmpty()) {
+            throw new JpqlException("TREAT(" + treat.alias() + " AS " + treat.subtype()
+                    + ") must be followed by an attribute in a scalar projection, e.g. TREAT(" + treat.alias()
+                    + " AS " + treat.subtype() + ").field");
+        }
+        if (treat.segments().size() != 1) {
+            throw new JpqlException("Multi-segment TREAT path 'TREAT(" + treat.alias() + " AS " + treat.subtype()
+                    + ")." + String.join(".", treat.segments()) + "' is not supported in v1");
+        }
+        return resolveColumn(ctx, treat.alias(), subMeta, treat.segments().get(0));
+    }
+
+    /** downcast 대상 서브타입 메타데이터를 해석하고 같은 SINGLE_TABLE 계층인지 검증한다. */
+    private EntityMetadata<?> resolveTreatSubtype(EntityMetadata<?> baseMeta, String subtypeName) {
+        requireSingleTableInheritance(baseMeta, "TREAT");
+        EntityMetadata<?> subMeta = resolver.resolve(subtypeName);
+        if (!subMeta.inheritance().present() || !subMeta.inheritance().sameHierarchy(baseMeta.inheritance())) {
+            throw new JpqlException("TREAT target '" + subtypeName + "' is not a subtype in the same inheritance "
+                    + "hierarchy as '" + baseMeta.entityType().getSimpleName() + "'");
+        }
+        return subMeta;
+    }
+
+    private static void requireSingleTableInheritance(EntityMetadata<?> meta, String context) {
+        if (!meta.hasInheritance()) {
+            throw new JpqlException(context + " requires an @Inheritance entity; '"
+                    + meta.entityType().getSimpleName() + "' is not polymorphic");
+        }
+        if (!meta.inheritance().singleTable()) {
+            throw new JpqlException(context + " is only supported for SINGLE_TABLE inheritance in v1; '"
+                    + meta.entityType().getSimpleName() + "' uses " + meta.inheritance().strategy());
+        }
+    }
+
+    /**
+     * 구체 서브타입 루트와 TREAT downcast가 유도하는 discriminator 제한을 수집한다. (별칭, discriminator 값)
+     * 기준으로 dedupe해 같은 제한을 중복 렌더하지 않는다.
+     */
+    private List<DiscriminatorConstraint> collectDiscriminatorConstraints(Ctx ctx, JpqlStatement.Select select) {
+        LinkedHashMap<String, DiscriminatorConstraint> byKey = new LinkedHashMap<>();
+        EntityMetadata<?> rootMeta = ctx.scope.resolve(select.rootAlias());
+        if (rootMeta.hasInheritance() && rootMeta.inheritance().singleTable() && !rootMeta.isInheritanceRoot()) {
+            byKey.putIfAbsent(constraintKey(select.rootAlias(), rootMeta.inheritance().discriminatorBindValue()),
+                    new DiscriminatorConstraint(select.rootAlias(),
+                            rootMeta.inheritance().discriminatorColumn(),
+                            rootMeta.inheritance().discriminatorBindValue()));
+        }
+        collectTreats(select, (alias, subtype) -> {
+            EntityMetadata<?> baseMeta = ctx.scope.resolve(alias);
+            EntityMetadata<?> subMeta = resolveTreatSubtype(baseMeta, subtype);
+            Object value = subMeta.inheritance().discriminatorBindValue();
+            byKey.putIfAbsent(constraintKey(alias, value),
+                    new DiscriminatorConstraint(alias, baseMeta.inheritance().discriminatorColumn(), value));
+        });
+        return new ArrayList<>(byKey.values());
+    }
+
+    private static String constraintKey(String alias, Object value) {
+        return alias + ' ' + value;
+    }
+
+    /** discriminator 제한(있으면)을 먼저 렌더하고 사용자 WHERE를 {@code and}로 이어 붙인다. */
+    private void renderWhereWithConstraints(Ctx ctx, List<DiscriminatorConstraint> constraints, Predicate where) {
+        boolean first = true;
+        for (DiscriminatorConstraint c : constraints) {
+            if (!first) {
+                ctx.sql.append(" and ");
+            }
+            String col = dialect.quote(c.column());
+            ctx.sql.append(ctx.qualify ? c.alias() + "." + col : col).append(" = ");
+            ctx.bind(new JpqlBinding.Literal(c.value()));
+            ctx.sql.append(marker(ctx));
+            first = false;
+        }
+        if (where != null) {
+            if (!first) {
+                ctx.sql.append(" and ");
+            }
+            renderPredicate(ctx, where);
+        }
+    }
+
+    /** select/where/having/order/group의 모든 식을 훑어 TREAT downcast(별칭, 서브타입)를 수집한다. */
+    private void collectTreats(JpqlStatement.Select select, java.util.function.BiConsumer<String, String> sink) {
+        for (SelectItem item : select.selectItems()) {
+            if (item.isConstructor()) {
+                for (Expression arg : item.constructorCall().arguments()) {
+                    walkTreats(arg, sink);
+                }
+            } else if (!item.isEntity()) {
+                walkTreats(item.expression(), sink);
+            }
+        }
+        walkTreats(select.where(), sink);
+        walkTreats(select.having(), sink);
+        for (OrderItem order : select.orderBy()) {
+            walkTreats(order.expression(), sink);
+        }
+        for (Expression.Path path : select.groupBy()) {
+            walkTreats(path, sink);
+        }
+    }
+
+    private void walkTreats(Expression expression, java.util.function.BiConsumer<String, String> sink) {
+        if (expression == null) {
+            return;
+        }
+        switch (expression) {
+            case Expression.Treat tr -> sink.accept(tr.alias(), tr.subtype());
+            case Expression.Arithmetic a -> {
+                walkTreats(a.left(), sink);
+                walkTreats(a.right(), sink);
+            }
+            case Expression.Aggregate agg -> walkTreats(agg.argument(), sink);
+            case Expression.FunctionCall fn -> fn.arguments().forEach(a -> walkTreats(a, sink));
+            case Expression.Cast cast -> walkTreats(cast.value(), sink);
+            case Expression.Case c -> {
+                for (WhenClause when : c.whens()) {
+                    walkTreats(when.condition(), sink);
+                    walkTreats(when.result(), sink);
+                }
+                walkTreats(c.elseResult(), sink);
+            }
+            default -> {
+                // Path/Literal/파라미터/Type/EntityTypeLiteral/ScalarSubquery: TREAT를 품지 않는다.
+            }
+        }
+    }
+
+    private void walkTreats(Predicate predicate, java.util.function.BiConsumer<String, String> sink) {
+        if (predicate == null) {
+            return;
+        }
+        switch (predicate) {
+            case Predicate.And and -> {
+                walkTreats(and.left(), sink);
+                walkTreats(and.right(), sink);
+            }
+            case Predicate.Or or -> {
+                walkTreats(or.left(), sink);
+                walkTreats(or.right(), sink);
+            }
+            case Predicate.Not not -> walkTreats(not.inner(), sink);
+            case Predicate.Comparison c -> {
+                walkTreats(c.left(), sink);
+                walkTreats(c.right(), sink);
+            }
+            case Predicate.Like like -> {
+                walkTreats(like.value(), sink);
+                walkTreats(like.pattern(), sink);
+            }
+            case Predicate.Between b -> {
+                walkTreats(b.value(), sink);
+                walkTreats(b.low(), sink);
+                walkTreats(b.high(), sink);
+            }
+            case Predicate.Null n -> walkTreats(n.value(), sink);
+            case Predicate.InList in -> {
+                walkTreats(in.value(), sink);
+                in.items().forEach(i -> walkTreats(i, sink));
+            }
+            case Predicate.InSubquery in -> walkTreats(in.value(), sink);
+            case Predicate.Exists ignored -> {
+                // 서브쿼리 내부의 TREAT는 v1 수집 범위 밖(rare); 서브쿼리 렌더가 필요 시 fail-fast한다.
+            }
+        }
+    }
+
+    /** 서브쿼리 스코프에 TYPE(...)/TREAT(...)가 등장하는지 검사한다(discriminator 미주입 → fail-fast 판정용). */
+    private static boolean usesPolymorphic(Expression expression) {
+        if (expression == null) {
+            return false;
+        }
+        return switch (expression) {
+            case Expression.Type ignored -> true;
+            case Expression.Treat ignored -> true;
+            case Expression.Arithmetic a -> usesPolymorphic(a.left()) || usesPolymorphic(a.right());
+            case Expression.Aggregate agg -> usesPolymorphic(agg.argument());
+            case Expression.FunctionCall fn -> fn.arguments().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
+            case Expression.Cast cast -> usesPolymorphic(cast.value());
+            case Expression.Case c -> c.whens().stream()
+                    .anyMatch(w -> usesPolymorphic(w.condition()) || usesPolymorphic(w.result()))
+                    || usesPolymorphic(c.elseResult());
+            // 중첩 서브쿼리는 자체 renderSubquery 호출에서 다시 검사된다.
+            default -> false;
+        };
+    }
+
+    private static boolean usesPolymorphic(Predicate predicate) {
+        if (predicate == null) {
+            return false;
+        }
+        return switch (predicate) {
+            case Predicate.And and -> usesPolymorphic(and.left()) || usesPolymorphic(and.right());
+            case Predicate.Or or -> usesPolymorphic(or.left()) || usesPolymorphic(or.right());
+            case Predicate.Not not -> usesPolymorphic(not.inner());
+            case Predicate.Comparison c -> usesPolymorphic(c.left()) || usesPolymorphic(c.right());
+            case Predicate.Like like -> usesPolymorphic(like.value()) || usesPolymorphic(like.pattern());
+            case Predicate.Between b ->
+                    usesPolymorphic(b.value()) || usesPolymorphic(b.low()) || usesPolymorphic(b.high());
+            case Predicate.Null n -> usesPolymorphic(n.value());
+            case Predicate.InList in ->
+                    usesPolymorphic(in.value()) || in.items().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
+            case Predicate.InSubquery in -> usesPolymorphic(in.value());
+            case Predicate.Exists ignored -> false;
+        };
+    }
+
+    /** 구체 서브타입/TREAT downcast가 유도하는 {@code discriminator = value} 제한. */
+    private record DiscriminatorConstraint(String alias, String column, Object value) {
     }
 
     private String marker(Ctx ctx) {

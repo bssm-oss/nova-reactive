@@ -8,8 +8,13 @@ import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import jakarta.persistence.Column;
+import jakarta.persistence.DiscriminatorColumn;
+import jakarta.persistence.DiscriminatorType;
+import jakarta.persistence.DiscriminatorValue;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Inheritance;
+import jakarta.persistence.InheritanceType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
@@ -32,7 +37,8 @@ class JpqlSqlBuilderTest {
     private final Dialect dialect = new TestDialect();
     private final EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
     private final JpqlEntityResolver resolver =
-            new JpqlEntityResolver(metadataFactory, List.of(Employee.class, Department.class, Company.class));
+            new JpqlEntityResolver(metadataFactory, List.of(Employee.class, Department.class, Company.class,
+                    Vehicle.class, Car.class, Truck.class));
     private final JpqlSqlBuilder builder = new JpqlSqlBuilder(dialect, resolver);
 
     private TranslatedSql scalar(String jpql) {
@@ -250,8 +256,108 @@ class JpqlSqlBuilderTest {
     }
 
     // ------------------------------------------------------------------------------------
+    // TYPE() / TREAT() polymorphism
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void rendersTypeEqualityAsDiscriminatorPredicate() {
+        TranslatedSql t = scalar("SELECT e.name FROM Vehicle e WHERE TYPE(e) = Car");
+        assertEquals(
+                "select e.\"name\" as \"c0\" from \"vehicle\" e where e.\"kind\" = ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void rendersTypeInAsDiscriminatorInList() {
+        TranslatedSql t = scalar("SELECT COUNT(e) FROM Vehicle e WHERE TYPE(e) IN (Car, Truck)");
+        assertEquals(
+                "select count(e.\"id\") as \"c0\" from \"vehicle\" e where e.\"kind\" in (?, ?)",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR"), new JpqlBinding.Literal("TRUCK")), t.bindings());
+    }
+
+    @Test
+    void rendersTreatProjectionWithDiscriminatorFilter() {
+        TranslatedSql t = scalar("SELECT TREAT(e AS Car).doors FROM Vehicle e");
+        assertEquals(
+                "select e.\"doors\" as \"c0\" from \"vehicle\" e where e.\"kind\" = ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void rendersConcreteSubtypeRootWithAutomaticDiscriminator() {
+        TranslatedSql t = scalar("SELECT c.doors FROM Car c");
+        assertEquals(
+                "select c.\"doors\" as \"c0\" from \"vehicle\" c where c.\"kind\" = ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void failsFastOnTypeForNonInheritanceEntity() {
+        JpqlException ex = assertThrows(JpqlException.class, () -> scalar("SELECT TYPE(e) FROM Employee e"));
+        assertTrue(ex.getMessage().contains("Inheritance"));
+    }
+
+    @Test
+    void failsFastOnTreatToUnrelatedType() {
+        assertThrows(JpqlException.class, () -> scalar("SELECT TREAT(e AS Truck).payload FROM Company e"));
+    }
+
+    @Test
+    void failsFastOnConcreteSubtypeAsSubqueryRoot() {
+        // 서브쿼리 안에서는 discriminator 제한이 주입되지 않으므로, 구체 서브타입 root는 공유 테이블을
+        // 필터 없이 풀어 Truck까지 매칭한다 — 조용한 오답 대신 fail-fast여야 한다.
+        JpqlException ex = assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE EXISTS (SELECT 1 FROM Car c WHERE c.doors > 0)"));
+        assertTrue(ex.getMessage().contains("subquery"));
+    }
+
+    @Test
+    void failsFastOnTreatInsideSubquery() {
+        JpqlException ex = assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE v.id IN (SELECT TREAT(w AS Car).doors FROM Vehicle w)"));
+        assertTrue(ex.getMessage().contains("subquery"));
+    }
+
+    @Test
+    void failsFastOnTypeInsideSubqueryPredicate() {
+        assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE v.id IN "
+                        + "(SELECT w.id FROM Vehicle w WHERE TYPE(w) = Car)"));
+    }
+
+    // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------
+
+    @Entity
+    @Table(name = "vehicle")
+    @Inheritance(strategy = InheritanceType.SINGLE_TABLE)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    public abstract static class Vehicle {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+    }
+
+    @Entity
+    @DiscriminatorValue("CAR")
+    public static class Car extends Vehicle {
+        @Column(name = "doors")
+        private int doors;
+    }
+
+    @Entity
+    @DiscriminatorValue("TRUCK")
+    public static class Truck extends Vehicle {
+        @Column(name = "payload")
+        private double payload;
+    }
 
     @Entity
     @Table(name = "employee")

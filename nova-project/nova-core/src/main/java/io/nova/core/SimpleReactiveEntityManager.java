@@ -10,13 +10,19 @@ import io.nova.query.LogicalOperator;
 import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
 import io.nova.query.CompoundPredicate;
+import io.nova.query.storedprocedure.NamedStoredProcedureRegistry;
+import io.nova.query.storedprocedure.ReactiveStoredProcedureQuery;
+import io.nova.query.storedprocedure.StoredProcedureParameterDefinition;
+import io.nova.query.storedprocedure.StoredProcedureRowMappers;
 import io.nova.exception.OptimisticLockingFailureException;
+import io.nova.sql.Dialect;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.FlushModeType;
 import jakarta.persistence.LockModeType;
 import reactor.core.publisher.Mono;
 import reactor.util.context.ContextView;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -43,16 +49,31 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
      * 심어 operations의 쿼리 전 auto-flush 동작을 제어한다.
      */
     private final FlushModeType flushMode;
+    /**
+     * 저장 프로시저 CALL 렌더링에 필요한 dialect. 이 collaborator 없이 만들어진 매니저(기존 2-arg 생성자)는
+     * SP 관련 메서드가 fail-fast 한다 — {@link Dialect}를 주입한 생성자로 만들어야 SP를 사용할 수 있다.
+     */
+    private final Dialect dialect;
 
     public SimpleReactiveEntityManager(
             ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory) {
-        this(operations, metadataFactory, FlushModeType.AUTO);
+        this(operations, metadataFactory, null, FlushModeType.AUTO);
+    }
+
+    /**
+     * 저장 프로시저(W7)를 사용하려면 {@link Dialect}를 함께 주입한다 — CALL 문 렌더링에 필요하다.
+     */
+    public SimpleReactiveEntityManager(
+            ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory, Dialect dialect) {
+        this(operations, metadataFactory, dialect, FlushModeType.AUTO);
     }
 
     private SimpleReactiveEntityManager(
-            ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory, FlushModeType flushMode) {
+            ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory,
+            Dialect dialect, FlushModeType flushMode) {
         this.operations = Objects.requireNonNull(operations, "operations must not be null");
         this.metadataFactory = Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
+        this.dialect = dialect;
         this.flushMode = Objects.requireNonNull(flushMode, "flushMode must not be null");
     }
 
@@ -182,12 +203,60 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         if (flushMode == this.flushMode) {
             return this;
         }
-        return new SimpleReactiveEntityManager(operations, metadataFactory, flushMode);
+        return new SimpleReactiveEntityManager(operations, metadataFactory, dialect, flushMode);
     }
 
     @Override
     public FlushModeType getFlushMode() {
         return flushMode;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 저장 프로시저(@StoredProcedureQuery / @NamedStoredProcedureQuery) — W7
+    // ---------------------------------------------------------------------------------------------
+
+    @Override
+    public ReactiveStoredProcedureQuery<?> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters) {
+        return newStoredProcedureQuery(procedureName, parameters, null);
+    }
+
+    @Override
+    public <T> ReactiveStoredProcedureQuery<T> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters, Class<T> resultClass) {
+        Objects.requireNonNull(resultClass, "resultClass must not be null");
+        return newStoredProcedureQuery(
+                procedureName, parameters, StoredProcedureRowMappers.entity(metadataFactory, resultClass));
+    }
+
+    @Override
+    public <T> ReactiveStoredProcedureQuery<T> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters,
+            Function<RowAccessor, T> mapper) {
+        Objects.requireNonNull(mapper, "mapper must not be null");
+        return newStoredProcedureQuery(procedureName, parameters, mapper);
+    }
+
+    @Override
+    public ReactiveStoredProcedureQuery<?> createNamedStoredProcedureQuery(
+            String name, NamedStoredProcedureRegistry registry) {
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(registry, "registry must not be null");
+        return registry.createNamedStoredProcedureQuery(name);
+    }
+
+    private <T> ReactiveStoredProcedureQuery<T> newStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters,
+            Function<RowAccessor, T> mapper) {
+        Objects.requireNonNull(procedureName, "procedureName must not be null");
+        Objects.requireNonNull(parameters, "parameters must not be null");
+        if (dialect == null) {
+            throw new IllegalStateException(
+                    "This ReactiveEntityManager was constructed without a Dialect; stored procedure queries"
+                            + " require a Dialect to render the CALL statement. Build it with"
+                            + " new SimpleReactiveEntityManager(operations, metadataFactory, dialect).");
+        }
+        return new ReactiveStoredProcedureQuery<>(procedureName, parameters, mapper, operations, dialect);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -273,16 +342,28 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
     }
 
     /**
-     * 단일 {@code @Id} 엔티티에 대해 {@code id = ?} 술어를 가진 {@link QuerySpec}을 만든다. 복합키
-     * ({@code @EmbeddedId}/{@code @IdClass})는 잠금 재조회 술어 구성이 복잡하므로 현재 미지원으로 거부한다.
+     * id로 {@code id = ?} (단일 {@code @Id}) 또는 {@code c1 = ? and c2 = ?} (복합키) 술어를 가진
+     * {@link QuerySpec}을 만든다. 잠금 재조회/버전 검증의 WHERE 절 구성에 쓰인다.
      */
     private QuerySpec idQuerySpec(EntityMetadata<?> metadata, Object id) {
-        if (metadata.hasCompositeId()) {
-            throw new UnsupportedOperationException(
-                    "Locked/versioned lookup is not supported for composite-id entity "
-                            + metadata.entityType().getName());
+        return QuerySpec.empty().where(idPredicate(metadata, id));
+    }
+
+    /**
+     * id 객체의 모든 {@code @Id} 컴포넌트를 {@code and}로 결합한 술어를 만든다. 단일 {@code @Id}는 하나의
+     * {@code eq}, {@code @EmbeddedId}/{@code @IdClass} 복합키는 컴포넌트별 {@code eq}를 AND로 묶는다.
+     * 각 컴포넌트 값은 {@link EntityMetadata#idColumnValue(PersistentProperty, Object)}로 id 객체에서 꺼낸다
+     * (단일 키에선 id 객체 자체가 값).
+     */
+    private static Predicate idPredicate(EntityMetadata<?> metadata, Object id) {
+        List<PersistentProperty> idProperties = metadata.idProperties();
+        List<Predicate> components = new ArrayList<>(idProperties.size());
+        for (PersistentProperty idProperty : idProperties) {
+            components.add(Criteria.eq(idProperty.propertyName(), metadata.idColumnValue(idProperty, id)));
         }
-        return QuerySpec.empty().where(Criteria.eq(metadata.idProperty().propertyName(), id));
+        return components.size() == 1
+                ? components.get(0)
+                : new CompoundPredicate(LogicalOperator.AND, components);
     }
 
     /**
@@ -304,16 +385,11 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
      * 불일치(다른 트랜잭션이 이미 갱신)면 {@link OptimisticLockingFailureException}.
      */
     private Mono<Void> verifyVersion(EntityMetadata<?> metadata, Object entity) {
-        if (metadata.hasCompositeId()) {
-            return Mono.error(new UnsupportedOperationException(
-                    "Optimistic lock verification is not supported for composite-id entity "
-                            + metadata.entityType().getName()));
-        }
         PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
         Object idValue = metadata.readIdValue(entity);
         Object currentVersion = versionProperty.read(entity);
         Predicate predicate = new CompoundPredicate(LogicalOperator.AND, List.of(
-                Criteria.eq(metadata.idProperty().propertyName(), idValue),
+                idPredicate(metadata, idValue),
                 Criteria.eq(versionProperty.propertyName(), currentVersion)));
         return operations.exists(metadata.entityType(), QuerySpec.empty().where(predicate))
                 .flatMap(exists -> exists

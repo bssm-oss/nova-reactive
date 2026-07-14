@@ -11,6 +11,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.Table;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
@@ -55,7 +56,9 @@ class ToOneForeignKeyTypeIntegrationTest {
                 ShortParent.class, ShortChild.class,
                 EnumParent.class, EnumChild.class,
                 ConvertParent.class, ConvertChild.class,
-                LongParent.class, LongChild.class).block();
+                LongParent.class, LongChild.class,
+                InheritedUuidParent.class, InheritedUuidChild.class,
+                InheritedLongParent.class, InheritedLongChild.class).block();
     }
 
     @Test
@@ -138,6 +141,52 @@ class ToOneForeignKeyTypeIntegrationTest {
                     assertNotNull(loaded.getParent());
                     assertNotNull(loaded.getParent().getId());
                     assertEquals("legacy", loaded.getParent().getName());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void manyToOneToInheritedUuidKeyedParentRoundTripsForeignKeyAsVarchar() {
+        // 참조 대상의 단일 @Id가 @MappedSuperclass(UuidKeyBase)에서 상속됐다. FK 타입 해석/read/write 경로가
+        // 모두 조상까지 walk해야 UUID→varchar로 정렬되고 save/findById가 런타임 즉사 없이 라운드트립한다.
+        UUID parentId = UUID.randomUUID();
+        support.execute("insert into \"fk_inherited_uuid_parent\" (\"id\", \"name\") values ('"
+                + parentId + "', 'inherited-ada')");
+
+        InheritedUuidParent parentRef = new InheritedUuidParent();
+        parentRef.setId(parentId);
+        InheritedUuidChild child = new InheritedUuidChild();
+        child.setLabel("inherited-uuid-child");
+        child.setParent(parentRef);
+
+        StepVerifier.create(support.operations().save(child)
+                        .flatMap(saved -> support.operations().findById(InheritedUuidChild.class, saved.getId())))
+                .assertNext(loaded -> {
+                    assertNotNull(loaded.getParent(), "상속 UUID @Id 연관이 하이드레이션돼야 한다");
+                    assertEquals(parentId, loaded.getParent().getId(), "상속 @Id FK가 UUID로 라운드트립돼야 한다");
+                    assertEquals("inherited-ada", loaded.getParent().getName());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void manyToOneToInheritedLongKeyedParentHasNoRegression() {
+        // 상속된 단일 Long @Id(@GeneratedValue): FK는 bigint 그대로. save(parent) 생성 → child FK 라운드트립.
+        InheritedLongParent parent = new InheritedLongParent();
+        parent.setName("inherited-legacy");
+
+        StepVerifier.create(support.operations().save(parent)
+                        .flatMap(savedParent -> {
+                            InheritedLongChild child = new InheritedLongChild();
+                            child.setName("inherited-long-child");
+                            child.setParent(savedParent);
+                            return support.operations().save(child);
+                        })
+                        .flatMap(savedChild -> support.operations().findById(InheritedLongChild.class, savedChild.getId())))
+                .assertNext(loaded -> {
+                    assertNotNull(loaded.getParent(), "상속 Long @Id 연관이 하이드레이션돼야 한다");
+                    assertNotNull(loaded.getParent().getId());
+                    assertEquals("inherited-legacy", loaded.getParent().getName());
                 })
                 .verifyComplete();
     }
@@ -686,6 +735,139 @@ class ToOneForeignKeyTypeIntegrationTest {
         }
 
         public void setParent(ConvertParent parent) {
+            this.parent = parent;
+        }
+    }
+
+    // --- inherited single @Id: @MappedSuperclass(UUID @Id) -----------------
+
+    @MappedSuperclass
+    public static class UuidKeyBase {
+        @Id
+        @Column(name = "id")
+        private UUID id;
+
+        public UUID getId() {
+            return id;
+        }
+
+        public void setId(UUID id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_inherited_uuid_parent")
+    public static class InheritedUuidParent extends UuidKeyBase {
+        @Column(name = "name")
+        private String name;
+
+        public InheritedUuidParent() {
+        }
+
+        public String getName() {
+            return name;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_inherited_uuid_child")
+    public static class InheritedUuidChild {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @Column(name = "label")
+        private String label;
+
+        @ManyToOne(targetEntity = InheritedUuidParent.class)
+        @JoinColumn(name = "parent_id")
+        private InheritedUuidParent parent;
+
+        public InheritedUuidChild() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setLabel(String label) {
+            this.label = label;
+        }
+
+        public InheritedUuidParent getParent() {
+            return parent;
+        }
+
+        public void setParent(InheritedUuidParent parent) {
+            this.parent = parent;
+        }
+    }
+
+    // --- inherited single @Id: @MappedSuperclass(Long @Id, generated) ------
+
+    @MappedSuperclass
+    public static class LongKeyBase {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_inherited_long_parent")
+    public static class InheritedLongParent extends LongKeyBase {
+        @Column(name = "name")
+        private String name;
+
+        public InheritedLongParent() {
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_inherited_long_child")
+    public static class InheritedLongChild {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @Column(name = "name")
+        private String name;
+
+        @ManyToOne(targetEntity = InheritedLongParent.class)
+        @JoinColumn(name = "parent_id")
+        private InheritedLongParent parent;
+
+        public InheritedLongChild() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public InheritedLongParent getParent() {
+            return parent;
+        }
+
+        public void setParent(InheritedLongParent parent) {
             this.parent = parent;
         }
     }

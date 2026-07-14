@@ -2,6 +2,7 @@ package io.nova.metadata;
 
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
+import jakarta.persistence.AssociationOverride;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
 import jakarta.persistence.ColumnResult;
@@ -40,8 +41,10 @@ import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MapKey;
+import jakarta.persistence.MapKeyClass;
 import jakarta.persistence.MapKeyColumn;
 import jakarta.persistence.MapKeyEnumerated;
+import jakarta.persistence.MapKeyTemporal;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.LockModeType;
@@ -735,6 +738,11 @@ public final class EntityMetadataFactory {
                 versionProperty = property;
             }
         }
+
+        // @MappedSuperclass에서 상속한 to-one 관계의 join 컬럼을 서브클래스 @AssociationOverride로 재지정한다.
+        // 관계 property는 이미 상속 필드 스캔으로 조립됐으므로, createManyToOneProperty 본문을 건드리지 않고
+        // 조립된 property의 FK 컬럼명만 post-processing으로 갈아끼운다.
+        applyAssociationOverrides(entityType, properties);
 
         if (idProperty == null) {
             throw new IllegalArgumentException(entityType.getName() + " must declare a field annotated with @Id");
@@ -2531,21 +2539,25 @@ public final class EntityMetadataFactory {
      * {@link Long} 기본값을 유지한다 — 복합키 to-one 참조는 확장하지 않고 기존 동작/실패 경로를 보존한다.
      * <p>
      * {@code @Id} 탐색은 read/write 경로({@link PersistentProperty#writeManyToOneStub}의 {@code findIdField},
-     * {@code extractReferencedId})와 <b>동일하게 {@code getDeclaredFields()}만</b> 본다(조상 walk 없음). 이렇게
-     * 해야 helper가 non-Long으로 해석한 FK 타입을 read-path가 반드시 바인딩/디코드할 수 있어, {@code @Id}가
-     * {@code @MappedSuperclass}에서 상속된 경우 양쪽이 함께 "미탐지"로 떨어져 {@code Long} 폴백으로 일치한다.
+     * {@code extractReferencedId})와 <b>동일하게</b> 대상 자신의 필드를 본 뒤 {@code @MappedSuperclass}/상위
+     * {@code @Entity} 조상 체인을 walk한다({@link #mappedFields} 규칙). 이렇게 해야 helper가 non-Long으로 해석한
+     * FK 타입을 read-path가 반드시 바인딩/디코드할 수 있고, {@code @Id}가 {@code @MappedSuperclass}에서 상속된
+     * 단일 키여도 양쪽이 함께 그 상속 {@code @Id}를 찾아 저장 표현이 일치한다. 조상까지 walk해도 단일 {@code @Id}가
+     * 아니면(복합키 {@code @EmbeddedId}/{@code @IdClass}) {@code null}로 떨어져 {@code Long} 폴백을 유지한다.
      */
     private static ForeignKeyStorage resolveToOneForeignKeyStorage(Class<?> targetType) {
         Field idField = null;
         int idCount = 0;
-        for (Field candidate : targetType.getDeclaredFields()) {
+        // 대상 자신 + @MappedSuperclass/상위 @Entity 조상 체인(root-first)을 훑어 @Id를 센다.
+        // 상속된 단일 @Id를 찾아 FK 저장 표현에 반영하되, 복합키(idCount != 1)는 Long 폴백을 유지한다.
+        for (Field candidate : mappedFields(targetType)) {
             if (candidate.isAnnotationPresent(Id.class)) {
                 idCount++;
                 idField = candidate;
             }
         }
         if (idCount != 1) {
-            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지(조상 상속 포함) — read-path와 동일하게 못 찾으면
+            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지 — read-path와 동일하게 단일 @Id가 아니면
             // 기존 Long 기본값을 유지한다(무리한 확장 금지, read-path 바인딩 가능성 보장).
             return null;
         }
@@ -2579,6 +2591,74 @@ public final class EntityMetadataFactory {
      */
     private record ForeignKeyStorage(Class<?> javaType, AttributeConverter<Object, Object> converter,
             Class<?> converterColumnType, int length) {
+    }
+
+    /**
+     * 서브클래스에 선언된 {@link AssociationOverride}(반복 애너테이션, 컨테이너 {@code @AssociationOverrides})를
+     * 읽어, {@code @MappedSuperclass}에서 상속한 이름이 일치하는 owning to-one({@code @ManyToOne}/owning
+     * {@code @OneToOne}) property의 FK 컬럼명을 재지정한다. 관계 property는 상속 필드 스캔으로 이미
+     * {@code properties}에 조립돼 있으므로, {@code createManyToOneProperty} 본문을 건드리지 않고 조립된
+     * property를 {@link PersistentProperty#withColumnName(String)}로 교체하는 post-processing이다.
+     *
+     * <p>fail-fast: override가 존재하지 않는 property를 지목하거나 owning to-one이 아닌 property를 지목하면,
+     * 또는 embedded association(dot 표기, 미지원)이나 다중/공백 join 컬럼을 지정하면 명확한 예외를 던진다.
+     */
+    private void applyAssociationOverrides(Class<?> entityType, List<PersistentProperty> properties) {
+        AssociationOverride[] overrides = entityType.getAnnotationsByType(AssociationOverride.class);
+        if (overrides.length == 0) {
+            return;
+        }
+        for (AssociationOverride override : overrides) {
+            String name = override.name();
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " declares an @AssociationOverride with a blank name");
+            }
+            // embedded association override(예: name="address.country")는 dot 표기를 쓴다. Nova는
+            // embedded 안의 association을 매핑하지 않으므로 조용히 무시하지 않고 명확히 거부한다.
+            if (name.contains(".")) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") targets an embedded"
+                                + " association path, which Nova does not support; only join columns of inherited"
+                                + " @ManyToOne/@OneToOne associations can be overridden");
+            }
+            int index = -1;
+            for (int i = 0; i < properties.size(); i++) {
+                if (properties.get(i).propertyName().equals(name)) {
+                    index = i;
+                    break;
+                }
+            }
+            if (index < 0) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") does not match any"
+                                + " property; it must name an inherited @ManyToOne/@OneToOne association");
+            }
+            PersistentProperty target = properties.get(index);
+            if (!target.manyToOne() || target.inverseToOne()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") must target an owning"
+                                + " @ManyToOne or @OneToOne association with a foreign-key column");
+            }
+            JoinColumn[] joinColumns = override.joinColumns();
+            if (joinColumns.length == 0) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") must declare a"
+                                + " @JoinColumn to remap the foreign-key column");
+            }
+            if (joinColumns.length > 1) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") declares multiple join"
+                                + " columns; Nova supports single-column to-one foreign keys only");
+            }
+            String newColumnName = joinColumns[0].name();
+            if (newColumnName == null || newColumnName.isBlank()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") @JoinColumn must set a"
+                                + " non-blank column name");
+            }
+            properties.set(index, target.withColumnName(newColumnName));
+        }
     }
 
     private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {
@@ -3217,19 +3297,45 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * {@code @ElementCollection Map}의 key 타입을 generic {@code Map<K,V>}의 첫 번째 타입 인자로 해석한다.
-     * raw {@code Map}이면 거부한다.
+     * {@code @ElementCollection Map}의 key 타입을 해석한다. 우선순위는:
+     * <ul>
+     *   <li>generic {@code Map<K,V>}의 첫 번째 타입 인자(reflectable {@code Class})가 있으면 그것을 후보로 삼는다.</li>
+     *   <li>{@code @MapKeyClass}가 있으면 그 클래스를 명시적 key 타입으로 쓴다. 파라미터화 타입 인자도 함께
+     *       reflectable하면 둘은 일치해야 하며(불일치 fail-fast), raw/generic {@code Map}처럼 인자를
+     *       reflect할 수 없을 때 key 타입을 결정하는 근거가 된다.</li>
+     * </ul>
+     * 둘 다 없으면(raw {@code Map} + {@code @MapKeyClass} 부재) fail-fast로 거부한다.
      */
     private static Class<?> resolveMapKeyType(Class<?> entityType, Field field, String location) {
+        Class<?> parameterizedKeyType = null;
         Type generic = field.getGenericType();
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 2 && arguments[0] instanceof Class<?> keyType) {
-                return keyType;
+                parameterizedKeyType = keyType;
             }
         }
+        MapKeyClass mapKeyClass = field.getAnnotation(MapKeyClass.class);
+        if (mapKeyClass != null) {
+            Class<?> declaredKeyType = mapKeyClass.value();
+            if (declaredKeyType == void.class || declaredKeyType == Void.class) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass requires a key class");
+            }
+            if (parameterizedKeyType != null && parameterizedKeyType != declaredKeyType) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass " + declaredKeyType.getName()
+                                + " does not match the parameterized Map key type "
+                                + parameterizedKeyType.getName());
+            }
+            return declaredKeyType;
+        }
+        if (parameterizedKeyType != null) {
+            return parameterizedKeyType;
+        }
         throw new IllegalArgumentException(
-                location + " @ElementCollection cannot infer the Map key type from a raw map; use a parameterized Map<K,V>");
+                location + " @ElementCollection cannot infer the Map key type from a raw map;"
+                        + " use a parameterized Map<K,V> or specify @MapKeyClass");
     }
 
     /**
@@ -3238,8 +3344,11 @@ public final class EntityMetadataFactory {
      *   <li>{@code @MapKey}(엔티티 property를 key로) — v1 미지원, fail-fast 거부.</li>
      *   <li>{@code @Embeddable} key 타입 — v1 미지원, fail-fast 거부.</li>
      *   <li>enum key — {@code @MapKeyEnumerated}로 STRING/ORDINAL 결정(미지정 시 JPA 기본 ORDINAL).</li>
+     *   <li>temporal key({@code java.util.Date}/{@code Calendar}) — {@code @MapKeyTemporal}(TemporalType)로 저장
+     *       정밀도(DATE/TIME/TIMESTAMP)를 정하고 {@code TemporalAttributeConverter}로 java.time 저장 표현에 왕복.
+     *       {@code @MapKeyTemporal} 없는 Date/Calendar key는 fail-fast 거부.</li>
      *   <li>기본 타입 key(String/Integer/Long/Short/Boolean/UUID) — 자기 자신(wrapper 정규화)으로 저장.</li>
-     *   <li>그 외 key 타입 / 비-enum에 {@code @MapKeyEnumerated} — fail-fast 거부.</li>
+     *   <li>그 외 key 타입 / 비-enum에 {@code @MapKeyEnumerated} / 비-temporal에 {@code @MapKeyTemporal} — fail-fast 거부.</li>
      * </ul>
      * key 컬럼 이름은 {@code @MapKeyColumn(name=...)} → naming strategy 기본 {@code <property>_key} 순으로 정한다.
      */
@@ -3269,6 +3378,34 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     location + " @MapKeyEnumerated is only valid on an enum map key, but the key type is "
                             + keyType.getName());
+        }
+        // 레거시 temporal map key(java.util.Date/Calendar)는 @MapKeyTemporal(TemporalType)로 저장 정밀도를
+        // 결정하고, 스칼라/EC 원소와 동일한 TemporalAttributeConverter 경로를 재사용해 java.time 저장 표현
+        // (LocalDate/LocalTime/LocalDateTime)으로 왕복한다. @MapKeyTemporal 없이 Date/Calendar key를 쓰면
+        // 매핑이 모호하므로(조용한 기본값 금지) fail-fast로 거부한다.
+        MapKeyTemporal mapKeyTemporal = field.getAnnotation(MapKeyTemporal.class);
+        boolean isUtilDate = keyType == java.util.Date.class;
+        boolean isCalendar = java.util.Calendar.class.isAssignableFrom(keyType);
+        if (mapKeyTemporal != null) {
+            if (!isUtilDate && !isCalendar) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyTemporal is only valid on a java.util.Date or java.util.Calendar"
+                                + " map key, but the key type is " + keyType.getName());
+            }
+            TemporalType temporalType = mapKeyTemporal.value();
+            Class<?> keyColumnType = switch (temporalType) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+            return new ElementCollectionInfo.MapKeyInfo(
+                    keyColumnName, keyType, keyColumnType, null,
+                    castConverter(new TemporalAttributeConverter(keyType, temporalType)));
+        }
+        if (isUtilDate || isCalendar) {
+            throw new IllegalArgumentException(
+                    location + " maps a java.util.Date/Calendar map key but is missing"
+                            + " @MapKeyTemporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
         }
         Class<?> wrapped = wrapPrimitiveType(keyType);
         if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapped)) {

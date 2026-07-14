@@ -132,9 +132,13 @@ public final class ReactiveCriteriaQuery<T> {
                     + " which is not assignable to requested result type " + resultType.getName()));
         }
 
+        // cb.equal(root.type(), Subtype.class) 제한은 QuerySpec 술어가 아니라 조회 대상 타입을 서브타입으로
+        // 좁혀 처리한다 — 코어 findAll(Subtype)이 discriminator 제한을 적용하므로 하이드레이션을 재사용한다.
+        DiscriminatorNarrowing narrowing = narrowByDiscriminator(query.restriction(), metadata);
+
         QuerySpec spec = QuerySpec.empty();
-        if (query.restriction() != null) {
-            spec = spec.where(CriteriaEntityTranslator.toPredicate(query.restriction()));
+        if (narrowing.remaining() != null) {
+            spec = spec.where(CriteriaEntityTranslator.toPredicate(narrowing.remaining()));
         }
         if (!query.orders().isEmpty()) {
             Sort sort = CriteriaEntityTranslator.toSort(query.orders());
@@ -151,8 +155,66 @@ public final class ReactiveCriteriaQuery<T> {
                     "setFirstResult without setMaxResults is not supported; provide a page size"));
         }
 
-        Class<Object> entityType = (Class<Object>) metadata.entityType();
+        Class<Object> entityType = (Class<Object>) narrowing.target().entityType();
         return (Flux<T>) operations.findAll(entityType, spec);
+    }
+
+    /** 조회 대상 서브타입과 discriminator 제한을 제외한 나머지 술어. */
+    private record DiscriminatorNarrowing(EntityMetadata<?> target, CriteriaPredicate remaining) {
+    }
+
+    /**
+     * 최상위(또는 AND로 결합된) {@link DiscriminatorPredicate}를 뽑아 조회 대상 타입을 좁히고 나머지 술어를
+     * 반환한다. discriminator 제한이 OR/NOT 등 좁힘 불가 위치에 있으면 fail-fast한다.
+     */
+    private static DiscriminatorNarrowing narrowByDiscriminator(CriteriaPredicate where, EntityMetadata<?> base) {
+        if (where == null) {
+            return new DiscriminatorNarrowing(base, null);
+        }
+        if (where instanceof DiscriminatorPredicate dp) {
+            return new DiscriminatorNarrowing(dp.subtypeMetadata(), null);
+        }
+        if (where.kind() == CriteriaPredicate.Kind.AND) {
+            List<CriteriaPredicate> others = new ArrayList<>();
+            EntityMetadata<?> target = base;
+            boolean narrowed = false;
+            for (CriteriaPredicate child : where.children()) {
+                if (child instanceof DiscriminatorPredicate dp) {
+                    if (narrowed) {
+                        throw new CriteriaException("Multiple cb.equal(root.type(), ...) restrictions in an "
+                                + "entity-returning query are not supported; a row has exactly one concrete type");
+                    }
+                    target = dp.subtypeMetadata();
+                    narrowed = true;
+                } else if (containsDiscriminator(child)) {
+                    throw new CriteriaException("cb.equal(root.type(), ...) is only supported at the top level "
+                            + "(optionally AND-combined) of an entity-returning Criteria query");
+                } else {
+                    others.add(child);
+                }
+            }
+            CriteriaPredicate remaining = others.isEmpty()
+                    ? null
+                    : (others.size() == 1 ? others.get(0)
+                            : CriteriaPredicate.junction(CriteriaPredicate.Kind.AND, others));
+            return new DiscriminatorNarrowing(target, remaining);
+        }
+        if (containsDiscriminator(where)) {
+            throw new CriteriaException("cb.equal(root.type(), ...) is only supported at the top level "
+                    + "(optionally AND-combined) of an entity-returning Criteria query");
+        }
+        return new DiscriminatorNarrowing(base, where);
+    }
+
+    private static boolean containsDiscriminator(CriteriaPredicate predicate) {
+        if (predicate instanceof DiscriminatorPredicate) {
+            return true;
+        }
+        return switch (predicate.kind()) {
+            case AND, OR -> predicate.children().stream().anyMatch(ReactiveCriteriaQuery::containsDiscriminator);
+            case NOT -> containsDiscriminator(predicate.inner());
+            default -> false;
+        };
     }
 
     private Flux<T> executeScalar() {

@@ -8,7 +8,8 @@ import java.util.List;
 public sealed interface Expression
         permits Expression.Path, Expression.Literal, Expression.NamedParameter, Expression.PositionalParameter,
         Expression.FunctionCall, Expression.Aggregate, Expression.Arithmetic, Expression.Case,
-        Expression.ScalarSubquery, Expression.Cast {
+        Expression.ScalarSubquery, Expression.Cast, Expression.Type, Expression.EntityTypeLiteral,
+        Expression.Treat {
 
     /** {@code alias.field.subfield} 경로 식. 첫 세그먼트는 별칭, 나머지는 필드 경로다. */
     record Path(String alias, List<String> segments) implements Expression {
@@ -64,5 +65,30 @@ public sealed interface Expression
      * 매핑된다(임의 문자열이 SQL에 삽입되지 않는다).
      */
     record Cast(Expression value, String targetType) implements Expression {
+    }
+
+    /**
+     * {@code TYPE(alias)} 다형성 식 — 상속 계층 엔티티의 discriminator 컬럼 값을 나타낸다. 비교/IN 술어의
+     * 좌변으로 쓰여 {@code TYPE(e) = Sub} / {@code TYPE(e) IN (A, B)}가 discriminator 조건으로 렌더된다.
+     */
+    record Type(String alias) implements Expression {
+    }
+
+    /**
+     * {@code TYPE(alias) = EntityName}에서 우변에 오는 엔티티 타입 리터럴. SQL 렌더 단계에서 해당 엔티티의
+     * discriminator 값으로 바인딩된다(임의 문자열이 SQL에 삽입되지 않는다).
+     */
+    record EntityTypeLiteral(String entityName) implements Expression {
+    }
+
+    /**
+     * {@code TREAT(alias AS Subtype).segments} downcast 경로 식. {@code segments}가 비면 downcast된 엔티티
+     * 자체를 가리키고(스칼라 투영에서는 fail-fast), 하나 이상이면 서브타입의 속성 컬럼으로 해석된다. SINGLE_TABLE
+     * 상속에서 downcast는 discriminator 제한을 함께 적용한다.
+     */
+    record Treat(String alias, String subtype, List<String> segments) implements Expression {
+        public Treat {
+            segments = List.copyOf(segments);
+        }
     }
 }

@@ -153,6 +153,10 @@ final class AliasedCriteriaSqlBuilder {
     // --- predicate ------------------------------------------------------------------------------
 
     private void renderPredicate(Ctx ctx, CriteriaPredicate predicate) {
+        if (predicate instanceof DiscriminatorPredicate) {
+            throw new CriteriaException("cb.equal(root.type(), ...) polymorphic restriction is not supported "
+                    + "together with joins/subqueries in v1; use it on a single-root query");
+        }
         switch (predicate.kind()) {
             case AND -> renderJunction(ctx, predicate, " and ");
             case OR -> renderJunction(ctx, predicate, " or ");
