@@ -6,6 +6,8 @@ import jakarta.persistence.GenerationType;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.fetch.AnnotationFetchGroupBuilder;
 import io.nova.fetch.FetchGroup;
+import io.nova.graph.EntityGraph;
+import io.nova.graph.FetchNode;
 import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
@@ -48,6 +50,8 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -2851,6 +2855,160 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         .then(hydrateManyToMany(parents, metadata))
                         .then(hydrateElementCollections(parents, metadata))
                         .thenMany(Flux.fromIterable(parents)));
+    }
+
+    @Override
+    public <T, ID> Mono<T> findById(Class<T> entityType, ID id, EntityGraph<T> entityGraph) {
+        if (entityGraph == null) {
+            return Mono.error(new IllegalArgumentException("entityGraph must not be null"));
+        }
+        // depth 1(중첩 없음)이면 flat FetchGroup 경로가 이미 always-eager로 충분하다.
+        Mono<T> flat = findById(entityType, id, entityGraph.toFetchGroup());
+        if (!entityGraph.hasNestedFetch()) {
+            return flat;
+        }
+        // depth>1: flat 경로로 루트+1차 연관을 로드한 뒤, subgraph 트리를 레벨별 배치 hydration으로 채운다.
+        return flat.flatMap(root -> hydrateFetchTree(entityType, List.of(root), entityGraph.fetchTree(), true)
+                .thenReturn(root));
+    }
+
+    @Override
+    public <T> Flux<T> findAll(Class<T> entityType, EntityGraph<T> entityGraph) {
+        if (entityGraph == null) {
+            return Flux.error(new IllegalArgumentException("entityGraph must not be null"));
+        }
+        if (!entityGraph.hasNestedFetch()) {
+            return findAll(entityType, entityGraph.toFetchGroup());
+        }
+        // depth>1: 루트+1차 연관을 flat 경로로 모두 로드한 뒤 subgraph 트리를 재귀 hydrate한다.
+        return findAll(entityType, entityGraph.toFetchGroup())
+                .collectList()
+                .flatMapMany(roots -> hydrateFetchTree(entityType, roots, entityGraph.fetchTree(), true)
+                        .thenMany(Flux.fromIterable(roots)));
+    }
+
+    /**
+     * {@link EntityGraph}의 중첩(depth&gt;1) fetch 트리를 <b>레벨별 배치 hydration</b>으로 채운다. 각 레벨의
+     * 선언된 연관은 부모 목록당 IN-절 쿼리 한 번으로 로드되므로 N+1이 없다. 트리는 finite하므로(사용자가 선언한
+     * 깊이만큼) 데이터 사이클(A→B→A)이 있어도 무한 재귀하지 않는다 — 명명되지 않은 더 깊은 연관은 로드하지 않는다.
+     *
+     * @param rootLevelLoaded {@code true}면 이 레벨의 연관은 이미 로드돼 있다(루트: flat always-eager 경로가 로드).
+     *                        {@code false}면(더 깊은 레벨) 각 선언 연관을 여기서 배치 로드한 뒤 재귀한다.
+     */
+    private <P> Mono<Void> hydrateFetchTree(
+            Class<P> parentType, List<P> parents, List<FetchNode> nodes, boolean rootLevelLoaded) {
+        if (parents.isEmpty() || nodes.isEmpty()) {
+            return Mono.empty();
+        }
+        EntityMetadata<P> metadata = metadataFactory.getEntityMetadata(parentType);
+        return Flux.fromIterable(nodes)
+                .concatMap(node -> {
+                    Mono<Void> ensureLoaded = rootLevelLoaded
+                            ? Mono.empty()
+                            : loadSingleAttribute(parentType, metadata, parents, node.attributeName());
+                    if (!node.hasChildren()) {
+                        // leaf: 이 레벨에서 로드만 보장하면 되고 더 깊은 재귀는 없다.
+                        return ensureLoaded;
+                    }
+                    return ensureLoaded.then(Mono.defer(() ->
+                            recurseIntoSubgraph(metadata, parents, node)));
+                })
+                .then();
+    }
+
+    /**
+     * subgraph를 가진 노드의 다음 레벨로 내려간다 — 부모들에서 이미 로드된 연관 대상 엔티티를 모아 그 타입으로
+     * 재귀 hydration한다. 대상 엔티티는 상위 레벨에서 로드돼 있으므로({@code rootLevelLoaded=true} 경로 또는 직전
+     * {@code loadSingleAttribute}) 여기서는 수집 후 자식 노드만 재귀 로드하면 된다.
+     */
+    private <P> Mono<Void> recurseIntoSubgraph(
+            EntityMetadata<P> metadata, List<P> parents, FetchNode node) {
+        PersistentProperty property = metadata.findProperty(node.attributeName())
+                .orElseThrow(() -> new IllegalStateException(
+                        "EntityGraph subgraph attribute '" + node.attributeName() + "' does not exist on "
+                                + metadata.entityType().getName()));
+        Class<?> childType = subgraphTargetType(metadata.entityType(), node.attributeName(), property);
+        List<Object> children = collectLoadedRelated(parents, property);
+        if (children.isEmpty()) {
+            return Mono.empty();
+        }
+        return hydrateFetchTreeErased(childType, children, node.children());
+    }
+
+    // 캡처된 childType의 와일드카드를 제네릭 메서드 경계로 넘겨 타입 안전하게 재귀한다.
+    @SuppressWarnings("unchecked")
+    private Mono<Void> hydrateFetchTreeErased(Class<?> childType, List<Object> children, List<FetchNode> nodes) {
+        return hydrateFetchTree((Class<Object>) childType, children, nodes, false);
+    }
+
+    /**
+     * 더 깊은 레벨에서 <b>선언된 연관 하나만</b> 배치 로드한다. to-one/to-many/inverse @OneToOne 은 단일 spec
+     * {@link FetchGroup}으로, @ManyToMany 는 전용 2-hop hydration으로 로드한다. @ElementCollection/비연관 속성
+     * 위의 subgraph 는 {@link #subgraphTargetType}가 이미 fail-fast 하므로 여기까지 오지 않는다.
+     */
+    private <P> Mono<Void> loadSingleAttribute(
+            Class<P> parentType, EntityMetadata<P> metadata, List<P> parents, String attributeName) {
+        PersistentProperty property = metadata.findProperty(attributeName)
+                .orElseThrow(() -> new IllegalStateException(
+                        "EntityGraph attribute '" + attributeName + "' does not exist on " + parentType.getName()));
+        if (property.manyToMany()) {
+            return hydrateOneManyToMany(parents, metadata, property);
+        }
+        FetchGroup<P> single = annotationFetchGroupBuilder.buildForAttribute(parentType, attributeName);
+        return hydrateChildren(parents, single);
+    }
+
+    /**
+     * 부모 목록에서 이미 로드된 연관 대상 엔티티를 identity 기준으로 중복 제거해 모은다. 컬렉션 연관
+     * ({@code @OneToMany}/{@code @ManyToMany})은 원소를 펼치고, 단건 연관({@code @ManyToOne}/{@code @OneToOne})은
+     * 값 자체를 담는다. {@code null}은 건너뛴다.
+     */
+    private static <P> List<Object> collectLoadedRelated(List<P> parents, PersistentProperty property) {
+        // identity 기반 중복 제거 — 같은 대상 인스턴스를 여러 부모가 공유해도 한 번만 재귀 hydrate한다.
+        Map<Object, Boolean> seen = new IdentityHashMap<>();
+        List<Object> collected = new ArrayList<>();
+        for (P parent : parents) {
+            Object value = property.read(parent);
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof Collection<?> collection) {
+                for (Object element : collection) {
+                    if (element != null && seen.put(element, Boolean.TRUE) == null) {
+                        collected.add(element);
+                    }
+                }
+            } else if (seen.put(value, Boolean.TRUE) == null) {
+                collected.add(value);
+            }
+        }
+        return collected;
+    }
+
+    /**
+     * subgraph를 선언한 속성의 대상 엔티티 타입을 해석한다({@code EntityGraphs}의 검증과 대칭). 비연관/복합키
+     * 타겟 to-one/@ElementCollection 원소 위 subgraph는 fail-fast한다 — 그래프 해석 단계에서 이미 거부되지만,
+     * hydration 경로에서도 방어적으로 동일 규칙을 적용한다(조용한 무시 금지).
+     */
+    private static Class<?> subgraphTargetType(
+            Class<?> entityType, String attributeName, PersistentProperty property) {
+        if (property.isCompositeToOne()) {
+            throw new IllegalStateException(
+                    "EntityGraph subgraph on '" + entityType.getName() + "." + attributeName
+                            + "' targets a composite-key entity; nested fetch through a multi-column FK is not supported");
+        }
+        if (property.manyToOne()) {
+            return property.manyToOneTargetType();
+        }
+        if (property.oneToMany() || property.inverseToOne()) {
+            return property.oneToManyTargetType();
+        }
+        if (property.manyToMany()) {
+            return property.manyToManyInfo().targetType();
+        }
+        throw new IllegalStateException(
+                "EntityGraph subgraph declared on non-association attribute '" + entityType.getName() + "."
+                        + attributeName + "'");
     }
 
     /**

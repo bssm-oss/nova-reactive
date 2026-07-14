@@ -243,6 +243,18 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     }
 
     @Override
+    public <T, ID> Mono<T> findById(Class<T> entityType, ID id, io.nova.graph.EntityGraph<T> entityGraph) {
+        // EntityGraph(중첩 subgraph 포함) 경로는 delegate가 depth>1 hydration을 담당하므로 그대로 위임한다
+        // (interface default 로 fallback 하면 flat FetchGroup 으로만 풀려 중첩 fetch 가 유실됨).
+        return delegate.findById(entityType, id, entityGraph);
+    }
+
+    @Override
+    public <T> Flux<T> findAll(Class<T> entityType, io.nova.graph.EntityGraph<T> entityGraph) {
+        return delegate.findAll(entityType, entityGraph);
+    }
+
+    @Override
     public <T> Flux<T> findAll(Class<T> entityType, CompiledQuery query, Object... bindings) {
         return delegate.findAll(entityType, query, bindings);
     }

@@ -90,10 +90,46 @@ class EntityGraphsTest {
     }
 
     @Test
-    void nestedSubgraphFailsFast() {
+    void nestedNamedSubgraphResolvesToFetchTree() {
+        // depth>1: books -> (each book's) author. flat fail-fast 대신 재귀 FetchNode 트리로 해석돼야 한다.
+        EntityGraph<GraphAuthor> graph = graphs.named(GraphAuthor.class, "GraphAuthor.deepBooks");
+        assertTrue(graph.hasNestedFetch(), "subgraph 선언이 있으면 중첩 fetch 로 표시된다");
+
+        List<FetchNode> tree = graph.fetchTree();
+        FetchNode booksNode = tree.stream().filter(n -> n.attributeName().equals("books")).findFirst().orElseThrow();
+        assertTrue(booksNode.hasChildren(), "books 는 subgraph(author) 를 가진다");
+        assertEquals(List.of("author"),
+                booksNode.children().stream().map(FetchNode::attributeName).collect(Collectors.toList()));
+        // flat FetchGroup 은 여전히 루트 연관 전체(books+awards)를 담아 always-eager 를 보존한다.
+        assertEquals(2, graph.toFetchGroup().specs().size());
+    }
+
+    @Test
+    void programmaticAddSubgraphBuildsNestedTree() {
+        EntityGraph<GraphAuthor> graph = graphs.building(GraphAuthor.class)
+                .addSubgraph("books")
+                .addAttributeNodes("author")
+                .build();
+        assertTrue(graph.hasNestedFetch());
+        FetchNode booksNode = graph.fetchTree().stream()
+                .filter(n -> n.attributeName().equals("books")).findFirst().orElseThrow();
+        assertEquals(List.of("author"),
+                booksNode.children().stream().map(FetchNode::attributeName).collect(Collectors.toList()));
+    }
+
+    @Test
+    void cyclicNamedSubgraphFailsFast() {
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> graphs.named(GraphAuthor.class, "GraphAuthor.deepBooks"));
-        assertTrue(ex.getMessage().contains("Nested"));
+                () -> graphs.named(GraphAuthor.class, "GraphAuthor.cycle"));
+        assertTrue(ex.getMessage().contains("cycle"), () -> "message: " + ex.getMessage());
+    }
+
+    @Test
+    void subgraphOnNonAssociationFailsFast() {
+        // @Id(basic) 위에 subgraph 를 선언하면 조용히 무시하지 않고 fail-fast 한다.
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> graphs.building(GraphAuthor.class).addSubgraph("id").addAttributeNodes("bogus").build());
+        assertTrue(ex.getMessage().contains("non-association"), () -> "message: " + ex.getMessage());
     }
 
     @Test
@@ -109,7 +145,13 @@ class EntityGraphsTest {
             @NamedEntityGraph(
                     name = "GraphAuthor.deepBooks",
                     attributeNodes = @NamedAttributeNode(value = "books", subgraph = "bookGraph"),
-                    subgraphs = @NamedSubgraph(name = "bookGraph", attributeNodes = @NamedAttributeNode("author")))
+                    subgraphs = @NamedSubgraph(name = "bookGraph", attributeNodes = @NamedAttributeNode("author"))),
+            @NamedEntityGraph(
+                    name = "GraphAuthor.cycle",
+                    attributeNodes = @NamedAttributeNode(value = "books", subgraph = "cyc"),
+                    subgraphs = @NamedSubgraph(
+                            name = "cyc",
+                            attributeNodes = @NamedAttributeNode(value = "author", subgraph = "cyc")))
     })
     public static class GraphAuthor {
         @Id

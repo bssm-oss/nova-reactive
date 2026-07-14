@@ -26,12 +26,19 @@ public final class EntityGraph<T> {
     private final String name;
     private final List<String> attributeNames;
     private final FetchGroup<T> fetchGroup;
+    private final List<FetchNode> fetchTree;
 
     EntityGraph(Class<T> rootType, String name, List<String> attributeNames, FetchGroup<T> fetchGroup) {
+        this(rootType, name, attributeNames, fetchGroup, List.of());
+    }
+
+    EntityGraph(Class<T> rootType, String name, List<String> attributeNames, FetchGroup<T> fetchGroup,
+            List<FetchNode> fetchTree) {
         this.rootType = Objects.requireNonNull(rootType, "rootType must not be null");
         this.name = name;
         this.attributeNames = List.copyOf(attributeNames);
         this.fetchGroup = Objects.requireNonNull(fetchGroup, "fetchGroup must not be null");
+        this.fetchTree = List.copyOf(fetchTree);
     }
 
     public Class<T> rootType() {
@@ -55,6 +62,29 @@ public final class EntityGraph<T> {
      */
     public FetchGroup<T> toFetchGroup() {
         return fetchGroup;
+    }
+
+    /**
+     * 이 그래프의 해석된 <b>중첩 fetch 계획</b>(subgraph) 트리를 반환한다. 최상위 노드는 루트 엔티티에서 fetch할
+     * 연관 속성이며, {@link FetchNode#children()}가 비어 있지 않으면 그 연관 대상 엔티티에서 더 깊게(depth&gt;1)
+     * fetch할 속성을 나타낸다. subgraph를 선언하지 않은 flat 그래프면 자식 없는 노드들만, 명명 속성이 없는 빈
+     * 그래프면 빈 리스트를 반환한다.
+     */
+    public List<FetchNode> fetchTree() {
+        return fetchTree;
+    }
+
+    /**
+     * 이 그래프가 depth&gt;1의 중첩 fetch(하나 이상의 {@link FetchNode}가 자식을 가짐)를 요구하는지 여부.
+     * {@code false}이면 {@link #toFetchGroup()}의 flat 배치 경로만으로 충분하다.
+     */
+    public boolean hasNestedFetch() {
+        for (FetchNode node : fetchTree) {
+            if (node.hasChildren()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
