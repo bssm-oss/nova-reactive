@@ -2541,6 +2541,16 @@ public final class EntityMetadataFactory {
                                 + " @MapsId(\"" + value + "\") cannot be combined with @GeneratedValue on the id"
                                 + " component; a derived identifier is supplied by the associated entity's primary key");
             }
+            // 파생 값은 연관 엔티티의 PK 전체(readIdValue)에서 온다. 그 타겟이 복합 @Id면 어느 컴포넌트를
+            // owner의 어느 컴포넌트로 매핑할지 모호하고 holder 객체를 스칼라 컬럼에 쓰려다 런타임에 던진다.
+            // 조용한 런타임 실패 대신 build 시점에 명확히 거부한다(단일 @Id 타겟만 지원).
+            if (declaresCompositeId(field.getType())) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + field.getName()
+                                + " @MapsId(\"" + value + "\") derives an id component from "
+                                + field.getType().getName() + ", but deriving from a composite-key associated"
+                                + " entity is not supported; the associated entity must declare a single @Id");
+            }
             return value;
         }
         // 단순 @MapsId: 정확히 하나의 단일 @Id 필드여야 하고 @GeneratedValue가 없어야 한다.
@@ -2563,6 +2573,30 @@ public final class EntityMetadataFactory {
                             + " a derived identifier is supplied by the associated entity's primary key");
         }
         return "";
+    }
+
+    /**
+     * {@code type}이 복합 {@code @Id}({@code @EmbeddedId}/{@code @IdClass}/다중 top-level {@code @Id})를
+     * 선언하는지 검사한다. {@code @MapsId("component")}의 파생 대상(연관 엔티티)이 단일 {@code @Id}인지
+     * build 시점에 확인하는 데 쓴다.
+     */
+    private static boolean declaresCompositeId(Class<?> type) {
+        if (type.isAnnotationPresent(jakarta.persistence.IdClass.class)) {
+            return true;
+        }
+        int idCount = 0;
+        for (Field candidate : mappedFields(type)) {
+            if (isNotPersistable(candidate)) {
+                continue;
+            }
+            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
+                return true;
+            }
+            if (candidate.isAnnotationPresent(Id.class)) {
+                idCount++;
+            }
+        }
+        return idCount > 1;
     }
 
     /**

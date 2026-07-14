@@ -85,6 +85,15 @@ class EntityMetadataFactoryMapsIdTest {
     }
 
     @Test
+    void rejectsMapsIdComponentDerivingFromCompositeKeyTarget() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(MapsIdComponentToCompositeTarget.class));
+        assertTrue(error.getMessage().contains("@MapsId"), error.getMessage());
+        assertTrue(error.getMessage().contains("composite-key associated")
+                || error.getMessage().contains("single @Id"), error.getMessage());
+    }
+
+    @Test
     void rejectsMapsIdCombinedWithGeneratedValue() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(MapsIdGeneratedId.class));
@@ -238,5 +247,25 @@ class EntityMetadataFactoryMapsIdTest {
         @MapsId("nope")
         @JoinColumn(name = "order_id")
         Master order;
+    }
+
+    @Entity
+    @Table(name = "maps_id_composite_target")
+    static class CompositeKeyTarget {
+        @EmbeddedId
+        OrderLineId id;
+    }
+
+    @Entity
+    @Table(name = "maps_id_owner_to_composite")
+    static class MapsIdComponentToCompositeTarget {
+        @EmbeddedId
+        OrderLineId id;
+
+        // @MapsId("orderRef")가 파생 대상으로 복합키 엔티티를 가리킨다 — 어느 타겟 컴포넌트를 owner의
+        // orderRef로 매핑할지 모호하므로 build 시점에 fail-fast로 거부해야 한다(단일 @Id 타겟만 지원).
+        @ManyToOne
+        @MapsId("orderRef")
+        CompositeKeyTarget target;
     }
 }
