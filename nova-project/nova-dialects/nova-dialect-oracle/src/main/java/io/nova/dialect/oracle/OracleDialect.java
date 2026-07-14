@@ -249,6 +249,85 @@ public final class OracleDialect implements Dialect {
         }
 
         /**
+         * 복합키 타겟 to-one의 FK 컬럼과 {@code @ManyToMany} link table 컬럼의 SQL 타입을 Oracle 네이티브
+         * 토큰으로 매핑한다. base {@link AbstractSchemaGenerator#foreignKeyColumnType(Class, int)}는 ANSI
+         * 토큰({@code bigint}/{@code integer}/{@code varchar}/{@code boolean})을 emit하는데, Oracle에는
+         * {@code bigint}/{@code boolean} 타입이 없어 DDL이 ORA-00902로 깨지고 {@code varchar}/{@code integer}는
+         * 이 dialect의 스칼라 {@link #sqlType} 매핑({@code number(19)}/{@code varchar2})과 불일치한다. 복합키
+         * 관계 컬럼도 스칼라 컬럼과 동일한 Oracle 타입을 쓰도록 여기서 재매핑한다({@code oracleColumnType}).
+         */
+        @Override
+        protected String foreignKeyColumnType(Class<?> columnType, int length) {
+            return oracleColumnType(columnType, length);
+        }
+
+        /**
+         * {@code @ManyToMany}/{@code @ElementCollection} owner-FK 컬럼(참조 {@code @Id} 도메인 타입)의 Oracle
+         * 네이티브 타입. base {@link AbstractSchemaGenerator#fkColumnType(Class)}의 ANSI 토큰과 같은 이유로
+         * 재매핑한다. base는 String을 {@code varchar(255)}로 고정하므로 Oracle은 {@code varchar2(255)}로 맞춘다.
+         */
+        @Override
+        protected String fkColumnType(Class<?> idType) {
+            return oracleColumnType(idType, 255);
+        }
+
+        /**
+         * {@code @ElementCollection} 값/키 컬럼(저장 표현 타입)의 Oracle 네이티브 타입. base
+         * {@link AbstractSchemaGenerator#elementColumnType(Class)}의 ANSI 토큰과 같은 이유로 재매핑한다.
+         */
+        @Override
+        protected String elementColumnType(Class<?> valueType) {
+            return oracleColumnType(valueType, 255);
+        }
+
+        /**
+         * 저장 표현 Java 타입을 Oracle 네이티브 컬럼 타입으로 매핑한다 — FK/link/element 컬럼 세 경로가 스칼라
+         * {@link #sqlType}와 동일한 토큰을 쓰도록 단일 자리에 모은다. {@code length}는 {@code varchar2} 컬럼
+         * 길이에만 쓰인다(비-문자 타입에서는 무시). {@code @Temporal} 저장타입의 실제 SQL 토큰은 dialect가
+         * 결정하며(Oracle은 {@code TIME}-only 타입이 없어 {@link OracleDialect#timeColumnType()}가 fail-fast),
+         * 진짜 미지원 타입은 base와 동일하게 fail-fast 한다.
+         */
+        private String oracleColumnType(Class<?> type, int length) {
+            if (type == String.class) {
+                return "varchar2(" + length + ")";
+            }
+            if (type == Long.class || type == long.class) {
+                return "number(19)";
+            }
+            if (type == Integer.class || type == int.class) {
+                return "number(10)";
+            }
+            if (type == Short.class || type == short.class) {
+                return "number(5)";
+            }
+            if (type == Boolean.class || type == boolean.class) {
+                return "number(1)";
+            }
+            if (type == Double.class || type == double.class) {
+                return "binary_double";
+            }
+            if (type == Float.class || type == float.class) {
+                return "binary_float";
+            }
+            if (type == java.math.BigDecimal.class) {
+                return "number(19, 2)";
+            }
+            if (type == java.util.UUID.class) {
+                return "varchar2(36)";
+            }
+            if (type == java.time.LocalDate.class) {
+                return dialect().dateColumnType();
+            }
+            if (type == java.time.LocalTime.class) {
+                return dialect().timeColumnType();
+            }
+            if (type == java.time.LocalDateTime.class) {
+                return dialect().timestampColumnType();
+            }
+            throw new IllegalArgumentException("Unsupported Oracle relation/element column type: " + type.getName());
+        }
+
+        /**
          * Oracle has no {@code CREATE TABLE IF NOT EXISTS} syntax. Wrap the raw
          * DDL in a PL/SQL anonymous block and swallow ORA-00955 (name already
          * used by an existing object), re-raising any other error so column /
