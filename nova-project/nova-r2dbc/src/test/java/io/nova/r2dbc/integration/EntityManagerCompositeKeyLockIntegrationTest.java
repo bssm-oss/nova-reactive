@@ -68,6 +68,28 @@ class EntityManagerCompositeKeyLockIntegrationTest {
     }
 
     @Test
+    void embeddedIdLockedFindMatchesOnAllKeyComponentsNotJustTheFirst() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(SeatReservation.class));
+
+        // 첫 컴포넌트(section='A')를 공유하는 sibling 두 행 — WHERE가 seat_no까지 걸지 않으면 둘이 구분되지 않아
+        // 한 잠금 재조회가 잘못된 행을 반환한다(단일-행 fixture로는 이 결함이 드러나지 않는다).
+        StepVerifier.create(
+                        h.support.operations().save(new SeatReservation(new SeatId("A", 1), "alice"))
+                                .then(h.support.operations().save(new SeatReservation(new SeatId("A", 2), "bob"))))
+                .expectNextCount(1).verifyComplete();
+
+        // 각 복합키가 정확히 자기 행으로만 해석돼야 한다. 첫 컴포넌트만 매칭하면 두 find가 같은 행을 반환해
+        // 아래 두 단언 중 하나는 반드시 깨진다(행 순서와 무관한 teeth).
+        StepVerifier.create(h.manager.find(SeatReservation.class, new SeatId("A", 1), LockModeType.PESSIMISTIC_WRITE))
+                .assertNext(found -> assertEquals("alice", found.getHolder()))
+                .verifyComplete();
+        StepVerifier.create(h.manager.find(SeatReservation.class, new SeatId("A", 2), LockModeType.PESSIMISTIC_WRITE))
+                .assertNext(found -> assertEquals("bob", found.getHolder()))
+                .verifyComplete();
+    }
+
+    @Test
     void embeddedIdOptimisticLockSucceedsWhenVersionMatches() {
         EntityManagerHarness h = harness();
         h.support.execute(h.support.operations().createTableSql(SeatReservation.class));
@@ -118,6 +140,26 @@ class EntityManagerCompositeKeyLockIntegrationTest {
 
         assertTrue(listener.anyMatches("for update"),
                 "복합키 PESSIMISTIC_WRITE find는 FOR UPDATE 절을 발행해야 한다. 실행 SQL=" + listener.snapshot());
+    }
+
+    @Test
+    void idClassLockedFindMatchesOnAllKeyComponentsNotJustTheFirst() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(Ticket.class));
+
+        // 첫 컴포넌트(event_id=10)를 공유하는 sibling 두 행 — WHERE가 code까지 걸지 않으면 잠금 재조회가
+        // 잘못된 행을 반환한다.
+        StepVerifier.create(
+                        h.support.operations().save(new Ticket(10L, "X1", "dave"))
+                                .then(h.support.operations().save(new Ticket(10L, "X2", "erin"))))
+                .expectNextCount(1).verifyComplete();
+
+        StepVerifier.create(h.manager.find(Ticket.class, new TicketId(10L, "X1"), LockModeType.PESSIMISTIC_WRITE))
+                .assertNext(found -> assertEquals("dave", found.getHolder()))
+                .verifyComplete();
+        StepVerifier.create(h.manager.find(Ticket.class, new TicketId(10L, "X2"), LockModeType.PESSIMISTIC_WRITE))
+                .assertNext(found -> assertEquals("erin", found.getHolder()))
+                .verifyComplete();
     }
 
     @Test

@@ -10,6 +10,7 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 |---------------------------------------|---------------------------------------------------------------------------------|
 | [Getting started](getting-started.md) | Installation, first entity, `Nova.create(...)`, schema initialization            |
 | [Entities](entities.md)               | Annotation reference, composite types (`@Embeddable`), relationships, indexes    |
+| [JPA compatibility](jpa-compatibility.md) | `jakarta.persistence` feature matrix — supported / reactive-equivalent / fail-fast |
 | [Queries](queries.md)                 | CRUD, Query DSL, Updater, Projection, Aggregations, Page/Slice, Cursor, NativeQuery, CompiledQuery |
 | [Transactions](transactions.md)       | `inTransaction`, Propagation / Isolation / readOnly, pessimistic locking, retry  |
 | [Dialects & Schema](dialects.md)      | `Dialect` interface, the five bundled dialects, `SchemaGenerator`, alter helpers |
@@ -27,7 +28,7 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 
 ## Module coordinates (Maven Central)
 
-All modules under the `io.github.bssm-oss` group are published at the same version (currently `2.1.0`).
+All modules under the `io.github.bssm-oss` group are published at the same version (currently `2.7.0`).
 
 ```
 io.github.bssm-oss:nova                          # aggregate (core + r2dbc + all dialects)

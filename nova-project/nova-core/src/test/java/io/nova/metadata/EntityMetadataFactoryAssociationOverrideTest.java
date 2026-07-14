@@ -2,6 +2,7 @@ package io.nova.metadata;
 
 import io.nova.support.fixtures.FixtureEntities.AssocCity;
 import io.nova.support.fixtures.FixtureEntities.AssocCountry;
+import io.nova.support.fixtures.FixtureEntities.AssocOverrideColumnCollision;
 import io.nova.support.fixtures.FixtureEntities.AssocOverrideEmbeddedPath;
 import io.nova.support.fixtures.FixtureEntities.AssocOverrideScalarTarget;
 import io.nova.support.fixtures.FixtureEntities.AssocOverrideUnknownName;
@@ -66,5 +67,17 @@ class EntityMetadataFactoryAssociationOverrideTest {
                 () -> factory.getEntityMetadata(AssocOverrideEmbeddedPath.class));
         assertTrue(ex.getMessage().contains("embedded"),
                 "메시지: " + ex.getMessage());
+    }
+
+    @Test
+    void associationOverrideIntoExistingColumnFailsFast() {
+        // override로 재지정한 FK 컬럼명이 서브클래스의 스칼라 @Column과 충돌하면, 두 property가 한 컬럼에 매핑돼
+        // silent 데이터 손상이 된다 — uniqueness 게이트가 duplicate column으로 거부해야 한다.
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(AssocOverrideColumnCollision.class));
+        assertTrue(ex.getMessage().contains("duplicate column"),
+                "메시지: " + ex.getMessage());
+        assertTrue(ex.getMessage().contains("taken_col"),
+                "충돌 컬럼명을 명시해야 한다. 메시지: " + ex.getMessage());
     }
 }

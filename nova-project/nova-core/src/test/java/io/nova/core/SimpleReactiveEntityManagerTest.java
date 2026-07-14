@@ -4,6 +4,9 @@ import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.QuerySpec;
+import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.FlushModeType;
@@ -22,6 +25,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -252,6 +256,40 @@ class SimpleReactiveEntityManagerTest {
     }
 
     @Test
+    void findWithPessimisticReadOnCompositeKeyIssuesForShareAcrossAllIdComponents() {
+        // H2는 FOR SHARE 구문을 지원하지 않아 복합키 PESSIMISTIC_READ의 왕복은 H2 통합 테스트로 검증할 수 없다.
+        // 대신 EntityManager가 (a) FOR_SHARE lock 모드로, (b) 모든 @Id 컴포넌트를 AND로 건 WHERE로 잠긴 SELECT를
+        // 발행하는지 QuerySpec 수준에서 검증한다. 첫 컴포넌트만 걸거나 FOR_UPDATE로 매핑하면 아래 단언이 깨진다.
+        CompositeWidget widget = new CompositeWidget(new CompositeWidgetKey("A", 1));
+        operations.findAllResults = List.of(widget);
+
+        StepVerifier.create(manager.find(CompositeWidget.class,
+                        new CompositeWidgetKey("A", 1), LockModeType.PESSIMISTIC_READ))
+                .expectNext(widget)
+                .verifyComplete();
+
+        QuerySpec spec = operations.findAllSpecs.get(0);
+        assertEquals(io.nova.query.LockMode.FOR_SHARE, spec.lockMode(),
+                "PESSIMISTIC_READ는 FOR SHARE로 매핑돼야 한다(FOR UPDATE 아님)");
+        io.nova.query.CompoundPredicate where =
+                assertInstanceOf(io.nova.query.CompoundPredicate.class, spec.predicate(),
+                        "복합키 WHERE는 컴포넌트별 술어의 결합이어야 한다");
+        assertEquals(io.nova.query.LogicalOperator.AND, where.operator());
+        assertEquals(2, where.predicates().size(), "두 @Id 컴포넌트가 모두 WHERE에 걸려야 한다");
+        java.util.Set<Object> boundValues = new java.util.HashSet<>();
+        java.util.Set<String> properties = new java.util.HashSet<>();
+        for (io.nova.query.Predicate child : where.predicates()) {
+            io.nova.query.Condition condition = assertInstanceOf(io.nova.query.Condition.class, child);
+            assertEquals(io.nova.query.ComparisonOperator.EQ, condition.operator());
+            boundValues.add(condition.value());
+            properties.add(condition.property());
+        }
+        // 두 컴포넌트가 서로 다른 property에 각자의 값으로 걸려야 한다(첫 컴포넌트만 반복 걸면 값/속성이 하나로 붕괴).
+        assertEquals(2, properties.size(), "두 컴포넌트는 서로 다른 @Id property를 걸어야 한다");
+        assertEquals(java.util.Set.of("A", 1), boundValues, "두 @Id 컴포넌트 값이 모두 WHERE에 바인딩돼야 한다");
+    }
+
+    @Test
     void findWithNoneLockModeUsesPlainFindById() {
         Widget widget = new Widget(4L, "d");
         operations.findByIdResult = widget;
@@ -415,6 +453,51 @@ class SimpleReactiveEntityManagerTest {
 
         Long getVersion() {
             return version;
+        }
+    }
+
+    @Embeddable
+    static class CompositeWidgetKey {
+        @Column(name = "part_a")
+        private String partA;
+        @Column(name = "part_b")
+        private Integer partB;
+
+        CompositeWidgetKey() {
+        }
+
+        CompositeWidgetKey(String partA, Integer partB) {
+            this.partA = partA;
+            this.partB = partB;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof CompositeWidgetKey that
+                    && java.util.Objects.equals(partA, that.partA)
+                    && java.util.Objects.equals(partB, that.partB);
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(partA, partB);
+        }
+    }
+
+    @Entity
+    static class CompositeWidget {
+        @EmbeddedId
+        private CompositeWidgetKey id;
+
+        CompositeWidget() {
+        }
+
+        CompositeWidget(CompositeWidgetKey id) {
+            this.id = id;
+        }
+
+        CompositeWidgetKey getId() {
+            return id;
         }
     }
 

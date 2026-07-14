@@ -3137,6 +3137,25 @@ public final class FixtureEntities {
     public static class AssocOverrideEmbeddedPath extends AssocRegionBase {
     }
 
+    /**
+     * 상속한 {@code country} 관계의 join 컬럼을 이 서브클래스가 선언한 스칼라 컬럼({@code taken_col})과 같은
+     * 이름으로 재지정한다. override가 기존 컬럼으로 들어가면 두 property가 한 컬럼에 매핑돼 데이터가 덮어써지므로
+     * uniqueness 게이트가 fail-fast로 거부해야 한다 — {@code @AssociationOverride} collision 검증용.
+     */
+    @Entity
+    @Table(name = "assoc_collision")
+    @jakarta.persistence.AssociationOverride(
+            name = "country",
+            joinColumns = @JoinColumn(name = "taken_col"))
+    public static class AssocOverrideColumnCollision extends AssocRegionBase {
+        @Column(name = "taken_col")
+        private String other;
+
+        public String getOther() {
+            return other;
+        }
+    }
+
     /** 복합키(@EmbeddedId) 부모 — 다중컬럼 FK로 참조되는 유효한 to-one 타겟(가드/조립 테스트용). */
     @Embeddable
     public static class CompositeJoinKey {

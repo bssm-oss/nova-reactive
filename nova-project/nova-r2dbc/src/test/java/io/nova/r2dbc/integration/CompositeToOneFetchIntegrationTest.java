@@ -7,6 +7,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.IdClass;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
@@ -49,7 +50,8 @@ class CompositeToOneFetchIntegrationTest {
         support = H2IntegrationTestSupport.createWithManagedTransactions(listener);
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
-        schema.create(Region.class, Store.class, Category.class, Product.class).block();
+        schema.create(Region.class, Store.class, Category.class, Product.class,
+                Warehouse.class, Bin.class).block();
     }
 
     @Test
@@ -140,6 +142,57 @@ class CompositeToOneFetchIntegrationTest {
     }
 
     @Test
+    void danglingCompositeReferenceKeepsIdStub() {
+        // 대상 region 행이 없는 FK를 가진 store(dangling FK). 참조는 null이 아니라 복합 @Id만 채운 id-stub으로
+        // 보존돼야 한다 — 배치 로드가 대상을 못 찾았다고 참조를 null로 덮으면 silent 데이터 손실이 된다.
+        StepVerifier.create(support.operations().save(store("lonely", "ZZ", 99)))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findAll(Store.class, QuerySpec.empty()).collectList())
+                .assertNext(stores -> {
+                    assertEquals(1, stores.size());
+                    Region parent = stores.get(0).getRegion();
+                    assertNotNull(parent, "dangling FK 참조는 id-stub으로 보존돼야 한다(null 아님)");
+                    assertNotNull(parent.getId());
+                    assertEquals("ZZ", parent.getId().getCountry());
+                    assertEquals(99, parent.getId().getCode());
+                    assertNull(parent.getName(), "대상 행이 없으므로 복합 @Id 외 필드는 로드되지 않은 채로 남는다");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void idClassCompositeToOneIsFullyHydrated() {
+        // @IdClass 복합 타겟도 @EmbeddedId와 동일하게 id-stub이 아니라 완전 엔티티로 배치 hydrate돼야 한다.
+        Warehouse hub = warehouse("A", 1, "north-hub");
+        StepVerifier.create(
+                        support.operations().save(hub)
+                                .then(support.operations().save(bin("b1", "A", 1)))
+                                .then(support.operations().save(bin("b2", "A", 1))))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        listener.reset();
+        StepVerifier.create(support.operations().findAll(Bin.class, QuerySpec.empty()).collectList())
+                .assertNext(bins -> {
+                    assertEquals(2, bins.size());
+                    for (Bin bin : bins) {
+                        Warehouse wh = bin.getWarehouse();
+                        assertNotNull(wh, "@IdClass 복합 to-one 참조가 hydrate돼야 한다");
+                        assertEquals("A", wh.getZone());
+                        assertEquals(1, wh.getSlot());
+                        assertEquals("north-hub", wh.getTitle(),
+                                "@IdClass 복합 타겟이 id-stub이 아니라 완전 엔티티로 로드돼야 한다");
+                    }
+                })
+                .verifyComplete();
+
+        assertEquals(1, listener.selectCountFor("warehouse"),
+                "@IdClass 복합 부모도 자식 수와 무관하게 한 번의 배치 쿼리로 로드돼야 한다");
+    }
+
+    @Test
     void singleKeyToOneHasNoRegression() {
         // 단일키 to-one auto-hydration 회귀 0 — 복합 경로 도입이 기존 단일 FK IN 경로를 바꾸지 않는다.
         Category tools = new Category();
@@ -190,6 +243,24 @@ class CompositeToOneFetchIntegrationTest {
         product.setLabel(label);
         product.setCategory(category);
         return product;
+    }
+
+    private static Warehouse warehouse(String zone, Integer slot, String title) {
+        Warehouse warehouse = new Warehouse();
+        warehouse.setZone(zone);
+        warehouse.setSlot(slot);
+        warehouse.setTitle(title);
+        return warehouse;
+    }
+
+    private static Bin bin(String label, String zone, Integer slot) {
+        Bin bin = new Bin();
+        bin.setLabel(label);
+        Warehouse ref = new Warehouse();
+        ref.setZone(zone);
+        ref.setSlot(slot);
+        bin.setWarehouse(ref);
+        return bin;
     }
 
     /** 실행된 SQL 문장을 모아 특정 테이블에 대한 SELECT 발행 횟수를 세는 listener. */
@@ -390,6 +461,115 @@ class CompositeToOneFetchIntegrationTest {
 
         public void setCategory(Category category) {
             this.category = category;
+        }
+    }
+
+    // --- @IdClass composite parent + child ---------------------------------
+
+    public static class WarehouseKey {
+        private String zone;
+        private Integer slot;
+
+        public WarehouseKey() {
+        }
+
+        public WarehouseKey(String zone, Integer slot) {
+            this.zone = zone;
+            this.slot = slot;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof WarehouseKey that
+                    && Objects.equals(zone, that.zone) && Objects.equals(slot, that.slot);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(zone, slot);
+        }
+    }
+
+    @Entity
+    @Table(name = "warehouse")
+    @IdClass(WarehouseKey.class)
+    public static class Warehouse {
+        @Id
+        @Column(name = "zone")
+        private String zone;
+        @Id
+        @Column(name = "slot")
+        private Integer slot;
+        @Column(name = "title")
+        private String title;
+
+        public Warehouse() {
+        }
+
+        public String getZone() {
+            return zone;
+        }
+
+        public void setZone(String zone) {
+            this.zone = zone;
+        }
+
+        public Integer getSlot() {
+            return slot;
+        }
+
+        public void setSlot(Integer slot) {
+            this.slot = slot;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public void setTitle(String title) {
+            this.title = title;
+        }
+    }
+
+    @Entity
+    @Table(name = "bin")
+    public static class Bin {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @Column(name = "label")
+        private String label;
+
+        @ManyToOne(targetEntity = Warehouse.class)
+        @JoinColumns({
+                @JoinColumn(name = "wh_zone", referencedColumnName = "zone"),
+                @JoinColumn(name = "wh_slot", referencedColumnName = "slot")
+        })
+        private Warehouse warehouse;
+
+        public Bin() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public void setLabel(String label) {
+            this.label = label;
+        }
+
+        public Warehouse getWarehouse() {
+            return warehouse;
+        }
+
+        public void setWarehouse(Warehouse warehouse) {
+            this.warehouse = warehouse;
         }
     }
 }
