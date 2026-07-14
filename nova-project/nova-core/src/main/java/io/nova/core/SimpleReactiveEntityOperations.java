@@ -3045,12 +3045,17 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return userGroup;
         }
         FetchGroup<P> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
-        if (annotationGroup.specs().isEmpty()) {
+        if (annotationGroup.specs().isEmpty() && annotationGroup.compositeToOneSpecs().isEmpty()) {
             return userGroup;
         }
         LinkedHashSet<String> userKeys = new LinkedHashSet<>();
         for (FetchGroup.FetchSpec<P, ?> spec : userGroup.specs()) {
             userKeys.add(specKey(spec));
+        }
+        // user가 명시한 composite spec은 targetType 기준으로 우선한다(공개 builder로 직접 만들 수 있으므로 보존).
+        LinkedHashSet<String> userCompositeKeys = new LinkedHashSet<>();
+        for (FetchGroup.CompositeToOneSpec<P, ?> spec : userGroup.compositeToOneSpecs()) {
+            userCompositeKeys.add(spec.targetType().getName());
         }
         FetchGroup.Builder<P> builder = FetchGroup.forParents(entityType);
         for (FetchGroup.FetchSpec<P, ?> spec : userGroup.specs()) {
@@ -3062,11 +3067,25 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
             appendSpec(builder, spec);
         }
+        for (FetchGroup.CompositeToOneSpec<P, ?> spec : userGroup.compositeToOneSpecs()) {
+            appendCompositeSpec(builder, spec);
+        }
+        for (FetchGroup.CompositeToOneSpec<P, ?> spec : annotationGroup.compositeToOneSpecs()) {
+            if (userCompositeKeys.contains(spec.targetType().getName())) {
+                continue;
+            }
+            appendCompositeSpec(builder, spec);
+        }
         return builder.build();
     }
 
     private static String specKey(FetchGroup.FetchSpec<?, ?> spec) {
         return spec.childType().getName() + "::" + spec.childForeignKeyColumn();
+    }
+
+    private static <P, C> void appendCompositeSpec(
+            FetchGroup.Builder<P> builder, FetchGroup.CompositeToOneSpec<P, C> spec) {
+        builder.withCompositeReferencedParent(spec.targetType(), spec.referenceReader(), spec.setter());
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -3108,12 +3127,112 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 주입된다 — silent drop 대신 명시적으로 빈 결과로 setter를 호출해 호출자가 일관된 상태를 보게 한다.
      */
     private <P> Mono<Void> hydrateChildren(List<P> parents, FetchGroup<P> fetchGroup) {
-        if (parents.isEmpty() || fetchGroup.specs().isEmpty()) {
+        if (parents.isEmpty()
+                || (fetchGroup.specs().isEmpty() && fetchGroup.compositeToOneSpecs().isEmpty())) {
             return Mono.empty();
         }
         return Flux.fromIterable(fetchGroup.specs())
                 .concatMap(spec -> hydrateChildSpec(parents, spec))
+                .thenMany(Flux.fromIterable(fetchGroup.compositeToOneSpecs())
+                        .concatMap(spec -> hydrateCompositeToOneSpec(parents, spec)))
                 .then();
+    }
+
+    /**
+     * 복합키({@code @EmbeddedId}/{@code @IdClass}) 엔티티를 참조하는 to-one을 한 번의 쿼리로 배치 로드해 완전
+     * 엔티티로 hydrate한다(레벨당 1쿼리, N+1 없음). row 디코딩이 각 parent에 만든 참조 stub의 복합 {@code @Id}를
+     * 대상 튜플로 모아, 참조 대상의 {@code @Id} 컴포넌트별 동등 조건을 AND로 묶고 서로 다른 튜플을 OR로 확장한
+     * 단일 predicate로 조회한다 — 5개 dialect가 모두 AND/OR을 지원하므로 dialect별 tuple-IN 구문이 필요 없다.
+     * <p>
+     * 튜플 추출·대상 매칭은 <b>양쪽 모두</b> {@code targetMetadata.idProperties()}/
+     * {@link EntityMetadata#idColumnValue(PersistentProperty, Object)}로 하므로 컴포넌트 순서가 항상 일치한다
+     * (wrong-object 회피). 같은 복합 대상을 여러 parent가 참조하면 튜플 기준으로 de-dup해 IN에 한 번만 넣는다.
+     * 참조가 {@code null}인 parent(옵셔널 관계)는 건너뛰어 stub이 애초에 만들어지지 않은 상태(null)를 보존하고,
+     * 대상 row가 없는 dangling FK는 기존 id-stub을 그대로 둔다(silent 데이터 손실 회피).
+     */
+    private <P, C> Mono<Void> hydrateCompositeToOneSpec(
+            List<P> parents, FetchGroup.CompositeToOneSpec<P, C> spec) {
+        EntityMetadata<C> targetMetadata = metadataFactory.getEntityMetadata(spec.targetType());
+        List<PersistentProperty> idProperties = targetMetadata.idProperties();
+        // 각 parent의 참조 stub에서 복합 id 튜플(컴포넌트 도메인 값들)을 idProperties 순서로 추출한다.
+        List<List<Object>> parentTuples = new ArrayList<>(parents.size());
+        LinkedHashSet<List<Object>> distinctTuples = new LinkedHashSet<>();
+        for (P parent : parents) {
+            List<Object> tuple = compositeIdTuple(targetMetadata, idProperties, spec.referenceReader().apply(parent));
+            parentTuples.add(tuple);
+            if (tuple != null) {
+                distinctTuples.add(tuple);
+            }
+        }
+        if (distinctTuples.isEmpty()) {
+            // 모든 참조가 null(옵셔널 관계) — 로드할 대상이 없으므로 stub 미생성(null) 상태를 그대로 둔다.
+            return Mono.empty();
+        }
+        Predicate predicate = compositeToOnePredicate(idProperties, distinctTuples);
+        return findAllInternal(targetMetadata, QuerySpec.empty().where(predicate))
+                .collectList()
+                .doOnNext(targets -> {
+                    Map<List<Object>, C> targetByTuple = new LinkedHashMap<>();
+                    for (C target : targets) {
+                        Object compositeId = targetMetadata.readIdValue(target);
+                        targetByTuple.put(idColumnTuple(targetMetadata, idProperties, compositeId), target);
+                    }
+                    for (int i = 0; i < parents.size(); i++) {
+                        List<Object> tuple = parentTuples.get(i);
+                        if (tuple == null) {
+                            continue; // 옵셔널 null 참조 — 그대로 둔다.
+                        }
+                        C full = targetByTuple.get(tuple);
+                        if (full != null) {
+                            spec.setter().accept(parents.get(i), full);
+                        }
+                        // full == null(dangling FK): 기존 id-stub을 보존한다.
+                    }
+                })
+                .then();
+    }
+
+    /**
+     * 참조 stub의 복합 {@code @Id}를 컴포넌트 도메인 값 튜플로 변환한다. stub이 {@code null}(옵셔널 관계 미설정)이거나
+     * 복합 id를 읽을 수 없으면 {@code null}을 반환한다. 튜플은 {@link EntityMetadata#idProperties()} 순서를 따라
+     * 대상 매칭과 동일 순서를 보장한다.
+     */
+    private static List<Object> compositeIdTuple(
+            EntityMetadata<?> targetMetadata, List<PersistentProperty> idProperties, Object stub) {
+        if (stub == null) {
+            return null;
+        }
+        Object compositeId = targetMetadata.readIdValue(stub);
+        if (compositeId == null) {
+            return null;
+        }
+        return idColumnTuple(targetMetadata, idProperties, compositeId);
+    }
+
+    private static List<Object> idColumnTuple(
+            EntityMetadata<?> targetMetadata, List<PersistentProperty> idProperties, Object compositeId) {
+        List<Object> tuple = new ArrayList<>(idProperties.size());
+        for (PersistentProperty idProperty : idProperties) {
+            tuple.add(targetMetadata.idColumnValue(idProperty, compositeId));
+        }
+        return tuple;
+    }
+
+    /**
+     * 복합 id 튜플 집합을 {@code (c1 = ? and c2 = ?) or (...)} predicate로 확장한다. 컴포넌트 도메인 값은
+     * {@code Criteria.eq}가 렌더링 단계에서 참조 컴포넌트 converter를 적용해 저장 표현으로 바인딩한다.
+     */
+    private static Predicate compositeToOnePredicate(
+            List<PersistentProperty> idProperties, LinkedHashSet<List<Object>> distinctTuples) {
+        List<Predicate> orTerms = new ArrayList<>(distinctTuples.size());
+        for (List<Object> tuple : distinctTuples) {
+            List<Predicate> ands = new ArrayList<>(idProperties.size());
+            for (int i = 0; i < idProperties.size(); i++) {
+                ands.add(Criteria.eq(idProperties.get(i).propertyName(), tuple.get(i)));
+            }
+            orTerms.add(ands.size() == 1 ? ands.get(0) : Criteria.and(ands.toArray(new Predicate[0])));
+        }
+        return orTerms.size() == 1 ? orTerms.get(0) : Criteria.or(orTerms.toArray(new Predicate[0]));
     }
 
     /**

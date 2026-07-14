@@ -49,9 +49,10 @@ public final class AnnotationFetchGroupBuilder {
         // @ManyToOne — child 측 PK column으로 IN-query를 발행한다. parent에서 FK 값을 꺼내 IN 키로 사용.
         for (PersistentProperty manyToOne : parentMetadata.manyToOneProperties()) {
             if (manyToOne.isCompositeToOne()) {
-                // 복합키 타겟 to-one은 단일 PK IN-query로 자동 hydrate할 수 없다(FK가 N개 컬럼). mapRow가 이미
-                // 복합 id를 채운 참조 stub을 만들어 두므로, 자동 fetch group에서 제외해 그 stub을 그대로 노출한다
-                // (복합키 타겟의 full graph fetch는 별도 Wave 범위). read()가 단일 @Id를 못 찾아 던지는 것도 회피한다.
+                // 복합키 타겟 to-one은 단일 PK IN-query로는 표현할 수 없다(FK가 N개 컬럼). mapRow가 이미 복합 id를
+                // 채운 참조 stub을 만들어 두므로, 그 stub의 복합 @Id를 대상 튜플로 모아 컴포넌트별 동등 조건 OR 확장
+                // 쿼리 한 번으로 완전 엔티티를 배치 로드하는 composite spec을 추가한다(레벨당 1쿼리, N+1 없음).
+                addCompositeManyToOneSpec(builder, parentType, manyToOne);
                 continue;
             }
             addManyToOneSpec(builder, parentType, manyToOne);
@@ -149,6 +150,28 @@ public final class AnnotationFetchGroupBuilder {
                 childPkColumn,
                 fkExtractor,
                 singleSetter
+        );
+    }
+
+    /**
+     * 복합키 타겟 to-one의 배치 로드 spec을 추가한다. 참조 stub은 {@code @Access(PROPERTY)}면 getter로, 아니면
+     * field로 읽고({@link PersistentProperty#readReference(Object)}), 완전 엔티티 주입도 같은 access 전략으로 쓴다
+     * ({@link PersistentProperty#writeReference(Object, Object)}). 실제 튜플 추출/매칭은 metadata를 가진 hydration
+     * 단계가 대상 엔티티의 복합 {@code @Id}로 수행한다.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private <P> void addCompositeManyToOneSpec(
+            FetchGroup.Builder<P> builder, Class<P> parentType, PersistentProperty manyToOne) {
+        Class<?> targetType = manyToOne.manyToOneTargetType();
+        if (targetType == null) {
+            throw new IllegalStateException(
+                    parentType.getName() + "." + manyToOne.propertyName()
+                            + " @ManyToOne target type cannot be resolved");
+        }
+        builder.withCompositeReferencedParent(
+                (Class<Object>) targetType,
+                manyToOne::readReference,
+                manyToOne::writeReference
         );
     }
 

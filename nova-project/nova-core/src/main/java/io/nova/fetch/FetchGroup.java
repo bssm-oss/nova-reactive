@@ -30,10 +30,15 @@ import java.util.function.Function;
 public final class FetchGroup<P> {
     private final Class<P> parentType;
     private final List<FetchSpec<P, ?>> specs;
+    private final List<CompositeToOneSpec<P, ?>> compositeToOneSpecs;
 
-    private FetchGroup(Class<P> parentType, List<FetchSpec<P, ?>> specs) {
+    private FetchGroup(
+            Class<P> parentType,
+            List<FetchSpec<P, ?>> specs,
+            List<CompositeToOneSpec<P, ?>> compositeToOneSpecs) {
         this.parentType = parentType;
         this.specs = List.copyOf(specs);
+        this.compositeToOneSpecs = List.copyOf(compositeToOneSpecs);
     }
 
     /**
@@ -53,12 +58,22 @@ public final class FetchGroup<P> {
     }
 
     /**
+     * 복합키({@code @EmbeddedId}/{@code @IdClass}) 엔티티를 참조하는 to-one({@code @ManyToOne}/owning
+     * {@code @OneToOne}) 배치 로드 spec들. 단일컬럼 IN으로 표현 불가한 다중컬럼 FK를 별도 리스트로 분리해
+     * {@link #specs()}(단일컬럼 IN 경로)와 뒤섞이지 않게 한다.
+     */
+    public List<CompositeToOneSpec<P, ?>> compositeToOneSpecs() {
+        return compositeToOneSpecs;
+    }
+
+    /**
      * {@link FetchGroup}을 누적해서 만드는 immutable builder. 각 {@link #with(Class, String, Function, BiConsumer)}
      * 호출은 동일 builder 인스턴스에 child spec을 추가하며 마지막에 {@link #build()}로 동결한다.
      */
     public static final class Builder<P> {
         private final Class<P> parentType;
         private final List<FetchSpec<P, ?>> specs = new ArrayList<>();
+        private final List<CompositeToOneSpec<P, ?>> compositeToOneSpecs = new ArrayList<>();
 
         private Builder(Class<P> parentType) {
             this.parentType = parentType;
@@ -181,8 +196,29 @@ public final class FetchGroup<P> {
             return this;
         }
 
+        /**
+         * 복합키({@code @EmbeddedId}/{@code @IdClass}) 엔티티를 참조하는 to-one의 배치 로드 spec을 추가한다.
+         * 참조 대상의 다중컬럼 FK는 단일컬럼 IN으로 표현할 수 없으므로, hydration 단계가 참조 대상의 복합 {@code @Id}
+         * 컴포넌트별 동등 조건을 AND로 묶고 부모 튜플들을 OR로 확장한 한 번의 쿼리로 배치 로드한다(레벨당 1쿼리, N+1 없음).
+         *
+         * @param targetType      참조 대상(복합키) 엔티티 타입
+         * @param referenceReader parent 인스턴스에서 참조 stub(복합 {@code @Id}가 채워진)을 읽는 함수. 참조가 없으면 {@code null}.
+         * @param singleSetter    parent에 완전 로드된 참조 엔티티를 주입하는 함수.
+         */
+        public <C> Builder<P> withCompositeReferencedParent(
+                Class<C> targetType,
+                Function<P, Object> referenceReader,
+                BiConsumer<P, C> singleSetter
+        ) {
+            Objects.requireNonNull(targetType, "targetType must not be null");
+            Objects.requireNonNull(referenceReader, "referenceReader must not be null");
+            Objects.requireNonNull(singleSetter, "singleSetter must not be null");
+            compositeToOneSpecs.add(new CompositeToOneSpec<>(targetType, referenceReader, singleSetter));
+            return this;
+        }
+
         public FetchGroup<P> build() {
-            return new FetchGroup<>(parentType, specs);
+            return new FetchGroup<>(parentType, specs, compositeToOneSpecs);
         }
     }
 
@@ -209,6 +245,26 @@ public final class FetchGroup<P> {
             Objects.requireNonNull(setter, "setter must not be null");
             // orderBy / orderColumn은 선택값(null 허용). 둘 다 정렬 수단이지만 orderColumn은 child property가
             // 아닌 child 테이블의 물리 순서 컬럼이며 @OrderColumn @OneToMany에서만 채워진다.
+        }
+    }
+
+    /**
+     * 복합키 엔티티를 참조하는 to-one({@code @ManyToOne}/owning {@code @OneToOne}) 배치 로드 선언. 참조 대상의
+     * 다중컬럼 FK 때문에 단일컬럼 IN을 쓰는 {@link FetchSpec}으로는 표현할 수 없어 별도 record로 분리한다.
+     * <p>
+     * {@code referenceReader}는 parent에서 참조 stub(row 디코딩 시 복합 {@code @Id}만 채워진)을 읽는다. 실행 단계는
+     * stub의 복합 {@code @Id}로 대상 튜플을 모아 컴포넌트별 동등 조건의 OR 확장 쿼리 한 번으로 완전 엔티티를 로드하고,
+     * {@code setter}로 stub을 완전 엔티티로 교체한다. 참조가 {@code null}(옵셔널 관계)인 parent는 그대로 둔다.
+     */
+    public record CompositeToOneSpec<P, C>(
+            Class<C> targetType,
+            Function<P, Object> referenceReader,
+            BiConsumer<P, C> setter
+    ) {
+        public CompositeToOneSpec {
+            Objects.requireNonNull(targetType, "targetType must not be null");
+            Objects.requireNonNull(referenceReader, "referenceReader must not be null");
+            Objects.requireNonNull(setter, "setter must not be null");
         }
     }
 }
