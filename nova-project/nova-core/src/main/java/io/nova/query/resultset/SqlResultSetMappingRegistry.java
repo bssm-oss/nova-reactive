@@ -198,6 +198,15 @@ public final class SqlResultSetMappingRegistry {
             }
         }
         List<PersistentProperty> columns = metadata.columnMappedProperties();
+        for (PersistentProperty property : columns) {
+            if (property.isCompositeToOne()) {
+                // property당 단일 컬럼만 읽는 매퍼라 복합 FK(N컬럼)를 대표 컬럼 하나로만 resolve해 오답을 낸다.
+                // 지원 전까지 명확히 fail-fast한다.
+                throw new IllegalStateException("@SqlResultSetMapping '" + mappingName + "' @EntityResult target "
+                        + entityClass.getName() + " is not yet supported: association '" + property.propertyName()
+                        + "' references a composite-key (@EmbeddedId/@IdClass) target via a multi-column foreign key");
+            }
+        }
         Constructor<?> constructor;
         try {
             constructor = entityClass.getDeclaredConstructor();

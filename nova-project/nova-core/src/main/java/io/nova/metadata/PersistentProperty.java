@@ -132,6 +132,14 @@ public final class PersistentProperty {
      * INSERT/UPDATE/SELECT 컬럼 집합에서 제외되고 별도의 secondary INSERT/UPDATE/LEFT JOIN 경로로 흐른다.
      */
     private final String secondaryTableName;
+    /**
+     * 복합키({@code @EmbeddedId}/{@code @IdClass}) 엔티티를 참조하는 owning to-one 관계의 다중컬럼 FK 모델.
+     * 참조 엔티티의 각 {@code @Id} 컴포넌트마다 FK 컬럼 1개를 참조 순서대로 담는다. 단일키 타겟 to-one과
+     * 관계가 아닌 property는 {@code null}이며, 이 경우 기존 단일 {@link #columnName} FK 경로를 그대로 탄다.
+     * {@code null}이 아니면 SELECT/INSERT/UPDATE/DDL/FK 렌더링이 {@link #columnName} 단일 컬럼 대신 이 목록의
+     * N개 컬럼을 emit/바인딩하고, row 디코딩은 N개 컬럼을 읽어 복합 id를 가진 stub을 조립한다.
+     */
+    private final ToOneForeignKey toOneForeignKey;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -179,7 +187,8 @@ public final class PersistentProperty {
             Method propertyAccessGetter,
             Method propertyAccessSetter,
             ToOneCascadeInfo toOneCascadeInfo,
-            String secondaryTableName
+            String secondaryTableName,
+            ToOneForeignKey toOneForeignKey
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -240,6 +249,7 @@ public final class PersistentProperty {
         }
         this.toOneCascadeInfo = toOneCascadeInfo;
         this.secondaryTableName = secondaryTableName == null ? "" : secondaryTableName;
+        this.toOneForeignKey = toOneForeignKey;
     }
 
     /**
@@ -296,7 +306,8 @@ public final class PersistentProperty {
                 propertyAccessGetter,
                 propertyAccessSetter,
                 toOneCascadeInfo,
-                secondaryTableName
+                secondaryTableName,
+                toOneForeignKey
         );
     }
 
@@ -355,7 +366,8 @@ public final class PersistentProperty {
                 propertyAccessGetter,
                 propertyAccessSetter,
                 toOneCascadeInfo,
-                secondaryTableName
+                secondaryTableName,
+                toOneForeignKey
         );
     }
 
@@ -414,7 +426,8 @@ public final class PersistentProperty {
                 propertyAccessGetter,
                 propertyAccessSetter,
                 toOneCascadeInfo,
-                secondaryTableName
+                secondaryTableName,
+                toOneForeignKey
         );
     }
 
@@ -638,6 +651,87 @@ public final class PersistentProperty {
      */
     public boolean manyToOneNullable() {
         return manyToOneNullable;
+    }
+
+    /**
+     * {@code true}이면 이 owning to-one 관계가 복합키({@code @EmbeddedId}/{@code @IdClass}) 엔티티를 참조하며
+     * {@link #toOneForeignKey()}가 참조 {@code @Id} 컴포넌트별 FK 컬럼 목록을 담는다. 이때 단일 {@link #columnName()}
+     * 대신 다중컬럼 FK 경로를 taken다. 단일키 타겟 to-one은 {@code false}이며 기존 단일 FK 컬럼 동작을 그대로 유지한다.
+     */
+    public boolean isCompositeToOne() {
+        return toOneForeignKey != null;
+    }
+
+    /**
+     * 복합키 타겟 owning to-one의 다중컬럼 FK 모델. 복합 타겟이 아니면 {@code null}.
+     */
+    public ToOneForeignKey toOneForeignKey() {
+        return toOneForeignKey;
+    }
+
+    /**
+     * to-one 관계 property의 <em>원본 참조 엔티티 인스턴스</em>를 읽는다({@link #read(Object)}와 달리 참조
+     * {@code @Id} 값으로 축약하지 않는다). 복합키 타겟 write 경로가 참조 엔티티에서 컴포넌트별 {@code @Id} 값을
+     * 각각 꺼낼 수 있도록 raw reference를 노출한다. 관계는 항상 FIELD access로 저장되므로 field로 읽는다.
+     */
+    public Object readReferenceInstance(Object instance) {
+        try {
+            Object current = instance;
+            for (Field hostField : embeddedHostPath) {
+                current = hostField.get(current);
+                if (current == null) {
+                    return null;
+                }
+            }
+            return fieldHandle != null ? fieldHandle.get(current) : field.get(current);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException("Cannot read @ManyToOne/@OneToOne reference field " + field.getName(), exception);
+        }
+    }
+
+    /**
+     * to-one 관계 property의 참조 엔티티 인스턴스를 그대로 set한다({@link #readReferenceInstance(Object)}와
+     * 대칭). merge의 컬럼 상태 복사처럼 참조 <em>객체</em>를 id-축약 stub 경로 없이 통째로 옮겨야 하는
+     * 경우에 사용한다(복합키 타겟은 단일 {@code @Id} stub 경로가 성립하지 않으므로). 관계는 항상 FIELD access다.
+     */
+    public void writeReferenceInstance(Object instance, Object reference) {
+        try {
+            // 관계 property는 top-level이라 embeddedHostPath가 비어 있지만, readReferenceInstance와 대칭이 되도록
+            // (그리고 향후 @Embeddable 내부 to-one 매핑에서도 어긋나지 않도록) 동일한 host-path traversal을 따르고
+            // 동일한 접근 경로(fieldHandle 우선)를 쓴다.
+            Object current = instance;
+            for (Field hostField : embeddedHostPath) {
+                Object next = hostField.get(current);
+                if (next == null) {
+                    next = instantiateEmbeddable(hostField.getType());
+                    hostField.set(current, next);
+                }
+                current = next;
+            }
+            if (fieldHandle != null) {
+                fieldHandle.set(current, reference);
+            } else {
+                field.set(current, reference);
+            }
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot write @ManyToOne/@OneToOne reference field " + field.getName(), exception);
+        }
+    }
+
+    /**
+     * 복합키 타겟 to-one row 디코딩: N개 FK 컬럼에서 디코드된 도메인 값들로 참조 엔티티 stub을 조립해
+     * reference 필드에 set한다. 모든 값이 {@code null}이면 reference도 {@code null}로 둔다. 단일키 to-one은
+     * {@link #writeManyToOneStub(Object, Object)} 경로를 그대로 쓰므로 이 메서드는 복합 타겟에만 호출된다.
+     */
+    public void writeCompositeReference(Object instance, List<Object> decodedValues) {
+        Object stub = toOneForeignKey.assembleStub(decodedValues);
+        try {
+            field.set(instance, stub);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot write @ManyToOne/@OneToOne reference field " + field.getName(), exception);
+        }
     }
 
     /**

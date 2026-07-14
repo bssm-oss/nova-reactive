@@ -27,6 +27,7 @@ public final class StoredProcedureRowMappers {
         Objects.requireNonNull(resultClass, "resultClass must not be null");
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(resultClass);
         List<PersistentProperty> columns = metadata.columnMappedProperties();
+        rejectCompositeToOne(resultClass, columns);
         Constructor<T> constructor;
         try {
             constructor = resultClass.getDeclaredConstructor();
@@ -49,5 +50,20 @@ public final class StoredProcedureRowMappers {
             }
             return instance;
         };
+    }
+
+    /**
+     * 엔티티 매핑 대상에 복합키({@code @EmbeddedId}/{@code @IdClass}) 타겟을 참조하는 to-one 관계(다중컬럼 FK)가
+     * 있으면 fail-fast한다. 이 매퍼는 property당 단일 컬럼만 읽으므로 복합 FK를 조용히 대표 컬럼 하나로만
+     * resolve해 오답을 낸다 — 지원 전까지 명확히 거부한다.
+     */
+    private static void rejectCompositeToOne(Class<?> resultClass, List<PersistentProperty> columns) {
+        for (PersistentProperty property : columns) {
+            if (property.isCompositeToOne()) {
+                throw new StoredProcedureException("stored procedure entity mapping of " + resultClass.getName()
+                        + " is not yet supported: association '" + property.propertyName()
+                        + "' references a composite-key (@EmbeddedId/@IdClass) target via a multi-column foreign key");
+            }
+        }
     }
 }

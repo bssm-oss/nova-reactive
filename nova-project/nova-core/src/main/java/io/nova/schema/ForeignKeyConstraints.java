@@ -4,6 +4,7 @@ import jakarta.persistence.CollectionTable;
 import jakarta.persistence.ConstraintMode;
 import jakarta.persistence.ForeignKey;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
 import jakarta.persistence.JoinTable;
 import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
@@ -11,6 +12,7 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.ToOneForeignKeyColumn;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -76,6 +78,27 @@ final class ForeignKeyConstraints {
             EntityMetadata<?> metadata, EntityMetadataFactory factory,
             LinkedHashMap<String, ForeignKeyDefinition> byKey) {
         for (PersistentProperty property : metadata.manyToOneProperties()) {
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one: @JoinColumns(foreignKey=...)가 CONSTRAINT면 다중컬럼 복합 FK를 발행한다.
+                // FK/참조 컬럼과 순서는 이미 참조 @Id 순서로 정렬된 toOneForeignKey 모델에서 그대로 가져온다.
+                JoinColumns joinColumns = property.field().getAnnotation(JoinColumns.class);
+                ForeignKey foreignKey = joinColumns == null ? null : joinColumns.foreignKey();
+                if (!emit(foreignKey)) {
+                    continue;
+                }
+                EntityMetadata<?> target = factory.getEntityMetadata(property.manyToOneTargetType());
+                List<String> fkColumns = property.toOneForeignKey().columns().stream()
+                        .map(ToOneForeignKeyColumn::columnName).toList();
+                List<String> referencedColumns = property.toOneForeignKey().columns().stream()
+                        .map(ToOneForeignKeyColumn::referencedColumnName).toList();
+                add(byKey, new ForeignKeyDefinition(
+                        metadata.tableName(),
+                        foreignKey.name(),
+                        fkColumns,
+                        target.tableName(),
+                        referencedColumns));
+                continue;
+            }
             JoinColumn joinColumn = property.field().getAnnotation(JoinColumn.class);
             ForeignKey foreignKey = joinColumn == null ? null : joinColumn.foreignKey();
             if (!emit(foreignKey)) {

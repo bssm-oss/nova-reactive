@@ -54,6 +54,14 @@ final class CriteriaAssociationPath extends AbstractCriteriaExpression<Object>
             throw new CriteriaException("Association '" + association.propertyName()
                     + "' has no column on this table; navigate to an attribute (get(\"x\")) or join() it");
         }
+        if (association.isCompositeToOne()) {
+            // owning to-one을 그 자체로 predicate/selection에 쓰면 단일 FK 컬럼으로 해석된다. 복합키 타겟은 FK가
+            // N개 컬럼이라 대표 컬럼 하나만 반환하면 조용한 오답이 되므로(예: cb.equal(e.get("parent"), x),
+            // cb.isNull(e.get("parent"))) 명확히 거부한다. @Id 컴포넌트를 개별로 비교하라.
+            throw new CriteriaException("Association '" + association.propertyName()
+                    + "' references a composite-key target whose foreign key spans multiple columns; it cannot be "
+                    + "used as a single column in a predicate/selection — compare its @Id components explicitly");
+        }
         return association;
     }
 

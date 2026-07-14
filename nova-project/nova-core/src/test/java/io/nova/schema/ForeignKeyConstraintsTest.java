@@ -126,10 +126,13 @@ class ForeignKeyConstraintsTest {
     }
 
     @Test
-    void compositeKeyTargetIsRejected() {
-        IllegalStateException ex = assertThrows(IllegalStateException.class,
+    void compositeKeyTargetWithSingleJoinColumnIsRejected() {
+        // 복합키(2컬럼) 타겟을 단일 @JoinColumn으로 참조하는 것은 컬럼 수 불일치 → 메타데이터 조립 단계에서
+        // fail-fast. (복합키 타겟 to-one 자체는 @JoinColumns로 컬럼당 하나씩 지정하면 이제 지원된다.)
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                 () -> ForeignKeyConstraints.resolve(List.of(FkChildToComposite.class), factory));
-        assertTrue(ex.getMessage().contains("composite-key"));
+        assertTrue(ex.getMessage().contains("join column"));
+        assertTrue(ex.getMessage().contains("id columns"));
     }
 
     @Test

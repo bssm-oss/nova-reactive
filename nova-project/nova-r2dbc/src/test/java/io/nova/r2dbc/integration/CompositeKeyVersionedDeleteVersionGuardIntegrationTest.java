@@ -16,6 +16,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
@@ -227,7 +228,10 @@ class CompositeKeyVersionedDeleteVersionGuardIntegrationTest {
         @Column(name = "label")
         private String label;
         @ManyToOne(targetEntity = Seat.class)
-        @JoinColumn(name = "seat_id")
+        @JoinColumns({
+                @JoinColumn(name = "seat_section", referencedColumnName = "section"),
+                @JoinColumn(name = "seat_no_fk", referencedColumnName = "seat_no")
+        })
         private Seat seat;
 
         public SeatLine() {
@@ -309,7 +313,10 @@ class CompositeKeyVersionedDeleteVersionGuardIntegrationTest {
         @Column(name = "label")
         private String label;
         @ManyToOne(targetEntity = IdClassSeat.class)
-        @JoinColumn(name = "seat_id")
+        @JoinColumns({
+                @JoinColumn(name = "seat_section", referencedColumnName = "section"),
+                @JoinColumn(name = "seat_no_fk", referencedColumnName = "seat_no")
+        })
         private IdClassSeat seat;
 
         public IdClassSeatLine() {

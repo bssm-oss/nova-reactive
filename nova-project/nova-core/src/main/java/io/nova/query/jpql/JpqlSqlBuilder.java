@@ -234,6 +234,13 @@ public final class JpqlSqlBuilder {
                         + " is only supported for @ManyToOne/owning @OneToOne relations in v1; "
                         + "other association joins are deferred");
             }
+            if (relation.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 FK가 N개 컬럼이지만 join on-절은 단일 FK=PK만 emit한다. 첫 컴포넌트만
+                // 잇는 조용한 오답 대신 명확히 거부한다(multi-column FK join은 별도 Wave).
+                throw new JpqlException("JOIN " + join.ownerAlias() + "." + join.relation()
+                        + " over a composite-key to-one target is not yet supported in v1 "
+                        + "(its foreign key spans multiple columns; multi-column FK joins are deferred)");
+            }
             EntityMetadata<?> target = resolver.resolve(relation.manyToOneTargetType());
             scope.bind(join.alias(), target);
         }
@@ -715,6 +722,11 @@ public final class JpqlSqlBuilder {
                 throw new JpqlException("Path segment '" + segment + "' navigates a collection or non-association "
                         + "field; implicit joins only support @ManyToOne/owning @OneToOne");
             }
+            if (prop.isCompositeToOne()) {
+                // 복합키 타겟 to-one 경유 implicit join은 단일 FK=PK만 emit하므로 조용한 오답을 낸다. 명확히 거부.
+                throw new JpqlException("Path segment '" + segment + "' navigates a composite-key to-one target; "
+                        + "implicit joins over multi-column foreign keys are not yet supported in v1");
+            }
             EntityMetadata<?> targetMeta = resolver.resolve(prop.manyToOneTargetType());
             currentAlias = implicitJoin(ctx, currentAlias, segment, prop, targetMeta);
             currentMeta = targetMeta;
@@ -730,6 +742,13 @@ public final class JpqlSqlBuilder {
         if (property.isRelation() && !property.manyToOne()) {
             throw new JpqlException("Path over collection/association field '" + field
                     + "' is not supported; use an explicit JOIN or SIZE(...)");
+        }
+        if (property.manyToOne() && property.isCompositeToOne()) {
+            // terminal 단일 세그먼트로 복합키 to-one을 참조(WHERE c.parent = :p / IS NULL / SELECT c.parent)하면
+            // 대표 FK 컬럼 하나만 반환돼 조용한 오답이 된다(join의 silent-first-column과 같은 부류). 명확히 거부한다.
+            throw new JpqlException("Reference to composite-key to-one association '" + field
+                    + "' as a single column is not supported (its foreign key spans multiple columns); "
+                    + "compare or select its @Id components explicitly");
         }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? alias + "." + col : col;

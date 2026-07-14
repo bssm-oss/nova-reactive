@@ -70,6 +70,22 @@ final class PersistenceSession {
         List<String> dirtyPropertyNames() {
             List<String> changed = new ArrayList<>();
             for (PersistentProperty property : metadata.updatableProperties()) {
+                if (property.isCompositeToOne()) {
+                    // 복합키 타겟 to-one FK의 dirty flush(다중컬럼 부분 UPDATE)는 아직 미지원이다. 하지만 조용히
+                    // 넘기면 lost-update(사용자가 참조를 바꿔도 flush가 반영 안 함)가 되므로, load 시 스냅샷에 담아둔
+                    // 참조와 현재 참조를 identity로 비교해 <b>바뀌었으면 loud fail-fast</b>, 안 바뀌었으면 조용히 통과한다
+                    // (always-dirty 오검출 금지). 참조를 실제로 바꾸려면 명시적 재-persist(save)를 쓰라고 안내한다.
+                    Object before = snapshot.get(property.columnName());
+                    Object current = property.readReferenceInstance(entity);
+                    if (before != current) {
+                        throw new IllegalStateException(
+                                "Composite-key to-one dirty flush is not supported yet for association '"
+                                        + property.propertyName() + "' on " + metadata.entityType().getName()
+                                        + "; re-persist the entity explicitly (e.g. operations.save(...)) to change its"
+                                        + " multi-column foreign key");
+                    }
+                    continue;
+                }
                 Object current = property.toColumnValue(property.read(entity));
                 Object before = snapshot.get(property.columnName());
                 if (!Objects.equals(before, current)) {
@@ -224,6 +240,13 @@ final class PersistenceSession {
     private static Map<String, Object> buildSnapshot(EntityMetadata<?> metadata, Object entity) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 단일 컬럼으로 축약할 수 없어(@EmbeddedId read()는 throw) 저장형 값 대신
+                // 참조 <em>객체</em>를 스냅샷에 담는다(readReferenceInstance는 복합 to-one에서도 동작한다).
+                // dirtyPropertyNames가 이 참조를 identity로 비교해 변경 시 loud fail-fast한다(silent lost-update 금지).
+                snapshot.put(property.columnName(), property.readReferenceInstance(entity));
+                continue;
+            }
             snapshot.put(property.columnName(), property.toColumnValue(property.read(entity)));
         }
         return snapshot;
