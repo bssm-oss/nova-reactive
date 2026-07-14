@@ -3173,6 +3173,16 @@ public final class FixtureEntities {
      */
     @Entity
     @Table(name = "gc_composite_child")
+    // native/@SqlResultSetMapping 엔티티 매퍼가 복합 to-one을 만나면 fail-fast하는지 검증하기 위한 매핑 선언.
+    // 이 애너테이션들은 NamedQueryRegistry/SqlResultSetMappingRegistry가 스캔할 때만 의미가 있고, 컬럼 매핑
+    // (EntityMetadataFactory)·JPQL/Criteria/StoredProc 경로에는 영향을 주지 않는다.
+    @jakarta.persistence.NamedNativeQuery(
+            name = "CompositeJoinChild.all",
+            query = "select * from gc_composite_child",
+            resultClass = CompositeJoinChild.class)
+    @jakarta.persistence.SqlResultSetMapping(
+            name = "CompositeJoinChild.map",
+            entities = @jakarta.persistence.EntityResult(entityClass = CompositeJoinChild.class))
     public static class CompositeJoinChild {
         @Id
         @Column(name = "id")

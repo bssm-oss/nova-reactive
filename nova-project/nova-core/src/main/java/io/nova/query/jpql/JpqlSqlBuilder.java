@@ -743,6 +743,13 @@ public final class JpqlSqlBuilder {
             throw new JpqlException("Path over collection/association field '" + field
                     + "' is not supported; use an explicit JOIN or SIZE(...)");
         }
+        if (property.manyToOne() && property.isCompositeToOne()) {
+            // terminal 단일 세그먼트로 복합키 to-one을 참조(WHERE c.parent = :p / IS NULL / SELECT c.parent)하면
+            // 대표 FK 컬럼 하나만 반환돼 조용한 오답이 된다(join의 silent-first-column과 같은 부류). 명확히 거부한다.
+            throw new JpqlException("Reference to composite-key to-one association '" + field
+                    + "' as a single column is not supported (its foreign key spans multiple columns); "
+                    + "compare or select its @Id components explicitly");
+        }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? alias + "." + col : col;
     }

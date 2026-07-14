@@ -125,6 +125,15 @@ class NamedQueryRegistryTest {
                 .block());
     }
 
+    @Test
+    void nativeEntityMapperOverCompositeToOneFailsFast() {
+        // native 엔티티 매퍼는 property당 단일 컬럼만 읽어 복합 to-one을 대표 컬럼 하나로만 resolve → fail-fast.
+        NamedQueryRegistry registry = registry(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        NamedQueryException ex = assertThrows(NamedQueryException.class,
+                () -> registry.createNativeQuery("CompositeJoinChild.all"));
+        assertTrue(ex.getMessage().contains("composite-key"));
+    }
+
     // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------

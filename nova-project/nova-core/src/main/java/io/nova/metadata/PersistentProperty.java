@@ -696,7 +696,23 @@ public final class PersistentProperty {
      */
     public void writeReferenceInstance(Object instance, Object reference) {
         try {
-            field.set(instance, reference);
+            // 관계 property는 top-level이라 embeddedHostPath가 비어 있지만, readReferenceInstance와 대칭이 되도록
+            // (그리고 향후 @Embeddable 내부 to-one 매핑에서도 어긋나지 않도록) 동일한 host-path traversal을 따르고
+            // 동일한 접근 경로(fieldHandle 우선)를 쓴다.
+            Object current = instance;
+            for (Field hostField : embeddedHostPath) {
+                Object next = hostField.get(current);
+                if (next == null) {
+                    next = instantiateEmbeddable(hostField.getType());
+                    hostField.set(current, next);
+                }
+                current = next;
+            }
+            if (fieldHandle != null) {
+                fieldHandle.set(current, reference);
+            } else {
+                field.set(current, reference);
+            }
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException(
                     "Cannot write @ManyToOne/@OneToOne reference field " + field.getName(), exception);

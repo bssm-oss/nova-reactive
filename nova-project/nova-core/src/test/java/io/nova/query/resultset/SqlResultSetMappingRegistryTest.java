@@ -149,6 +149,16 @@ class SqlResultSetMappingRegistryTest {
     }
 
     @Test
+    void entityResultOverCompositeToOneFailsFast() {
+        // @EntityResult 매퍼도 property당 단일 컬럼만 읽어 복합 to-one을 대표 컬럼 하나로만 resolve → fail-fast.
+        SqlResultSetMappingRegistry registry =
+                registry(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> registry.queryNative("SELECT 1", "CompositeJoinChild.map"));
+        assertTrue(ex.getMessage().contains("composite-key"));
+    }
+
+    @Test
     void namedNativeQueryWithoutResultSetMappingFailsFast() {
         SqlResultSetMappingRegistry registry = registry(WidgetMappings.class);
         NamedQueryRegistry named =

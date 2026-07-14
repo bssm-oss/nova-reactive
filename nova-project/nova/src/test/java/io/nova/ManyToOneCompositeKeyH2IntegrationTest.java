@@ -166,11 +166,13 @@ class ManyToOneCompositeKeyH2IntegrationTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // EntityManager merge + session persist 가 복합 to-one 엔티티에서 깨지지 않고(clean) 참조를 보존
+    // 세션/EntityManager 경로가 복합 to-one 엔티티에서 clean하게 동작 (dirty-tracking / refresh teeth)
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    void entityManagerMergeAndSessionHandleCompositeToOneCleanly() {
+    void sessionFlushIsCleanWhenCompositeToOneUnchanged() {
+        // 세션 안에서 persist → flush 를 태워 buildSnapshot(복합 to-one 참조를 스냅샷에 저장)이 always-dirty
+        // 오검출을 내지 않는지 확인한다(변경 없음 → flush no-op 완료). 이후 find 가 복합 id stub 을 복원한다.
         ConnectionFactory cf = freshConnectionFactory();
         SchemaInitializer schema = Nova.schemaInitializer(cf);
         ReactiveEntityManager em = Nova.entityManager(cf);
@@ -178,22 +180,64 @@ class ManyToOneCompositeKeyH2IntegrationTest {
         OrderEntity order = new OrderEntity(new OrderKey(700L, "BR"), "m");
         Line line = new Line(order);
 
-        // persist(session buildSnapshot가 복합 FK를 skip), merge(copyColumnState가 참조를 통째로 복사)가
-        // 예전처럼 "has no @Id field"로 throw하지 않고 clean하게 동작하며, 이후 find가 복합 id stub을 복원한다.
+        StepVerifier.create(
+                schema.create(List.of(OrderEntity.class, Line.class))
+                        .then(em.persist(order))
+                        .then(em.inTransaction(m -> m.persist(line)
+                                .flatMap(saved -> m.flush().thenReturn(saved.getId()))))
+                        .flatMap(id -> em.find(Line.class, id))
+        ).assertNext(found -> {
+            org.junit.jupiter.api.Assertions.assertNotNull(found.order);
+            org.junit.jupiter.api.Assertions.assertEquals(700L, found.order.id.orderNo);
+            org.junit.jupiter.api.Assertions.assertEquals("BR", found.order.id.region);
+        }).verifyComplete();
+    }
+
+    @Test
+    void sessionFlushFailsFastWhenCompositeToOneReferenceChanged() {
+        // 세션 안에서 복합 to-one 참조를 바꾼 뒤 flush 하면 다중컬럼 FK dirty flush 미지원을 loud하게 거부해야
+        // 한다(예전 skip = silent lost-update 로의 퇴화 방지). identity 변경 감지 → IllegalStateException.
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityManager em = Nova.entityManager(cf);
+
+        OrderEntity order = new OrderEntity(new OrderKey(700L, "BR"), "m");
+        Line line = new Line(order);
+
+        StepVerifier.create(
+                schema.create(List.of(OrderEntity.class, Line.class))
+                        .then(em.inTransaction(m -> m.persist(line)
+                                .flatMap(saved -> {
+                                    saved.setOrder(new OrderEntity(new OrderKey(999L, "ZZ"), "z"));
+                                    return m.flush();
+                                })))
+        ).verifyErrorMatches(error -> error instanceof IllegalStateException
+                && error.getMessage().contains("Composite-key to-one dirty flush is not supported"));
+    }
+
+    @Test
+    void entityManagerRefreshPreservesCompositeToOne() {
+        // refresh 는 DB에서 다시 읽은 컬럼 상태를 copyColumnState 로 되쓴다. 복합 to-one 은 참조 객체를 통째로
+        // 복사(writeReferenceInstance)해야 하며, in-memory 로 clobber 한 잘못된 참조가 DB 값(700/BR)으로 복원돼야 한다.
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityManager em = Nova.entityManager(cf);
+
+        OrderEntity order = new OrderEntity(new OrderKey(700L, "BR"), "m");
+        Line line = new Line(order);
+
         StepVerifier.create(
                 schema.create(List.of(OrderEntity.class, Line.class))
                         .then(em.persist(order))
                         .then(em.persist(line))
                         .flatMap(saved -> {
-                            Line changed = new Line(order);
-                            changed.setId(saved.getId());
-                            return em.merge(changed).thenReturn(saved.getId());
+                            saved.setOrder(new OrderEntity(new OrderKey(1L, "WRONG"), "w"));
+                            return em.refresh(saved).thenReturn(saved);
                         })
-                        .flatMap(id -> em.find(Line.class, id))
-        ).assertNext(found -> {
-            org.junit.jupiter.api.Assertions.assertNotNull(found.order, "merge/session must preserve composite reference");
-            org.junit.jupiter.api.Assertions.assertEquals(700L, found.order.id.orderNo);
-            org.junit.jupiter.api.Assertions.assertEquals("BR", found.order.id.region);
+        ).assertNext(refreshed -> {
+            org.junit.jupiter.api.Assertions.assertNotNull(refreshed.order, "refresh must restore composite reference");
+            org.junit.jupiter.api.Assertions.assertEquals(700L, refreshed.order.id.orderNo);
+            org.junit.jupiter.api.Assertions.assertEquals("BR", refreshed.order.id.region);
         }).verifyComplete();
     }
 
@@ -295,6 +339,10 @@ class ManyToOneCompositeKeyH2IntegrationTest {
 
         public void setId(Long id) {
             this.id = id;
+        }
+
+        public void setOrder(OrderEntity order) {
+            this.order = order;
         }
     }
 
