@@ -1,9 +1,12 @@
 package io.nova;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
@@ -101,6 +104,41 @@ class MapsIdH2IntegrationTest {
         }).verifyComplete();
     }
 
+    @Test
+    void mapsIdComponentDerivesOneCompositeIdComponentFromParentAndRoundTrips() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        Company company = new Company("acme");
+
+        StepVerifier.create(
+                schema.create(Company.class)
+                        .then(schema.create(Branch.class))
+                        .then(operations.save(company))
+                        .flatMap(savedCompany -> {
+                            assertNotNull(savedCompany.getId(), "company는 IDENTITY로 id가 채워져야 한다");
+                            Branch branch = new Branch(7L, "berlin");
+                            branch.setCompany(savedCompany);
+                            return operations.save(branch);
+                        })
+                        .flatMap(savedBranch -> {
+                            // branch.id.companyRef는 @MapsId("companyRef")로 company.id에서 파생된다.
+                            assertEquals(company.getId(), savedBranch.getCompanyRef(),
+                                    "복합 @Id의 companyRef 컴포넌트가 company.id로 파생되어야 한다");
+                            assertEquals(7L, savedBranch.getBranchNo());
+                            BranchId key = new BranchId(company.getId(), 7L);
+                            return operations.findById(Branch.class, key);
+                        })
+        ).assertNext(loaded -> {
+            assertEquals(company.getId(), loaded.getCompanyRef());
+            assertEquals(7L, loaded.getBranchNo());
+            assertEquals("berlin", loaded.getCity());
+            assertNotNull(loaded.getCompany(), "@MapsId 관계는 findById에서 hydrate되어야 한다");
+            assertEquals(company.getId(), loaded.getCompany().getId());
+        }).verifyComplete();
+    }
+
     // --- fixtures -----------------------------------------------------------
 
     @Entity
@@ -168,6 +206,92 @@ class MapsIdH2IntegrationTest {
 
         void setMaster(Master master) {
             this.master = master;
+        }
+    }
+
+    // --- composite-component @MapsId fixtures -------------------------------
+
+    @Entity
+    @Table(name = "maps_id_company")
+    static class Company {
+        @Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "name")
+        private String name;
+
+        Company() {
+        }
+
+        Company(String name) {
+            this.name = name;
+        }
+
+        Long getId() {
+            return id;
+        }
+    }
+
+    @Embeddable
+    static class BranchId {
+        @Column(name = "company_ref")
+        private Long companyRef;
+
+        @Column(name = "branch_no")
+        private Long branchNo;
+
+        BranchId() {
+        }
+
+        BranchId(Long companyRef, Long branchNo) {
+            this.companyRef = companyRef;
+            this.branchNo = branchNo;
+        }
+    }
+
+    @Entity
+    @Table(name = "maps_id_branch")
+    static class Branch {
+        @EmbeddedId
+        private BranchId id;
+
+        @Column(name = "city")
+        private String city;
+
+        // 복합 @Id의 companyRef 컴포넌트를 company.id에서 파생한다. FK 컬럼(company_id)과 컴포넌트 컬럼
+        // (company_ref)은 별도 컬럼으로 emit되며 둘 다 같은 값을 담는다.
+        @ManyToOne
+        @MapsId("companyRef")
+        @JoinColumn(name = "company_id")
+        private Company company;
+
+        Branch() {
+        }
+
+        Branch(Long branchNo, String city) {
+            this.id = new BranchId(null, branchNo);
+            this.city = city;
+        }
+
+        Long getCompanyRef() {
+            return id == null ? null : id.companyRef;
+        }
+
+        Long getBranchNo() {
+            return id == null ? null : id.branchNo;
+        }
+
+        String getCity() {
+            return city;
+        }
+
+        Company getCompany() {
+            return company;
+        }
+
+        void setCompany(Company company) {
+            this.company = company;
         }
     }
 }

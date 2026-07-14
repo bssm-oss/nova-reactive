@@ -332,7 +332,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private <T> Mono<T> saveWithDerivedIdentifier(
             Optional<PersistenceSession> session, EntityMetadata<T> metadata, T entity) {
-        Object id = metadata.idProperty().read(entity);
+        // 단일키 owner는 스칼라 id, 복합키 owner(@MapsId("component"))는 id holder/@IdClass 인스턴스를 읽는다.
+        Object id = metadata.readIdValue(entity);
         if (id == null) {
             // applyMapsIdDerivedIdentifier가 채웠어야 한다. 여기 도달하면 연관 PK가 null이라는 뜻이다.
             return Mono.error(new IllegalStateException(
@@ -356,34 +357,55 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 금지). {@code @MapsId}가 없으면 무비용 no-op.
      */
     private <T> void applyMapsIdDerivedIdentifier(EntityMetadata<T> metadata, T entity) {
-        PersistentProperty mapsIdProperty = metadata.mapsIdProperty().orElse(null);
-        if (mapsIdProperty == null) {
+        List<PersistentProperty> mapsIdProperties = metadata.mapsIdProperties();
+        if (mapsIdProperties.isEmpty()) {
             return;
         }
-        Object associated;
-        try {
-            associated = mapsIdProperty.field().get(entity);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot read @MapsId relation " + mapsIdProperty.propertyName()
-                            + " on " + metadata.entityType().getName(), exception);
+        for (PersistentProperty mapsIdProperty : mapsIdProperties) {
+            // 관계 참조는 access 전략(FIELD/PROPERTY)에 맞춰 읽는다 — @Access(PROPERTY) 관계면 getter를 탄다.
+            Object associated = mapsIdProperty.readReference(entity);
+            if (associated == null) {
+                throw new IllegalArgumentException(
+                        metadata.entityType().getName() + "." + mapsIdProperty.propertyName()
+                                + " @MapsId association must not be null on save;"
+                                + " set the associated entity so its primary key can derive the identifier");
+            }
+            EntityMetadata<?> associatedMetadata =
+                    metadataFactory.getEntityMetadata(mapsIdProperty.manyToOneTargetType());
+            // 연관 엔티티의 PK를 읽는다(단일키는 스칼라, 복합키는 id holder/@IdClass 인스턴스).
+            Object associatedId = associatedMetadata.readIdValue(associated);
+            if (associatedId == null) {
+                throw new IllegalArgumentException(
+                        metadata.entityType().getName() + "." + mapsIdProperty.propertyName()
+                                + " @MapsId association " + associatedMetadata.entityType().getName()
+                                + " must be persisted (non-null primary key) before saving the owner");
+            }
+            // 단순 @MapsId는 owner의 단일 @Id 전체를, @MapsId("component")는 복합 @Id의 named 컴포넌트를 채운다.
+            PersistentProperty target = resolveMapsIdTarget(metadata, mapsIdProperty);
+            target.write(entity, target.toPropertyValue(associatedId));
         }
-        if (associated == null) {
-            throw new IllegalArgumentException(
-                    metadata.entityType().getName() + "." + mapsIdProperty.propertyName()
-                            + " @MapsId association must not be null on save;"
-                            + " set the associated entity so its primary key can derive the identifier");
+    }
+
+    /**
+     * {@code @MapsId}가 채울 owner의 {@code @Id} 대상 property를 해석한다. 단순 {@code @MapsId}(빈 value)는 owner의
+     * 단일 {@code @Id} 전체를, {@code @MapsId("component")}는 복합 {@code @Id} 중 이름이 일치하는 컴포넌트를 가리킨다.
+     * 메타데이터 단계({@code EntityMetadataFactory})가 컴포넌트 존재를 이미 검증하므로 여기서 못 찾으면 내부 불변식
+     * 위반이다.
+     */
+    private static PersistentProperty resolveMapsIdTarget(EntityMetadata<?> metadata, PersistentProperty mapsIdProperty) {
+        String component = mapsIdProperty.mapsIdValue();
+        if (component == null || component.isBlank()) {
+            return metadata.idProperty();
         }
-        EntityMetadata<?> associatedMetadata =
-                metadataFactory.getEntityMetadata(mapsIdProperty.manyToOneTargetType());
-        Object associatedId = associatedMetadata.idProperty().read(associated);
-        if (associatedId == null) {
-            throw new IllegalArgumentException(
-                    metadata.entityType().getName() + "." + mapsIdProperty.propertyName()
-                            + " @MapsId association " + associatedMetadata.entityType().getName()
-                            + " must be persisted (non-null primary key) before saving the owner");
-        }
-        metadata.idProperty().write(entity, metadata.idProperty().toPropertyValue(associatedId));
+        // @MapsId("component")는 복합 @Id의 leaf 필드 이름을 가리킨다. @EmbeddedId 컴포넌트는 host-qualified
+        // propertyName("id.component")을 가지므로 leaf 필드 이름(field().getName())으로 매칭한다(@IdClass는 top-level
+        // @Id 필드라 동일하게 동작). 존재 검증은 이미 EntityMetadataFactory가 끝냈으므로 미발견은 내부 불변식 위반이다.
+        return metadata.idProperties().stream()
+                .filter(id -> id.field().getName().equals(component))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        metadata.entityType().getName() + " @MapsId(\"" + component
+                                + "\") does not match any @Id component"));
     }
 
     /**

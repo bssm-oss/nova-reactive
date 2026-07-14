@@ -141,8 +141,9 @@ public final class AnnotationFetchGroupBuilder {
         EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(childType);
         String childPkColumn = childMetadata.idProperty().columnName();
         Function<P, Object> fkExtractor = parent -> manyToOne.read(parent);
-        BiConsumer<P, Object> singleSetter = (parent, child) ->
-                writeField(parent, manyToOne.field(), child);
+        // 관계에 @Access(PROPERTY)가 적용되면 field 직접 대입 대신 JavaBean setter로 참조를 주입한다
+        // (access 전략은 PersistentProperty가 생성 시점에 확정해 두므로 여기서는 위임만 한다).
+        BiConsumer<P, Object> singleSetter = manyToOne::writeReference;
         builder.withReferencedParent(
                 (Class<Object>) childType,
                 childPkColumn,
@@ -163,8 +164,8 @@ public final class AnnotationFetchGroupBuilder {
         }
         String fkColumn = resolveOneToManyForeignKeyColumn(parentType, oneToOne, childType);
         Function<P, Object> parentIdExtractor = parent -> idProperty.read(parent);
-        BiConsumer<P, Object> singleSetter = (parent, child) ->
-                writeField(parent, oneToOne.field(), child);
+        // inverse @OneToOne도 @Access(PROPERTY)면 setter로 참조를 주입한다(FIELD면 field 직접 대입).
+        BiConsumer<P, Object> singleSetter = oneToOne::writeReference;
         builder.withInverseReference(
                 (Class<Object>) childType,
                 fkColumn,

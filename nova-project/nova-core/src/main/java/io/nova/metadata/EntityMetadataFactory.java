@@ -2485,14 +2485,18 @@ public final class EntityMetadataFactory {
      */
     /**
      * owning to-one 관계 필드({@code @ManyToOne}/owning {@code @OneToOne})의 {@code @MapsId} 마커를 해석한다.
-     * {@code @MapsId}가 없으면 {@code null}(비파생). v1은 단일 {@code @Id} 전체 파생(shared primary key)만
-     * 지원하므로, 다음은 fail-fast로 거부한다(조용한 무시 금지):
+     * {@code @MapsId}가 없으면 {@code null}(비파생). 두 형태를 지원한다:
      * <ul>
-     *   <li>{@code @MapsId("attr")}처럼 복합키 부분 컴포넌트를 가리키는 비어있지 않은 value</li>
-     *   <li>{@code @MapsId}를 선언한 엔티티가 복합키({@code @EmbeddedId}/{@code @IdClass})인 경우 — 파생
-     *       대상 단일 {@code @Id}가 정의되지 않는다</li>
-     *   <li>{@code @GeneratedValue}로 생성되는 {@code @Id} — 파생 식별자는 application/연관-PK가 채우므로 양립 불가</li>
+     *   <li>단순 {@code @MapsId}(빈 value): 파생 대상은 owner의 단일 {@code @Id} 전체(shared primary key).
+     *       마커는 빈 문자열({@code ""})이다.</li>
+     *   <li>{@code @MapsId("component")}: owner가 복합 {@code @Id}({@code @EmbeddedId}/{@code @IdClass})일 때
+     *       named 컴포넌트를 연관 엔티티 PK에서 파생한다. 마커는 컴포넌트 이름이다. 복합키 relation target
+     *       (다중컬럼 FK)이 착지한 뒤이므로 이제 컴포넌트↔FK 매핑을 활용해 파생할 수 있다.</li>
      * </ul>
+     * 다음은 fail-fast로 거부한다(조용한 무시 금지): {@code @MapsId("component")}인데 owner가 복합 {@code @Id}가
+     * 아니거나 named 컴포넌트가 존재하지 않는 경우, 단순 {@code @MapsId}인데 owner가 단일 {@code @Id}가 아닌 경우,
+     * 파생 대상 {@code @Id}(또는 named 컴포넌트)가 {@code @GeneratedValue}로 생성되는 경우(파생 식별자는
+     * application/연관-PK가 채우므로 양립 불가).
      */
     private static String resolveMapsIdMarker(Class<?> entityType, Field field) {
         MapsId mapsId = field.getAnnotation(MapsId.class);
@@ -2500,43 +2504,128 @@ public final class EntityMetadataFactory {
             return null;
         }
         String value = mapsId.value();
-        if (value != null && !value.isBlank()) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
-                            + " @MapsId(\"" + value + "\") (deriving a composite-key component) is not supported;"
-                            + " only a simple @MapsId deriving the entire single @Id is supported");
-        }
-        // 파생 대상 @Id 검증: 정확히 하나의 단일 @Id 필드여야 하고 @GeneratedValue가 없어야 한다.
+        // 파생 대상 @Id 구조 파악: top-level @Id 필드들과 @EmbeddedId holder를 수집한다.
         List<Field> idFields = new ArrayList<>();
-        boolean hasEmbeddedId = false;
-        boolean idGenerated = false;
+        Field embeddedIdField = null;
         for (Field candidate : mappedFields(entityType)) {
             if (isNotPersistable(candidate)) {
                 continue;
             }
             if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                hasEmbeddedId = true;
+                embeddedIdField = candidate;
             }
             if (candidate.isAnnotationPresent(Id.class)) {
                 idFields.add(candidate);
-                if (candidate.isAnnotationPresent(GeneratedValue.class)) {
-                    idGenerated = true;
-                }
             }
         }
-        if (hasEmbeddedId || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class) || idFields.size() != 1) {
+        boolean composite = embeddedIdField != null
+                || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class)
+                || idFields.size() > 1;
+        if (value != null && !value.isBlank()) {
+            // @MapsId("component"): owner는 복합 @Id여야 하고 named 컴포넌트가 존재해야 한다.
+            if (!composite) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + field.getName()
+                                + " @MapsId(\"" + value + "\") names an id component but the entity does not declare a"
+                                + " composite @Id (@EmbeddedId/@IdClass); use a simple @MapsId to derive the single @Id");
+            }
+            if (!compositeIdComponentExists(embeddedIdField, idFields, value)) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + field.getName()
+                                + " @MapsId(\"" + value + "\") does not match any component of the composite @Id of "
+                                + entityType.getName());
+            }
+            if (compositeIdComponentGenerated(embeddedIdField, idFields, value)) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + "." + field.getName()
+                                + " @MapsId(\"" + value + "\") cannot be combined with @GeneratedValue on the id"
+                                + " component; a derived identifier is supplied by the associated entity's primary key");
+            }
+            return value;
+        }
+        // 단순 @MapsId: 정확히 하나의 단일 @Id 필드여야 하고 @GeneratedValue가 없어야 한다.
+        if (composite) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + "." + field.getName()
+                            + " @MapsId requires the owning entity to declare exactly one single @Id"
+                            + " (a composite @Id requires @MapsId(\"component\") to derive one named component)");
+        }
+        if (idFields.size() != 1) {
             throw new IllegalArgumentException(
                     entityType.getName() + "." + field.getName()
                             + " @MapsId requires the owning entity to declare exactly one single @Id"
                             + " (composite keys are not supported)");
         }
-        if (idGenerated) {
+        if (idFields.get(0).isAnnotationPresent(GeneratedValue.class)) {
             throw new IllegalArgumentException(
                     entityType.getName() + "." + field.getName()
                             + " @MapsId cannot be combined with @GeneratedValue on the @Id;"
                             + " a derived identifier is supplied by the associated entity's primary key");
         }
         return "";
+    }
+
+    /**
+     * 복합 {@code @Id}에 {@code name} 컴포넌트가 존재하는지 검사한다. {@code @EmbeddedId}는 {@code @Embeddable}의
+     * leaf 필드 이름을, {@code @IdClass}(또는 top-level 다중 {@code @Id})는 top-level {@code @Id} 필드 이름을 본다.
+     */
+    private static boolean compositeIdComponentExists(Field embeddedIdField, List<Field> idFields, String name) {
+        if (embeddedIdField != null) {
+            for (Field sub : embeddedIdField.getType().getDeclaredFields()) {
+                if (!isNotPersistable(sub) && sub.getName().equals(name)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        for (Field idField : idFields) {
+            if (idField.getName().equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 복합 {@code @Id}의 {@code name} 컴포넌트가 {@code @GeneratedValue}로 표시되어 있으면 {@code true}.
+     */
+    private static boolean compositeIdComponentGenerated(Field embeddedIdField, List<Field> idFields, String name) {
+        if (embeddedIdField != null) {
+            for (Field sub : embeddedIdField.getType().getDeclaredFields()) {
+                if (sub.getName().equals(name)) {
+                    return sub.isAnnotationPresent(GeneratedValue.class);
+                }
+            }
+            return false;
+        }
+        for (Field idField : idFields) {
+            if (idField.getName().equals(name)) {
+                return idField.isAnnotationPresent(GeneratedValue.class);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 관계 필드({@code @ManyToOne}/{@code @OneToOne})의 effective access 전략을 해석한다. 클래스레벨/멤버레벨
+     * {@code @Access(PROPERTY)}면 basic property와 동일하게 JavaBean getter/setter를 resolve하고(없으면 fail-fast),
+     * FIELD면 accessor 없이 field 접근을 유지한다. basic property가 쓰는
+     * {@link #resolvePropertyAccess}/{@link #resolvePropertyGetter}/{@link #resolvePropertySetter}를 그대로 재사용해
+     * 관계와 basic의 access 규칙을 대칭으로 만든다.
+     */
+    private static RelationAccess resolveRelationAccess(Field field) {
+        if (!resolvePropertyAccess(field)) {
+            return RelationAccess.FIELD;
+        }
+        return new RelationAccess(true, resolvePropertyGetter(field), resolvePropertySetter(field));
+    }
+
+    /**
+     * 관계 property의 access 전략 해석 결과. {@code propertyAccess}가 {@code false}이면 getter/setter는 {@code null}
+     * (FIELD 접근), {@code true}이면 둘 다 non-null(PROPERTY 접근)이다.
+     */
+    private record RelationAccess(boolean propertyAccess, Method getter, Method setter) {
+        static final RelationAccess FIELD = new RelationAccess(false, null, null);
     }
 
     /**
@@ -2871,9 +2960,9 @@ public final class EntityMetadataFactory {
     }
 
     private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {
-        // 한계(문서화): 관계 property는 항상 FIELD access로 읽고/쓴다. 클래스 레벨 @Access(PROPERTY) 엔티티라도
-        // @ManyToOne/@OneToOne FK는 backing field로 접근한다. Nova는 backing field를 요구하므로 setter가
-        // 단순 대입이면 무해하나, 변환 accessor를 쓰는 관계는 JPA와 달라질 수 있다.
+        // 관계 property의 effective access 전략을 basic property와 동일 규칙으로 해석한다. 클래스/멤버 레벨
+        // @Access(PROPERTY)면 JavaBean getter/setter로 read/write하고(없으면 fail-fast), FIELD면 field 접근을 유지한다.
+        RelationAccess access = resolveRelationAccess(field);
         ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
         String mapsIdMarker = resolveMapsIdMarker(entityType, field);
         // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 관계는 findById에서
@@ -2954,9 +3043,9 @@ public final class EntityMetadataFactory {
                 null,
                 mapsIdMarker != null,
                 mapsIdMarker == null ? "" : mapsIdMarker,
-                false,
-                null,
-                null,
+                access.propertyAccess(),
+                access.getter(),
+                access.setter(),
                 toOneCascadeInfo,
                 "",
                 compositeForeignKey);
@@ -2970,6 +3059,8 @@ public final class EntityMetadataFactory {
      * 관계는 FetchGroup으로만 populate되므로 EAGER와 LAZY가 런타임 동일), cascade는 거부한다.
      */
     private PersistentProperty createOneToOneProperty(Class<?> entityType, Field field) {
+        // 관계 property의 effective access 전략을 basic property와 동일 규칙으로 해석한다(owning/inverse 공통).
+        RelationAccess access = resolveRelationAccess(field);
         OneToOne oneToOne = field.getAnnotation(OneToOne.class);
         // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 EAGER/LAZY가 런타임에서
         // 동일하게 동작하며 관계는 FetchGroup을 명시 구동할 때만 populate된다. FK 컬럼은 정상 persist.
@@ -3032,9 +3123,9 @@ public final class EntityMetadataFactory {
                     null,
                     false,
                     "",
-                    false,
-                    null,
-                    null,
+                    access.propertyAccess(),
+                    access.getter(),
+                    access.setter(),
                     null,
                     "",
                     null
@@ -3111,9 +3202,9 @@ public final class EntityMetadataFactory {
                 null,
                 mapsIdMarker != null,
                 mapsIdMarker == null ? "" : mapsIdMarker,
-                false,
-                null,
-                null,
+                access.propertyAccess(),
+                access.getter(),
+                access.setter(),
                 toOneCascadeInfo,
                 "",
                 compositeForeignKey);
