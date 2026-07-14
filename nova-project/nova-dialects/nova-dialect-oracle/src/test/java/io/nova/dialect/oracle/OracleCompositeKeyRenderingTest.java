@@ -7,6 +7,7 @@ import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.ManyToManyInfo;
 import jakarta.persistence.Column;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
@@ -129,6 +130,36 @@ class OracleCompositeKeyRenderingTest {
         assertEquals(List.of("us", 1L, "dns", 7), stmt.bindings());
     }
 
+    // element-path token-leak 가드: @ElementCollection collection 테이블의 owner-FK/element 컬럼도 같은 fix
+    // (elementColumnType override)로 Oracle 타입을 써야 한다. owner Long → number(19), 원소 Long → number(19),
+    // 원소 String → varchar2(255). pre-fix면 owner/element가 bigint로 새어 실패한다(teeth).
+    @Test
+    void elementCollectionTablesUseOracleTypesNotAnsiTokens() {
+        String longDdl = collectionTableDdl(Warehouse.class, "binNumbers");
+        assertEquals(
+                "create table \"warehouse_bin_numbers\" ("
+                        + "\"warehouse_id\" number(19) not null, \"bin_numbers\" number(19))",
+                longDdl);
+
+        String stringDdl = collectionTableDdl(Warehouse.class, "zoneCodes");
+        assertEquals(
+                "create table \"warehouse_zone_codes\" ("
+                        + "\"warehouse_id\" number(19) not null, \"zone_codes\" varchar2(255))",
+                stringDdl);
+
+        // ANSI 토큰(bigint/integer/ANSI varchar())이 owner-FK/element 어느 쪽에도 새지 않아야 한다.
+        for (String ddl : List.of(longDdl, stringDdl)) {
+            assertTrue(!ddl.contains(" bigint") && !ddl.contains(" integer") && !ddl.contains(" varchar("), ddl);
+        }
+    }
+
+    private String collectionTableDdl(Class<?> owner, String property) {
+        io.nova.metadata.ElementCollectionInfo info = factory.getEntityMetadata(owner)
+                .findProperty(property).orElseThrow().elementCollectionInfo();
+        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(Long.class);
+        return dialect.schemaGenerator().createCollectionTable(definition);
+    }
+
     private JoinTableDefinition joinTable(Class<?> owner, String property, Class<?> target) {
         EntityMetadata<?> ownerMetadata = factory.getEntityMetadata(owner);
         EntityMetadata<?> targetMetadata = factory.getEntityMetadata(target);
@@ -215,5 +246,19 @@ class OracleCompositeKeyRenderingTest {
                         @JoinColumn(name = "label_ns", referencedColumnName = "ns"),
                         @JoinColumn(name = "label_code", referencedColumnName = "code")})
         List<Label> labels;
+    }
+
+    @Entity
+    @Table(name = "warehouse")
+    static class Warehouse {
+        @Id
+        @Column(name = "id")
+        Long id;
+
+        @ElementCollection
+        List<Long> binNumbers;
+
+        @ElementCollection
+        List<String> zoneCodes;
     }
 }
