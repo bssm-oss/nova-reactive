@@ -5,6 +5,7 @@ import io.nova.metadata.InheritanceInfo;
 import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.SecondaryTableInfo;
+import io.nova.metadata.ToOneForeignKeyColumn;
 import io.nova.query.AggregateFunction;
 import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
@@ -50,18 +51,30 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         List<String> columns = new ArrayList<>();
         List<String> markers = new ArrayList<>();
         List<Object> bindings = new ArrayList<>();
-        for (int index = 0; index < properties.size(); index++) {
-            PersistentProperty property = properties.get(index);
-            columns.add(column(property));
-            markers.add(dialect.bindMarkers().marker(index + 1));
-            bindings.add(property.toColumnValue(property.read(entity)));
+        for (PersistentProperty property : properties) {
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 참조 엔티티의 각 @Id 컴포넌트 값을 N개 FK 컬럼에 바인딩한다. 컬럼 순서는
+                // toOneForeignKey가 참조 @Id 순서로 고정하므로 read/DDL/FK와 정렬된다.
+                Object reference = property.readReferenceInstance(entity);
+                for (ToOneForeignKeyColumn fkColumn : property.toOneForeignKey().columns()) {
+                    columns.add(dialect.quote(fkColumn.columnName()));
+                    Object domain = reference == null ? null : fkColumn.readReferencedValue(reference);
+                    bindings.add(fkColumn.toColumnValue(domain));
+                }
+            } else {
+                columns.add(column(property));
+                bindings.add(property.toColumnValue(property.read(entity)));
+            }
         }
         // SINGLE_TABLE 상속만 단일 테이블에 물리 discriminator 컬럼을 가진다. JOINED는 루트 테이블에서 별도로
         // 기록하고(insertJoinedRoot), TABLE_PER_CLASS는 물리 discriminator 컬럼이 없으므로 여기서 emit하지 않는다.
         if (metadata.hasInheritance() && metadata.inheritance().singleTable()) {
             columns.add(dialect.quote(metadata.inheritance().discriminatorColumn()));
-            markers.add(dialect.bindMarkers().marker(properties.size() + 1));
             bindings.add(metadata.inheritance().discriminatorBindValue());
+        }
+        // 마커는 컬럼 개수(복합 FK로 property 개수보다 많을 수 있음)에 맞춰 위치 순으로 생성한다.
+        for (int i = 0; i < columns.size(); i++) {
+            markers.add(dialect.bindMarkers().marker(i + 1));
         }
         String sql = "insert into " + table(metadata) +
                 " (" + String.join(", ", columns) + ") values (" + String.join(", ", markers) + ")" +
@@ -91,9 +104,13 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
         List<String> assignments = new ArrayList<>();
         List<Object> bindings = new ArrayList<>();
-        int index = 1;
+        int[] index = {1};
         for (PersistentProperty property : properties) {
-            assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index++));
+            if (property.isCompositeToOne()) {
+                appendCompositeAssignments(property, entity, assignments, bindings, index);
+                continue;
+            }
+            assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index[0]++));
             if (versionProperty != null && property.equals(versionProperty)) {
                 Object next = hasPrecomputedVersion
                         ? precomputedVersion
@@ -105,7 +122,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         List<String> idClauses = new ArrayList<>();
         for (PersistentProperty idProperty : metadata.idProperties()) {
-            idClauses.add(column(idProperty) + " = " + dialect.bindMarkers().marker(index++));
+            idClauses.add(column(idProperty) + " = " + dialect.bindMarkers().marker(index[0]++));
             bindings.add(idProperty.toColumnValue(idProperty.read(entity)));
         }
         StringBuilder sql = new StringBuilder("update ").append(table(metadata))
@@ -113,10 +130,25 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 .append(" where ").append(String.join(" and ", idClauses));
         if (versionProperty != null) {
             sql.append(" and ").append(column(versionProperty))
-                    .append(" = ").append(dialect.bindMarkers().marker(index));
+                    .append(" = ").append(dialect.bindMarkers().marker(index[0]));
             bindings.add(versionProperty.toColumnValue(versionProperty.read(entity)));
         }
         return new SqlStatement(sql.toString(), bindings);
+    }
+
+    /**
+     * 복합키 타겟 to-one property의 SET 절 assignment/binding을 참조 @Id 컴포넌트 순서대로 N개 추가한다.
+     * marker 인덱스는 {@code index[0]}를 통해 호출부와 공유해 위치 바인딩이 연속되게 한다.
+     */
+    private void appendCompositeAssignments(
+            PersistentProperty property, Object entity,
+            List<String> assignments, List<Object> bindings, int[] index) {
+        Object reference = property.readReferenceInstance(entity);
+        for (ToOneForeignKeyColumn fkColumn : property.toOneForeignKey().columns()) {
+            assignments.add(dialect.quote(fkColumn.columnName()) + " = " + dialect.bindMarkers().marker(index[0]++));
+            Object domain = reference == null ? null : fkColumn.readReferencedValue(reference);
+            bindings.add(fkColumn.toColumnValue(domain));
+        }
     }
 
     @Override
@@ -167,9 +199,13 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
 
         List<String> assignments = new ArrayList<>(properties.size());
         List<Object> bindings = new ArrayList<>(properties.size() + 2);
-        int index = 1;
+        int[] index = {1};
         for (PersistentProperty property : properties) {
-            assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index++));
+            if (property.isCompositeToOne()) {
+                appendCompositeAssignments(property, entity, assignments, bindings, index);
+                continue;
+            }
+            assignments.add(column(property) + " = " + dialect.bindMarkers().marker(index[0]++));
             if (versionProperty != null && property.equals(versionProperty)) {
                 Object next = hasPrecomputedVersion
                         ? precomputedVersion
@@ -181,7 +217,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         List<String> idClauses = new ArrayList<>();
         for (PersistentProperty idProperty : metadata.idProperties()) {
-            idClauses.add(column(idProperty) + " = " + dialect.bindMarkers().marker(index++));
+            idClauses.add(column(idProperty) + " = " + dialect.bindMarkers().marker(index[0]++));
             bindings.add(idProperty.toColumnValue(idProperty.read(entity)));
         }
         StringBuilder sql = new StringBuilder("update ").append(table(metadata))
@@ -189,7 +225,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                 .append(" where ").append(String.join(" and ", idClauses));
         if (versionProperty != null) {
             sql.append(" and ").append(column(versionProperty))
-                    .append(" = ").append(dialect.bindMarkers().marker(index));
+                    .append(" = ").append(dialect.bindMarkers().marker(index[0]));
             bindings.add(versionProperty.toColumnValue(versionProperty.read(entity)));
         }
         return new SqlStatement(sql.toString(), bindings);
@@ -1247,6 +1283,13 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     private String selectList(EntityMetadata<?> metadata) {
         List<String> items = new ArrayList<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 N개 FK 컬럼을 SELECT한다. row 디코딩(mapRow)이 이 컬럼들을 읽어 stub을 조립한다.
+                for (ToOneForeignKeyColumn fkColumn : property.toOneForeignKey().columns()) {
+                    items.add(dialect.quote(fkColumn.columnName()) + " as " + dialect.quote(fkColumn.columnName()));
+                }
+                continue;
+            }
             items.add(column(property) + " as " + dialect.quote(property.columnName()));
         }
         // SINGLE_TABLE 상속만 단일 테이블에 물리 discriminator 컬럼을 가진다 — row마다 구체 서브타입을

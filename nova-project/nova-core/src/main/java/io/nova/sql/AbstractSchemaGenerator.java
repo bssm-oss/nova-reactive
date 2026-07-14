@@ -13,6 +13,7 @@ import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.SecondaryTableInfo;
 import io.nova.metadata.TableGeneratorInfo;
+import io.nova.metadata.ToOneForeignKeyColumn;
 import io.nova.metadata.UniqueConstraintDefinition;
 
 import java.util.ArrayList;
@@ -214,6 +215,13 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         boolean compositePk = metadata.hasCompositeId();
         List<String> columns = new ArrayList<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 참조 @Id 컴포넌트마다 FK 컬럼 1개를 emit한다(read/write/FK와 동일 순서).
+                for (ToOneForeignKeyColumn fkColumn : property.toOneForeignKey().columns()) {
+                    columns.add(foreignKeyColumnDefinition(fkColumn));
+                }
+                continue;
+            }
             columns.add(columnDefinition(property, compositePk));
         }
         if (compositePk) {
@@ -486,6 +494,67 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      */
     protected String identityColumn(PersistentProperty property) {
         return dialect.quote(property.columnName()) + " " + sqlType(property) + " primary key";
+    }
+
+    /**
+     * 복합키 타겟 to-one의 FK 컬럼 1개에 대한 DDL 조각을 만든다. 저장타입/길이/nullability는 참조 @Id
+     * 컴포넌트에서 이미 해석된 {@link ToOneForeignKeyColumn}을 그대로 따른다. 복합 PK 컬럼이 아니므로
+     * inline primary key는 두지 않는다.
+     */
+    protected String foreignKeyColumnDefinition(ToOneForeignKeyColumn fkColumn) {
+        StringBuilder builder = new StringBuilder()
+                .append(dialect.quote(fkColumn.columnName()))
+                .append(' ')
+                .append(foreignKeyColumnType(fkColumn.columnType(), fkColumn.length()));
+        if (!fkColumn.nullable()) {
+            builder.append(" not null");
+        }
+        return builder.toString();
+    }
+
+    /**
+     * 복합 FK 컬럼의 저장 표현 타입에 대응하는 SQL 컬럼 타입을 결정한다. {@link #sqlType(PersistentProperty)}의
+     * 스칼라 분기를 property 없이 미러하되, 저장타입은 이미 {@code @Convert}/{@code @Enumerated}/UUID 해석이
+     * 끝난 값(String/Integer/Long/UUID→varchar 등)이다.
+     */
+    protected String foreignKeyColumnType(Class<?> columnType, int length) {
+        if (columnType == String.class) {
+            return "varchar(" + length + ")";
+        }
+        if (columnType == Long.class || columnType == long.class) {
+            return "bigint";
+        }
+        if (columnType == Integer.class || columnType == int.class) {
+            return "integer";
+        }
+        if (columnType == Short.class || columnType == short.class) {
+            return "smallint";
+        }
+        if (columnType == Boolean.class || columnType == boolean.class) {
+            return "boolean";
+        }
+        if (columnType == Double.class || columnType == double.class) {
+            return "double precision";
+        }
+        if (columnType == Float.class || columnType == float.class) {
+            return "real";
+        }
+        if (columnType == java.math.BigDecimal.class) {
+            return "numeric(19, 2)";
+        }
+        if (columnType == java.util.UUID.class) {
+            return "varchar(36)";
+        }
+        if (columnType == java.time.LocalDate.class) {
+            return dialect.dateColumnType();
+        }
+        if (columnType == java.time.LocalTime.class) {
+            return dialect.timeColumnType();
+        }
+        if (columnType == java.time.LocalDateTime.class) {
+            return dialect.timestampColumnType();
+        }
+        throw new IllegalArgumentException("Unsupported composite foreign-key column type: " + columnType.getName());
     }
 
     /**

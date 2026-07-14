@@ -35,6 +35,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.Inheritance;
 import jakarta.persistence.InheritanceType;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
 import jakarta.persistence.Lob;
 import io.nova.annotation.Json;
 import jakarta.persistence.JoinTable;
@@ -784,6 +785,18 @@ public final class EntityMetadataFactory {
                     || property.manyToMany() || property.elementCollection()) {
                 // 컬럼 없는 marker-only(@OneToMany / inverse @OneToOne / @ManyToMany / @ElementCollection)는
                 // 빈 columnName을 가지므로 uniqueness 검증에서 제외한다(빈 문자열 false collision 방지).
+                continue;
+            }
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 N개 FK 컬럼을 emit하므로 각 컬럼을 uniqueness 게이트에 넣는다
+                // (첫 컬럼만 검사하면 나머지 FK 컬럼의 silent 충돌을 놓친다).
+                for (ToOneForeignKeyColumn fkColumn : property.toOneForeignKey().columns()) {
+                    if (!columnNames.add(fkColumn.columnName())) {
+                        throw new IllegalArgumentException(
+                                entityType.getName() + " declares duplicate column '" + fkColumn.columnName()
+                                        + "'; check @JoinColumns and composite foreign-key column names");
+                    }
+                }
                 continue;
             }
             if (!columnNames.add(property.columnName())) {
@@ -2091,7 +2104,8 @@ public final class EntityMetadataFactory {
                 propertyAccessGetter,
                 propertyAccessSetter,
                 null,
-                secondaryTableName
+                secondaryTableName,
+                null
         );
     }
 
@@ -2457,7 +2471,8 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 null,
-                ""
+                "",
+                null
         );
     }
 
@@ -2558,16 +2573,27 @@ public final class EntityMetadataFactory {
         }
         if (idCount != 1) {
             // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지 — read-path와 동일하게 단일 @Id가 아니면
-            // 기존 Long 기본값을 유지한다(무리한 확장 금지, read-path 바인딩 가능성 보장).
+            // 단일 FK 저장 표현으로는 해석하지 않는다. 복합키 타겟은 별도로 다중컬럼 FK 모델
+            // ({@link #resolveCompositeToOneForeignKey})로 확장하고, 그마저 불가하면 호출부가 Long 기본값을 유지한다.
             return null;
         }
+        return resolveScalarFieldStorage(targetType, idField);
+    }
+
+    /**
+     * 단일 스칼라 {@code @Id} 컴포넌트 필드의 FK 저장 표현을 해석한다. 단일키 타겟과 복합키 타겟의 각 컴포넌트가
+     * 이 한 자리를 공유해 {@code @Convert}/{@code @Enumerated}/UUID 등 저장타입 규칙이 대칭이 되게 한다.
+     * {@code owner}는 {@code @Convert} 제네릭 인자 해석에 쓰이는 필드 선언 타입(단일키는 target 엔티티,
+     * {@code @EmbeddedId} 컴포넌트는 {@code @Embeddable} 타입)이다.
+     */
+    private static ForeignKeyStorage resolveScalarFieldStorage(Class<?> owner, Field idField) {
         Class<?> domainType = wrapPrimitiveType(idField.getType());
         Column column = idField.getAnnotation(Column.class);
         int length = column != null ? column.length() : 255;
         Convert convert = idField.getAnnotation(Convert.class);
         if (convert != null && !convert.disableConversion()) {
             Class<?>[] attributeAndColumn =
-                    resolveJpaConverterTypeArguments(targetType, idField, convert.converter());
+                    resolveJpaConverterTypeArguments(owner, idField, convert.converter());
             AttributeConverter<Object, Object> converter =
                     new JpaAttributeConverterAdapter<>(instantiateJpaConverter(convert.converter()));
             return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1], length);
@@ -2591,6 +2617,189 @@ public final class EntityMetadataFactory {
      */
     private record ForeignKeyStorage(Class<?> javaType, AttributeConverter<Object, Object> converter,
             Class<?> converterColumnType, int length) {
+    }
+
+    /**
+     * 참조 엔티티의 복합키({@code @EmbeddedId}/{@code @IdClass}) 컴포넌트 하나에 대응하는 서술자. FK 컬럼명 해석,
+     * DDL/read/write에 필요한 저장타입/converter/길이/참조 컬럼명/참조 경로를 담는다.
+     */
+    private record ReferencedIdComponent(String referencedColumnName, Class<?> domainType,
+            AttributeConverter<Object, Object> converter, Class<?> converterColumnType, int length,
+            List<Field> referencedPath) {
+    }
+
+    /**
+     * to-one({@code @ManyToOne}/owning {@code @OneToOne})이 복합키 엔티티를 참조할 때의 다중컬럼 FK 모델을
+     * 해석한다. 참조 엔티티의 각 {@code @Id} 컴포넌트마다 FK 컬럼 1개를 <b>참조 컴포넌트 순서대로</b> 만든다.
+     * 참조가 복합키가 아니거나(단일키/키 없음) 해석 불가하면 {@code null}을 반환해 호출부가 기존 단일 FK/Long
+     * 폴백을 유지하게 한다.
+     *
+     * <p>FK 컬럼명은 {@code @JoinColumns}(복수 {@code @JoinColumn})가 있으면 그것을 honor하고(전부
+     * {@code referencedColumnName} 지정 시 참조 컬럼명 매칭, 전부 미지정 시 위치 매칭), 없으면 기본
+     * {@code <property>_<referencedColumn>} 규칙으로 만든다.
+     */
+    private ToOneForeignKey resolveCompositeToOneForeignKey(Class<?> entityType, Class<?> targetType, Field field) {
+        List<ReferencedIdComponent> components = resolveReferencedIdComponents(targetType);
+        if (components == null || components.size() < 2) {
+            return null;
+        }
+        JoinColumn[] perComponent = alignJoinColumns(entityType, field, components);
+        ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
+        OneToOne oneToOne = field.getAnnotation(OneToOne.class);
+        boolean relationOptional = manyToOne != null ? manyToOne.optional() : (oneToOne == null || oneToOne.optional());
+        List<ToOneForeignKeyColumn> fkColumns = new ArrayList<>(components.size());
+        for (int i = 0; i < components.size(); i++) {
+            ReferencedIdComponent component = components.get(i);
+            JoinColumn joinColumn = perComponent[i];
+            String fkColumnName = joinColumn != null && !joinColumn.name().isBlank()
+                    ? joinColumn.name()
+                    : namingStrategy.columnName(field.getName() + "_" + component.referencedColumnName());
+            boolean nullable = relationOptional && (joinColumn == null || joinColumn.nullable());
+            Class<?> columnType = component.converterColumnType() != null
+                    ? component.converterColumnType() : component.domainType();
+            fkColumns.add(new ToOneForeignKeyColumn(
+                    fkColumnName,
+                    component.referencedColumnName(),
+                    columnType,
+                    component.length(),
+                    nullable,
+                    component.converter(),
+                    component.referencedPath()));
+        }
+        return new ToOneForeignKey(fkColumns, targetType);
+    }
+
+    /**
+     * 참조 엔티티 타입의 복합키 {@code @Id} 컴포넌트들을 참조 순서대로 서술한다. {@code @EmbeddedId}는
+     * {@code @Embeddable} leaf 필드들을(host 필드의 {@code @AttributeOverride} 컬럼명 재정의 반영),
+     * {@code @IdClass}는 top-level {@code @Id} 필드들을 매핑한다. 컬럼명/순서/저장타입은 참조 엔티티가 그 자신의
+     * 메타데이터를 만들 때와 동일 규칙({@code mappedFields} root-first, {@code getDeclaredFields} 순서)을 써서
+     * read/write/DDL/FK가 참조 테이블의 {@code @Id} 컬럼과 정확히 정렬되게 한다. 복합키가 아니거나 nested
+     * embedded 컴포넌트 등 미지원이면 {@code null}.
+     */
+    private List<ReferencedIdComponent> resolveReferencedIdComponents(Class<?> targetType) {
+        Field embeddedIdField = null;
+        List<Field> topLevelIds = new ArrayList<>();
+        for (Field field : mappedFields(targetType)) {
+            if (isNotPersistable(field)) {
+                continue;
+            }
+            if (field.isAnnotationPresent(EmbeddedId.class)) {
+                embeddedIdField = field;
+            } else if (field.isAnnotationPresent(Id.class)) {
+                topLevelIds.add(field);
+            }
+        }
+        if (embeddedIdField != null) {
+            Class<?> embeddableType = embeddedIdField.getType();
+            if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
+                return null;
+            }
+            Map<String, String> columnOverrides = new java.util.HashMap<>();
+            for (AttributeOverride override : embeddedIdField.getAnnotationsByType(AttributeOverride.class)) {
+                columnOverrides.put(override.name(), override.column().name());
+            }
+            List<ReferencedIdComponent> result = new ArrayList<>();
+            for (Field subField : embeddableType.getDeclaredFields()) {
+                if (isNotPersistable(subField)) {
+                    continue;
+                }
+                if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
+                    // nested embedded @EmbeddedId 컴포넌트는 미지원 — 조용한 오매핑 대신 확장하지 않는다.
+                    return null;
+                }
+                String override = columnOverrides.get(subField.getName());
+                String columnName = override != null && !override.isBlank() ? override : columnNameOf(subField);
+                ForeignKeyStorage storage = resolveScalarFieldStorage(embeddableType, subField);
+                result.add(new ReferencedIdComponent(columnName, storage.javaType(), storage.converter(),
+                        storage.converterColumnType(), storage.length(), List.of(embeddedIdField, subField)));
+            }
+            return result.isEmpty() ? null : result;
+        }
+        if (topLevelIds.size() >= 2) {
+            List<ReferencedIdComponent> result = new ArrayList<>(topLevelIds.size());
+            for (Field idField : topLevelIds) {
+                ForeignKeyStorage storage = resolveScalarFieldStorage(targetType, idField);
+                result.add(new ReferencedIdComponent(columnNameOf(idField), storage.javaType(), storage.converter(),
+                        storage.converterColumnType(), storage.length(), List.of(idField)));
+            }
+            return result;
+        }
+        return null;
+    }
+
+    /**
+     * 스칼라 {@code @Id}/{@code @EmbeddedId} 컴포넌트 필드의 컬럼명을 해석한다({@code createProperty}와 동일 규칙:
+     * {@code @Column(name)}이 있으면 그 이름, 없으면 naming strategy).
+     */
+    private String columnNameOf(Field field) {
+        Column column = field.getAnnotation(Column.class);
+        return column != null && !column.name().isBlank()
+                ? column.name()
+                : namingStrategy.columnName(field.getName());
+    }
+
+    /**
+     * 복합키 to-one의 {@code @JoinColumns}(또는 단일 {@code @JoinColumn})를 참조 컴포넌트 순서에 맞춰 정렬한다.
+     * join 컬럼이 없으면 전부 {@code null}(기본 이름 규칙 사용), 있으면 개수가 컴포넌트 수와 일치해야 하며
+     * {@code referencedColumnName}은 전부 지정(참조명 매칭)하거나 전부 생략(위치 매칭)해야 한다. 위반 시 fail-fast.
+     */
+    private JoinColumn[] alignJoinColumns(Class<?> entityType, Field field, List<ReferencedIdComponent> components) {
+        JoinColumn[] result = new JoinColumn[components.size()];
+        JoinColumn[] declared;
+        JoinColumns container = field.getAnnotation(JoinColumns.class);
+        if (container != null) {
+            declared = container.value();
+        } else {
+            JoinColumn single = field.getAnnotation(JoinColumn.class);
+            declared = single != null ? new JoinColumn[] {single} : new JoinColumn[0];
+        }
+        if (declared.length == 0) {
+            return result;
+        }
+        String location = entityType.getName() + "." + field.getName();
+        if (declared.length != components.size()) {
+            throw new IllegalArgumentException(location + " references composite-key entity with "
+                    + components.size() + " id columns but declares " + declared.length
+                    + " join column(s); one @JoinColumn per referenced @Id column is required");
+        }
+        for (JoinColumn joinColumn : declared) {
+            if (joinColumn.name().isBlank()) {
+                throw new IllegalArgumentException(location
+                        + " composite-key @JoinColumn must set a non-blank name");
+            }
+        }
+        int withReferenced = 0;
+        for (JoinColumn joinColumn : declared) {
+            if (!joinColumn.referencedColumnName().isBlank()) {
+                withReferenced++;
+            }
+        }
+        if (withReferenced == 0) {
+            System.arraycopy(declared, 0, result, 0, declared.length);
+            return result;
+        }
+        if (withReferenced != declared.length) {
+            throw new IllegalArgumentException(location
+                    + " composite-key @JoinColumn referencedColumnName must be either all specified or all omitted");
+        }
+        for (int i = 0; i < components.size(); i++) {
+            String referenced = components.get(i).referencedColumnName();
+            JoinColumn match = null;
+            for (JoinColumn joinColumn : declared) {
+                if (joinColumn.referencedColumnName().equals(referenced)) {
+                    match = joinColumn;
+                    break;
+                }
+            }
+            if (match == null) {
+                throw new IllegalArgumentException(location
+                        + " @JoinColumn referencedColumnName does not cover target @Id column \""
+                        + referenced + "\"");
+            }
+            result[i] = match;
+        }
+        return result;
     }
 
     /**
@@ -2695,6 +2904,15 @@ public final class EntityMetadataFactory {
         AttributeConverter<Object, Object> fkConverter = fkStorage != null ? fkStorage.converter() : null;
         Class<?> fkConverterColumnType = fkStorage != null ? fkStorage.converterColumnType() : null;
         int fkLength = fkStorage != null ? fkStorage.length() : 255;
+        // 단일 @Id 해석 불가(복합키 @EmbeddedId/@IdClass)면 다중컬럼 FK 모델로 확장한다. 복합 FK가 있으면
+        // 단일 columnName 대신 그 첫 FK 컬럼명을 대표로 두고(단일컬럼 접근자/uniqueness 표기 결정성 유지),
+        // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
+        // 기존 단일 FK 경로를 byte-identical하게 유지한다.
+        ToOneForeignKey compositeForeignKey = fkStorage == null
+                ? resolveCompositeToOneForeignKey(entityType, targetType, field) : null;
+        if (compositeForeignKey != null) {
+            columnName = compositeForeignKey.columns().get(0).columnName();
+        }
         return new PersistentProperty(
                 field,
                 field.getName(),
@@ -2740,7 +2958,8 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 toOneCascadeInfo,
-                "");
+                "",
+                compositeForeignKey);
     }
 
     /**
@@ -2817,7 +3036,8 @@ public final class EntityMetadataFactory {
                     null,
                     null,
                     null,
-                    ""
+                    "",
+                    null
             );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
@@ -2841,6 +3061,15 @@ public final class EntityMetadataFactory {
         AttributeConverter<Object, Object> fkConverter = fkStorage != null ? fkStorage.converter() : null;
         Class<?> fkConverterColumnType = fkStorage != null ? fkStorage.converterColumnType() : null;
         int fkLength = fkStorage != null ? fkStorage.length() : 255;
+        // 단일 @Id 해석 불가(복합키 @EmbeddedId/@IdClass)면 다중컬럼 FK 모델로 확장한다. 복합 FK가 있으면
+        // 단일 columnName 대신 그 첫 FK 컬럼명을 대표로 두고(단일컬럼 접근자/uniqueness 표기 결정성 유지),
+        // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
+        // 기존 단일 FK 경로를 byte-identical하게 유지한다.
+        ToOneForeignKey compositeForeignKey = fkStorage == null
+                ? resolveCompositeToOneForeignKey(entityType, targetType, field) : null;
+        if (compositeForeignKey != null) {
+            columnName = compositeForeignKey.columns().get(0).columnName();
+        }
         return new PersistentProperty(
                 field,
                 field.getName(),
@@ -2886,7 +3115,8 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 toOneCascadeInfo,
-                "");
+                "",
+                compositeForeignKey);
     }
 
     /**
@@ -2955,7 +3185,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null, null, false, "", false, null, null, null, "");
+                info, null, null, null, false, "", false, null, null, null, "", null);
     }
 
     /**
@@ -3170,7 +3400,8 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 null,
-                "");
+                "",
+                null);
     }
 
     /**

@@ -16,6 +16,7 @@ import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.SecondaryTableInfo;
+import io.nova.metadata.ToOneForeignKeyColumn;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
@@ -3512,6 +3513,17 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // outer host 전체가 all-null이면 outer까지 null로 설정해 빈 인스턴스가 남지 않도록 한다.
         List<EmbeddedValue> embeddedValues = new ArrayList<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one: N개 FK 컬럼을 각 컴포넌트 저장타입(columnType)으로 디코드한 뒤 복합 id를 가진
+                // 참조 stub을 조립해 reference 필드에 세팅한다. 컬럼 순서는 write/DDL/FK와 동일(toOneForeignKey).
+                List<Object> decoded = new ArrayList<>(property.toOneForeignKey().columns().size());
+                for (ToOneForeignKeyColumn fkColumn : property.toOneForeignKey().columns()) {
+                    Object rawFk = row.get(fkColumn.columnName(), wrapPrimitive(fkColumn.columnType()));
+                    decoded.add(fkColumn.toPropertyValue(rawFk));
+                }
+                property.writeCompositeReference(instance, decoded);
+                continue;
+            }
             // converter가 있는 property(@Json, @Enumerated)는 driver가 디코딩 가능한 저장 타입(columnType)을
             // 요청해야 한다 — driver는 varchar 컬럼을 enum/POJO로 직접 디코딩할 수 없다. converter가 없으면
             // columnType()이 javaType을 그대로 돌려준다. primitive Java 타입을 그대로 row.get(..., type)에

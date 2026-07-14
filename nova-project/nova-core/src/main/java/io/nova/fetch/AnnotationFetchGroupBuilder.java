@@ -70,6 +70,12 @@ public final class AnnotationFetchGroupBuilder {
         }
         // @ManyToOne — child 측 PK column으로 IN-query를 발행한다. parent에서 FK 값을 꺼내 IN 키로 사용.
         for (PersistentProperty manyToOne : parentMetadata.manyToOneProperties()) {
+            if (manyToOne.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 단일 PK IN-query로 자동 hydrate할 수 없다(FK가 N개 컬럼). mapRow가 이미
+                // 복합 id를 채운 참조 stub을 만들어 두므로, 자동 fetch group에서 제외해 그 stub을 그대로 노출한다
+                // (복합키 타겟의 full graph fetch는 별도 Wave 범위). read()가 단일 @Id를 못 찾아 던지는 것도 회피한다.
+                continue;
+            }
             Class<?> childType = manyToOne.manyToOneTargetType();
             if (childType == null) {
                 throw new IllegalStateException(

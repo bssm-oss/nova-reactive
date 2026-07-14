@@ -2980,8 +2980,9 @@ public final class FixtureEntities {
     }
 
     /**
-     * 복합키 대상을 단일 FK 컬럼으로 참조하려는 child + {@code @ForeignKey(CONSTRAINT)} — 단일 PK 참조만
-     * 지원하는 v1에서 FK 해석이 fail-fast로 거부해야 한다.
+     * 복합키(2컬럼) 대상을 <em>단일</em> {@code @JoinColumn}으로 참조하려는 child — 컬럼 수 불일치이므로
+     * 메타데이터 조립 단계에서 fail-fast로 거부한다. (복합키 타겟 to-one 자체는 컴포넌트당 하나씩
+     * {@code @JoinColumns}로 지정하면 다중컬럼 FK로 지원된다.)
      */
     @Entity
     @Table(name = "fk_child_to_composite")
