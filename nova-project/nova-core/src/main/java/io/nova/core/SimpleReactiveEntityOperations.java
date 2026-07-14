@@ -2315,11 +2315,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             CollectionTableDefinition definition = collectionDefinition(metadata, property.elementCollectionInfo());
             deletes.add(sqlExecutor.execute(renderer.deleteCollectionRows(definition, ownerId)).then());
         }
+        // owning/inverse 양측 @ManyToMany link 행을 모두 정리한다. ManyToManyInfo는 컬럼을 항상 이 엔티티
+        // 기준으로 정규화하므로(inverse는 owning의 @JoinTable을 swap) ownerForeignKeyColumn이 언제나 이 엔티티의
+        // id를 가리킨다 → owning/inverse 구분 없이 deleteJoinRows(definition, ownerId)가 이 엔티티를 참조하는 link
+        // 행을 지운다. inverse 측을 정리하지 않으면 이 엔티티를 target으로 가리키는 다른 owner의 link 행이 남아
+        // enforced @ForeignKey에서 이 엔티티의 hard delete가 FK 위반으로 실패한다.
         for (PersistentProperty property : metadata.manyToManyProperties()) {
             ManyToManyInfo info = property.manyToManyInfo();
-            if (!info.owning()) {
-                continue;
-            }
             EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
             JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
             deletes.add(sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then());
@@ -2331,15 +2333,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
-     * 이 엔티티가 owner로서 정리해야 할 소유 컬렉션 테이블(@ElementCollection collection table 또는 owning
-     * @ManyToMany link table)을 가지는지 여부. batch hard delete 경로가 owner당 정리 루프를 돌릴지 빠르게 가른다.
+     * 이 엔티티가 hard delete 시 정리해야 할 link/collection 테이블(@ElementCollection collection table 또는
+     * owning/inverse @ManyToMany link table)을 가지는지 여부. batch hard delete가 owner당 정리 루프를 돌릴지,
+     * 그리고 versioned delete가 비가역 pre-owner 정리 앞에서 (id, version) 선검증을 할지를 가른다. inverse @ManyToMany
+     * 도 이 엔티티를 참조하는 link 행을 removeOwnedCollectionRows에서 지우므로 여기서 함께 센다(inverse-only 엔티티도 true).
      */
     private boolean hasOwnedCollectionTables(EntityMetadata<?> metadata) {
         if (!metadata.elementCollectionProperties().isEmpty()) {
             return true;
         }
-        return metadata.manyToManyProperties().stream()
-                .anyMatch(property -> property.manyToManyInfo().owning());
+        return !metadata.manyToManyProperties().isEmpty();
     }
 
     /**
@@ -2697,6 +2700,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(entry.getKey());
                     Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
                     Optional<PersistentProperty> version = metadata.versionProperty();
+                    if (metadata.hasCompositeId()) {
+                        // 복합키는 단일 컬럼 IN batch로 표현할 수 없다 → 단건 delete(entity)로 폴백한다
+                        // (soft/hard, @Version, @PreRemove, 소유 컬렉션 정리를 모두 위임).
+                        return Flux.fromIterable(entitiesByType.get(entry.getKey()))
+                                .concatMap(this::delete)
+                                .reduce(0L, Long::sum);
+                    }
                     if (softDelete.isPresent() && version.isPresent()) {
                         // @SoftDelete + @Version: 단일 IN-UPDATE로 묶으면 entity별 version 검증이 불가능하므로
                         // 안전하게 단건 delete(entity) 경로로 폴백한다. @PreRemove는 단건 delete가 호출한다.
@@ -3324,6 +3334,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             idValues.add(id);
         }
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        if (metadata.hasCompositeId()) {
+            // 단일 컬럼 IN으로는 복합키를 표현할 수 없다(soft/hard 모두). per-id deleteById로 분기한다 —
+            // deleteById가 soft/hard, 소유 컬렉션 정리(owning/inverse @ManyToMany 포함)를 위임받아 처리한다.
+            return Flux.fromIterable(materialized)
+                    .concatMap(id -> deleteById(entityType, id))
+                    .reduce(0L, Long::sum);
+        }
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         if (softDelete.isPresent()) {
             Object deletedAt = currentTimeFor(softDelete.get());
