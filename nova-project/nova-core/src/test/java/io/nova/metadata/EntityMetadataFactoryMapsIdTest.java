@@ -1,5 +1,7 @@
 package io.nova.metadata;
 
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -59,6 +61,36 @@ class EntityMetadataFactoryMapsIdTest {
                 () -> factory.getEntityMetadata(MapsIdWithValue.class));
         assertTrue(error.getMessage().contains("@MapsId"));
         assertTrue(error.getMessage().contains("composite"));
+    }
+
+    @Test
+    void recognisesMapsIdComponentDerivingCompositeEmbeddedIdComponent() {
+        EntityMetadata<OrderLine> line = factory.getEntityMetadata(OrderLine.class);
+        PersistentProperty order = line.findProperty("order").orElseThrow();
+
+        assertTrue(order.mapsId(), "@MapsId(\"component\") 관계는 파생 식별자 마커를 가져야 한다");
+        assertEquals("orderRef", order.mapsIdValue(),
+                "복합키 컴포넌트 파생은 컴포넌트 이름을 마커로 보관해야 한다");
+        assertEquals(1, line.mapsIdProperties().size());
+        assertEquals("order", line.mapsIdProperties().get(0).propertyName());
+        assertTrue(line.hasCompositeId(), "owner는 @EmbeddedId 복합키여야 한다");
+    }
+
+    @Test
+    void rejectsMapsIdComponentThatDoesNotMatchAnyIdComponent() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(OrderLineBadComponent.class));
+        assertTrue(error.getMessage().contains("@MapsId"), error.getMessage());
+        assertTrue(error.getMessage().contains("does not match"), error.getMessage());
+    }
+
+    @Test
+    void rejectsMapsIdComponentDerivingFromCompositeKeyTarget() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(MapsIdComponentToCompositeTarget.class));
+        assertTrue(error.getMessage().contains("@MapsId"), error.getMessage());
+        assertTrue(error.getMessage().contains("composite-key associated")
+                || error.getMessage().contains("single @Id"), error.getMessage());
     }
 
     @Test
@@ -181,5 +213,59 @@ class EntityMetadataFactoryMapsIdTest {
         @ManyToMany(targetEntity = Master.class)
         @MapsId
         List<Master> masters;
+    }
+
+    // --- composite-component @MapsId fixtures -------------------------------
+
+    @Embeddable
+    static class OrderLineId {
+        Long orderRef;
+        Long lineNo;
+    }
+
+    @Entity
+    @Table(name = "maps_id_order_line")
+    static class OrderLine {
+        @EmbeddedId
+        OrderLineId id;
+
+        // 복합 @Id의 "orderRef" 컴포넌트를 단일키 Master의 PK에서 파생한다. FK 컬럼(order_id)과
+        // 컴포넌트 컬럼(order_ref)은 Nova 모델상 별도 컬럼으로 emit된다.
+        @ManyToOne
+        @MapsId("orderRef")
+        @JoinColumn(name = "order_id")
+        Master order;
+    }
+
+    @Entity
+    @Table(name = "maps_id_order_line_bad")
+    static class OrderLineBadComponent {
+        @EmbeddedId
+        OrderLineId id;
+
+        @ManyToOne
+        @MapsId("nope")
+        @JoinColumn(name = "order_id")
+        Master order;
+    }
+
+    @Entity
+    @Table(name = "maps_id_composite_target")
+    static class CompositeKeyTarget {
+        @EmbeddedId
+        OrderLineId id;
+    }
+
+    @Entity
+    @Table(name = "maps_id_owner_to_composite")
+    static class MapsIdComponentToCompositeTarget {
+        @EmbeddedId
+        OrderLineId id;
+
+        // @MapsId("orderRef")가 파생 대상으로 복합키 엔티티를 가리킨다 — 어느 타겟 컴포넌트를 owner의
+        // orderRef로 매핑할지 모호하므로 build 시점에 fail-fast로 거부해야 한다(단일 @Id 타겟만 지원).
+        @ManyToOne
+        @MapsId("orderRef")
+        CompositeKeyTarget target;
     }
 }

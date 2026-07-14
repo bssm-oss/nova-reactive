@@ -6,9 +6,9 @@ import java.util.Objects;
  * {@code jakarta.persistence.NamedAttributeNode} 한 개를 표현하는 fetch-plan 노드다. fetch 대상 연관
  * 속성 이름과, 그 연관을 더 깊게 펼치는 {@link NamedSubgraphDefinition}의 이름(선택)을 담는다.
  *
- * <p>{@code subgraphName}이 {@code null}/blank가 아니면 이 노드는 depth&gt;1의 중첩 fetch를 요구하는데,
- * Nova v1의 flat {@link io.nova.fetch.FetchGroup} 경로는 이를 표현할 수 없어 변환 단계에서 fail-fast한다
- * (설계상 미지원, {@link EntityGraphs} 참고).
+ * <p>{@code subgraphName}이 {@code null}/blank가 아니면 이 노드는 depth&gt;1의 중첩 fetch를 요구한다.
+ * {@link EntityGraphs}가 그 이름의 {@link NamedSubgraphDefinition}을 찾아 재귀적으로 {@link FetchNode}
+ * 트리로 해석하며(레벨별 배치 hydration), subgraph 이름 참조가 사이클을 이루면 fail-fast한다.
  *
  * @param attributeName fetch할 연관 속성 이름(엔티티의 property 이름)
  * @param subgraphName  중첩 서브그래프 이름(없으면 {@code null})

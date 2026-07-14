@@ -7,6 +7,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.schema.SchemaInitializer;
@@ -84,6 +86,40 @@ class PropertyAccessH2IntegrationTest {
             assertEquals("prop-val", loaded.getPropertyMapped());
             assertTrue(loaded.propertySetterInvoked,
                     "PROPERTY override 컬럼은 setter를 경유해 채워져야 한다");
+        }).verifyComplete();
+    }
+
+    @Test
+    void classLevelPropertyAccessManyToOneRelationRoundTripsViaAccessors() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        Blog blog = new Blog("nova-blog");
+        PropertyAccessArticle article = new PropertyAccessArticle("hello");
+
+        StepVerifier.create(
+                schema.create(Blog.class)
+                        .then(schema.create(PropertyAccessArticle.class))
+                        .then(operations.save(blog))
+                        .flatMap(savedBlog -> {
+                            assertNotNull(savedBlog.getId());
+                            article.setBlog(savedBlog);
+                            return operations.save(article);
+                        })
+                        .flatMap(savedArticle -> {
+                            // owner INSERT는 FK 값을 관계 getter로 읽어 바인딩해야 한다(field 직접접근 아님).
+                            assertTrue(article.blogGetterInvoked,
+                                    "save의 FK 바인딩은 관계 getter를 경유해야 한다");
+                            return operations.findById(PropertyAccessArticle.class, savedArticle.getId());
+                        })
+        ).assertNext(loaded -> {
+            assertNotNull(loaded.getId());
+            assertEquals("hello", loaded.getTitle());
+            assertNotNull(loaded.getBlog(), "@ManyToOne는 findById에서 hydrate되어야 한다");
+            assertEquals(blog.getId(), loaded.getBlog().getId());
+            // row 디코딩/hydration이 관계 setter를 경유해야 한다(field 직접접근 아님).
+            assertTrue(loaded.blogSetterInvoked, "관계 hydration은 setter를 경유해야 한다");
         }).verifyComplete();
     }
 
@@ -167,6 +203,82 @@ class PropertyAccessH2IntegrationTest {
         public void setPropertyMapped(String propertyMapped) {
             this.propertySetterInvoked = true;
             this.propertyMapped = propertyMapped;
+        }
+    }
+
+    // --- relation @Access(PROPERTY) fixtures --------------------------------
+
+    @Entity
+    @Table(name = "property_access_blogs")
+    public static class Blog {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "name")
+        private String name;
+
+        public Blog() {
+        }
+
+        public Blog(String name) {
+            this.name = name;
+        }
+
+        public Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "property_access_articles")
+    @Access(AccessType.PROPERTY)
+    public static class PropertyAccessArticle {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "title")
+        private String title;
+
+        @ManyToOne
+        @JoinColumn(name = "blog_id")
+        private Blog blog;
+
+        public transient boolean blogGetterInvoked;
+        public transient boolean blogSetterInvoked;
+
+        public PropertyAccessArticle() {
+        }
+
+        public PropertyAccessArticle(String title) {
+            this.title = title;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public void setTitle(String title) {
+            this.title = title;
+        }
+
+        public Blog getBlog() {
+            this.blogGetterInvoked = true;
+            return blog;
+        }
+
+        public void setBlog(Blog blog) {
+            this.blogSetterInvoked = true;
+            this.blog = blog;
         }
     }
 }

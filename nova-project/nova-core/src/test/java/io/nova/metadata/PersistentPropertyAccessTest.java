@@ -5,12 +5,16 @@ import jakarta.persistence.AccessType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -96,6 +100,46 @@ class PersistentPropertyAccessTest {
                 () -> factory.getEntityMetadata(MissingSetterAccount.class));
         assertTrue(exception.getMessage().contains("no JavaBean setter"),
                 "setter 부재는 fail-fast로 거부되어야 한다: " + exception.getMessage());
+    }
+
+    @Test
+    void classLevelPropertyAccessAppliesToManyToOneRelation() {
+        EntityMetadata<PropertyAccessPost> metadata = factory.getEntityMetadata(PropertyAccessPost.class);
+        PersistentProperty authorProp = property(metadata, "author");
+
+        assertTrue(authorProp.propertyAccess(),
+                "클래스 레벨 @Access(PROPERTY)는 @ManyToOne 관계에도 적용되어야 한다(더 이상 항상 field 접근이 아님)");
+        assertNotNull(authorProp.propertyAccessGetter());
+        assertNotNull(authorProp.propertyAccessSetter());
+
+        PropertyAccessPost post = new PropertyAccessPost();
+        PropertyAccessAuthor author = new PropertyAccessAuthor();
+        author.setId(7L);
+        authorProp.writeReference(post, author);
+        assertTrue(post.authorSetterInvoked, "관계 참조 write는 setter를 경유해야 한다");
+        assertSame(author, authorProp.readReference(post));
+        assertTrue(post.authorGetterInvoked, "관계 참조 read는 getter를 경유해야 한다");
+        // read()는 FK 바인딩용으로 참조 대상의 @Id를 추출한다(getter 경유).
+        assertEquals(7L, authorProp.read(post));
+    }
+
+    @Test
+    void fieldAccessRelationKeepsFieldAccess() {
+        EntityMetadata<FieldAccessPost> metadata = factory.getEntityMetadata(FieldAccessPost.class);
+        PersistentProperty authorProp = property(metadata, "author");
+
+        assertFalse(authorProp.propertyAccess(), "@Access 없는 관계는 FIELD 접근(기본)이어야 한다");
+        assertNull(authorProp.propertyAccessGetter());
+        assertNull(authorProp.propertyAccessSetter());
+    }
+
+    @Test
+    void rejectsPropertyAccessRelationWithoutAccessors() {
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> factory.getEntityMetadata(MissingRelationAccessorPost.class));
+        assertTrue(exception.getMessage().contains("no JavaBean"),
+                "관계 getter/setter 부재도 basic과 동일하게 fail-fast여야 한다: " + exception.getMessage());
     }
 
     private static PersistentProperty property(EntityMetadata<?> metadata, String name) {
@@ -231,5 +275,96 @@ class PersistentPropertyAccessTest {
             return name;
         }
         // setName 없음 → PROPERTY access resolve 실패.
+    }
+
+    // --- relation @Access(PROPERTY) fixtures --------------------------------
+
+    @Entity
+    @Table(name = "property_access_authors")
+    static class PropertyAccessAuthor {
+        @Id
+        private Long id;
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "property_access_posts")
+    @Access(AccessType.PROPERTY)
+    static class PropertyAccessPost {
+        @Id
+        private Long id;
+
+        @ManyToOne
+        @JoinColumn(name = "author_id")
+        private PropertyAccessAuthor author;
+
+        transient boolean authorGetterInvoked;
+        transient boolean authorSetterInvoked;
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public PropertyAccessAuthor getAuthor() {
+            authorGetterInvoked = true;
+            return author;
+        }
+
+        public void setAuthor(PropertyAccessAuthor author) {
+            authorSetterInvoked = true;
+            this.author = author;
+        }
+    }
+
+    @Entity
+    @Table(name = "field_access_posts")
+    static class FieldAccessPost {
+        @Id
+        private Long id;
+
+        // @Access 없음 → 엔티티 기본(FIELD) 접근.
+        @ManyToOne
+        @JoinColumn(name = "author_id")
+        private PropertyAccessAuthor author;
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "missing_relation_accessor_posts")
+    @Access(AccessType.PROPERTY)
+    static class MissingRelationAccessorPost {
+        @Id
+        private Long id;
+
+        // getAuthor/setAuthor 없음 → PROPERTY access resolve 실패(fail-fast).
+        @ManyToOne
+        @JoinColumn(name = "author_id")
+        private PropertyAccessAuthor author;
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
     }
 }

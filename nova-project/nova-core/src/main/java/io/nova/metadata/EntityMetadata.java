@@ -42,10 +42,17 @@ public final class EntityMetadata<T> {
     private final List<PersistentProperty> manyToManyProperties;
     private final List<PersistentProperty> elementCollectionProperties;
     /**
-     * {@code @MapsId} 파생 식별자(shared primary key)를 가진 owning to-one 관계 property. v1은 엔티티당
-     * 하나의 {@code @MapsId}만 의미가 있으므로(단일 {@code @Id} 전체 파생) 첫 번째만 보관한다. 없으면 {@code null}.
+     * {@code @MapsId} 파생 식별자(shared primary key)를 가진 owning to-one 관계 property. 단순 {@code @MapsId}
+     * (단일 {@code @Id} 전체 파생)는 엔티티당 하나만 의미가 있으므로 첫 번째만 보관한다. 복합 {@code @Id}의
+     * 컴포넌트를 각각 파생하는 {@code @MapsId("component")}는 여러 개일 수 있으므로 전체는 {@link #mapsIdProperties}로
+     * 노출한다. 없으면 {@code null}.
      */
     private final PersistentProperty mapsIdProperty;
+    /**
+     * {@code @MapsId}로 마킹된 모든 owning to-one 관계 property를 declaration 순서로 보관한다. 단순 {@code @MapsId}는
+     * 1개, 복합 {@code @Id}의 서로 다른 컴포넌트를 파생하는 {@code @MapsId("component")}는 여러 개일 수 있다.
+     */
+    private final List<PersistentProperty> mapsIdProperties;
     private final boolean hasRelationProperties;
     private final PersistentProperty createdAtProperty;
     private final PersistentProperty updatedAtProperty;
@@ -212,7 +219,8 @@ public final class EntityMetadata<T> {
         this.oneToOneInverseProperties = this.properties.stream().filter(PersistentProperty::inverseToOne).toList();
         this.manyToManyProperties = this.properties.stream().filter(PersistentProperty::manyToMany).toList();
         this.elementCollectionProperties = this.properties.stream().filter(PersistentProperty::elementCollection).toList();
-        this.mapsIdProperty = this.properties.stream().filter(PersistentProperty::mapsId).findFirst().orElse(null);
+        this.mapsIdProperties = this.properties.stream().filter(PersistentProperty::mapsId).toList();
+        this.mapsIdProperty = this.mapsIdProperties.isEmpty() ? null : this.mapsIdProperties.get(0);
         this.hasRelationProperties = !manyToOneProperties.isEmpty()
                 || !oneToManyProperties.isEmpty()
                 || !oneToOneInverseProperties.isEmpty()
@@ -569,6 +577,15 @@ public final class EntityMetadata<T> {
      */
     public Optional<PersistentProperty> mapsIdProperty() {
         return Optional.ofNullable(mapsIdProperty);
+    }
+
+    /**
+     * {@code @MapsId}로 마킹된 모든 owning to-one 관계 property. 단순 {@code @MapsId}는 1개, 복합 {@code @Id}의
+     * 서로 다른 컴포넌트를 각각 파생하는 {@code @MapsId("component")}는 여러 개일 수 있다. save 경로가 각 관계의
+     * 연관 PK를 owner의 대응 {@code @Id}(컴포넌트)로 복사하는 데 사용한다.
+     */
+    public List<PersistentProperty> mapsIdProperties() {
+        return mapsIdProperties;
     }
 
     /**

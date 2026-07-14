@@ -1142,20 +1142,64 @@ public final class PersistentProperty {
 
     /**
      * @ManyToOne row 디코딩용 stub: target entity의 no-arg 생성자로 빈 인스턴스를 만들고 @Id 필드에 FK
-     * 값을 채워 entity reference 필드에 set한다. FK 값이 null이면 reference도 null로 둔다.
+     * 값을 채워 entity reference 필드에 set한다. FK 값이 null이면 reference도 null로 둔다. 관계에
+     * {@code @Access(PROPERTY)}가 적용되면 field 직접 대입 대신 JavaBean setter로 기록한다.
      */
     private void writeManyToOneStub(Object instance, Object fkValue) {
+        if (fkValue == null) {
+            setReferenceValue(instance, null);
+            return;
+        }
+        Class<?> target = manyToOneTargetType != null ? manyToOneTargetType : field.getType();
+        Object stub = instantiateTarget(target);
+        Field idField = findIdField(target);
+        idField.setAccessible(true);
         try {
-            if (fkValue == null) {
-                field.set(instance, null);
-                return;
-            }
-            Class<?> target = manyToOneTargetType != null ? manyToOneTargetType : field.getType();
-            Object stub = instantiateTarget(target);
-            Field idField = findIdField(target);
-            idField.setAccessible(true);
             idField.set(stub, fkValue);
-            field.set(instance, stub);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot write @Id on @ManyToOne stub " + target.getName(), exception);
+        }
+        setReferenceValue(instance, stub);
+    }
+
+    /**
+     * 이 to-one 관계가 참조하는 <em>엔티티 객체</em>(FK id가 아니라 참조 자체)를 읽는다. {@link #read(Object)}는
+     * 관계에서 FK 바인딩용 @Id 값을 추출하지만 이 메서드는 참조 인스턴스를 그대로 돌려준다.
+     * {@code @Access(PROPERTY)}이면 JavaBean getter로, 아니면 field로 읽는다(관계는 embedded host-path가 없다).
+     */
+    public Object readReference(Object instance) {
+        if (propertyAccess) {
+            return invokeGetter(instance);
+        }
+        try {
+            return fieldHandle != null ? fieldHandle.get(instance) : field.get(instance);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot read relation reference " + field.getName(), exception);
+        }
+    }
+
+    /**
+     * 이 to-one 관계의 참조 <em>엔티티 객체</em>를 인스턴스에 기록한다({@link #writeManyToOneStub} row-decode와
+     * FetchGroup hydration이 공유). {@code @Access(PROPERTY)}이면 JavaBean setter로, 아니면 field로 쓴다 —
+     * 관계는 embedded host-path가 없으므로 leaf 순회가 없다.
+     */
+    public void writeReference(Object instance, Object reference) {
+        setReferenceValue(instance, reference);
+    }
+
+    /**
+     * 관계 참조 대입의 단일 진입점 — access 전략(FIELD/PROPERTY)에 따라 field 직접 대입 또는 setter 호출로
+     * 분기한다. row 디코딩 stub 주입과 hydration이 모두 이 자리를 거쳐 일관되게 동작한다.
+     */
+    private void setReferenceValue(Object instance, Object reference) {
+        if (propertyAccess) {
+            invokeSetter(instance, reference);
+            return;
+        }
+        try {
+            field.set(instance, reference);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException(
                     "Cannot write @ManyToOne reference field " + field.getName(), exception);
