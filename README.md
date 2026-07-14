@@ -44,7 +44,7 @@ core module depends only on the R2DBC SPI.
 repositories { mavenCentral() }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.1.0")
+    implementation("io.github.bssm-oss:nova:2.7.0")
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
     // runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
@@ -86,6 +86,7 @@ Nova.schemaInitializer(cf).create(Account.class)
 |------------------------------------------------|---------------------------------------------------------------------------|
 | [Getting started](docs/getting-started.md)     | Installation, first entity, `Nova.create(...)`, schema initialization      |
 | [Entities](docs/entities.md)                   | Annotations, composite types, relationships, indexes                       |
+| [JPA compatibility](docs/jpa-compatibility.md) | `jakarta.persistence` feature matrix — supported / reactive-equivalent / fail-fast |
 | [Queries](docs/queries.md)                     | CRUD, Query DSL, Updater, Projection, Aggregations, Page/Slice, Cursor     |
 | [Transactions](docs/transactions.md)           | Propagation / isolation, pessimistic locking, retry                        |
 | [Dialects & Schema](docs/dialects.md)          | `Dialect` SPI, the five bundled dialects, `SchemaGenerator`, migration     |
@@ -130,7 +131,7 @@ Nova core depends only on the R2DBC **SPI**. Add the matching R2DBC driver (`r2d
 | `nova-spring-data`           | Spring Data-style `ReactiveCrudRepository<T, ID>` + `@EnableNovaRepositories` |
 | `nova-metrics-micrometer`    | Micrometer adapter (`MicrometerSqlExecutionListener`)                          |
 
-Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.1.0`.
+Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.7.0`.
 
 ---
 
@@ -176,6 +177,21 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 - [x] JSON column type (`@Json` — pluggable `JsonCodec` SPI)
 - [x] `@Column(length / precision / scale)` and `BigDecimal` columns
 - [x] 1.0 GA released to Maven Central (`io.github.bssm-oss:nova:1.0.0` — all 11 modules published)
+
+### JPA / jakarta.persistence parity (`2.0.0` → `2.7.0`)
+
+Reactive equivalents of the standard `jakarta.persistence` surface — see the full
+[JPA compatibility matrix](docs/jpa-compatibility.md).
+
+- [x] Standard `jakarta.persistence` annotations (breaking `2.0.0`), `@Convert` / `AttributeConverter`
+- [x] Composite keys (`@EmbeddedId` / `@IdClass`) — ids, soft/batch delete, locking, **and as relation targets** (multi-column FK)
+- [x] Inheritance (`SINGLE_TABLE` / `JOINED` / `TABLE_PER_CLASS`), `@MappedSuperclass`
+- [x] Full relationships — `@OneToOne` / `@OneToMany` / `@ManyToMany` / `@ElementCollection`, `@MapsId`, `@AssociationOverride`, `@ManyToMany` over composite keys
+- [x] Reactive `EntityManager` (`persist` / `merge` / `find` / `flush` / …), `LockModeType`, `FlushModeType`
+- [x] JPQL + Criteria API, `TREAT()` / `TYPE()` polymorphism, multi-column joins over composite targets
+- [x] `@NamedQuery` / `@NamedNativeQuery`, `@SqlResultSetMapping`, `@StoredProcedureQuery`
+- [x] `@NamedEntityGraph` + nested `@NamedSubgraph` (depth > 1), JOIN FETCH — always-eager, no N+1
+- [x] 2nd-level cache (`nova-cache`, `@Cacheable` / `SharedCacheMode`), `@Query` repositories
 
 For in-flight and proposed items, see the issue tracker.
 
