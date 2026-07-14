@@ -256,6 +256,35 @@ class JpqlSqlBuilderTest {
     }
 
     // ------------------------------------------------------------------------------------
+    // 복합키 타겟 to-one join 은 다중컬럼 FK라 단일 FK=PK on-절로 표현할 수 없다 → 조용한 오답 대신 fail-fast.
+    // ------------------------------------------------------------------------------------
+
+    private JpqlSqlBuilder compositeBuilder() {
+        JpqlEntityResolver compositeResolver = new JpqlEntityResolver(metadataFactory,
+                List.of(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class,
+                        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent.class));
+        return new JpqlSqlBuilder(dialect, compositeResolver);
+    }
+
+    @Test
+    void failsFastOnExplicitJoinOverCompositeKeyToOne() {
+        JpqlSqlBuilder b = compositeBuilder();
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT c.id FROM CompositeJoinChild c JOIN c.parent p").parse();
+        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
+        assertTrue(ex.getMessage().contains("composite-key"));
+    }
+
+    @Test
+    void failsFastOnImplicitJoinOverCompositeKeyToOne() {
+        JpqlSqlBuilder b = compositeBuilder();
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT c.id FROM CompositeJoinChild c WHERE c.parent.k1 = 5").parse();
+        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
+        assertTrue(ex.getMessage().contains("composite-key"));
+    }
+
+    // ------------------------------------------------------------------------------------
     // TYPE() / TREAT() polymorphism
     // ------------------------------------------------------------------------------------
 

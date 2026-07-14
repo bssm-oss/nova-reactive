@@ -690,6 +690,20 @@ public final class PersistentProperty {
     }
 
     /**
+     * to-one 관계 property의 참조 엔티티 인스턴스를 그대로 set한다({@link #readReferenceInstance(Object)}와
+     * 대칭). merge의 컬럼 상태 복사처럼 참조 <em>객체</em>를 id-축약 stub 경로 없이 통째로 옮겨야 하는
+     * 경우에 사용한다(복합키 타겟은 단일 {@code @Id} stub 경로가 성립하지 않으므로). 관계는 항상 FIELD access다.
+     */
+    public void writeReferenceInstance(Object instance, Object reference) {
+        try {
+            field.set(instance, reference);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot write @ManyToOne/@OneToOne reference field " + field.getName(), exception);
+        }
+    }
+
+    /**
      * 복합키 타겟 to-one row 디코딩: N개 FK 컬럼에서 디코드된 도메인 값들로 참조 엔티티 stub을 조립해
      * reference 필드에 set한다. 모든 값이 {@code null}이면 reference도 {@code null}로 둔다. 단일키 to-one은
      * {@link #writeManyToOneStub(Object, Object)} 경로를 그대로 쓰므로 이 메서드는 복합 타겟에만 호출된다.

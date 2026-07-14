@@ -36,6 +36,13 @@ final class CriteriaJoinResolver {
         }
         if (association.manyToOne()) {
             // owning @ManyToOne / @OneToOne: 부모 테이블 FK → 대상 PK.
+            if (association.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 다중컬럼 FK(N개)를 가지지만 이 경로는 단일 FK=PK on-절만 emit한다.
+                // 조용히 첫 컴포넌트만 잇는 잘못된 join(silent wrong) 대신 명확히 거부한다(multi-column join은 별도 Wave).
+                throw new CriteriaException("Criteria join over composite-key to-one association '"
+                        + association.propertyName() + "' is not yet supported (its foreign key spans multiple "
+                        + "columns; multi-column FK joins are out of scope for v1)");
+            }
             EntityMetadata<?> target = context.resolve(association.manyToOneTargetType());
             String parentColumn = association.columnName();
             String childColumn = singleIdColumn(target, association);

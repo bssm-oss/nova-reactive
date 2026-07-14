@@ -188,6 +188,18 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void failsFastOnJoinOverCompositeKeyToOne() {
+        // 복합키 타겟 to-one은 다중컬럼 FK라 단일 FK=PK on-절로 표현할 수 없다 → 첫 컴포넌트만 잇는 조용한
+        // 오답 대신 명확한 CriteriaException으로 거부한다(join 해석 시점에 fail-fast).
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+
+        CriteriaException ex = assertThrows(CriteriaException.class, () -> c.join("parent"));
+        assertTrue(ex.getMessage().contains("composite-key"));
+    }
+
+    @Test
     void rendersLeftJoin() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);

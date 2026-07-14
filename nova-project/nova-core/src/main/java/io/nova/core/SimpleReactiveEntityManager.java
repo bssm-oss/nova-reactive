@@ -405,6 +405,13 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
      */
     private static <T> void copyColumnState(EntityMetadata<T> metadata, Object source, Object target) {
         for (PersistentProperty property : metadata.columnMappedProperties()) {
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 단일 @Id로 축약하는 read()/write() stub 경로가 성립하지 않는다
+                // (@EmbeddedId는 throw, @IdClass는 첫 컴포넌트만 silent). merge가 FK를 잃지 않도록 참조 객체를
+                // 통째로 복사한다. 다중컬럼 FK 자체의 dirty 추적은 session flush 범위 밖이다(별도 Wave).
+                property.writeReferenceInstance(target, property.readReferenceInstance(source));
+                continue;
+            }
             property.write(target, property.read(source));
         }
     }

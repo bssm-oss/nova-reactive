@@ -1,5 +1,6 @@
 package io.nova;
 
+import io.nova.core.ReactiveEntityManager;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.query.NativeQuery;
 import io.nova.schema.SchemaInitializer;
@@ -165,6 +166,38 @@ class ManyToOneCompositeKeyH2IntegrationTest {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // EntityManager merge + session persist 가 복합 to-one 엔티티에서 깨지지 않고(clean) 참조를 보존
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void entityManagerMergeAndSessionHandleCompositeToOneCleanly() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityManager em = Nova.entityManager(cf);
+
+        OrderEntity order = new OrderEntity(new OrderKey(700L, "BR"), "m");
+        Line line = new Line(order);
+
+        // persist(session buildSnapshot가 복합 FK를 skip), merge(copyColumnState가 참조를 통째로 복사)가
+        // 예전처럼 "has no @Id field"로 throw하지 않고 clean하게 동작하며, 이후 find가 복합 id stub을 복원한다.
+        StepVerifier.create(
+                schema.create(List.of(OrderEntity.class, Line.class))
+                        .then(em.persist(order))
+                        .then(em.persist(line))
+                        .flatMap(saved -> {
+                            Line changed = new Line(order);
+                            changed.setId(saved.getId());
+                            return em.merge(changed).thenReturn(saved.getId());
+                        })
+                        .flatMap(id -> em.find(Line.class, id))
+        ).assertNext(found -> {
+            org.junit.jupiter.api.Assertions.assertNotNull(found.order, "merge/session must preserve composite reference");
+            org.junit.jupiter.api.Assertions.assertEquals(700L, found.order.id.orderNo);
+            org.junit.jupiter.api.Assertions.assertEquals("BR", found.order.id.region);
+        }).verifyComplete();
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // @JoinColumns(foreignKey=CONSTRAINT) 복합 FK 제약이 위반 INSERT를 거부
     // ---------------------------------------------------------------------------------------------
 
@@ -258,6 +291,10 @@ class ManyToOneCompositeKeyH2IntegrationTest {
 
         public Long getId() {
             return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
         }
     }
 

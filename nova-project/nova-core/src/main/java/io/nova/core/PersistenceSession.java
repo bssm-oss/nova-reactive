@@ -70,6 +70,12 @@ final class PersistenceSession {
         List<String> dirtyPropertyNames() {
             List<String> changed = new ArrayList<>();
             for (PersistentProperty property : metadata.updatableProperties()) {
+                if (property.isCompositeToOne()) {
+                    // 복합키 타겟 to-one은 단일 @Id로 축약하는 read() 경로가 성립하지 않으므로(@EmbeddedId throw,
+                    // @IdClass 첫 컴포넌트만) 세션 dirty 추적에서 제외한다. buildSnapshot도 동일하게 제외해
+                    // 항상-dirty 오검출을 피한다. 다중컬럼 FK dirty flush 지원은 별도 Wave.
+                    continue;
+                }
                 Object current = property.toColumnValue(property.read(entity));
                 Object before = snapshot.get(property.columnName());
                 if (!Objects.equals(before, current)) {
@@ -224,6 +230,12 @@ final class PersistenceSession {
     private static Map<String, Object> buildSnapshot(EntityMetadata<?> metadata, Object entity) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
+            if (property.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 세션 dirty 추적에서 제외한다(dirtyPropertyNames와 대칭). 단일 @Id 축약
+                // read() 경로가 성립하지 않아 스냅샷에 담을 수 없다 — INSERT/UPDATE 자체는 renderer의 다중컬럼
+                // 경로가 처리하고, 여기서는 FK 변경 dirty 감지만 유보한다(별도 Wave).
+                continue;
+            }
             snapshot.put(property.columnName(), property.toColumnValue(property.read(entity)));
         }
         return snapshot;

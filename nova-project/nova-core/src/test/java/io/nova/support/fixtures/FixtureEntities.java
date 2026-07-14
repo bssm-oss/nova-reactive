@@ -3136,4 +3136,58 @@ public final class FixtureEntities {
             joinColumns = @JoinColumn(name = "addr_country_id"))
     public static class AssocOverrideEmbeddedPath extends AssocRegionBase {
     }
+
+    /** 복합키(@EmbeddedId) 부모 — 다중컬럼 FK로 참조되는 유효한 to-one 타겟(가드/조립 테스트용). */
+    @Embeddable
+    public static class CompositeJoinKey {
+        @Column(name = "k1")
+        private Long k1;
+        @Column(name = "k2")
+        private String k2;
+
+        public CompositeJoinKey() {
+        }
+
+        public CompositeJoinKey(Long k1, String k2) {
+            this.k1 = k1;
+            this.k2 = k2;
+        }
+    }
+
+    @Entity
+    @Table(name = "gc_composite_parent")
+    public static class CompositeJoinParent {
+        @jakarta.persistence.EmbeddedId
+        private CompositeJoinKey id;
+        @Column(name = "label")
+        private String label;
+
+        public CompositeJoinParent() {
+        }
+    }
+
+    /**
+     * 복합키 부모를 유효한 다중컬럼 FK(@JoinColumns)로 참조하는 child. 지원되는 매핑이지만 Criteria/JPQL join,
+     * native/stored-proc/named-query 엔티티 매핑 등 아직 복합 FK를 이해하지 못하는 2차 경로에서 fail-fast
+     * 회귀를 검증하는 데 쓴다.
+     */
+    @Entity
+    @Table(name = "gc_composite_child")
+    public static class CompositeJoinChild {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "label")
+        private String label;
+
+        @ManyToOne(targetEntity = CompositeJoinParent.class)
+        @jakarta.persistence.JoinColumns({
+                @JoinColumn(name = "p_k1", referencedColumnName = "k1"),
+                @JoinColumn(name = "p_k2", referencedColumnName = "k2")
+        })
+        private CompositeJoinParent parent;
+
+        public CompositeJoinChild() {
+        }
+    }
 }

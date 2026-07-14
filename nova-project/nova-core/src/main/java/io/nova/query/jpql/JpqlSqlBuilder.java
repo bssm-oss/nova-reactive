@@ -234,6 +234,13 @@ public final class JpqlSqlBuilder {
                         + " is only supported for @ManyToOne/owning @OneToOne relations in v1; "
                         + "other association joins are deferred");
             }
+            if (relation.isCompositeToOne()) {
+                // 복합키 타겟 to-one은 FK가 N개 컬럼이지만 join on-절은 단일 FK=PK만 emit한다. 첫 컴포넌트만
+                // 잇는 조용한 오답 대신 명확히 거부한다(multi-column FK join은 별도 Wave).
+                throw new JpqlException("JOIN " + join.ownerAlias() + "." + join.relation()
+                        + " over a composite-key to-one target is not yet supported in v1 "
+                        + "(its foreign key spans multiple columns; multi-column FK joins are deferred)");
+            }
             EntityMetadata<?> target = resolver.resolve(relation.manyToOneTargetType());
             scope.bind(join.alias(), target);
         }
@@ -714,6 +721,11 @@ public final class JpqlSqlBuilder {
             if (!prop.manyToOne()) {
                 throw new JpqlException("Path segment '" + segment + "' navigates a collection or non-association "
                         + "field; implicit joins only support @ManyToOne/owning @OneToOne");
+            }
+            if (prop.isCompositeToOne()) {
+                // 복합키 타겟 to-one 경유 implicit join은 단일 FK=PK만 emit하므로 조용한 오답을 낸다. 명확히 거부.
+                throw new JpqlException("Path segment '" + segment + "' navigates a composite-key to-one target; "
+                        + "implicit joins over multi-column foreign keys are not yet supported in v1");
             }
             EntityMetadata<?> targetMeta = resolver.resolve(prop.manyToOneTargetType());
             currentAlias = implicitJoin(ctx, currentAlias, segment, prop, targetMeta);
