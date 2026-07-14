@@ -26,6 +26,7 @@ import io.nova.query.NativeQuery;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
 import io.nova.query.Projection;
+import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
 import io.nova.query.Slice;
 import io.nova.query.Updater;
@@ -2393,9 +2394,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private Mono<Void> ensurePrimaryVersionPresent(
             EntityMetadata<?> metadata, Object entity, Object id, PersistentProperty versionProperty) {
         Object currentVersion = versionProperty.read(entity);
-        QuerySpec spec = QuerySpec.empty().where(Criteria.and(
-                Criteria.eq(metadata.idProperty().propertyName(), id),
-                Criteria.eq(versionProperty.propertyName(), currentVersion)));
+        // 복합키(@EmbeddedId/@IdClass)는 모든 id 컴포넌트를 AND로 걸어야 한다 — idProperty()만
+        // 쓰면 첫 컬럼만 보고 나머지 컴포넌트가 빠져 잘못된 count/락 판정이 난다.
+        List<Predicate> conditions = new ArrayList<>();
+        for (PersistentProperty idProperty : metadata.idProperties()) {
+            conditions.add(Criteria.eq(idProperty.propertyName(), metadata.idColumnValue(idProperty, id)));
+        }
+        conditions.add(Criteria.eq(versionProperty.propertyName(), currentVersion));
+        QuerySpec spec = QuerySpec.empty().where(Criteria.and(conditions.toArray(new Predicate[0])));
         return sqlExecutor.queryOne(
                         dialect.sqlRenderer().count(metadata, spec), row -> row.get("count", Long.class))
                 .defaultIfEmpty(0L)
