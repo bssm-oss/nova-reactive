@@ -102,8 +102,19 @@ class EntityMetadataFactoryManyToManyTest {
     }
 
     @Test
-    void rejectsCompositeKeyedOwner() {
-        assertThrows(IllegalArgumentException.class, () -> factory.getEntityMetadata(CompositeOwner.class));
+    void acceptsCompositeKeyedOwnerWithMultiColumnJoin() {
+        // 복합키(@EmbeddedId) owner + 단일키 target: owner FK는 참조 @Id 컴포넌트마다 컬럼 1개(a, b), target FK는 1개.
+        EntityMetadata<CompositeOwner> metadata = factory.getEntityMetadata(CompositeOwner.class);
+        ManyToManyInfo info = metadata.findProperty("courses").orElseThrow().manyToManyInfo();
+        assertTrue(info.owning());
+        assertTrue(info.composite());
+        assertEquals(2, info.ownerForeignKeyColumns().size());
+        assertEquals(List.of("composite_owner_a", "composite_owner_b"),
+                info.ownerForeignKeyColumns().stream().map(ManyToManyInfo.JoinColumnRef::columnName).toList());
+        assertEquals(List.of("a", "b"),
+                info.ownerForeignKeyColumns().stream().map(ManyToManyInfo.JoinColumnRef::referencedColumnName).toList());
+        assertEquals(1, info.targetForeignKeyColumns().size());
+        assertEquals("course_id", info.targetForeignKeyColumn());
     }
 
     @Test

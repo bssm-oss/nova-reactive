@@ -444,7 +444,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (owning.isEmpty()) {
             return Mono.empty();
         }
-        Object ownerId = metadata.idProperty().read(owner);
+        // 단일키는 id 값, 복합키(@EmbeddedId/@IdClass)는 id 객체를 owner 식별자로 쓴다(readId가 두 경우를 통합).
+        Object ownerId = metadata.readIdValue(owner);
         if (ownerId == null) {
             return Mono.error(new IllegalStateException(
                     "owner id must be set before reconciling @ManyToMany links on " + metadata.entityType().getName()));
@@ -475,15 +476,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             elements.add(element);
         }
         SqlRenderer renderer = dialect.sqlRenderer();
-        Mono<Void> delete = sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
+        boolean composite = definition.composite();
+        List<Object> ownerColumnValues = composite
+                ? foreignKeyColumnValues(ownerMetadata, info.ownerForeignKeyColumns(), ownerId) : null;
+        Mono<Void> delete = composite
+                ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then()
+                : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
         return resolveManyToManyTargetIds(ownerMetadata, property, targetMetadata, owner, elements)
                 .flatMap(targetIds -> {
                     if (targetIds.isEmpty()) {
                         return delete;
                     }
                     return delete.thenMany(Flux.fromIterable(targetIds)
-                                    .concatMap(targetId -> sqlExecutor.execute(
-                                            renderer.insertJoinRow(definition, ownerId, targetId))))
+                                    .concatMap(targetId -> sqlExecutor.execute(composite
+                                            ? renderer.insertJoinRowByColumns(definition, ownerColumnValues,
+                                                    foreignKeyColumnValues(targetMetadata, info.targetForeignKeyColumns(), targetId))
+                                            : renderer.insertJoinRow(definition, ownerId, targetId))))
                             .then();
                 });
     }
@@ -502,7 +510,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (!cascadePersist && !cascadeMerge) {
             List<Object> ids = new ArrayList<>();
             for (Object element : elements) {
-                Object targetId = targetMetadata.idProperty().read(element);
+                Object targetId = targetMetadata.readIdValue(element);
                 if (targetId == null) {
                     return Mono.error(new IllegalStateException(
                             "@ManyToMany targets must be persisted (non-null id) before saving the owner on "
@@ -519,20 +527,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             visited.add(owner);
             return Flux.fromIterable(elements)
                     .concatMap(element -> {
-                        Object targetId = targetMetadata.idProperty().read(element);
+                        Object targetId = targetMetadata.readIdValue(element);
                         // 영속 대상 + MERGE 아님 → 재저장 없이 현재 id를 그대로 link한다(PERSIST는 transient에만 전파).
                         if (targetId != null && !cascadeMerge) {
                             return Mono.just(targetId);
                         }
                         // 사이클/공유 참조: 이미 cascade 경로에 있으면 재저장하지 않고 현재 id를 쓴다.
                         if (!visited.add(element)) {
-                            Object idNow = targetMetadata.idProperty().read(element);
+                            Object idNow = targetMetadata.readIdValue(element);
                             return idNow != null ? Mono.just(idNow) : Mono.error(new IllegalStateException(
                                     "@ManyToMany cascade encountered a transient target in a reference cycle on "
                                             + ownerMetadata.entityType().getName() + "." + property.propertyName()));
                         }
                         return save(element).map(saved -> {
-                            Object savedId = targetMetadata.idProperty().read(saved);
+                            Object savedId = targetMetadata.readIdValue(saved);
                             if (savedId == null) {
                                 throw new IllegalStateException(
                                         "@ManyToMany cascade-saved target has a null id on "
@@ -548,12 +556,91 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private JoinTableDefinition joinDefinition(
             EntityMetadata<?> ownerMetadata, ManyToManyInfo info, EntityMetadata<?> targetMetadata) {
-        return new JoinTableDefinition(
-                info.joinTableName(),
-                info.ownerForeignKeyColumn(),
-                wrapPrimitive(ownerMetadata.idProperty().javaType()),
-                info.targetForeignKeyColumn(),
-                wrapPrimitive(targetMetadata.idProperty().javaType()));
+        // 단일키·복합키를 한 자리에서 조립한다 — 단일키는 기존 도메인 타입 + varchar 255, 복합키는 참조 @Id
+        // 컴포넌트 저장타입/길이. DDL(schema init)과 runtime SQL이 동일한 정의를 공유한다.
+        return JoinTableDefinition.of(ownerMetadata, info, targetMetadata);
+    }
+
+    /**
+     * {@code @ManyToMany} owner/target {@code @Id}(단일 또는 복합) 값을 link table FK 컬럼 순서(참조 컴포넌트
+     * 순서)대로 저장 표현으로 인코딩한다. 각 join 컬럼의 참조 {@code @Id} 컬럼명으로 컴포넌트 property를 찾아
+     * 도메인 값을 꺼낸 뒤 converter/enum/UUID 저장 규칙을 적용한다(read-source-type 대칭).
+     */
+    private static List<Object> foreignKeyColumnValues(
+            EntityMetadata<?> metadata, List<ManyToManyInfo.JoinColumnRef> refs, Object idObject) {
+        Map<String, PersistentProperty> byColumn = idPropertiesByColumn(metadata);
+        List<Object> values = new ArrayList<>(refs.size());
+        for (ManyToManyInfo.JoinColumnRef ref : refs) {
+            PersistentProperty idProperty = byColumn.get(ref.referencedColumnName());
+            Object domain = metadata.idColumnValue(idProperty, idObject);
+            values.add(idProperty.toColumnValue(domain));
+        }
+        return values;
+    }
+
+    /**
+     * {@link #idComponentKey} 형태의 도메인 컴포넌트 키(=idProperties 순서)를 link table FK 컬럼 순서대로 저장
+     * 표현으로 인코딩한다. 최소 diff 경로가 값 비교 가능한 키를 그대로 재사용해 link 행을 지우고/넣을 때 쓴다.
+     */
+    private static List<Object> columnValuesFromKey(
+            EntityMetadata<?> metadata, List<ManyToManyInfo.JoinColumnRef> refs, List<Object> componentKey) {
+        List<PersistentProperty> idProperties = metadata.idProperties();
+        Map<String, Integer> positionByColumn = new LinkedHashMap<>();
+        for (int i = 0; i < idProperties.size(); i++) {
+            positionByColumn.put(idProperties.get(i).columnName(), i);
+        }
+        List<Object> values = new ArrayList<>(refs.size());
+        for (ManyToManyInfo.JoinColumnRef ref : refs) {
+            int position = positionByColumn.get(ref.referencedColumnName());
+            PersistentProperty idProperty = idProperties.get(position);
+            values.add(idProperty.toColumnValue(componentKey.get(position)));
+        }
+        return values;
+    }
+
+    /**
+     * {@code @Id}(단일 또는 복합) 값을 값-비교 가능한 도메인 컴포넌트 키({@code idProperties()} 순서의 {@code List})로
+     * 만든다. 복합키 holder/@IdClass의 equals/hashCode에 의존하지 않고 hydration 그룹핑·최소 diff에서 안전하게 쓰기
+     * 위한 canonical 표현이다.
+     */
+    private static List<Object> idComponentKey(EntityMetadata<?> metadata, Object idObject) {
+        List<PersistentProperty> idProperties = metadata.idProperties();
+        List<Object> key = new ArrayList<>(idProperties.size());
+        for (PersistentProperty idProperty : idProperties) {
+            key.add(metadata.idColumnValue(idProperty, idObject));
+        }
+        return key;
+    }
+
+    private static Map<String, PersistentProperty> idPropertiesByColumn(EntityMetadata<?> metadata) {
+        Map<String, PersistentProperty> byColumn = new LinkedHashMap<>();
+        for (PersistentProperty idProperty : metadata.idProperties()) {
+            byColumn.put(idProperty.columnName(), idProperty);
+        }
+        return byColumn;
+    }
+
+    /**
+     * link table 한 row에서 owner/target FK 컬럼들을 저장 표현으로 읽어 도메인 컴포넌트 키({@code idProperties()}
+     * 순서)로 복원한다. 컬럼 순서가 아니라 참조 {@code @Id} 컬럼명으로 컴포넌트를 매칭해 컬럼 순서 drift에 안전하다.
+     */
+    private static List<Object> decodeIdKeyFromRow(
+            RowAccessor row, EntityMetadata<?> metadata,
+            List<JoinTableDefinition.ForeignKeyColumn> columns, List<ManyToManyInfo.JoinColumnRef> refs) {
+        Map<String, PersistentProperty> byColumn = idPropertiesByColumn(metadata);
+        Map<String, Object> domainByReferenced = new LinkedHashMap<>();
+        for (int i = 0; i < columns.size(); i++) {
+            JoinTableDefinition.ForeignKeyColumn column = columns.get(i);
+            String referenced = refs.get(i).referencedColumnName();
+            PersistentProperty idProperty = byColumn.get(referenced);
+            Object stored = row.get(column.columnName(), column.columnType());
+            domainByReferenced.put(referenced, idProperty.toPropertyValue(stored));
+        }
+        List<Object> key = new ArrayList<>();
+        for (PersistentProperty idProperty : metadata.idProperties()) {
+            key.add(domainByReferenced.get(idProperty.columnName()));
+        }
+        return key;
     }
 
     /**
@@ -1724,7 +1811,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (properties.isEmpty()) {
             return Mono.empty();
         }
-        Object ownerId = metadata.idProperty().read(entity);
+        // 단일키는 id 값, 복합키는 id 객체(readId가 통합). @ElementCollection 복합키 owner는 factory에서 거부되므로
+        // 이 자리에 복합키가 오는 것은 owning @ManyToMany 뿐이다.
+        Object ownerId = metadata.readIdValue(entity);
         if (ownerId == null) {
             return Mono.empty();
         }
@@ -1802,11 +1891,28 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + property.propertyName() + "; add cascade=PERSIST to cascade transient targets"));
         }
         SqlRenderer renderer = dialect.sqlRenderer();
+        if (definition.composite()) {
+            // 복합키: diff 키는 idComponentKey(List). owner 컬럼 값은 owner id 객체에서, target 컬럼 값은 키에서 유도.
+            List<Object> ownerColumnValues =
+                    foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
+            return Flux.fromIterable(removedTargetIds)
+                    .concatMap(key -> sqlExecutor.execute(renderer.deleteJoinRowByColumns(definition, ownerColumnValues,
+                            columnValuesFromKey(targetMetadata, info.targetForeignKeyColumns(), asKey(key)))))
+                    .thenMany(Flux.fromIterable(addedTargetIds)
+                            .concatMap(key -> sqlExecutor.execute(renderer.insertJoinRowByColumns(definition, ownerColumnValues,
+                                    columnValuesFromKey(targetMetadata, info.targetForeignKeyColumns(), asKey(key))))))
+                    .then();
+        }
         return Flux.fromIterable(removedTargetIds)
                 .concatMap(targetId -> sqlExecutor.execute(renderer.deleteJoinRow(definition, ownerId, targetId)))
                 .thenMany(Flux.fromIterable(addedTargetIds)
                         .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRow(definition, ownerId, targetId))))
                 .then();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Object> asKey(Object key) {
+        return (List<Object>) key;
     }
 
     /**
@@ -1876,12 +1982,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
         List<Object> targetIds = readManyToManyTargetIds(property, targetMetadata, owner);
         SqlRenderer renderer = dialect.sqlRenderer();
-        Mono<Void> delete = sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
+        boolean composite = definition.composite();
+        List<Object> ownerColumnValues = composite
+                ? foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId) : null;
+        Mono<Void> delete = composite
+                ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then()
+                : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
         if (targetIds.isEmpty()) {
             return delete;
         }
         return delete.thenMany(Flux.fromIterable(targetIds)
-                        .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRow(definition, ownerId, targetId))))
+                        .concatMap(targetId -> sqlExecutor.execute(composite
+                                ? renderer.insertJoinRowByColumns(definition, ownerColumnValues,
+                                        foreignKeyColumnValues(targetMetadata, info.targetForeignKeyColumns(), targetId))
+                                : renderer.insertJoinRow(definition, ownerId, targetId))))
                 .then();
     }
 
@@ -1897,7 +2011,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return ids;
         }
         for (Object element : (Iterable<?>) collection) {
-            Object targetId = targetMetadata.idProperty().read(element);
+            Object targetId = targetMetadata.readIdValue(element);
             if (targetId == null) {
                 throw new IllegalStateException(
                         "@ManyToMany targets must be persisted before flush on "
@@ -1948,8 +2062,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (property.manyToMany()) {
             EntityMetadata<?> targetMetadata =
                     metadataFactory.getEntityMetadata(property.manyToManyInfo().targetType());
+            // 단일키는 대상 id 값, 복합키(owner 또는 target)는 값-비교 가능한 도메인 컴포넌트 키(List)를 diff 키로
+            // 쓴다(첫 컴포넌트만 보면 silent 손상 — trap #2 회피). owner가 복합키면 link 행도 복합 컬럼이므로
+            // diffManyToMany가 List 키를 그대로 target 컬럼 값으로 되돌린다(단일키 target도 size-1 List로 통일).
+            boolean composite = metadata.hasCompositeId() || targetMetadata.hasCompositeId();
             for (Object element : (Iterable<?>) collection) {
-                keys.add(targetMetadata.idProperty().read(element));
+                keys.add(composite
+                        ? idComponentKey(targetMetadata, targetMetadata.readIdValue(element))
+                        : targetMetadata.idProperty().read(element));
             }
             return keys;
         }
@@ -2352,7 +2472,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             ManyToManyInfo info = property.manyToManyInfo();
             EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
             JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
-            deletes.add(sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then());
+            // 복합키(owner 또는 target): 이 엔티티 기준으로 정규화된 owner FK 컬럼들을 id 객체에서 분해해 지운다.
+            Mono<Void> delete = definition.composite()
+                    ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition,
+                            foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId))).then()
+                    : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
+            deletes.add(delete);
         }
         if (deletes.isEmpty()) {
             return Mono.empty();
@@ -3256,6 +3381,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         ManyToManyInfo info = property.manyToManyInfo();
         EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
         JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
+        if (definition.composite()) {
+            return hydrateOneManyToManyComposite(parents, metadata, targetMetadata, property, info, definition);
+        }
         PersistentProperty parentIdProperty = metadata.idProperty();
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
         Class<?> targetIdType = wrapPrimitive(targetMetadata.idProperty().javaType());
@@ -3314,6 +3442,105 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             })
                             .then();
                 });
+    }
+
+    /**
+     * 복합키(owner 또는 target이 {@code @EmbeddedId}/{@code @IdClass}) {@code @ManyToMany} hydration. 단일키 경로와
+     * 같은 2-hop 구조지만 id를 값-비교 가능한 도메인 컴포넌트 키({@code idProperties()} 순서 List)로 다뤄 grouping과
+     * 매칭이 복합키 holder의 equals/hashCode에 의존하지 않게 한다. link 행 조회는 owner 컬럼 튜플 OR-of-ANDs로,
+     * target 로드는 복합 id property별 eq를 OR로 묶은 predicate로 batch 처리해 N+1을 피한다.
+     */
+    private <P> Mono<Void> hydrateOneManyToManyComposite(
+            List<P> parents, EntityMetadata<P> metadata, EntityMetadata<?> targetMetadata,
+            PersistentProperty property, ManyToManyInfo info, JoinTableDefinition definition) {
+        List<JoinTableDefinition.ForeignKeyColumn> ownerColumns = definition.ownerForeignKeyColumns();
+        List<JoinTableDefinition.ForeignKeyColumn> targetColumns = definition.targetForeignKeyColumns();
+        List<ManyToManyInfo.JoinColumnRef> ownerRefs = info.ownerForeignKeyColumns();
+        List<ManyToManyInfo.JoinColumnRef> targetRefs = info.targetForeignKeyColumns();
+
+        LinkedHashMap<List<Object>, List<P>> parentsByKey = new LinkedHashMap<>();
+        for (P parent : parents) {
+            Object idObject = metadata.readIdValue(parent);
+            if (idObject != null) {
+                parentsByKey.computeIfAbsent(idComponentKey(metadata, idObject), key -> new ArrayList<>()).add(parent);
+            }
+        }
+        if (parentsByKey.isEmpty()) {
+            injectEmptyCollections(property, parents, info.usesSet());
+            return Mono.empty();
+        }
+        List<List<Object>> ownerTuples = new ArrayList<>(parentsByKey.size());
+        for (List<Object> ownerKey : parentsByKey.keySet()) {
+            ownerTuples.add(columnValuesFromKey(metadata, ownerRefs, ownerKey));
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return sqlExecutor.queryMany(
+                        renderer.selectJoinRowsByColumns(definition, ownerTuples),
+                        row -> new Object[]{
+                                decodeIdKeyFromRow(row, metadata, ownerColumns, ownerRefs),
+                                decodeIdKeyFromRow(row, targetMetadata, targetColumns, targetRefs)})
+                .collectList()
+                .flatMap(links -> {
+                    LinkedHashMap<List<Object>, List<List<Object>>> targetKeysByOwner = new LinkedHashMap<>();
+                    LinkedHashSet<List<Object>> allTargetKeys = new LinkedHashSet<>();
+                    for (Object[] link : links) {
+                        @SuppressWarnings("unchecked")
+                        List<Object> ownerKey = (List<Object>) link[0];
+                        @SuppressWarnings("unchecked")
+                        List<Object> targetKey = (List<Object>) link[1];
+                        targetKeysByOwner.computeIfAbsent(ownerKey, key -> new ArrayList<>()).add(targetKey);
+                        allTargetKeys.add(targetKey);
+                    }
+                    if (allTargetKeys.isEmpty()) {
+                        injectEmptyCollections(property, parents, info.usesSet());
+                        return Mono.empty();
+                    }
+                    return findAllInternal(targetMetadata,
+                                    QuerySpec.empty().where(compositeIdPredicate(targetMetadata, allTargetKeys)))
+                            .collectList()
+                            .doOnNext(targets -> {
+                                Map<List<Object>, Object> targetByKey = new LinkedHashMap<>();
+                                for (Object target : targets) {
+                                    targetByKey.put(idComponentKey(targetMetadata, targetMetadata.readIdValue(target)), target);
+                                }
+                                for (Map.Entry<List<Object>, List<P>> entry : parentsByKey.entrySet()) {
+                                    List<Object> resolved = new ArrayList<>();
+                                    for (List<Object> targetKey : targetKeysByOwner.getOrDefault(entry.getKey(), List.of())) {
+                                        Object target = targetByKey.get(targetKey);
+                                        if (target != null) {
+                                            resolved.add(target);
+                                        }
+                                    }
+                                    for (P parent : entry.getValue()) {
+                                        injectCollection(property, parent, resolved, info.usesSet());
+                                    }
+                                }
+                            })
+                            .then();
+                });
+    }
+
+    /**
+     * 복합키 엔티티의 id 컴포넌트 키({@code idProperties()} 순서 도메인 값)들에 매칭되는 {@code Predicate}를 만든다 —
+     * 키마다 {@code (id1 = v1 and id2 = v2)}를 만들고 여럿이면 OR로 묶는다. 각 컴포넌트는 그 {@code @Id} property
+     * 이름으로 참조해 converter/컬럼 매핑이 일반 조회와 동일하게 적용된다.
+     */
+    private static io.nova.query.Predicate compositeIdPredicate(
+            EntityMetadata<?> metadata, java.util.Collection<List<Object>> keys) {
+        List<PersistentProperty> idProperties = metadata.idProperties();
+        List<io.nova.query.Predicate> disjuncts = new ArrayList<>(keys.size());
+        for (List<Object> key : keys) {
+            List<io.nova.query.Predicate> conjuncts = new ArrayList<>(idProperties.size());
+            for (int i = 0; i < idProperties.size(); i++) {
+                conjuncts.add(Criteria.eq(idProperties.get(i).propertyName(), key.get(i)));
+            }
+            disjuncts.add(conjuncts.size() == 1
+                    ? conjuncts.get(0)
+                    : Criteria.and(conjuncts.toArray(new io.nova.query.Predicate[0])));
+        }
+        return disjuncts.size() == 1
+                ? disjuncts.get(0)
+                : Criteria.or(disjuncts.toArray(new io.nova.query.Predicate[0]));
     }
 
     private static <P> void injectEmptyCollections(PersistentProperty property, List<P> parents, boolean usesSet) {

@@ -54,14 +54,24 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public String createJoinTable(JoinTableDefinition definition) {
-        String ownerColumn = dialect.quote(definition.ownerForeignKeyColumn())
-                + " " + fkColumnType(definition.ownerForeignKeyType()) + " not null";
-        String targetColumn = dialect.quote(definition.targetForeignKeyColumn())
-                + " " + fkColumnType(definition.targetForeignKeyType()) + " not null";
-        String primaryKey = "primary key (" + dialect.quote(definition.ownerForeignKeyColumn())
-                + ", " + dialect.quote(definition.targetForeignKeyColumn()) + ")";
+        // owner FK 컬럼(들) + target FK 컬럼(들)마다 not null 컬럼을 emit하고, 전체를 복합 PK로 묶는다. 단일키는
+        // owner 1 + target 1 컬럼 + primary key (owner, target)로 기존 DDL과 동일하다. 복합키는 참조 @Id 컴포넌트
+        // 순서대로 N+M 컬럼을 emit한다(read/write/FK와 동일 순서). FK 컬럼 타입/길이는 이미 저장타입으로 해석돼 있다.
+        List<String> columns = new ArrayList<>();
+        List<String> pkColumns = new ArrayList<>();
+        for (JoinTableDefinition.ForeignKeyColumn column : definition.ownerForeignKeyColumns()) {
+            columns.add(dialect.quote(column.columnName()) + " "
+                    + foreignKeyColumnType(column.columnType(), column.length()) + " not null");
+            pkColumns.add(dialect.quote(column.columnName()));
+        }
+        for (JoinTableDefinition.ForeignKeyColumn column : definition.targetForeignKeyColumns()) {
+            columns.add(dialect.quote(column.columnName()) + " "
+                    + foreignKeyColumnType(column.columnType(), column.length()) + " not null");
+            pkColumns.add(dialect.quote(column.columnName()));
+        }
+        columns.add("primary key (" + String.join(", ", pkColumns) + ")");
         return "create table " + dialect.quote(definition.tableName())
-                + " (" + ownerColumn + ", " + targetColumn + ", " + primaryKey + ")";
+                + " (" + String.join(", ", columns) + ")";
     }
 
     @Override
