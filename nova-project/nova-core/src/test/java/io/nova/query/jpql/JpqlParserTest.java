@@ -221,11 +221,43 @@ class JpqlParserTest {
     }
 
     @Test
-    void rejectsTreatAndType() {
+    void parsesTypeEqualityPredicate() {
+        JpqlStatement.Select select = parseSelect("SELECT e FROM Employee e WHERE TYPE(e) = Manager");
+        Predicate.Comparison comparison = assertInstanceOf(Predicate.Comparison.class, select.where());
+        assertEquals(ComparisonOp.EQ, comparison.op());
+        Expression.Type type = assertInstanceOf(Expression.Type.class, comparison.left());
+        assertEquals("e", type.alias());
+        Expression.EntityTypeLiteral literal =
+                assertInstanceOf(Expression.EntityTypeLiteral.class, comparison.right());
+        assertEquals("Manager", literal.entityName());
+    }
+
+    @Test
+    void parsesTypeInPredicate() {
+        JpqlStatement.Select select = parseSelect("SELECT e FROM Employee e WHERE TYPE(e) IN (Manager, Director)");
+        Predicate.InList in = assertInstanceOf(Predicate.InList.class, select.where());
+        assertInstanceOf(Expression.Type.class, in.value());
+        assertEquals(2, in.items().size());
+        assertEquals("Manager", assertInstanceOf(Expression.EntityTypeLiteral.class, in.items().get(0)).entityName());
+        assertEquals("Director", assertInstanceOf(Expression.EntityTypeLiteral.class, in.items().get(1)).entityName());
+    }
+
+    @Test
+    void parsesTreatDowncastPath() {
+        JpqlStatement.Select select = parseSelect("SELECT TREAT(e AS Manager).department FROM Employee e");
+        Expression.Treat treat =
+                assertInstanceOf(Expression.Treat.class, select.selectItems().get(0).expression());
+        assertEquals("e", treat.alias());
+        assertEquals("Manager", treat.subtype());
+        assertEquals(1, treat.segments().size());
+        assertEquals("department", treat.segments().get(0));
+    }
+
+    @Test
+    void rejectsTypeWithNonEntityOperator() {
+        // TYPE(e)는 '= EntityType' / 'IN (...)'만 허용한다; '> 5' 같은 스칼라 비교는 fail-fast.
         assertThrows(JpqlSyntaxException.class,
-                () -> parse("SELECT e FROM Employee e WHERE TYPE(e) = Manager"));
-        assertThrows(JpqlSyntaxException.class,
-                () -> parse("SELECT TREAT(e AS Manager) FROM Employee e"));
+                () -> parse("SELECT e FROM Employee e WHERE TYPE(e) > 5"));
     }
 
     @Test

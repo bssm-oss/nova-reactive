@@ -285,6 +285,10 @@ public final class JpqlParser {
     }
 
     private Predicate parseComparisonRest(Expression left) {
+        // TYPE(e) 다형성 술어: 우변은 엔티티 타입 이름(리터럴 값이 아니라 식별자)이다.
+        if (left instanceof Expression.Type type) {
+            return parseTypePredicate(type);
+        }
         // 비교 연산자
         if (peek().type() == TokenType.OPERATOR && isComparisonSymbol(peek().text())) {
             String symbol = advance().text();
@@ -343,6 +347,32 @@ public final class JpqlParser {
             throw syntax("Expected NULL after IS [NOT]");
         }
         throw syntax("Expected a comparison/LIKE/IN/BETWEEN/IS NULL predicate but found " + describe(peek()));
+    }
+
+    /**
+     * {@code TYPE(e)} 좌변의 다형성 술어를 파싱한다. {@code = EntityName} / {@code <> EntityName} /
+     * {@code [NOT] IN (EntityName, ...)}만 허용하며, 우변은 엔티티 타입 이름(식별자)이다.
+     */
+    private Predicate parseTypePredicate(Expression.Type type) {
+        if (peek().type() == TokenType.OPERATOR && (peek().text().equals("=") || peek().text().equals("<>"))) {
+            String symbol = advance().text();
+            String entity = expectIdentifier("entity type name after TYPE(...) " + symbol);
+            return new Predicate.Comparison(
+                    ComparisonOp.fromSymbol(symbol), type, new Expression.EntityTypeLiteral(entity));
+        }
+        boolean negated = consumeKeyword("NOT");
+        if (consumeKeyword("IN")) {
+            expectOperator("(");
+            List<Expression> items = new ArrayList<>();
+            items.add(new Expression.EntityTypeLiteral(expectIdentifier("entity type name")));
+            while (consumeOperator(",")) {
+                items.add(new Expression.EntityTypeLiteral(expectIdentifier("entity type name")));
+            }
+            expectOperator(")");
+            return new Predicate.InList(type, items, negated);
+        }
+        throw syntax("TYPE(...) supports only '= EntityType', '<> EntityType', or '[NOT] IN (EntityType, ...)'; "
+                + "found " + describe(peek()));
     }
 
     // ----------------------------------------------------------------------------------------
@@ -416,8 +446,11 @@ public final class JpqlParser {
                 if (kw.equals("CASE")) {
                     return parseCase();
                 }
-                if (kw.equals("TREAT") || kw.equals("TYPE")) {
-                    throw syntax(kw + "(...) polymorphic expression is not supported in v1 (deferred to Wave2 W3)");
+                if (kw.equals("TYPE")) {
+                    return parseType();
+                }
+                if (kw.equals("TREAT")) {
+                    return parseTreat();
                 }
                 throw syntax("Unexpected keyword '" + t.text() + "' in expression");
             }
@@ -503,6 +536,30 @@ public final class JpqlParser {
         }
         expectOperator(")");
         return new Expression.FunctionCall(name, args);
+    }
+
+    /** {@code TYPE(alias)} — 다형성 discriminator 식. */
+    private Expression parseType() {
+        expectKeyword("TYPE");
+        expectOperator("(");
+        String alias = expectIdentifier("TYPE() entity alias");
+        expectOperator(")");
+        return new Expression.Type(alias);
+    }
+
+    /** {@code TREAT(alias AS Subtype)[.seg[.seg...]]} — downcast 경로 식. */
+    private Expression parseTreat() {
+        expectKeyword("TREAT");
+        expectOperator("(");
+        String alias = expectIdentifier("TREAT() entity alias");
+        expectKeyword("AS");
+        String subtype = expectIdentifier("TREAT() subtype name");
+        expectOperator(")");
+        List<String> segments = new ArrayList<>();
+        while (consumeOperator(".")) {
+            segments.add(expectIdentifier("TREAT path segment"));
+        }
+        return new Expression.Treat(alias, subtype, segments);
     }
 
     private Expression parseCase() {

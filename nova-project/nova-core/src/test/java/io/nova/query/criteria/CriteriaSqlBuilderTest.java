@@ -345,8 +345,62 @@ class CriteriaSqlBuilderTest {
     }
 
     // ------------------------------------------------------------------------------------
+    // TYPE() / TREAT() polymorphism
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void rendersTypeEqualityAsDiscriminatorPredicate() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Vehicle> v = cq.from(Vehicle.class);
+        cq.multiselect(v.<String>get("name")).where(cb.equal(v.type(), Car.class));
+
+        CriteriaSql t = scalar(cq);
+        assertEquals("select \"name\" as \"c0\" from \"vehicle\" where \"kind\" = ?", t.sql());
+        assertEquals(List.of("CAR"), t.bindings());
+    }
+
+    @Test
+    void rendersTreatProjectionWithDiscriminatorFilter() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Vehicle> v = cq.from(Vehicle.class);
+        Root<Car> car = cb.treat(v, Car.class);
+        cq.multiselect(car.<Integer>get("doors"));
+
+        CriteriaSql t = scalar(cq);
+        assertEquals("select \"doors\" as \"c0\" from \"vehicle\" where \"kind\" = ?", t.sql());
+        assertEquals(List.of("CAR"), t.bindings());
+    }
+
+    @Test
+    void failsFastOnTypeForNonInheritanceEntity() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        assertThrows(CriteriaException.class, () -> cb.equal(e.type(), Employee.class));
+    }
+
+    // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------
+
+    @Entity
+    @Table(name = "vehicle")
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.SINGLE_TABLE)
+    @jakarta.persistence.DiscriminatorColumn(
+            name = "kind", discriminatorType = jakarta.persistence.DiscriminatorType.STRING)
+    public abstract static class Vehicle {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+    }
+
+    @Entity
+    @jakarta.persistence.DiscriminatorValue("CAR")
+    public static class Car extends Vehicle {
+        @Column(name = "doors")
+        private int doors;
+    }
 
     @Entity
     @Table(name = "employee")

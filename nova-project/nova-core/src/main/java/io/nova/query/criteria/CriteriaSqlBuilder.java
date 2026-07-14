@@ -7,6 +7,7 @@ import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Selection;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 /**
@@ -46,10 +47,26 @@ final class CriteriaSqlBuilder {
         }
         ctx.sql.append(" from ").append(tableRef(metadata));
 
+        // 구체 서브타입 루트 / cb.treat downcast가 유도하는 discriminator 제한을 WHERE 앞에 병합한다.
+        List<DiscriminatorConstraint> constraints = collectDiscriminatorConstraints(query);
         CriteriaPredicate where = query.restriction();
-        if (where != null) {
+        if (!constraints.isEmpty() || where != null) {
             ctx.sql.append(" where ");
-            renderPredicate(ctx, where);
+            boolean first = true;
+            for (DiscriminatorConstraint c : constraints) {
+                if (!first) {
+                    ctx.sql.append(" and ");
+                }
+                ctx.sql.append(dialect.quote(c.column())).append(" = ");
+                bindMarker(ctx, c.value());
+                first = false;
+            }
+            if (where != null) {
+                if (!first) {
+                    ctx.sql.append(" and ");
+                }
+                renderPredicate(ctx, where);
+            }
         }
 
         List<Expression<?>> groupBy = query.groupExpressions();
@@ -110,6 +127,11 @@ final class CriteriaSqlBuilder {
     // --- predicate ------------------------------------------------------------------------------
 
     private void renderPredicate(Ctx ctx, CriteriaPredicate predicate) {
+        if (predicate instanceof DiscriminatorPredicate dp) {
+            ctx.sql.append(dialect.quote(dp.discriminatorColumn())).append(" = ");
+            bindMarker(ctx, dp.discriminatorValue());
+            return;
+        }
         switch (predicate.kind()) {
             case AND -> renderJunction(ctx, predicate, " and ");
             case OR -> renderJunction(ctx, predicate, " or ");
@@ -172,8 +194,12 @@ final class CriteriaSqlBuilder {
     // --- column / table -------------------------------------------------------------------------
 
     private String tableRef(EntityMetadata<?> metadata) {
-        if (metadata.hasInheritance() || metadata.hasSecondaryTables()) {
-            throw new CriteriaException("Criteria over inheritance/secondary-table entity '"
+        // SINGLE_TABLE 상속은 서브타입이 루트 테이블을 공유하므로 스칼라 SELECT가 직접 참조할 수 있다
+        // (구체 서브타입/treat는 discriminator 제한을 별도로 붙인다). JOINED/TABLE_PER_CLASS·보조 테이블은
+        // 단일 FROM으로 표현할 수 없어 v1에서 fail-fast한다.
+        if (metadata.hasSecondaryTables()
+                || (metadata.hasInheritance() && !metadata.inheritance().singleTable())) {
+            throw new CriteriaException("Criteria over non-SINGLE_TABLE inheritance/secondary-table entity '"
                     + metadata.entityType().getSimpleName() + "' is not supported in v1 scalar queries");
         }
         String schema = metadata.schema();
@@ -196,6 +222,68 @@ final class CriteriaSqlBuilder {
     private void bindMarker(Ctx ctx, Object value) {
         ctx.bindings.add(value);
         ctx.sql.append(dialect.bindMarkers().marker(ctx.bindings.size()));
+    }
+
+    // --- inheritance discriminator constraints --------------------------------------------------
+
+    /**
+     * 구체 서브타입 루트({@code from(Sub.class)})와 {@code cb.treat(root, Sub)} downcast가 유도하는
+     * {@code discriminator = value} 제한을 수집한다. (컬럼, 값) 기준으로 dedupe한다.
+     */
+    private List<DiscriminatorConstraint> collectDiscriminatorConstraints(CriteriaQueryImpl<?> query) {
+        LinkedHashMap<String, DiscriminatorConstraint> byKey = new LinkedHashMap<>();
+        EntityMetadata<?> rootMeta = query.root().ownerMetadata();
+        if (rootMeta.hasInheritance() && rootMeta.inheritance().singleTable() && !rootMeta.isInheritanceRoot()) {
+            addConstraint(byKey, rootMeta);
+        }
+        for (Selection<?> selection : query.selections()) {
+            addTreatFromSelection(byKey, selection);
+        }
+        addTreatFromPredicate(byKey, query.restriction());
+        addTreatFromPredicate(byKey, query.havingPredicate());
+        return new ArrayList<>(byKey.values());
+    }
+
+    private void addTreatFromSelection(LinkedHashMap<String, DiscriminatorConstraint> byKey, Selection<?> selection) {
+        if (selection instanceof CriteriaAggregate<?> aggregate) {
+            addTreatFromColumn(byKey, aggregate.operand());
+        } else if (selection instanceof CriteriaColumnPath path) {
+            addTreatFromColumn(byKey, path);
+        }
+    }
+
+    private void addTreatFromPredicate(LinkedHashMap<String, DiscriminatorConstraint> byKey, CriteriaPredicate p) {
+        if (p == null || p instanceof DiscriminatorPredicate) {
+            return;
+        }
+        switch (p.kind()) {
+            case AND, OR -> {
+                for (CriteriaPredicate child : p.children()) {
+                    addTreatFromPredicate(byKey, child);
+                }
+            }
+            case NOT -> addTreatFromPredicate(byKey, p.inner());
+            case COMPARISON, LIKE, BETWEEN, IN, NULL -> addTreatFromColumn(byKey, p.path());
+            default -> {
+                // 서브쿼리/컬럼 대 컬럼 술어는 이 스칼라 빌더가 처리하지 않는다.
+            }
+        }
+    }
+
+    private void addTreatFromColumn(LinkedHashMap<String, DiscriminatorConstraint> byKey, CriteriaColumnPath column) {
+        if (column != null && column.source() instanceof CriteriaTreatedRoot<?> treated) {
+            addConstraint(byKey, treated.metadata());
+        }
+    }
+
+    private static void addConstraint(
+            LinkedHashMap<String, DiscriminatorConstraint> byKey, EntityMetadata<?> subtypeMetadata) {
+        String column = subtypeMetadata.inheritance().discriminatorColumn();
+        Object value = subtypeMetadata.inheritance().discriminatorBindValue();
+        byKey.putIfAbsent(column + ' ' + value, new DiscriminatorConstraint(column, value));
+    }
+
+    private record DiscriminatorConstraint(String column, Object value) {
     }
 
     static String columnLabel(int index) {

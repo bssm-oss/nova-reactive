@@ -1,10 +1,12 @@
 package io.nova.query.criteria;
 
+import io.nova.metadata.EntityMetadata;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Order;
 import jakarta.persistence.criteria.Predicate;
+import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Subquery;
 
 import java.util.ArrayList;
@@ -150,6 +152,10 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
 
     @Override
     public Predicate equal(Expression<?> expression, Object value) {
+        // cb.equal(root.type(), Subtype.class) → 다형성 discriminator 술어.
+        if (expression instanceof CriteriaTypeExpression typeExpr) {
+            return discriminatorEqual(typeExpr, value);
+        }
         CriteriaColumnPath path = path(expression, "equal");
         if (value == null) {
             return CriteriaPredicate.isNull(path);
@@ -314,6 +320,47 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         }
         throw new CriteriaException("CriteriaBuilder." + name
                 + " requires a Subquery built by this CriteriaBuilder");
+    }
+
+    // --- polymorphism: treat / type ------------------------------------------------------------
+
+    @Override
+    public <X, T extends X> Root<T> treat(Root<X> root, Class<T> type) {
+        if (!(root instanceof CriteriaRoot<X> criteriaRoot)) {
+            throw new CriteriaException("cb.treat(...) requires a Root created by this CriteriaBuilder");
+        }
+        EntityMetadata<T> subtypeMetadata = metamodel.resolve(type);
+        requireSingleTableSubtype(criteriaRoot.ownerMetadata(), subtypeMetadata, type);
+        return new CriteriaTreatedRoot<>(type, subtypeMetadata, criteriaRoot.context());
+    }
+
+    private Predicate discriminatorEqual(CriteriaTypeExpression typeExpr, Object value) {
+        if (!(value instanceof Class<?> subtype)) {
+            throw new CriteriaException("cb.equal(root.type(), ...) requires a subtype Class literal, "
+                    + "e.g. cb.equal(root.type(), Car.class)");
+        }
+        EntityMetadata<?> baseMetadata = typeExpr.source().metadata();
+        EntityMetadata<?> subtypeMetadata = metamodel.resolve(subtype);
+        requireSingleTableSubtype(baseMetadata, subtypeMetadata, subtype);
+        return new DiscriminatorPredicate(baseMetadata, subtypeMetadata);
+    }
+
+    private static void requireSingleTableSubtype(
+            EntityMetadata<?> baseMetadata, EntityMetadata<?> subtypeMetadata, Class<?> subtype) {
+        if (!baseMetadata.hasInheritance()) {
+            throw new CriteriaException("cb.treat/type requires an @Inheritance entity; '"
+                    + baseMetadata.entityType().getSimpleName() + "' is not polymorphic");
+        }
+        if (!baseMetadata.inheritance().singleTable()) {
+            throw new CriteriaException("cb.treat/type is only supported for SINGLE_TABLE inheritance in v1; '"
+                    + baseMetadata.entityType().getSimpleName() + "' uses " + baseMetadata.inheritance().strategy());
+        }
+        if (!subtypeMetadata.inheritance().present()
+                || !subtypeMetadata.inheritance().sameHierarchy(baseMetadata.inheritance())) {
+            throw new CriteriaException("cb.treat/type target '" + subtype.getSimpleName()
+                    + "' is not a subtype in the same inheritance hierarchy as '"
+                    + baseMetadata.entityType().getSimpleName() + "'");
+        }
     }
 
     // --- helpers --------------------------------------------------------------------------------

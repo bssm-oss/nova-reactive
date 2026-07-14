@@ -226,8 +226,10 @@ abstract class AbstractCriteriaFrom<Z, X> extends AbstractCriteriaExpression<X>
     }
 
     @Override
+    @SuppressWarnings({"unchecked", "rawtypes"})
     public Expression<Class<? extends X>> type() {
-        throw unsupported("From.type()");
+        // TYPE(from) 다형성 식. cb.equal(from.type(), Subtype.class)로 discriminator 술어를 만든다.
+        return (Expression) new CriteriaTypeExpression(this);
     }
 
     @Override

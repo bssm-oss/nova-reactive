@@ -5,6 +5,7 @@ import io.nova.query.Criteria;
 import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
+import io.nova.query.jpql.ast.ComparisonOp;
 import io.nova.query.jpql.ast.Expression;
 import io.nova.query.jpql.ast.JoinClause;
 import io.nova.query.jpql.ast.JpqlStatement;
@@ -131,14 +132,128 @@ public final class JpqlEntityQueryPlanner {
         String alias = select.rootAlias();
         validateFetchJoins(select, metadata);
 
+        // TYPE(e) = Subtype 제한은 QuerySpec 술어가 아니라 조회 대상 엔티티 타입을 서브타입으로 좁혀서
+        // 처리한다 — 코어 findAll(Subtype)이 이미 discriminator 제한을 적용하므로 하이드레이션을 그대로 재사용한다.
+        TypeNarrowing narrowing = narrowByType(select.where(), alias, metadata);
+
         QuerySpec spec = QuerySpec.empty();
-        if (select.where() != null) {
-            spec = spec.where(translatePredicate(select.where(), alias, parameters));
+        if (narrowing.remaining() != null) {
+            spec = spec.where(translatePredicate(narrowing.remaining(), alias, parameters));
         }
         if (!select.orderBy().isEmpty()) {
             spec = spec.orderBy(translateSort(select.orderBy(), alias));
         }
-        return new EntityPlan(metadata, spec);
+        return new EntityPlan(narrowing.target(), spec);
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // TYPE(e) polymorphic narrowing (entity-returning path)
+    // ----------------------------------------------------------------------------------------
+
+    /** 조회 대상 서브타입과 TYPE 제한을 제외한 나머지 WHERE 술어. */
+    private record TypeNarrowing(EntityMetadata<?> target, io.nova.query.jpql.ast.Predicate remaining) {
+    }
+
+    /**
+     * 최상위 AND 체인에서 {@code TYPE(root) = Subtype} 제한을 추출해 조회 대상 타입을 좁히고, 나머지 술어를
+     * 반환한다. TYPE/TREAT가 좁힘 불가 위치(OR/NOT/부등식/IN/부분식)에 있으면 fail-fast하며 스칼라 경로로
+     * 재작성하도록 안내한다.
+     */
+    private TypeNarrowing narrowByType(
+            io.nova.query.jpql.ast.Predicate where, String rootAlias, EntityMetadata<?> baseMeta) {
+        List<io.nova.query.jpql.ast.Predicate> remaining = new ArrayList<>();
+        EntityMetadata<?>[] target = {baseMeta};
+        boolean[] narrowed = {false};
+        flattenTypeNarrowing(where, rootAlias, baseMeta, remaining, target, narrowed);
+        return new TypeNarrowing(target[0], combineAnd(remaining));
+    }
+
+    private void flattenTypeNarrowing(
+            io.nova.query.jpql.ast.Predicate predicate, String rootAlias, EntityMetadata<?> baseMeta,
+            List<io.nova.query.jpql.ast.Predicate> remaining, EntityMetadata<?>[] target, boolean[] narrowed) {
+        if (predicate == null) {
+            return;
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.And and) {
+            flattenTypeNarrowing(and.left(), rootAlias, baseMeta, remaining, target, narrowed);
+            flattenTypeNarrowing(and.right(), rootAlias, baseMeta, remaining, target, narrowed);
+            return;
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Comparison c
+                && c.op() == ComparisonOp.EQ
+                && c.left() instanceof Expression.Type type
+                && c.right() instanceof Expression.EntityTypeLiteral lit) {
+            if (!type.alias().equals(rootAlias)) {
+                throw unsupported("TYPE(...) over a non-root alias '" + type.alias() + "'");
+            }
+            if (narrowed[0]) {
+                throw new JpqlException("Multiple TYPE(...) = Subtype restrictions in an entity-returning query "
+                        + "are not supported; a row has exactly one concrete type");
+            }
+            target[0] = resolveEntitySubtype(baseMeta, lit.entityName());
+            narrowed[0] = true;
+            return;
+        }
+        if (mentionsPolymorphic(predicate)) {
+            throw unsupported("TYPE(...)/TREAT(...) in this position of an entity-returning query; "
+                    + "use 'WHERE TYPE(e) = Subtype', or project scalar columns");
+        }
+        remaining.add(predicate);
+    }
+
+    private EntityMetadata<?> resolveEntitySubtype(EntityMetadata<?> baseMeta, String subtypeName) {
+        if (!baseMeta.hasInheritance()) {
+            throw new JpqlException("TYPE(...) requires an @Inheritance entity; '"
+                    + baseMeta.entityType().getSimpleName() + "' is not polymorphic");
+        }
+        if (!baseMeta.inheritance().singleTable()) {
+            throw new JpqlException("TYPE(...) narrowing is only supported for SINGLE_TABLE inheritance in v1; '"
+                    + baseMeta.entityType().getSimpleName() + "' uses " + baseMeta.inheritance().strategy());
+        }
+        EntityMetadata<?> subMeta = resolver.resolve(subtypeName);
+        if (!subMeta.inheritance().present() || !subMeta.inheritance().sameHierarchy(baseMeta.inheritance())) {
+            throw new JpqlException("TYPE(...) target '" + subtypeName + "' is not a subtype in the same "
+                    + "inheritance hierarchy as '" + baseMeta.entityType().getSimpleName() + "'");
+        }
+        return subMeta;
+    }
+
+    private static io.nova.query.jpql.ast.Predicate combineAnd(List<io.nova.query.jpql.ast.Predicate> parts) {
+        if (parts.isEmpty()) {
+            return null;
+        }
+        io.nova.query.jpql.ast.Predicate combined = parts.get(0);
+        for (int i = 1; i < parts.size(); i++) {
+            combined = new io.nova.query.jpql.ast.Predicate.And(combined, parts.get(i));
+        }
+        return combined;
+    }
+
+    private static boolean mentionsPolymorphic(io.nova.query.jpql.ast.Predicate predicate) {
+        return switch (predicate) {
+            case io.nova.query.jpql.ast.Predicate.And and ->
+                    mentionsPolymorphic(and.left()) || mentionsPolymorphic(and.right());
+            case io.nova.query.jpql.ast.Predicate.Or or ->
+                    mentionsPolymorphic(or.left()) || mentionsPolymorphic(or.right());
+            case io.nova.query.jpql.ast.Predicate.Not not -> mentionsPolymorphic(not.inner());
+            case io.nova.query.jpql.ast.Predicate.Comparison c ->
+                    isPolymorphic(c.left()) || isPolymorphic(c.right());
+            case io.nova.query.jpql.ast.Predicate.Like like ->
+                    isPolymorphic(like.value()) || isPolymorphic(like.pattern());
+            case io.nova.query.jpql.ast.Predicate.Between b ->
+                    isPolymorphic(b.value()) || isPolymorphic(b.low()) || isPolymorphic(b.high());
+            case io.nova.query.jpql.ast.Predicate.Null n -> isPolymorphic(n.value());
+            case io.nova.query.jpql.ast.Predicate.InList in ->
+                    isPolymorphic(in.value()) || in.items().stream().anyMatch(JpqlEntityQueryPlanner::isPolymorphic);
+            case io.nova.query.jpql.ast.Predicate.InSubquery in -> isPolymorphic(in.value());
+            case io.nova.query.jpql.ast.Predicate.Exists ignored -> false;
+        };
+    }
+
+    private static boolean isPolymorphic(Expression expression) {
+        return expression instanceof Expression.Type
+                || expression instanceof Expression.Treat
+                || expression instanceof Expression.EntityTypeLiteral;
     }
 
     // ----------------------------------------------------------------------------------------

@@ -19,6 +19,10 @@ final class CriteriaEntityTranslator {
     }
 
     static Predicate toPredicate(CriteriaPredicate predicate) {
+        if (predicate instanceof DiscriminatorPredicate) {
+            throw new CriteriaException("cb.equal(root.type(), ...) narrows the queried entity type and is "
+                    + "handled before QuerySpec translation; it cannot appear as a QuerySpec predicate");
+        }
         return switch (predicate.kind()) {
             case AND -> Criteria.and(childArray(predicate));
             case OR -> Criteria.or(childArray(predicate));
