@@ -308,6 +308,22 @@ class JpqlSqlBuilderTest {
     }
 
     @Test
+    void terminalNotEqualToCompositeKeyToOneExpandsToComponentInequalityWithOr() {
+        // {@code <>}는 튜플 부등이므로 각 FK 컴포넌트 neq의 OR로 전개된다({@code =}의 AND와 대비).
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent <> :p");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where (c.\"p_k1\" <> ? or c.\"p_k2\" <> ?)",
+                t.sql());
+        assertEquals(2, t.bindings().size());
+        JpqlBinding.Component first = assertComponent(t.bindings().get(0));
+        JpqlBinding.Component second = assertComponent(t.bindings().get(1));
+        assertEquals(new JpqlBinding.Named("p"), first.source());
+        assertEquals(new JpqlBinding.Named("p"), second.source());
+        assertEquals("p_k1", first.column().columnName());
+        assertEquals("p_k2", second.column().columnName());
+    }
+
+    @Test
     void terminalIsNullOverCompositeKeyToOneExpandsToAllForeignKeyColumns() {
         TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent IS NULL");
         assertEquals(

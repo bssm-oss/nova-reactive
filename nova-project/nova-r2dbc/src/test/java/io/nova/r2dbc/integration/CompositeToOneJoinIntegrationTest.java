@@ -117,6 +117,21 @@ class CompositeToOneJoinIntegrationTest {
     }
 
     @Test
+    void jpqlTerminalCompositeInequalityExpandsToOrOfComponentNotEquals() {
+        // WHERE c.parent <> :ref. ref=(US,1). 튜플 부등 = OR-of-neq: (region<>US or code<>1).
+        //  alpha(US,1): 둘 다 거짓 → 제외. beta(US,2): code<>1 참 → 포함. gamma(EU,1): region<>US 참 → 포함.
+        //  delta(null,null): NULL<>… → 3치 논리 NULL → 제외.
+        // AND-of-neq로 잘못 전개하면 beta·gamma 모두 빠져 결과가 비고, 단일 컬럼만 비교하면 한쪽만 샌다.
+        StepVerifier.create(
+                        jpql.createQuery("SELECT c.label FROM WjChild c WHERE c.parent <> :ref ORDER BY c.label",
+                                        String.class)
+                                .setParameter("ref", parentRef("US", 1))
+                                .getResultList())
+                .expectNext("beta", "gamma")
+                .verifyComplete();
+    }
+
+    @Test
     void jpqlTerminalIsNullOnAllForeignKeyColumns() {
         StepVerifier.create(
                         jpql.createQuery("SELECT c.label FROM WjChild c WHERE c.parent IS NULL", String.class)
@@ -171,6 +186,21 @@ class CompositeToOneJoinIntegrationTest {
     }
 
     @Test
+    void criteriaTerminalCompositeInequalityExpandsToOrOfComponentNotEquals() {
+        // cb.notEqual(c.get("parent"), (US,1)). JPQL <> 와 동일한 OR-of-neq 의미 → beta·gamma.
+        CriteriaBuilder cb = criteria.getCriteriaBuilder();
+        CriteriaQuery<WjChild> cq = cb.createQuery(WjChild.class);
+        Root<WjChild> c = cq.from(WjChild.class);
+        cq.select(c).where(cb.notEqual(c.get("parent"), parentRef("US", 1)))
+                .orderBy(cb.asc(c.<String>get("label")));
+
+        StepVerifier.create(criteria.createQuery(cq).getResultList())
+                .assertNext(x -> assertEquals("beta", x.getLabel()))
+                .assertNext(x -> assertEquals("gamma", x.getLabel()))
+                .verifyComplete();
+    }
+
+    @Test
     void criteriaTerminalIsNullOnAllForeignKeyColumns() {
         CriteriaBuilder cb = criteria.getCriteriaBuilder();
         CriteriaQuery<WjChild> cq = cb.createQuery(WjChild.class);
@@ -191,6 +221,23 @@ class CompositeToOneJoinIntegrationTest {
 
         StepVerifier.create(criteria.createQuery(cq).getResultList())
                 .expectError()
+                .verify();
+    }
+
+    @Test
+    void criteriaLikeOnCompositeToOneFailsWithAccurateUnsupportedMessage() {
+        // 복합 to-one에는 LIKE를 전개할 alias 경로가 없다. 엔티티 경로 번역기는 "aliased SQL path로 실행하라"는
+        // (존재하지 않는 경로를 가리키는) 오해소지 메시지 대신, 정확한 미지원 사유를 담아 fail-fast해야 한다.
+        CriteriaBuilder cb = criteria.getCriteriaBuilder();
+        CriteriaQuery<WjChild> cq = cb.createQuery(WjChild.class);
+        Root<WjChild> c = cq.from(WjChild.class);
+        cq.select(c).where(cb.like(c.<String>get("parent"), "x"));
+
+        StepVerifier.create(criteria.createQuery(cq).getResultList())
+                .expectErrorMatches(error -> error.getMessage() != null
+                        && error.getMessage().contains("is not supported in a LIKE predicate")
+                        && error.getMessage().contains("parent")
+                        && !error.getMessage().contains("aliased SQL path"))
                 .verify();
     }
 

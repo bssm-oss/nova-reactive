@@ -223,6 +223,25 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void terminalNotEqualOverCompositeKeyToOneExpandsToComponentInequalityWithOr() {
+        // cb.notEqual(c.get("parent"), ref)은 각 FK 컴포넌트 neq의 OR로 전개된다(튜플 부등; equal의 AND와 대비).
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent ref =
+                new io.nova.support.fixtures.FixtureEntities.CompositeJoinParent();
+        ref.setId(new io.nova.support.fixtures.FixtureEntities.CompositeJoinKey(5L, "x"));
+        cq.multiselect(c.<Long>get("id")).where(cb.notEqual(c.get("parent"), ref));
+
+        CriteriaSql t = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"gc_composite_child\" \"t0\" "
+                        + "where (\"t0\".\"p_k1\" <> ? or \"t0\".\"p_k2\" <> ?)",
+                t.sql());
+        assertEquals(List.of(5L, "x"), t.bindings());
+    }
+
+    @Test
     void terminalIsNullOverCompositeKeyToOneExpandsToAllForeignKeyColumns() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
