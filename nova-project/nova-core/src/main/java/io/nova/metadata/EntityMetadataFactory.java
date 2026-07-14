@@ -2,6 +2,7 @@ package io.nova.metadata;
 
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
+import jakarta.persistence.AssociationOverride;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
 import jakarta.persistence.ColumnResult;
@@ -737,6 +738,11 @@ public final class EntityMetadataFactory {
                 versionProperty = property;
             }
         }
+
+        // @MappedSuperclass에서 상속한 to-one 관계의 join 컬럼을 서브클래스 @AssociationOverride로 재지정한다.
+        // 관계 property는 이미 상속 필드 스캔으로 조립됐으므로, createManyToOneProperty 본문을 건드리지 않고
+        // 조립된 property의 FK 컬럼명만 post-processing으로 갈아끼운다.
+        applyAssociationOverrides(entityType, properties);
 
         if (idProperty == null) {
             throw new IllegalArgumentException(entityType.getName() + " must declare a field annotated with @Id");
@@ -2585,6 +2591,74 @@ public final class EntityMetadataFactory {
      */
     private record ForeignKeyStorage(Class<?> javaType, AttributeConverter<Object, Object> converter,
             Class<?> converterColumnType, int length) {
+    }
+
+    /**
+     * 서브클래스에 선언된 {@link AssociationOverride}(반복 애너테이션, 컨테이너 {@code @AssociationOverrides})를
+     * 읽어, {@code @MappedSuperclass}에서 상속한 이름이 일치하는 owning to-one({@code @ManyToOne}/owning
+     * {@code @OneToOne}) property의 FK 컬럼명을 재지정한다. 관계 property는 상속 필드 스캔으로 이미
+     * {@code properties}에 조립돼 있으므로, {@code createManyToOneProperty} 본문을 건드리지 않고 조립된
+     * property를 {@link PersistentProperty#withColumnName(String)}로 교체하는 post-processing이다.
+     *
+     * <p>fail-fast: override가 존재하지 않는 property를 지목하거나 owning to-one이 아닌 property를 지목하면,
+     * 또는 embedded association(dot 표기, 미지원)이나 다중/공백 join 컬럼을 지정하면 명확한 예외를 던진다.
+     */
+    private void applyAssociationOverrides(Class<?> entityType, List<PersistentProperty> properties) {
+        AssociationOverride[] overrides = entityType.getAnnotationsByType(AssociationOverride.class);
+        if (overrides.length == 0) {
+            return;
+        }
+        for (AssociationOverride override : overrides) {
+            String name = override.name();
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " declares an @AssociationOverride with a blank name");
+            }
+            // embedded association override(예: name="address.country")는 dot 표기를 쓴다. Nova는
+            // embedded 안의 association을 매핑하지 않으므로 조용히 무시하지 않고 명확히 거부한다.
+            if (name.contains(".")) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") targets an embedded"
+                                + " association path, which Nova does not support; only join columns of inherited"
+                                + " @ManyToOne/@OneToOne associations can be overridden");
+            }
+            int index = -1;
+            for (int i = 0; i < properties.size(); i++) {
+                if (properties.get(i).propertyName().equals(name)) {
+                    index = i;
+                    break;
+                }
+            }
+            if (index < 0) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") does not match any"
+                                + " property; it must name an inherited @ManyToOne/@OneToOne association");
+            }
+            PersistentProperty target = properties.get(index);
+            if (!target.manyToOne() || target.inverseToOne()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") must target an owning"
+                                + " @ManyToOne or @OneToOne association with a foreign-key column");
+            }
+            JoinColumn[] joinColumns = override.joinColumns();
+            if (joinColumns.length == 0) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") must declare a"
+                                + " @JoinColumn to remap the foreign-key column");
+            }
+            if (joinColumns.length > 1) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") declares multiple join"
+                                + " columns; Nova supports single-column to-one foreign keys only");
+            }
+            String newColumnName = joinColumns[0].name();
+            if (newColumnName == null || newColumnName.isBlank()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @AssociationOverride(name=\"" + name + "\") @JoinColumn must set a"
+                                + " non-blank column name");
+            }
+            properties.set(index, target.withColumnName(newColumnName));
+        }
     }
 
     private PersistentProperty createManyToOneProperty(Class<?> entityType, Field field) {

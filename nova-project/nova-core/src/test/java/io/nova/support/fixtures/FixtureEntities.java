@@ -3026,4 +3026,113 @@ public final class FixtureEntities {
             return id;
         }
     }
+
+    // --- @AssociationOverride: 상속한 to-one의 join 컬럼 재지정 ---------------------
+
+    /**
+     * {@code @AssociationOverride}로 재지정할 to-one 관계의 참조 대상 엔티티.
+     */
+    @Entity
+    @Table(name = "assoc_country")
+    public static class AssocCountry {
+        @Id
+        private Long id;
+
+        @Column(name = "name")
+        private String name;
+
+        public AssocCountry() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+    }
+
+    /**
+     * {@code @MappedSuperclass}에 {@code @ManyToOne} 관계를 선언한 베이스. 기본 FK 컬럼명은
+     * {@code region_country_id}(= {@code @JoinColumn(name=...)})이며, 서브클래스가 이를
+     * {@code @AssociationOverride}로 재지정한다.
+     */
+    @MappedSuperclass
+    public static abstract class AssocRegionBase {
+        @Id
+        private Long id;
+
+        @Column(name = "label")
+        private String label;
+
+        @ManyToOne
+        @JoinColumn(name = "region_country_id")
+        private AssocCountry country;
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public AssocCountry getCountry() {
+            return country;
+        }
+    }
+
+    /**
+     * 상속한 {@code country} 관계의 join 컬럼을 {@code home_country_id}로 재지정한 서브 엔티티.
+     */
+    @Entity
+    @Table(name = "assoc_city")
+    @jakarta.persistence.AssociationOverride(
+            name = "country",
+            joinColumns = @JoinColumn(name = "home_country_id"))
+    public static class AssocCity extends AssocRegionBase {
+        @Column(name = "population")
+        private Integer population;
+
+        public AssocCity() {
+        }
+
+        public Integer getPopulation() {
+            return population;
+        }
+    }
+
+    /**
+     * 존재하지 않는 프로퍼티를 지목하는 {@code @AssociationOverride} — fail-fast 검증용.
+     */
+    @Entity
+    @Table(name = "assoc_bad_name")
+    @jakarta.persistence.AssociationOverride(
+            name = "missing",
+            joinColumns = @JoinColumn(name = "whatever_id"))
+    public static class AssocOverrideUnknownName extends AssocRegionBase {
+    }
+
+    /**
+     * 관계가 아닌 스칼라 프로퍼티를 지목하는 {@code @AssociationOverride} — fail-fast 검증용.
+     */
+    @Entity
+    @Table(name = "assoc_scalar_target")
+    @jakarta.persistence.AssociationOverride(
+            name = "label",
+            joinColumns = @JoinColumn(name = "label_id"))
+    public static class AssocOverrideScalarTarget extends AssocRegionBase {
+    }
+
+    /**
+     * embedded association path(dot 표기)를 지목하는 {@code @AssociationOverride} — 미지원 fail-fast 검증용.
+     */
+    @Entity
+    @Table(name = "assoc_embedded_path")
+    @jakarta.persistence.AssociationOverride(
+            name = "address.country",
+            joinColumns = @JoinColumn(name = "addr_country_id"))
+    public static class AssocOverrideEmbeddedPath extends AssocRegionBase {
+    }
 }

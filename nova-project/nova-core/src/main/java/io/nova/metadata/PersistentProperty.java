@@ -301,6 +301,65 @@ public final class PersistentProperty {
     }
 
     /**
+     * 이 property의 {@code columnName}만 바꾼 복사본을 만든다. {@code @MappedSuperclass}에서 상속한
+     * to-one 관계의 join 컬럼을 서브클래스의 {@code @AssociationOverride}로 재지정할 때, 이미 조립된
+     * 관계 property의 FK 컬럼명만 갈아끼우는 용도로 사용한다. converter/target/insertable 등 나머지
+     * 모든 메타데이터는 그대로 보존한다.
+     */
+    public PersistentProperty withColumnName(String newColumnName) {
+        if (this.columnName.equals(newColumnName)) {
+            return this;
+        }
+        return new PersistentProperty(
+                field,
+                propertyName,
+                newColumnName,
+                javaType,
+                id,
+                version,
+                nullable,
+                length,
+                precision,
+                scale,
+                generationType,
+                generator,
+                converter,
+                createdAt,
+                updatedAt,
+                softDelete,
+                embedded,
+                embeddedHostPath,
+                enumerated,
+                enumType,
+                json,
+                manyToOne,
+                manyToOneTargetType,
+                manyToOneNullable,
+                oneToMany,
+                oneToManyTargetType,
+                oneToManyMappedBy,
+                insertable,
+                updatable,
+                unique,
+                columnDefinition,
+                lob,
+                converterColumnType,
+                inverseToOne,
+                manyToManyInfo,
+                elementCollectionInfo,
+                oneToManyInfo,
+                tableGeneratorInfo,
+                mapsId,
+                mapsIdValue,
+                propertyAccess,
+                propertyAccessGetter,
+                propertyAccessSetter,
+                toOneCascadeInfo,
+                secondaryTableName
+        );
+    }
+
+    /**
      * 이 property의 {@code id} 플래그만 {@code true}로 올린 복사본을 만든다. {@code @EmbeddedId}로 펼쳐진
      * 복합키 컴포넌트는 {@code @Embeddable} 안에 {@code @Id}가 없는 평범한 필드로 선언되므로
      * {@link EntityMetadataFactory}가 컬럼으로 펼친 뒤 이 메서드로 id 컴포넌트임을 표시한다. 나머지 모든
