@@ -243,6 +243,42 @@ public interface SqlRenderer {
     }
 
     /**
+     * 복합키(N+M 컬럼) link table을 위한 by-columns 변형들. owner/target FK가 다중 컬럼일 때 각 컬럼 값을
+     * 참조 {@code @Id} 컴포넌트 순서대로 리스트로 받아 바인딩한다. 단일키(컬럼 1개)도 처리하지만 단일키 경로는
+     * 기존 단일-값 메서드를 그대로 쓴다(하위 호환·회귀 0). 기본 구현은 미지원이므로 dialect base
+     * ({@link AbstractSqlRenderer})가 override 한다.
+     */
+    default SqlStatement deleteJoinRowsByColumns(JoinTableDefinition definition, List<Object> ownerColumnValues) {
+        throw new UnsupportedOperationException("deleteJoinRowsByColumns is not supported by this SqlRenderer");
+    }
+
+    /**
+     * link table에 (owner 컬럼들, target 컬럼들) link row 1건을 추가하는 구문(복합키 대응).
+     */
+    default SqlStatement insertJoinRowByColumns(
+            JoinTableDefinition definition, List<Object> ownerColumnValues, List<Object> targetColumnValues) {
+        throw new UnsupportedOperationException("insertJoinRowByColumns is not supported by this SqlRenderer");
+    }
+
+    /**
+     * link table에서 (owner 컬럼들, target 컬럼들) link row 1건만 삭제하는 구문(복합키 대응, 최소 diff).
+     */
+    default SqlStatement deleteJoinRowByColumns(
+            JoinTableDefinition definition, List<Object> ownerColumnValues, List<Object> targetColumnValues) {
+        throw new UnsupportedOperationException("deleteJoinRowByColumns is not supported by this SqlRenderer");
+    }
+
+    /**
+     * 주어진 owner id 컬럼 튜플들에 대한 link row(owner FK 컬럼들, target FK 컬럼들)를 조회하는 구문(복합키
+     * 대응, 2-hop hydration의 1단계). WHERE는 튜플마다 {@code (oc1 = ? and oc2 = ?)}를 OR로 묶어 모든 dialect에서
+     * 안전하다.
+     */
+    default SqlStatement selectJoinRowsByColumns(
+            JoinTableDefinition definition, List<List<Object>> ownerColumnTuples) {
+        throw new UnsupportedOperationException("selectJoinRowsByColumns is not supported by this SqlRenderer");
+    }
+
+    /**
      * {@code @ElementCollection} collection table에서 owner의 값 row를 모두 삭제하는 구문(full-replace 1단계).
      */
     default SqlStatement deleteCollectionRows(CollectionTableDefinition definition, Object ownerId) {

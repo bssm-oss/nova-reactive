@@ -3164,12 +3164,16 @@ public final class FixtureEntities {
 
         public CompositeJoinParent() {
         }
+
+        public void setId(CompositeJoinKey id) {
+            this.id = id;
+        }
     }
 
     /**
-     * 복합키 부모를 유효한 다중컬럼 FK(@JoinColumns)로 참조하는 child. 지원되는 매핑이지만 Criteria/JPQL join,
-     * native/stored-proc/named-query 엔티티 매핑 등 아직 복합 FK를 이해하지 못하는 2차 경로에서 fail-fast
-     * 회귀를 검증하는 데 쓴다.
+     * 복합키 부모를 유효한 다중컬럼 FK(@JoinColumns)로 참조하는 child. Criteria/JPQL join·terminal 비교는
+     * 이제 모든 FK 컴포넌트로 전개(다중컬럼 ON)해 지원하며, native/stored-proc/named-query 엔티티 매핑 등
+     * 아직 복합 FK를 이해하지 못하는 2차 경로에서의 fail-fast 회귀를 검증하는 데 함께 쓴다.
      */
     @Entity
     @Table(name = "gc_composite_child")

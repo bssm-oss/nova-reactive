@@ -365,6 +365,120 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     }
 
     @Override
+    public SqlStatement deleteJoinRowsByColumns(
+            io.nova.metadata.JoinTableDefinition definition, List<Object> ownerColumnValues) {
+        requireColumnValueArity(definition.ownerForeignKeyColumns(), ownerColumnValues, "owner");
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("delete from ").append(dialect.quote(definition.tableName()))
+                .append(" where ");
+        appendColumnConjunction(sql, context, definition.ownerForeignKeyColumns(), ownerColumnValues);
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
+    public SqlStatement insertJoinRowByColumns(
+            io.nova.metadata.JoinTableDefinition definition,
+            List<Object> ownerColumnValues, List<Object> targetColumnValues) {
+        List<io.nova.metadata.JoinTableDefinition.ForeignKeyColumn> ownerColumns = definition.ownerForeignKeyColumns();
+        List<io.nova.metadata.JoinTableDefinition.ForeignKeyColumn> targetColumns = definition.targetForeignKeyColumns();
+        requireColumnValueArity(ownerColumns, ownerColumnValues, "owner");
+        requireColumnValueArity(targetColumns, targetColumnValues, "target");
+        RenderContext context = new RenderContext();
+        StringBuilder names = new StringBuilder();
+        StringBuilder markers = new StringBuilder();
+        appendColumnInsert(names, markers, context, ownerColumns, ownerColumnValues);
+        appendColumnInsert(names, markers, context, targetColumns, targetColumnValues);
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + names + ") values (" + markers + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement deleteJoinRowByColumns(
+            io.nova.metadata.JoinTableDefinition definition,
+            List<Object> ownerColumnValues, List<Object> targetColumnValues) {
+        requireColumnValueArity(definition.ownerForeignKeyColumns(), ownerColumnValues, "owner");
+        requireColumnValueArity(definition.targetForeignKeyColumns(), targetColumnValues, "target");
+        RenderContext context = new RenderContext();
+        StringBuilder sql = new StringBuilder("delete from ").append(dialect.quote(definition.tableName()))
+                .append(" where ");
+        appendColumnConjunction(sql, context, definition.ownerForeignKeyColumns(), ownerColumnValues);
+        sql.append(" and ");
+        appendColumnConjunction(sql, context, definition.targetForeignKeyColumns(), targetColumnValues);
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    @Override
+    public SqlStatement selectJoinRowsByColumns(
+            io.nova.metadata.JoinTableDefinition definition, List<List<Object>> ownerColumnTuples) {
+        if (ownerColumnTuples.isEmpty()) {
+            throw new IllegalArgumentException("selectJoinRowsByColumns requires at least one owner id tuple");
+        }
+        List<io.nova.metadata.JoinTableDefinition.ForeignKeyColumn> ownerColumns = definition.ownerForeignKeyColumns();
+        List<io.nova.metadata.JoinTableDefinition.ForeignKeyColumn> targetColumns = definition.targetForeignKeyColumns();
+        RenderContext context = new RenderContext();
+        StringBuilder projection = new StringBuilder();
+        for (io.nova.metadata.JoinTableDefinition.ForeignKeyColumn column : ownerColumns) {
+            if (projection.length() > 0) {
+                projection.append(", ");
+            }
+            projection.append(dialect.quote(column.columnName()));
+        }
+        for (io.nova.metadata.JoinTableDefinition.ForeignKeyColumn column : targetColumns) {
+            projection.append(", ").append(dialect.quote(column.columnName()));
+        }
+        StringBuilder sql = new StringBuilder("select ").append(projection)
+                .append(" from ").append(dialect.quote(definition.tableName())).append(" where ");
+        // owner 튜플마다 (oc1 = ? and oc2 = ...)를 OR로 묶는다 — row value IN 미지원 dialect 회피.
+        for (int t = 0; t < ownerColumnTuples.size(); t++) {
+            List<Object> tuple = ownerColumnTuples.get(t);
+            requireColumnValueArity(ownerColumns, tuple, "owner");
+            if (t > 0) {
+                sql.append(" or ");
+            }
+            sql.append("(");
+            appendColumnConjunction(sql, context, ownerColumns, tuple);
+            sql.append(")");
+        }
+        return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    private void appendColumnConjunction(
+            StringBuilder sql, RenderContext context,
+            List<io.nova.metadata.JoinTableDefinition.ForeignKeyColumn> columns, List<Object> values) {
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                sql.append(" and ");
+            }
+            sql.append(dialect.quote(columns.get(i).columnName())).append(" = ")
+                    .append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(values.get(i));
+        }
+    }
+
+    private void appendColumnInsert(
+            StringBuilder names, StringBuilder markers, RenderContext context,
+            List<io.nova.metadata.JoinTableDefinition.ForeignKeyColumn> columns, List<Object> values) {
+        for (int i = 0; i < columns.size(); i++) {
+            if (names.length() > 0) {
+                names.append(", ");
+                markers.append(", ");
+            }
+            names.append(dialect.quote(columns.get(i).columnName()));
+            markers.append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(values.get(i));
+        }
+    }
+
+    private static void requireColumnValueArity(
+            List<io.nova.metadata.JoinTableDefinition.ForeignKeyColumn> columns, List<Object> values, String side) {
+        if (values.size() != columns.size()) {
+            throw new IllegalArgumentException("join-row " + side + " expects " + columns.size()
+                    + " column values but got " + values.size());
+        }
+    }
+
+    @Override
     public SqlStatement deleteCollectionRows(io.nova.metadata.CollectionTableDefinition definition, Object ownerId) {
         String sql = "delete from " + dialect.quote(definition.tableName())
                 + " where " + dialect.quote(definition.ownerForeignKeyColumn())

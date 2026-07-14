@@ -188,29 +188,66 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
-    void failsFastOnJoinOverCompositeKeyToOne() {
-        // 복합키 타겟 to-one은 다중컬럼 FK라 단일 FK=PK on-절로 표현할 수 없다 → 첫 컴포넌트만 잇는 조용한
-        // 오답 대신 명확한 CriteriaException으로 거부한다(join 해석 시점에 fail-fast).
+    void joinOverCompositeKeyToOneRendersAllOnComponents() {
+        // 복합키 타겟 to-one은 다중컬럼 FK이므로 ON 조건이 모든 FK↔참조 @Id 컴포넌트 짝을 and로 잇는다.
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
                 cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        c.join("parent");
+        cq.multiselect(c.<Long>get("id"));
 
-        CriteriaException ex = assertThrows(CriteriaException.class, () -> c.join("parent"));
-        assertTrue(ex.getMessage().contains("composite-key"));
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"gc_composite_child\" \"t0\" "
+                        + "inner join \"gc_composite_parent\" \"t1\" "
+                        + "on \"t0\".\"p_k1\" = \"t1\".\"k1\" and \"t0\".\"p_k2\" = \"t1\".\"k2\"",
+                aliased(cq).sql());
     }
 
     @Test
-    void failsFastOnTerminalPredicateOverCompositeKeyToOne() {
-        // 복합키 to-one을 그 자체로 술어에 쓰면(cb.equal(c.get("parent"), x)) 대표 FK 컬럼 하나로만 해석돼
-        // 조용한 오답이 된다 → 명확한 CriteriaException으로 거부한다.
+    void terminalEqualityOverCompositeKeyToOneExpandsToComponentEquality() {
+        // cb.equal(c.get("parent"), ref)은 각 FK 컴포넌트 eq의 and로 전개된다(참조 엔티티에서 컴포넌트 추출).
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent ref =
+                new io.nova.support.fixtures.FixtureEntities.CompositeJoinParent();
+        ref.setId(new io.nova.support.fixtures.FixtureEntities.CompositeJoinKey(5L, "x"));
+        cq.multiselect(c.<Long>get("id")).where(cb.equal(c.get("parent"), ref));
+
+        CriteriaSql t = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"gc_composite_child\" \"t0\" "
+                        + "where (\"t0\".\"p_k1\" = ? and \"t0\".\"p_k2\" = ?)",
+                t.sql());
+        assertEquals(List.of(5L, "x"), t.bindings());
+    }
+
+    @Test
+    void terminalIsNullOverCompositeKeyToOneExpandsToAllForeignKeyColumns() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        cq.multiselect(c.<Long>get("id")).where(cb.isNull(c.get("parent")));
+
+        CriteriaSql t = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"gc_composite_child\" \"t0\" "
+                        + "where (\"t0\".\"p_k1\" is null and \"t0\".\"p_k2\" is null)",
+                t.sql());
+        assertTrue(t.bindings().isEmpty());
+    }
+
+    @Test
+    void failsFastOnSelectingCompositeKeyToOneAsSingleColumn() {
+        // SELECT c.parent(복합 to-one을 단일 컬럼으로 투영)은 축약 불가 → 조용한 오답 대신 fail-fast.
         CriteriaException ex = assertThrows(CriteriaException.class, () -> {
             CriteriaQuery<Object> cq = cb.createQuery(Object.class);
             Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
                     cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
-            cq.multiselect(c.<Long>get("id")).where(cb.equal(c.get("parent"), 1L));
+            cq.multiselect(c.get("parent"));
             aliased(cq).sql();
         });
-        assertTrue(ex.getMessage().contains("composite-key"));
+        assertTrue(ex.getMessage().contains("composite-key") || ex.getMessage().contains("single column"));
     }
 
     @Test

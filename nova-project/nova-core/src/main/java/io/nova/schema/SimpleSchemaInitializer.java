@@ -378,14 +378,9 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 if (!info.owning()) {
                     continue;
                 }
-                Class<?> ownerIdType = metadata.idProperty().javaType();
-                Class<?> targetIdType = metadataFactory.getEntityMetadata(info.targetType()).idProperty().javaType();
-                byName.putIfAbsent(info.joinTableName(), new JoinTableDefinition(
-                        info.joinTableName(),
-                        info.ownerForeignKeyColumn(),
-                        ownerIdType,
-                        info.targetForeignKeyColumn(),
-                        targetIdType));
+                EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
+                byName.putIfAbsent(info.joinTableName(),
+                        JoinTableDefinition.of(metadata, info, targetMetadata));
             }
         }
         return new ArrayList<>(byName.values());

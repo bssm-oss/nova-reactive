@@ -3335,28 +3335,147 @@ public final class EntityMetadataFactory {
 
     /**
      * owning side({@code @JoinTable})의 link table 매핑을 해석한다. 테이블/컬럼 이름은 {@code @JoinTable}/
-     * {@code @JoinColumn}이 있으면 그 값을, 없으면 JPA 기본 규약을 따른다. target id 컬럼은 재진입 메타 빌드를
-     * 피하려 {@link #resolveSingleIdColumn} 경량 reflection으로 해석한다.
+     * {@code @JoinColumn}이 있으면 그 값을, 없으면 JPA 기본 규약을 따른다. owner/target {@code @Id}(단일 또는
+     * 복합키)의 각 컴포넌트마다 FK 컬럼 1개를 <b>참조 컴포넌트 순서대로</b> 만들어 write/read/DDL/FK가 같은 순서를
+     * 공유하게 한다. id 컬럼은 재진입 메타 빌드를 피하려 경량 reflection으로 해석한다.
      */
     private ManyToManyInfo resolveOwningManyToManyInfo(
             Class<?> ownerType, String ownerTable, Field field, Class<?> target, boolean usesSet) {
         JoinTable joinTable = field.getAnnotation(JoinTable.class);
         String location = ownerType.getName() + "." + field.getName();
-        String ownerIdColumn = resolveSingleIdColumn(ownerType, location);
-        String targetIdColumn = resolveSingleIdColumn(target, location);
         String targetTable = resolveTableName(target);
         String tableName = joinTable != null && !joinTable.name().isBlank()
                 ? joinTable.name()
                 : namingStrategy.joinTableName(ownerTable, targetTable);
-        String ownerForeignKeyColumn = resolveSingleJoinColumn(
+        List<ManyToManyInfo.JoinColumnRef> ownerColumns = resolveManyToManyJoinColumnRefs(
+                ownerType,
                 joinTable == null ? null : joinTable.joinColumns(),
-                namingStrategy.joinColumnName(ownerType.getSimpleName(), ownerIdColumn),
+                ownerType.getSimpleName(),
                 location + " @JoinTable.joinColumns");
-        String targetForeignKeyColumn = resolveSingleJoinColumn(
+        List<ManyToManyInfo.JoinColumnRef> targetColumns = resolveManyToManyJoinColumnRefs(
+                target,
                 joinTable == null ? null : joinTable.inverseJoinColumns(),
-                namingStrategy.joinColumnName(target.getSimpleName(), targetIdColumn),
+                target.getSimpleName(),
                 location + " @JoinTable.inverseJoinColumns");
-        return new ManyToManyInfo(true, target, tableName, ownerForeignKeyColumn, targetForeignKeyColumn, "", usesSet);
+        return new ManyToManyInfo(true, target, tableName, ownerColumns, targetColumns, "", usesSet);
+    }
+
+    /**
+     * {@code @ManyToMany} link table의 한 측(owner 또는 target) FK 컬럼들을 참조 {@code @Id} 컴포넌트 순서대로
+     * 해석한다. 단일키는 컬럼 1개, 복합키({@code @EmbeddedId}/{@code @IdClass})는 컴포넌트마다 1개다. 컬럼명은
+     * {@code @JoinTable}의 {@code joinColumns}/{@code inverseJoinColumns}가 있으면 honor하고(전부
+     * {@code referencedColumnName} 지정 시 참조명 매칭, 전부 미지정 시 위치 매칭), 없으면 기본
+     * {@code <entity>_<referencedColumn>} 규칙으로 만든다. 각 컬럼은 그 참조 {@code @Id} 컬럼명과 짝지어 저장된다.
+     */
+    private List<ManyToManyInfo.JoinColumnRef> resolveManyToManyJoinColumnRefs(
+            Class<?> type, JoinColumn[] declared, String entitySimpleName, String location) {
+        List<String> referencedColumns = resolveManyToManyReferencedColumns(type, location);
+        JoinColumn[] aligned = alignManyToManyJoinColumns(declared, referencedColumns, location);
+        List<ManyToManyInfo.JoinColumnRef> refs = new ArrayList<>(referencedColumns.size());
+        for (int i = 0; i < referencedColumns.size(); i++) {
+            String referenced = referencedColumns.get(i);
+            JoinColumn joinColumn = aligned[i];
+            String columnName = joinColumn != null && !joinColumn.name().isBlank()
+                    ? joinColumn.name()
+                    : namingStrategy.joinColumnName(entitySimpleName, referenced);
+            refs.add(new ManyToManyInfo.JoinColumnRef(columnName, referenced));
+        }
+        return refs;
+    }
+
+    /**
+     * {@code @ManyToMany} 대상/소유 엔티티의 {@code @Id} 컬럼명들을 참조 순서대로 경량 reflection으로 해석한다.
+     * 단일 {@code @Id}는 컬럼 1개, 복합키({@code @EmbeddedId}/{@code @IdClass})는
+     * {@link #resolveReferencedIdComponents}로 컴포넌트 컬럼들을 얻는다. {@code @Id}가 없거나 nested embedded
+     * {@code @EmbeddedId}처럼 미지원 복합키면 fail-fast로 거부한다(조용한 오매핑 방지).
+     */
+    private List<String> resolveManyToManyReferencedColumns(Class<?> type, String location) {
+        List<Field> idFields = new ArrayList<>();
+        boolean hasEmbeddedId = false;
+        for (Field candidate : mappedFields(type)) {
+            if (isNotPersistable(candidate)) {
+                continue;
+            }
+            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
+                hasEmbeddedId = true;
+            }
+            if (candidate.isAnnotationPresent(Id.class)) {
+                idFields.add(candidate);
+            }
+        }
+        if (hasEmbeddedId || idFields.size() >= 2) {
+            List<ReferencedIdComponent> components = resolveReferencedIdComponents(type);
+            if (components == null) {
+                throw new IllegalArgumentException(location
+                        + " @ManyToMany with composite-keyed entity " + type.getName()
+                        + " is not supported (nested @EmbeddedId component or unmappable id)");
+            }
+            return components.stream().map(ReferencedIdComponent::referencedColumnName).toList();
+        }
+        if (idFields.size() == 1) {
+            return List.of(columnNameOf(idFields.get(0)));
+        }
+        throw new IllegalArgumentException(
+                location + " @ManyToMany references entity " + type.getName() + " with no @Id");
+    }
+
+    /**
+     * {@code @JoinTable}의 join/inverseJoin 컬럼 배열을 참조 {@code @Id} 컬럼 순서에 맞춰 정렬한다. 단일키는
+     * 기존 규약을 그대로 보존한다(컬럼 미지정→기본 이름, 1개→그대로, 2개 이상→fail-fast). 복합키는 컬럼 수가
+     * 컴포넌트 수와 일치해야 하며 {@code referencedColumnName}은 전부 지정(참조명 매칭)하거나 전부 생략(위치 매칭)
+     * 해야 한다. 위반 시 fail-fast.
+     */
+    private static JoinColumn[] alignManyToManyJoinColumns(
+            JoinColumn[] declared, List<String> referencedColumns, String location) {
+        JoinColumn[] result = new JoinColumn[referencedColumns.size()];
+        if (declared == null || declared.length == 0) {
+            return result;
+        }
+        if (referencedColumns.size() == 1) {
+            // 단일키: 레거시 동작 보존 — referencedColumnName은 여기서 검증하지 않는다(FK 해석에서 별도로 검증).
+            if (declared.length > 1) {
+                throw new IllegalArgumentException(
+                        location + " with multiple columns (composite keys) is not supported");
+            }
+            result[0] = declared[0];
+            return result;
+        }
+        if (declared.length != referencedColumns.size()) {
+            throw new IllegalArgumentException(location + " declares " + declared.length
+                    + " join column(s) but the referenced entity has " + referencedColumns.size()
+                    + " @Id column(s); one @JoinColumn per referenced @Id column is required");
+        }
+        int withReferenced = 0;
+        for (JoinColumn joinColumn : declared) {
+            if (!joinColumn.referencedColumnName().isBlank()) {
+                withReferenced++;
+            }
+        }
+        if (withReferenced == 0) {
+            System.arraycopy(declared, 0, result, 0, declared.length);
+            return result;
+        }
+        if (withReferenced != declared.length) {
+            throw new IllegalArgumentException(location
+                    + " @JoinColumn referencedColumnName must be either all specified or all omitted");
+        }
+        for (int i = 0; i < referencedColumns.size(); i++) {
+            String referenced = referencedColumns.get(i);
+            JoinColumn match = null;
+            for (JoinColumn joinColumn : declared) {
+                if (joinColumn.referencedColumnName().equals(referenced)) {
+                    match = joinColumn;
+                    break;
+                }
+            }
+            if (match == null) {
+                throw new IllegalArgumentException(location
+                        + " @JoinColumn referencedColumnName does not cover referenced @Id column \""
+                        + referenced + "\"");
+            }
+            result[i] = match;
+        }
+        return result;
     }
 
     /**
@@ -3384,7 +3503,7 @@ public final class EntityMetadataFactory {
                 target, resolveTableName(target), owningField, entityType, usesSet);
         return new ManyToManyInfo(
                 false, target, owning.joinTableName(),
-                owning.targetForeignKeyColumn(), owning.ownerForeignKeyColumn(), mappedBy, usesSet);
+                owning.targetForeignKeyColumns(), owning.ownerForeignKeyColumns(), mappedBy, usesSet);
     }
 
     /**

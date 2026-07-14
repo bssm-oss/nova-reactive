@@ -4,7 +4,9 @@ import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.ToOneForeignKeyColumn;
 import io.nova.query.jpql.ast.Assignment;
+import io.nova.query.jpql.ast.ComparisonOp;
 import io.nova.query.jpql.ast.Expression;
 import io.nova.query.jpql.ast.JoinClause;
 import io.nova.query.jpql.ast.JpqlStatement;
@@ -234,13 +236,7 @@ public final class JpqlSqlBuilder {
                         + " is only supported for @ManyToOne/owning @OneToOne relations in v1; "
                         + "other association joins are deferred");
             }
-            if (relation.isCompositeToOne()) {
-                // 복합키 타겟 to-one은 FK가 N개 컬럼이지만 join on-절은 단일 FK=PK만 emit한다. 첫 컴포넌트만
-                // 잇는 조용한 오답 대신 명확히 거부한다(multi-column FK join은 별도 Wave).
-                throw new JpqlException("JOIN " + join.ownerAlias() + "." + join.relation()
-                        + " over a composite-key to-one target is not yet supported in v1 "
-                        + "(its foreign key spans multiple columns; multi-column FK joins are deferred)");
-            }
+            // 복합키 타겟 to-one은 FK가 N개 컬럼이며 appendFrom이 모든 컴포넌트 짝을 ON에 렌더한다.
             EntityMetadata<?> target = resolver.resolve(relation.manyToOneTargetType());
             scope.bind(join.alias(), target);
         }
@@ -256,19 +252,43 @@ public final class JpqlSqlBuilder {
             EntityMetadata<?> target = resolver.resolve(relation.manyToOneTargetType());
             ctx.sql.append(join.inner() ? " join " : " left join ")
                     .append(tableRef(target)).append(' ').append(join.alias())
-                    .append(" on ")
-                    .append(join.ownerAlias()).append('.').append(dialect.quote(relation.columnName()))
-                    .append(" = ")
-                    .append(join.alias()).append('.').append(dialect.quote(target.idProperty().columnName()));
+                    .append(" on ");
+            appendJoinOn(ctx, join.ownerAlias(), join.alias(), joinColumnPairs(relation, target));
         }
         for (ImplicitJoin ij : block.implicitByKey.values()) {
             ctx.sql.append(" join ")
                     .append(tableRef(ij.targetMeta)).append(' ').append(ij.alias)
-                    .append(" on ")
-                    .append(ij.ownerAlias).append('.').append(dialect.quote(ij.fkColumn))
-                    .append(" = ")
-                    .append(ij.alias).append('.').append(dialect.quote(ij.targetIdColumn));
+                    .append(" on ");
+            appendJoinOn(ctx, ij.ownerAlias, ij.alias, ij.columnPairs);
         }
+    }
+
+    /** {@code ownerAlias.fk = targetAlias.targetId} 짝들을 {@code and}로 이어 ON 절 본문을 붙인다. */
+    private void appendJoinOn(Ctx ctx, String ownerAlias, String targetAlias, List<ColumnPair> pairs) {
+        for (int i = 0; i < pairs.size(); i++) {
+            if (i > 0) {
+                ctx.sql.append(" and ");
+            }
+            ColumnPair pair = pairs.get(i);
+            ctx.sql.append(ownerAlias).append('.').append(dialect.quote(pair.fkColumn()))
+                    .append(" = ")
+                    .append(targetAlias).append('.').append(dialect.quote(pair.targetColumn()));
+        }
+    }
+
+    /**
+     * owning to-one 관계의 join ON 컬럼 짝들. 단일키는 {@code fk = target.id} 한 짝, 복합키 타겟은 각 FK
+     * 컬럼을 참조 {@code @Id} 컴포넌트 컬럼과 짝지어 순서대로 담는다(read/write/DDL과 동일 순서 소스).
+     */
+    private static List<ColumnPair> joinColumnPairs(PersistentProperty relation, EntityMetadata<?> target) {
+        if (relation.isCompositeToOne()) {
+            List<ColumnPair> pairs = new ArrayList<>();
+            for (ToOneForeignKeyColumn fk : relation.toOneForeignKey().columns()) {
+                pairs.add(new ColumnPair(fk.columnName(), fk.referencedColumnName()));
+            }
+            return List.copyOf(pairs);
+        }
+        return List.of(new ColumnPair(relation.columnName(), target.idProperty().columnName()));
     }
 
     // ----------------------------------------------------------------------------------------
@@ -347,11 +367,7 @@ public final class JpqlSqlBuilder {
                 renderPredicate(ctx, not.inner());
                 ctx.sql.append(')');
             }
-            case Predicate.Comparison c -> {
-                renderExpression(ctx, c.left());
-                ctx.sql.append(' ').append(c.op().symbol()).append(' ');
-                renderExpression(ctx, c.right());
-            }
+            case Predicate.Comparison c -> renderComparison(ctx, c);
             case Predicate.Like like -> {
                 renderExpression(ctx, like.value());
                 ctx.sql.append(like.negated() ? " not like " : " like ");
@@ -369,10 +385,7 @@ public final class JpqlSqlBuilder {
                 ctx.sql.append(" and ");
                 renderExpression(ctx, b.high());
             }
-            case Predicate.Null n -> {
-                renderExpression(ctx, n.value());
-                ctx.sql.append(n.negated() ? " is not null" : " is null");
-            }
+            case Predicate.Null n -> renderNull(ctx, n);
             case Predicate.InList in -> {
                 renderExpression(ctx, in.value());
                 ctx.sql.append(in.negated() ? " not in (" : " in (");
@@ -397,6 +410,101 @@ public final class JpqlSqlBuilder {
                 ctx.sql.append(')');
             }
         }
+    }
+
+    /**
+     * 비교 술어를 렌더한다. 한쪽이 복합키 타겟 to-one terminal({@code c.parent})이고 다른 쪽이 파라미터/리터럴
+     * (참조 엔티티)이면 각 FK 컴포넌트 비교로 전개한다({@code =}→컴포넌트 eq의 and, {@code <>}→컴포넌트 neq의 or).
+     * 그 외는 기존 좌/우 식 렌더로 처리한다.
+     */
+    private void renderComparison(Ctx ctx, Predicate.Comparison c) {
+        CompositeToOneRef ref = compositeToOneRef(ctx, c.left());
+        Expression other = c.right();
+        if (ref == null) {
+            ref = compositeToOneRef(ctx, c.right());
+            other = c.left();
+        }
+        if (ref != null) {
+            renderCompositeComparison(ctx, ref, c.op(), other);
+            return;
+        }
+        renderExpression(ctx, c.left());
+        ctx.sql.append(' ').append(c.op().symbol()).append(' ');
+        renderExpression(ctx, c.right());
+    }
+
+    /** IS [NOT] NULL 술어. 복합키 to-one terminal이면 모든 FK 컬럼의 IS [NOT] NULL을 and로 전개한다. */
+    private void renderNull(Ctx ctx, Predicate.Null n) {
+        CompositeToOneRef ref = compositeToOneRef(ctx, n.value());
+        if (ref != null) {
+            List<ToOneForeignKeyColumn> columns = ref.property().toOneForeignKey().columns();
+            ctx.sql.append('(');
+            for (int i = 0; i < columns.size(); i++) {
+                if (i > 0) {
+                    ctx.sql.append(" and ");
+                }
+                appendCompositeColumn(ctx, ref.alias(), columns.get(i));
+                ctx.sql.append(n.negated() ? " is not null" : " is null");
+            }
+            ctx.sql.append(')');
+            return;
+        }
+        renderExpression(ctx, n.value());
+        ctx.sql.append(n.negated() ? " is not null" : " is null");
+    }
+
+    /** 식이 복합키 타겟 to-one terminal 경로면 그 참조(별칭+관계)를, 아니면 {@code null}을 돌려준다. */
+    private CompositeToOneRef compositeToOneRef(Ctx ctx, Expression expression) {
+        if (!(expression instanceof Expression.Path path)) {
+            return null;
+        }
+        ResolvedPath resolved = resolvePath(ctx, path);
+        PersistentProperty property = resolved.property();
+        if (property.manyToOne() && property.isCompositeToOne()) {
+            return new CompositeToOneRef(resolved.alias(), property);
+        }
+        return null;
+    }
+
+    private void renderCompositeComparison(Ctx ctx, CompositeToOneRef ref, ComparisonOp op, Expression other) {
+        boolean eq = op == ComparisonOp.EQ;
+        boolean ne = op == ComparisonOp.NE;
+        if (!eq && !ne) {
+            throw new JpqlException("Ordering comparison (" + op.symbol() + ") on composite-key to-one '"
+                    + ref.property().propertyName() + "' is not supported; only = and <> are, or compare its "
+                    + "@Id components individually");
+        }
+        JpqlBinding source = compositeComparisonSource(other, ref);
+        List<ToOneForeignKeyColumn> columns = ref.property().toOneForeignKey().columns();
+        ctx.sql.append('(');
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                ctx.sql.append(ne ? " or " : " and ");
+            }
+            ToOneForeignKeyColumn column = columns.get(i);
+            appendCompositeColumn(ctx, ref.alias(), column);
+            ctx.sql.append(eq ? " = " : " <> ");
+            ctx.bind(new JpqlBinding.Component(source, column));
+            ctx.sql.append(marker(ctx));
+        }
+        ctx.sql.append(')');
+    }
+
+    /** 복합키 to-one 비교의 우변(참조 엔티티) 바인딩 소스. 파라미터/리터럴만 허용한다. */
+    private static JpqlBinding compositeComparisonSource(Expression other, CompositeToOneRef ref) {
+        return switch (other) {
+            case Expression.NamedParameter p -> new JpqlBinding.Named(p.name());
+            case Expression.PositionalParameter p -> new JpqlBinding.Positional(p.position());
+            case Expression.Literal l -> new JpqlBinding.Literal(l.value());
+            default -> throw new JpqlException("Composite-key to-one '" + ref.property().propertyName()
+                    + "' can only be compared to a bound parameter or entity reference literal, not "
+                    + other.getClass().getSimpleName());
+        };
+    }
+
+    private void appendCompositeColumn(Ctx ctx, String alias, ToOneForeignKeyColumn column) {
+        String col = dialect.quote(column.columnName());
+        ctx.sql.append(ctx.qualify ? alias + "." + col : col);
     }
 
     // ----------------------------------------------------------------------------------------
@@ -695,18 +803,23 @@ public final class JpqlSqlBuilder {
      * 묵시 INNER JOIN으로 전개해 마지막 별칭 컬럼으로 해석한다. {@code ctx.qualify}면 {@code alias."column"}.
      */
     private String pathColumn(Ctx ctx, Expression.Path path) {
+        return columnOf(ctx, resolvePath(ctx, path));
+    }
+
+    /**
+     * 경로를 최종 소유 별칭/프로퍼티까지 해석한다(중간 to-one 세그먼트는 묵시 INNER JOIN으로 전개하며, 복합키
+     * 타겟이면 각 레벨에서 다중컬럼 ON을 만든다). 최종 세그먼트가 복합키 to-one이어도 예외를 던지지 않고 그대로
+     * 반환한다 — 단일 컬럼 축약 여부는 호출부가 결정한다({@link #columnOf}는 fail-fast, 비교/IS NULL은 컴포넌트 전개).
+     */
+    private ResolvedPath resolvePath(Ctx ctx, Expression.Path path) {
         EntityMetadata<?> ownerMeta = ctx.scope.resolve(path.alias());
         List<String> segments = path.segments();
         if (segments.isEmpty()) {
-            // 순수 별칭 → 그 엔티티의 id 컬럼(COUNT(e) 등).
-            String col = dialect.quote(ownerMeta.idProperty().columnName());
-            return ctx.qualify ? path.alias() + "." + col : col;
-        }
-        if (segments.size() == 1) {
-            return resolveColumn(ctx, path.alias(), ownerMeta, segments.get(0));
+            // 순수 별칭 → 그 엔티티의 대표 id property(COUNT(e) 등).
+            return new ResolvedPath(path.alias(), ownerMeta.idProperty());
         }
         // 다세그먼트: 묵시 조인이 필요하므로 unqualified(벌크) 컨텍스트에서는 지원하지 않는다.
-        if (!ctx.qualify) {
+        if (segments.size() > 1 && !ctx.qualify) {
             throw new JpqlException("Multi-segment path '" + path.alias() + "."
                     + String.join(".", segments) + "' requires a join and is not supported in bulk UPDATE/DELETE");
         }
@@ -722,16 +835,35 @@ public final class JpqlSqlBuilder {
                 throw new JpqlException("Path segment '" + segment + "' navigates a collection or non-association "
                         + "field; implicit joins only support @ManyToOne/owning @OneToOne");
             }
-            if (prop.isCompositeToOne()) {
-                // 복합키 타겟 to-one 경유 implicit join은 단일 FK=PK만 emit하므로 조용한 오답을 낸다. 명확히 거부.
-                throw new JpqlException("Path segment '" + segment + "' navigates a composite-key to-one target; "
-                        + "implicit joins over multi-column foreign keys are not yet supported in v1");
-            }
             EntityMetadata<?> targetMeta = resolver.resolve(prop.manyToOneTargetType());
+            // 중간 세그먼트가 복합키 to-one이면 implicitJoin이 모든 컴포넌트 짝을 ON에 렌더한다(각 레벨 복합 ON).
             currentAlias = implicitJoin(ctx, currentAlias, segment, prop, targetMeta);
             currentMeta = targetMeta;
         }
-        return resolveColumn(ctx, currentAlias, currentMeta, segments.get(segments.size() - 1));
+        String field = segments.get(segments.size() - 1);
+        EntityMetadata<?> finalMeta = currentMeta;
+        PersistentProperty property = finalMeta.findProperty(field)
+                .orElseThrow(() -> new JpqlException("Unknown field '" + field + "' on entity "
+                        + finalMeta.entityType().getSimpleName()));
+        return new ResolvedPath(currentAlias, property);
+    }
+
+    /** 해석된 경로를 단일 컬럼 참조로. 컬렉션/복합키 to-one은 단일 컬럼 자리에서 fail-fast한다. */
+    private String columnOf(Ctx ctx, ResolvedPath resolved) {
+        PersistentProperty property = resolved.property();
+        if (property.isRelation() && !property.manyToOne()) {
+            throw new JpqlException("Path over collection/association field '" + property.propertyName()
+                    + "' is not supported; use an explicit JOIN or SIZE(...)");
+        }
+        if (property.manyToOne() && property.isCompositeToOne()) {
+            // 단일 컬럼 자리(SELECT 투영/GROUP BY/ORDER BY/산술)에서 복합키 to-one은 대표 컬럼 하나로 축약할 수
+            // 없다 — 조용한 오답 대신 거부한다. 비교/IS NULL은 renderComparison/renderNull이 컴포넌트로 전개한다.
+            throw new JpqlException("Reference to composite-key to-one association '" + property.propertyName()
+                    + "' as a single column is not supported (its foreign key spans multiple columns); "
+                    + "compare it with = / <> / IS NULL, join it, or reference its @Id components explicitly");
+        }
+        String col = dialect.quote(property.columnName());
+        return ctx.qualify ? resolved.alias() + "." + col : col;
     }
 
     /** {@code alias.field} 단일 세그먼트를 컬럼 참조로. to-one 관계면 FK 컬럼, 컬렉션이면 fail-fast. */
@@ -764,8 +896,7 @@ public final class JpqlSqlBuilder {
         }
         String alias = ctx.nextImplicitAlias();
         ctx.scope.bind(alias, targetMeta);
-        ImplicitJoin ij = new ImplicitJoin(
-                alias, ownerAlias, targetMeta, prop.columnName(), targetMeta.idProperty().columnName());
+        ImplicitJoin ij = new ImplicitJoin(alias, ownerAlias, targetMeta, joinColumnPairs(prop, targetMeta));
         ctx.block.implicitByKey.put(key, ij);
         return alias;
     }
@@ -1064,22 +1195,31 @@ public final class JpqlSqlBuilder {
         }
     }
 
-    /** 다세그먼트 경로에서 자동 생성한 INNER JOIN. */
+    /** 다세그먼트 경로에서 자동 생성한 INNER JOIN. 복합키 타겟이면 {@code columnPairs}가 N개 짝을 담는다. */
     private static final class ImplicitJoin {
         final String alias;
         final String ownerAlias;
         final EntityMetadata<?> targetMeta;
-        final String fkColumn;
-        final String targetIdColumn;
+        final List<ColumnPair> columnPairs;
 
-        ImplicitJoin(String alias, String ownerAlias, EntityMetadata<?> targetMeta,
-                     String fkColumn, String targetIdColumn) {
+        ImplicitJoin(String alias, String ownerAlias, EntityMetadata<?> targetMeta, List<ColumnPair> columnPairs) {
             this.alias = alias;
             this.ownerAlias = ownerAlias;
             this.targetMeta = targetMeta;
-            this.fkColumn = fkColumn;
-            this.targetIdColumn = targetIdColumn;
+            this.columnPairs = columnPairs;
         }
+    }
+
+    /** join ON 한 짝: owner 테이블 FK 컬럼 ↔ target 테이블 참조 컬럼(단일키는 target @Id). */
+    private record ColumnPair(String fkColumn, String targetColumn) {
+    }
+
+    /** 경로 해석 결과: 최종 세그먼트가 위치한 별칭과 그 프로퍼티. */
+    private record ResolvedPath(String alias, PersistentProperty property) {
+    }
+
+    /** 복합키 to-one terminal 비교/IS NULL 대상: FK가 걸린 별칭과 그 관계 프로퍼티. */
+    private record CompositeToOneRef(String alias, PersistentProperty property) {
     }
 
     /** 별칭 → 메타데이터 스코프. 서브쿼리 상관 참조를 위해 부모 스코프로 위임한다. */

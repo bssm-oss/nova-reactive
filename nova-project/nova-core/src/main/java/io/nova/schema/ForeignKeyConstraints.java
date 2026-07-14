@@ -133,24 +133,34 @@ final class ForeignKeyConstraints {
             if (emit(ownerForeignKey)) {
                 String relationDesc = "@JoinTable(joinColumns) of @ManyToMany "
                         + metadata.entityType().getName() + "#" + property.propertyName();
+                // 복합키 owner: link table의 owner FK 컬럼들 → owner PK 컬럼들(참조명은 이미 join 컬럼과 짝지어져
+                // 있다). 단일키는 기존 단일 PK 참조 검증 경로를 그대로 탄다(회귀 0).
+                List<String> fkColumns = columnNames(info.ownerForeignKeyColumns());
+                List<String> referencedColumns = metadata.hasCompositeId()
+                        ? referencedNames(info.ownerForeignKeyColumns())
+                        : referencedColumns(metadata, joinColumns(joinTable, true), relationDesc);
                 add(byKey, new ForeignKeyDefinition(
                         info.joinTableName(),
                         ownerForeignKey.name(),
-                        List.of(info.ownerForeignKeyColumn()),
+                        fkColumns,
                         metadata.tableName(),
-                        referencedColumns(metadata, joinColumns(joinTable, true), relationDesc)));
+                        referencedColumns));
             }
             ForeignKey inverseForeignKey = joinTable == null ? null : joinTable.inverseForeignKey();
             if (emit(inverseForeignKey)) {
                 EntityMetadata<?> target = factory.getEntityMetadata(info.targetType());
                 String relationDesc = "@JoinTable(inverseJoinColumns) of @ManyToMany "
                         + metadata.entityType().getName() + "#" + property.propertyName();
+                List<String> fkColumns = columnNames(info.targetForeignKeyColumns());
+                List<String> referencedColumns = target.hasCompositeId()
+                        ? referencedNames(info.targetForeignKeyColumns())
+                        : referencedColumns(target, joinColumns(joinTable, false), relationDesc);
                 add(byKey, new ForeignKeyDefinition(
                         info.joinTableName(),
                         inverseForeignKey.name(),
-                        List.of(info.targetForeignKeyColumn()),
+                        fkColumns,
                         target.tableName(),
-                        referencedColumns(target, joinColumns(joinTable, false), relationDesc)));
+                        referencedColumns));
             }
         }
     }
@@ -221,6 +231,21 @@ final class ForeignKeyConstraints {
                 target,
                 joinColumn == null ? new JoinColumn[0] : new JoinColumn[] {joinColumn},
                 relationDesc);
+    }
+
+    /**
+     * {@code @ManyToMany} link table FK 컬럼 refs에서 join table 컬럼명들을 참조 순서대로 뽑는다(복합 FK 발행용).
+     */
+    private static List<String> columnNames(List<ManyToManyInfo.JoinColumnRef> refs) {
+        return refs.stream().map(ManyToManyInfo.JoinColumnRef::columnName).toList();
+    }
+
+    /**
+     * {@code @ManyToMany} link table FK 컬럼 refs에서 참조 {@code @Id} 컬럼명들을 참조 순서대로 뽑는다(복합 FK가
+     * 참조하는 대상 PK 컬럼들).
+     */
+    private static List<String> referencedNames(List<ManyToManyInfo.JoinColumnRef> refs) {
+        return refs.stream().map(ManyToManyInfo.JoinColumnRef::referencedColumnName).toList();
     }
 
     /**

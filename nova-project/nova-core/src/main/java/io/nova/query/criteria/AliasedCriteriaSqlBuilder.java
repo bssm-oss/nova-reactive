@@ -117,10 +117,18 @@ final class AliasedCriteriaSqlBuilder {
             String keyword = join.getJoinType() == JoinType.LEFT ? " left join " : " inner join ";
             ctx.sql.append(keyword)
                     .append(tableRef(join.ownerMetadata())).append(' ').append(dialect.quote(join.alias()))
-                    .append(" on ")
-                    .append(qualified(join.parentFrom().alias(), join.parentColumn()))
-                    .append(" = ")
-                    .append(qualified(join.alias(), join.childColumn()));
+                    .append(" on ");
+            // 단일키는 한 짝, 복합키 타겟 to-one은 모든 FK↔참조 @Id 컴포넌트 짝을 and로 잇는다.
+            List<CriteriaJoinResolver.JoinColumnPair> pairs = join.columnPairs();
+            for (int i = 0; i < pairs.size(); i++) {
+                if (i > 0) {
+                    ctx.sql.append(" and ");
+                }
+                CriteriaJoinResolver.JoinColumnPair pair = pairs.get(i);
+                ctx.sql.append(qualified(join.parentFrom().alias(), pair.parentColumn()))
+                        .append(" = ")
+                        .append(qualified(join.alias(), pair.childColumn()));
+            }
             renderJoins(ctx, join);
         }
     }
@@ -166,6 +174,10 @@ final class AliasedCriteriaSqlBuilder {
                 ctx.sql.append(')');
             }
             case COMPARISON -> {
+                if (isCompositeToOne(predicate.path())) {
+                    renderCompositeToOneComparison(ctx, predicate.path(), predicate.op(), predicate.value());
+                    break;
+                }
                 ctx.sql.append(column(predicate.path())).append(' ').append(predicate.op().symbol()).append(' ');
                 bindMarker(ctx, predicate.value());
             }
@@ -180,8 +192,14 @@ final class AliasedCriteriaSqlBuilder {
                 bindMarker(ctx, predicate.high());
             }
             case IN -> renderIn(ctx, predicate);
-            case NULL -> ctx.sql.append(column(predicate.path()))
-                    .append(predicate.negated() ? " is not null" : " is null");
+            case NULL -> {
+                if (isCompositeToOne(predicate.path())) {
+                    renderCompositeToOneNull(ctx, predicate.path(), predicate.negated());
+                    break;
+                }
+                ctx.sql.append(column(predicate.path()))
+                        .append(predicate.negated() ? " is not null" : " is null");
+            }
             case EXISTS -> {
                 ctx.sql.append(predicate.negated() ? "not exists (" : "exists (");
                 renderSubquery(ctx, predicate.subquery(), true);
@@ -286,12 +304,74 @@ final class AliasedCriteriaSqlBuilder {
     }
 
     private String column(CriteriaColumnPath path) {
+        PersistentProperty property = path.property();
+        if (property.manyToOne() && property.isCompositeToOne()) {
+            // 복합키 타겟 to-one을 단일 컬럼으로 렌더하는 자리(SELECT 투영/GROUP BY/ORDER BY/집계)는 대표 컬럼
+            // 하나로 축약할 수 없다 — 조용한 오답 대신 명확히 거부한다. 비교/IS NULL만 컴포넌트로 전개된다.
+            throw new CriteriaException("Composite-key to-one association '" + property.propertyName()
+                    + "' cannot be used as a single column here (its foreign key spans multiple columns); "
+                    + "it is only supported in a join, an equality/inequality comparison, or an IS [NOT] NULL test");
+        }
         CriteriaFrom source = path.source();
-        String columnName = path.property().columnName();
+        String columnName = property.columnName();
         if (source == null) {
             return dialect.quote(columnName);
         }
         return qualified(source.alias(), columnName);
+    }
+
+    /** 경로가 복합키 타겟 owning to-one을 가리키는지(다중컬럼 FK). */
+    private static boolean isCompositeToOne(CriteriaColumnPath path) {
+        if (path == null) {
+            return false;
+        }
+        PersistentProperty property = path.property();
+        return property.manyToOne() && property.isCompositeToOne();
+    }
+
+    /**
+     * {@code alias.parent = :ref} / {@code alias.parent <> :ref}를 모든 FK 컴포넌트 비교로 전개한다.
+     * {@code =}는 각 컴포넌트 eq의 {@code and}, {@code <>}는 각 컴포넌트 neq의 {@code or}(튜플 부등)로 렌더하며,
+     * 각 bind 값은 참조 엔티티에서 해당 {@code @Id} 컴포넌트를 꺼내 저장 표현으로 인코딩한다.
+     */
+    private void renderCompositeToOneComparison(Ctx ctx, CriteriaColumnPath path, CompareOp op, Object reference) {
+        boolean eq = op == CompareOp.EQ;
+        boolean ne = op == CompareOp.NE;
+        if (!eq && !ne) {
+            throw new CriteriaException("Ordering comparison (" + op.symbol() + ") on composite-key to-one '"
+                    + path.property().propertyName() + "' is not supported; only equal/notEqual are, "
+                    + "or compare its @Id components individually");
+        }
+        String alias = path.source() == null ? null : path.source().alias();
+        List<io.nova.metadata.ToOneForeignKeyColumn> columns = path.property().toOneForeignKey().columns();
+        ctx.sql.append('(');
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                ctx.sql.append(ne ? " or " : " and ");
+            }
+            io.nova.metadata.ToOneForeignKeyColumn fk = columns.get(i);
+            ctx.sql.append(alias == null ? dialect.quote(fk.columnName()) : qualified(alias, fk.columnName()))
+                    .append(eq ? " = " : " <> ");
+            Object domain = reference == null ? null : fk.readReferencedValue(reference);
+            bindMarker(ctx, fk.toColumnValue(domain));
+        }
+        ctx.sql.append(')');
+    }
+
+    /** {@code alias.parent IS [NOT] NULL}을 모든 FK 컬럼의 IS [NOT] NULL {@code and}로 전개한다. */
+    private void renderCompositeToOneNull(Ctx ctx, CriteriaColumnPath path, boolean negated) {
+        String alias = path.source() == null ? null : path.source().alias();
+        List<io.nova.metadata.ToOneForeignKeyColumn> columns = path.property().toOneForeignKey().columns();
+        ctx.sql.append('(');
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                ctx.sql.append(" and ");
+            }
+            io.nova.metadata.ToOneForeignKeyColumn fk = columns.get(i);
+            ctx.sql.append(alias == null ? dialect.quote(fk.columnName()) : qualified(alias, fk.columnName()))
+                    .append(negated ? " is not null" : " is null");
+        }
+        ctx.sql.append(')');
     }
 
     private String qualified(String alias, String columnName) {
