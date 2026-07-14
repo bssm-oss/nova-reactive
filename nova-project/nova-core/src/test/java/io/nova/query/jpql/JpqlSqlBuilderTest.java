@@ -256,7 +256,8 @@ class JpqlSqlBuilderTest {
     }
 
     // ------------------------------------------------------------------------------------
-    // 복합키 타겟 to-one join 은 다중컬럼 FK라 단일 FK=PK on-절로 표현할 수 없다 → 조용한 오답 대신 fail-fast.
+    // 복합키 타겟 to-one: join ON 과 terminal 비교/IS NULL 을 모든 FK 컴포넌트로 전개한다(다중컬럼 FK).
+    // SELECT 투영처럼 단일 컬럼으로 축약 불가한 자리만 fail-fast로 남는다.
     // ------------------------------------------------------------------------------------
 
     private JpqlSqlBuilder compositeBuilder() {
@@ -266,32 +267,59 @@ class JpqlSqlBuilderTest {
         return new JpqlSqlBuilder(dialect, compositeResolver);
     }
 
-    @Test
-    void failsFastOnExplicitJoinOverCompositeKeyToOne() {
-        JpqlSqlBuilder b = compositeBuilder();
-        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
-                "SELECT c.id FROM CompositeJoinChild c JOIN c.parent p").parse();
-        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
-        assertTrue(ex.getMessage().contains("composite-key"));
+    private TranslatedSql compositeScalar(String jpql) {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(jpql).parse();
+        return compositeBuilder().buildScalarSelect(select);
     }
 
     @Test
-    void failsFastOnImplicitJoinOverCompositeKeyToOne() {
-        JpqlSqlBuilder b = compositeBuilder();
-        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
-                "SELECT c.id FROM CompositeJoinChild c WHERE c.parent.k1 = 5").parse();
-        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
-        assertTrue(ex.getMessage().contains("composite-key"));
+    void explicitJoinOverCompositeKeyToOneRendersAllOnComponents() {
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c JOIN c.parent p");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c "
+                        + "join \"gc_composite_parent\" p on c.\"p_k1\" = p.\"k1\" and c.\"p_k2\" = p.\"k2\"",
+                t.sql());
     }
 
     @Test
-    void failsFastOnTerminalReferenceToCompositeKeyToOneInWhere() {
-        // terminal 단일 세그먼트 참조(WHERE c.parent = :p)도 대표 FK 컬럼 하나만 낼 수 있어 fail-fast여야 한다.
-        JpqlSqlBuilder b = compositeBuilder();
-        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
-                "SELECT c.id FROM CompositeJoinChild c WHERE c.parent = :p").parse();
-        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
-        assertTrue(ex.getMessage().contains("composite-key"));
+    void implicitJoinOverCompositeKeyToOneRendersAllOnComponents() {
+        // 중간 세그먼트(parent)가 복합키 to-one이면 각 레벨에서 다중컬럼 ON을 만든 뒤 마지막 스칼라 컬럼을 해석한다.
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent.label = 'x'");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c "
+                        + "join \"gc_composite_parent\" j0 on c.\"p_k1\" = j0.\"k1\" and c.\"p_k2\" = j0.\"k2\" "
+                        + "where j0.\"label\" = ?",
+                t.sql());
+    }
+
+    @Test
+    void terminalReferenceToCompositeKeyToOneExpandsToComponentEquality() {
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent = :p");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where (c.\"p_k1\" = ? and c.\"p_k2\" = ?)",
+                t.sql());
+        assertEquals(2, t.bindings().size());
+        JpqlBinding.Component first = assertComponent(t.bindings().get(0));
+        JpqlBinding.Component second = assertComponent(t.bindings().get(1));
+        assertEquals(new JpqlBinding.Named("p"), first.source());
+        assertEquals(new JpqlBinding.Named("p"), second.source());
+        assertEquals("p_k1", first.column().columnName());
+        assertEquals("p_k2", second.column().columnName());
+    }
+
+    @Test
+    void terminalIsNullOverCompositeKeyToOneExpandsToAllForeignKeyColumns() {
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent IS NULL");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c "
+                        + "where (c.\"p_k1\" is null and c.\"p_k2\" is null)",
+                t.sql());
+        assertTrue(t.bindings().isEmpty());
+    }
+
+    private static JpqlBinding.Component assertComponent(JpqlBinding binding) {
+        assertTrue(binding instanceof JpqlBinding.Component, "expected component binding, got " + binding);
+        return (JpqlBinding.Component) binding;
     }
 
     @Test

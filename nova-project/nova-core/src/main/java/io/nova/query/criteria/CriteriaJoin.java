@@ -12,9 +12,9 @@ import jakarta.persistence.metamodel.Attribute;
 /**
  * {@code from.join("assoc"[, JoinType])}가 만드는 실제 SQL JOIN 노드. 대상 엔티티 테이블을 자기 alias로
  * 나타내며, 다시 {@link #get(String)}으로 대상 컬럼을 참조하거나 {@link #join(String)}으로 연쇄 join을
- * 만들 수 있다. join 조건 컬럼({@code on parentAlias.parentColumn = alias.childColumn})은
- * {@link CriteriaJoinResolver}가 연관 property에서 유도한다. 공통 탐색/alias 동작은
- * {@link AbstractCriteriaFrom}가 담당한다.
+ * 만들 수 있다. join 조건 컬럼 쌍({@code on parentAlias.parentColumn = alias.childColumn}, 복합키 타겟은
+ * 여러 짝을 {@code and} 결합)은 {@link CriteriaJoinResolver}가 연관 property에서 유도한다. 공통 탐색/alias
+ * 동작은 {@link AbstractCriteriaFrom}가 담당한다.
  *
  * @param <Z> 이 join을 만든 부모 소스의 엔티티 타입
  * @param <X> join 대상 엔티티 타입
@@ -47,14 +47,13 @@ final class CriteriaJoin<Z, X> extends AbstractCriteriaFrom<Z, X> implements Joi
         return parent;
     }
 
-    /** join 조건의 부모측 컬럼(부모 테이블 alias로 한정된다). */
-    String parentColumn() {
-        return target.parentColumn();
-    }
-
-    /** join 조건의 대상측 컬럼(이 join alias로 한정된다). */
-    String childColumn() {
-        return target.childColumn();
+    /**
+     * join 조건 컬럼 쌍들. 단일키 연관은 한 짝, 복합키 타겟 owning to-one은 참조 {@code @Id} 컴포넌트
+     * 수만큼의 짝을 담으며, SQL 빌더가 각 짝을 {@code parentAlias.parentColumn = alias.childColumn} 형태로
+     * {@code and} 결합한다.
+     */
+    java.util.List<CriteriaJoinResolver.JoinColumnPair> columnPairs() {
+        return target.columnPairs();
     }
 
     // --- Join surface -------------------------------------------------------------------------

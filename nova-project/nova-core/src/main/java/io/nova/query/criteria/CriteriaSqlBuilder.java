@@ -209,6 +209,14 @@ final class CriteriaSqlBuilder {
 
     private String column(CriteriaColumnPath path) {
         PersistentProperty property = path.property();
+        if (property.manyToOne() && property.isCompositeToOne()) {
+            // 복합키 타겟 to-one은 FK가 N개 컬럼이라 단일 컬럼으로 축약 불가. 비교/IS NULL은
+            // requiresAliasedSql이 alias 경로로 라우팅해 컴포넌트로 전개하므로 여기 도달하면(SELECT 투영/
+            // GROUP BY/ORDER BY 등) 축약 불가 위치다 — 조용한 오답 대신 명확히 거부한다.
+            throw new CriteriaException("Composite-key to-one association '" + property.propertyName()
+                    + "' cannot be used as a single column (its foreign key spans multiple columns); "
+                    + "it is only supported in a join or an equality/IS NULL comparison");
+        }
         return dialect.quote(property.columnName());
     }
 

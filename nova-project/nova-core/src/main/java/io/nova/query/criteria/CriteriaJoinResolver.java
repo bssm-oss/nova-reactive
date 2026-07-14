@@ -2,6 +2,10 @@ package io.nova.query.criteria;
 
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.ToOneForeignKeyColumn;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 연관 property 하나를 실제 SQL JOIN 조건으로 해석한다. {@code @ManyToOne}(및 동일 모델링인 owning
@@ -9,16 +13,25 @@ import io.nova.metadata.PersistentProperty;
  * {@code @OneToOne}은 부모 PK를 자식 테이블의 FK와 잇는다. {@code @ManyToMany}/{@code @ElementCollection}
  * 처럼 link/collection 테이블을 거치는 연관은 v1 join 범위를 벗어나 fail-fast한다.
  * <p>
+ * 복합키({@code @EmbeddedId}/{@code @IdClass}) 엔티티를 참조하는 owning to-one은 FK가 N개 컬럼이므로 ON
+ * 조건도 모든 컴포넌트 쌍을 {@code and}로 잇는다. 컬럼 순서/짝은 {@link PersistentProperty#toOneForeignKey()}가
+ * 참조 {@code @Id} 컴포넌트 순서대로 확정한 단일 소스({@code fkColumn ↔ referencedIdComponentColumn})를 그대로
+ * 따르므로 read/write/DDL 경로와 동일한 순서를 공유한다.
+ * <p>
  * 대상 엔티티/컬럼 이름은 {@link EntityMetadata}에서만 얻으므로(화이트리스트), 렌더된 식별자는 항상
  * 매핑된 컬럼으로 제한된다 — 사용자 입력이 식별자 자리에 끼어들 여지가 없다.
  */
 final class CriteriaJoinResolver {
 
+    /** ON 조건 한 짝: {@code parentAlias.parentColumn = childAlias.childColumn}. */
+    record JoinColumnPair(String parentColumn, String childColumn) {
+    }
+
     /**
-     * 해석 결과: 대상 엔티티 메타데이터와, {@code on parentAlias.parentColumn = childAlias.childColumn}에
-     * 들어갈 두 컬럼 이름.
+     * 해석 결과: 대상 엔티티 메타데이터와, {@code on ...}에 {@code and}로 이어질 컬럼 쌍들. 단일키 연관은
+     * 한 짝, 복합키 타겟 owning to-one은 참조 {@code @Id} 컴포넌트 수만큼의 짝을 순서대로 담는다.
      */
-    record JoinTarget(EntityMetadata<?> targetMetadata, String parentColumn, String childColumn) {
+    record JoinTarget(EntityMetadata<?> targetMetadata, List<JoinColumnPair> columnPairs) {
     }
 
     private CriteriaJoinResolver() {
@@ -36,24 +49,25 @@ final class CriteriaJoinResolver {
         }
         if (association.manyToOne()) {
             // owning @ManyToOne / @OneToOne: 부모 테이블 FK → 대상 PK.
-            if (association.isCompositeToOne()) {
-                // 복합키 타겟 to-one은 다중컬럼 FK(N개)를 가지지만 이 경로는 단일 FK=PK on-절만 emit한다.
-                // 조용히 첫 컴포넌트만 잇는 잘못된 join(silent wrong) 대신 명확히 거부한다(multi-column join은 별도 Wave).
-                throw new CriteriaException("Criteria join over composite-key to-one association '"
-                        + association.propertyName() + "' is not yet supported (its foreign key spans multiple "
-                        + "columns; multi-column FK joins are out of scope for v1)");
-            }
             EntityMetadata<?> target = context.resolve(association.manyToOneTargetType());
+            if (association.isCompositeToOne()) {
+                // 복합키 타겟 to-one: 각 FK 컬럼을 참조 @Id 컴포넌트 컬럼과 짝지어 모두 ON에 넣는다.
+                List<JoinColumnPair> pairs = new ArrayList<>();
+                for (ToOneForeignKeyColumn fk : association.toOneForeignKey().columns()) {
+                    pairs.add(new JoinColumnPair(fk.columnName(), fk.referencedColumnName()));
+                }
+                return new JoinTarget(target, List.copyOf(pairs));
+            }
             String parentColumn = association.columnName();
             String childColumn = singleIdColumn(target, association);
-            return new JoinTarget(target, parentColumn, childColumn);
+            return new JoinTarget(target, List.of(new JoinColumnPair(parentColumn, childColumn)));
         }
         if (association.oneToMany()) {
             // @OneToMany(mappedBy): 부모 PK → 자식 테이블의 owning FK 컬럼.
             EntityMetadata<?> target = context.resolve(association.oneToManyTargetType());
             String parentColumn = singleIdColumn(ownerMetadata, association);
             String childColumn = mappedByFkColumn(target, association.oneToManyMappedBy(), association);
-            return new JoinTarget(target, parentColumn, childColumn);
+            return new JoinTarget(target, List.of(new JoinColumnPair(parentColumn, childColumn)));
         }
         if (association.inverseToOne()) {
             // inverse @OneToOne(mappedBy): 부모 PK → 대상 테이블의 owning FK 컬럼. mappedBy로 owning
@@ -61,7 +75,7 @@ final class CriteriaJoinResolver {
             EntityMetadata<?> target = context.resolve(association.javaType());
             String parentColumn = singleIdColumn(ownerMetadata, association);
             String childColumn = owningFkColumnTo(target, ownerMetadata.entityType(), association);
-            return new JoinTarget(target, parentColumn, childColumn);
+            return new JoinTarget(target, List.of(new JoinColumnPair(parentColumn, childColumn)));
         }
         throw new CriteriaException("Attribute '" + association.propertyName()
                 + "' is not a joinable association");

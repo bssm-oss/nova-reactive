@@ -25,6 +25,12 @@ public final class JpqlParameters {
             case JpqlBinding.Literal l -> l.value();
             case JpqlBinding.Named n -> resolveNamed(n.name());
             case JpqlBinding.Positional p -> resolvePositional(p.position());
+            case JpqlBinding.Component c -> {
+                // 참조 엔티티에서 이 FK 컴포넌트의 @Id 도메인 값을 꺼내 저장 표현으로 인코딩한다.
+                Object reference = resolve(c.source());
+                Object domain = reference == null ? null : c.column().readReferencedValue(reference);
+                yield c.column().toColumnValue(domain);
+            }
         };
     }
 

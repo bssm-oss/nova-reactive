@@ -292,9 +292,22 @@ final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {
                     }
                 }
                 return false;
+            case COMPARISON, NULL:
+                // 복합키 타겟 owning to-one을 그 자체로 비교/IS NULL하면 FK가 N개 컬럼이므로 단일 루트
+                // QuerySpec/unqualified 스칼라 경로로는 표현할 수 없다. 컴포넌트 전개를 담당하는 alias 경로로
+                // 라우팅한다(단일키 to-one/스칼라는 기존 경로 그대로).
+                return referencesCompositeToOne(predicate.path());
             default:
                 return false;
         }
+    }
+
+    private static boolean referencesCompositeToOne(CriteriaColumnPath path) {
+        if (path == null) {
+            return false;
+        }
+        io.nova.metadata.PersistentProperty property = path.property();
+        return property.manyToOne() && property.isCompositeToOne();
     }
 
     // --- helpers --------------------------------------------------------------------------------
