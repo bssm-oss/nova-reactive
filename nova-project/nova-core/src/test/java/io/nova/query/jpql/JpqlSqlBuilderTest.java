@@ -306,6 +306,29 @@ class JpqlSqlBuilderTest {
         assertThrows(JpqlException.class, () -> scalar("SELECT TREAT(e AS Truck).payload FROM Company e"));
     }
 
+    @Test
+    void failsFastOnConcreteSubtypeAsSubqueryRoot() {
+        // 서브쿼리 안에서는 discriminator 제한이 주입되지 않으므로, 구체 서브타입 root는 공유 테이블을
+        // 필터 없이 풀어 Truck까지 매칭한다 — 조용한 오답 대신 fail-fast여야 한다.
+        JpqlException ex = assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE EXISTS (SELECT 1 FROM Car c WHERE c.doors > 0)"));
+        assertTrue(ex.getMessage().contains("subquery"));
+    }
+
+    @Test
+    void failsFastOnTreatInsideSubquery() {
+        JpqlException ex = assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE v.id IN (SELECT TREAT(w AS Car).doors FROM Vehicle w)"));
+        assertTrue(ex.getMessage().contains("subquery"));
+    }
+
+    @Test
+    void failsFastOnTypeInsideSubqueryPredicate() {
+        assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE v.id IN "
+                        + "(SELECT w.id FROM Vehicle w WHERE TYPE(w) = Car)"));
+    }
+
     // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------

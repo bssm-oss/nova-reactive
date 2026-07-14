@@ -609,6 +609,22 @@ public final class JpqlSqlBuilder {
         child.bind(sub.rootAlias(), rootMeta);
         bindJoins(child, sub.joins());
 
+        // v1은 서브쿼리 안에 discriminator 제한을 주입하지 않는다(collectDiscriminatorConstraints는 outer
+        // SELECT에서만 돈다). 따라서 서브쿼리 root가 구체 서브타입이면 공유 물리 테이블이 필터 없이 풀려
+        // 다른 서브타입 행까지 매칭되고, 서브쿼리 안의 TYPE/TREAT도 discriminator 없이 downcast된다 —
+        // 조용한 오답 대신 명확히 fail-fast한다(Criteria join/subquery 경로와 동일한 정책).
+        if (rootMeta.hasInheritance() && !rootMeta.isInheritanceRoot()) {
+            throw new JpqlException("JPQL subquery over concrete subtype '"
+                    + rootMeta.entityType().getSimpleName() + "' is not supported in v1: the discriminator "
+                    + "restriction is not applied inside subqueries. Query the inheritance root in the subquery "
+                    + "and filter with TYPE(...) there, or restructure the query.");
+        }
+        if (usesPolymorphic(sub.selection()) || usesPolymorphic(sub.where()) || usesPolymorphic(sub.having())) {
+            throw new JpqlException("TYPE(...)/TREAT(...) inside a JPQL subquery is not supported in v1: the "
+                    + "discriminator restriction is not applied inside subqueries, so the downcast would silently "
+                    + "match other subtypes. Move the polymorphic condition to the top-level query.");
+        }
+
         Scope savedScope = ctx.scope;
         Block savedBlock = ctx.block;
         boolean savedQualify = ctx.qualify;
@@ -933,6 +949,46 @@ public final class JpqlSqlBuilder {
                 // 서브쿼리 내부의 TREAT는 v1 수집 범위 밖(rare); 서브쿼리 렌더가 필요 시 fail-fast한다.
             }
         }
+    }
+
+    /** 서브쿼리 스코프에 TYPE(...)/TREAT(...)가 등장하는지 검사한다(discriminator 미주입 → fail-fast 판정용). */
+    private static boolean usesPolymorphic(Expression expression) {
+        if (expression == null) {
+            return false;
+        }
+        return switch (expression) {
+            case Expression.Type ignored -> true;
+            case Expression.Treat ignored -> true;
+            case Expression.Arithmetic a -> usesPolymorphic(a.left()) || usesPolymorphic(a.right());
+            case Expression.Aggregate agg -> usesPolymorphic(agg.argument());
+            case Expression.FunctionCall fn -> fn.arguments().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
+            case Expression.Cast cast -> usesPolymorphic(cast.value());
+            case Expression.Case c -> c.whens().stream()
+                    .anyMatch(w -> usesPolymorphic(w.condition()) || usesPolymorphic(w.result()))
+                    || usesPolymorphic(c.elseResult());
+            // 중첩 서브쿼리는 자체 renderSubquery 호출에서 다시 검사된다.
+            default -> false;
+        };
+    }
+
+    private static boolean usesPolymorphic(Predicate predicate) {
+        if (predicate == null) {
+            return false;
+        }
+        return switch (predicate) {
+            case Predicate.And and -> usesPolymorphic(and.left()) || usesPolymorphic(and.right());
+            case Predicate.Or or -> usesPolymorphic(or.left()) || usesPolymorphic(or.right());
+            case Predicate.Not not -> usesPolymorphic(not.inner());
+            case Predicate.Comparison c -> usesPolymorphic(c.left()) || usesPolymorphic(c.right());
+            case Predicate.Like like -> usesPolymorphic(like.value()) || usesPolymorphic(like.pattern());
+            case Predicate.Between b ->
+                    usesPolymorphic(b.value()) || usesPolymorphic(b.low()) || usesPolymorphic(b.high());
+            case Predicate.Null n -> usesPolymorphic(n.value());
+            case Predicate.InList in ->
+                    usesPolymorphic(in.value()) || in.items().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
+            case Predicate.InSubquery in -> usesPolymorphic(in.value());
+            case Predicate.Exists ignored -> false;
+        };
     }
 
     /** 구체 서브타입/TREAT downcast가 유도하는 {@code discriminator = value} 제한. */

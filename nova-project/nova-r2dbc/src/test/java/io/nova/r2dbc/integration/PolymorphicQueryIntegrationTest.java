@@ -91,6 +91,30 @@ class PolymorphicQueryIntegrationTest {
     }
 
     @Test
+    void jpqlConcreteSubtypeSubqueryRootFailsFastInsteadOfLeakingOtherSubtypes() {
+        // 서브쿼리 안에서는 discriminator가 주입되지 않아 Car 서브쿼리가 Truck 행까지 매칭할 수 있다.
+        // 조용히 잘못된 결과를 내는 대신 JpqlException으로 실패해야 한다.
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT v.name FROM Vehicle v WHERE EXISTS "
+                                                + "(SELECT 1 FROM Car c WHERE c.doors > 0)", Object.class)
+                                .getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
+    void jpqlTreatInsideSubqueryFailsFast() {
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT v.name FROM Vehicle v WHERE v.id IN "
+                                                + "(SELECT TREAT(w AS Car).doors FROM Vehicle w)", Object.class)
+                                .getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
     void jpqlTreatInEntityReturningWhereFailsFast() {
         // 엔티티 반환 경로는 TYPE(e) = Subtype narrowing만 지원한다. TREAT 부등식 술어는 스칼라로 재작성해야 한다.
         StepVerifier.create(
