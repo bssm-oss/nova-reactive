@@ -12,7 +12,9 @@ Two rules make the table below predictable:
 
 - **Additive.** The reactive persistence API is unchanged; JPA annotations are read on top of it.
 - **Fail-fast, never silent.** An unsupported annotation or combination is rejected at
-  metadata-build time with a clear message. Nova never silently ignores a mapping.
+  metadata-build time with a clear message. Nova never silently ignores a *mapping*. The only
+  accepted-but-inert inputs are hints with no reactive meaning — `fetch = LAZY` / `EAGER`,
+  `@Basic(fetch = ...)`, and `cascade = REFRESH` / `DETACH` — and each is called out where it applies.
 
 Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of the blocking JPA type) ·
 **⛔ fail-fast** (declared but rejected with a message until implemented).
@@ -24,7 +26,8 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | `@Entity` / `@Table` / `@Column` | ✅ | `name` / `length` / `precision` / `scale` / `insertable` / `updatable` / `nullable` |
-| `@Id` + `@GeneratedValue` | ✅ | `IDENTITY`, `SEQUENCE`, `TABLE` (`@TableGenerator`), `AUTO`, `UUID` |
+| `@Id` + `@GeneratedValue` | ✅ | `IDENTITY`, `SEQUENCE`, `TABLE` (`@TableGenerator`), `AUTO` (maps to `IDENTITY`), `UUID` |
+| `@Basic` | ✅ | `optional = false` enforced as `NOT NULL` (combines with `@Column(nullable)`); `fetch` is accepted but inert |
 | `@EmbeddedId` / `@IdClass` composite keys | ✅ | `findById` / `deleteById` / soft-delete / batch-delete / optimistic + pessimistic lock |
 | `@Embeddable` / `@Embedded` / `@AttributeOverride` | ✅ | Nested value types flattened into the owner table |
 | `@Enumerated` (`STRING` / `ORDINAL`) | ✅ | |

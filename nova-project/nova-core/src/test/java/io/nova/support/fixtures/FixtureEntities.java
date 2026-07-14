@@ -1,6 +1,7 @@
 package io.nova.support.fixtures;
 
 import jakarta.persistence.AttributeOverride;
+import jakarta.persistence.Basic;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import io.nova.annotation.CreatedAt;
@@ -3221,6 +3222,30 @@ public final class FixtureEntities {
         private CompositeJoinParent parent;
 
         public CompositeJoinChild() {
+        }
+    }
+
+    /**
+     * {@code @Basic(optional=false)}가 NOT NULL 제약으로 반영되는지, 그리고 {@code @Column.nullable}과 함께 있을 때
+     * "하나라도 false면 NOT NULL"이 되는지 검증하기 위한 fixture.
+     */
+    @Entity(name = "basic_optional_entity")
+    @Table(name = "basic_optional")
+    public static class BasicOptionalEntity {
+        @Id
+        private Long id;
+
+        @Basic(optional = false)
+        private String required;
+
+        @Basic
+        private String optionalDefault;
+
+        @Basic(optional = false)
+        @Column(nullable = false)
+        private String bothRequired;
+
+        public BasicOptionalEntity() {
         }
     }
 }

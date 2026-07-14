@@ -77,8 +77,8 @@ QuerySpec spec = QuerySpec.empty()
         eq("active", true),
         or(like("email", "%@example.com"), isNull("email"))
     ))
-    .orderBy(Sort.by("id").descending())
-    .page(Pageable.of(0, 20));
+    .orderBy(Sort.by(Sort.Order.desc("id")))
+    .page(Pageable.of(20, 0)); // Pageable.of(limit, offset): 20 rows from offset 0
 
 Flux<Account> accounts = operations.findAll(Account.class, spec);
 Mono<Long>    total    = operations.count(Account.class, spec);
@@ -94,7 +94,7 @@ Empty-collection semantics: `in([])` renders as `1=0` (always false) and `notIn(
 operations.update(Account.class, Updater.of(Account.class)
         .set("email", "x@nova.io")
         .set("active", true)
-        .where(Criteria.where("id").gte(10L)));
+        .where(Criteria.gte("id", 10L)));
 ```
 
 If `@UpdatedAt` exists in the metadata, it is added to the SET clause automatically.
@@ -120,7 +120,7 @@ AggregateSpec spec = AggregateSpec.of(
         Aggregation.countDistinct("email").as("unique_emails"),
         Aggregation.sum("balance").as("total"))
     .groupBy("active")
-    .having(Criteria.where("total").gt(0L));
+    .having(Criteria.gt("total", 0L));
 
 Flux<AggregateRow> rows = operations.aggregate(Account.class, spec);
 ```

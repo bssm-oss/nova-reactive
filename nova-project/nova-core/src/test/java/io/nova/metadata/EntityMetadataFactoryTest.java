@@ -75,6 +75,7 @@ import io.nova.support.fixtures.FixtureEntities.WhitespaceSequenceGeneratorEntit
 import io.nova.support.fixtures.FixtureEntities.SampleAccount;
 import io.nova.support.fixtures.FixtureEntities.SequencedAccount;
 import io.nova.support.fixtures.FixtureEntities.StringUuidAccount;
+import io.nova.support.fixtures.FixtureEntities;
 import io.nova.support.fixtures.FixtureEntities.UuidAccount;
 import io.nova.support.fixtures.FixtureEntities.ShortVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
@@ -115,6 +116,19 @@ class EntityMetadataFactoryTest {
         assertTrue(metadata.idProperty().generated());
         assertEquals("email_address", metadata.properties().get(1).columnName());
         assertFalse(metadata.properties().get(2).nullable());
+    }
+
+    @Test
+    void honorsBasicOptionalFalseAsNotNull() {
+        EntityMetadata<FixtureEntities.BasicOptionalEntity> metadata =
+                factory.getEntityMetadata(FixtureEntities.BasicOptionalEntity.class);
+
+        assertFalse(metadata.findProperty("required").orElseThrow().nullable(),
+                "@Basic(optional=false)는 NOT NULL 제약으로 반영되어야 한다");
+        assertTrue(metadata.findProperty("optionalDefault").orElseThrow().nullable(),
+                "@Basic 기본값(optional=true)은 nullable을 유지해야 한다");
+        assertFalse(metadata.findProperty("bothRequired").orElseThrow().nullable(),
+                "@Column(nullable=false)와 @Basic(optional=false)가 겹쳐도 NOT NULL이다");
     }
 
     @Test
