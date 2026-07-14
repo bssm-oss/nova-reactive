@@ -102,6 +102,19 @@ class EntityMetadataFactoryManyToManyTest {
     }
 
     @Test
+    void alignsCompositeJoinColumnsByReferencedColumnNameNotDeclarationOrder() {
+        // inverseJoinColumns를 참조 @Id 컬럼(pa, pb)과 역순(pb, pa)으로 선언해도, referencedColumnName 매칭으로
+        // 참조 컴포넌트 순서(pa, pb)에 맞춰 정렬되어야 한다(positional이 아니라 이름 매칭).
+        EntityMetadata<Machine> metadata = factory.getEntityMetadata(Machine.class);
+        ManyToManyInfo info = metadata.findProperty("parts").orElseThrow().manyToManyInfo();
+        assertTrue(info.composite());
+        assertEquals(List.of("fk_a", "fk_b"),
+                info.targetForeignKeyColumns().stream().map(ManyToManyInfo.JoinColumnRef::columnName).toList());
+        assertEquals(List.of("pa", "pb"),
+                info.targetForeignKeyColumns().stream().map(ManyToManyInfo.JoinColumnRef::referencedColumnName).toList());
+    }
+
+    @Test
     void acceptsCompositeKeyedOwnerWithMultiColumnJoin() {
         // 복합키(@EmbeddedId) owner + 단일키 target: owner FK는 참조 @Id 컴포넌트마다 컬럼 1개(a, b), target FK는 1개.
         EntityMetadata<CompositeOwner> metadata = factory.getEntityMetadata(CompositeOwner.class);
@@ -243,5 +256,36 @@ class EntityMetadataFactoryManyToManyTest {
         @ManyToMany
         @jakarta.persistence.ManyToOne
         Course course;
+    }
+
+    @Embeddable
+    static class PartId {
+        @jakarta.persistence.Column(name = "pa")
+        Long a;
+        @jakarta.persistence.Column(name = "pb")
+        Long b;
+    }
+
+    @Entity
+    @Table(name = "part")
+    static class Part {
+        @EmbeddedId
+        PartId id;
+    }
+
+    @Entity
+    @Table(name = "machine")
+    static class Machine {
+        @Id
+        Long id;
+
+        // inverseJoinColumns를 참조 컬럼(pa, pb) 역순으로 선언하고 referencedColumnName으로 매칭시킨다.
+        @ManyToMany
+        @JoinTable(name = "machine_part",
+                joinColumns = @JoinColumn(name = "machine_id"),
+                inverseJoinColumns = {
+                        @JoinColumn(name = "fk_b", referencedColumnName = "pb"),
+                        @JoinColumn(name = "fk_a", referencedColumnName = "pa")})
+        List<Part> parts;
     }
 }

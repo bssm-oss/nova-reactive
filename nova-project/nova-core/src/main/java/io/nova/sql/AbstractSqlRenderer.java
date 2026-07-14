@@ -367,6 +367,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     @Override
     public SqlStatement deleteJoinRowsByColumns(
             io.nova.metadata.JoinTableDefinition definition, List<Object> ownerColumnValues) {
+        requireColumnValueArity(definition.ownerForeignKeyColumns(), ownerColumnValues, "owner");
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("delete from ").append(dialect.quote(definition.tableName()))
                 .append(" where ");
@@ -396,6 +397,8 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     public SqlStatement deleteJoinRowByColumns(
             io.nova.metadata.JoinTableDefinition definition,
             List<Object> ownerColumnValues, List<Object> targetColumnValues) {
+        requireColumnValueArity(definition.ownerForeignKeyColumns(), ownerColumnValues, "owner");
+        requireColumnValueArity(definition.targetForeignKeyColumns(), targetColumnValues, "target");
         RenderContext context = new RenderContext();
         StringBuilder sql = new StringBuilder("delete from ").append(dialect.quote(definition.tableName()))
                 .append(" where ");

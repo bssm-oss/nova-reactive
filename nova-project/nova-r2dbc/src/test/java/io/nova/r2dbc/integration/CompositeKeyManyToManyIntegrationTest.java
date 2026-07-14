@@ -156,6 +156,33 @@ class CompositeKeyManyToManyIntegrationTest {
                 .verifyComplete();
     }
 
+    @Test
+    void batchHydrationKeepsCompositeOwnersWithSharedLeadingComponentDistinct() {
+        Book a = support.operations().save(new Book(new BookId("978", 1L), "A")).block();
+        Book b = support.operations().save(new Book(new BookId("978", 2L), "B")).block();
+
+        // 두 owner가 leading 컴포넌트(country="US")를 공유하고 num만 다르다 — 그룹 키가 첫 컴포넌트만 보면 섞인다.
+        Author ada = new Author(new AuthorId("US", 10L), "Ada");
+        ada.getBooks().add(a);
+        support.operations().save(ada).block();
+        Author bob = new Author(new AuthorId("US", 11L), "Bob");
+        bob.getBooks().add(b);
+        support.operations().save(bob).block();
+
+        // findAll → 한 번의 batch hydration(OR-of-ANDs owner 튜플)으로 두 owner를 각자의 book으로 정확히 채워야 한다.
+        StepVerifier.create(support.operations().findAll(Author.class, QuerySpec.empty()).collectList())
+                .assertNext(authors -> {
+                    assertEquals(2, authors.size());
+                    Author foundAda = authors.stream().filter(x -> x.getName().equals("Ada")).findFirst().orElseThrow();
+                    Author foundBob = authors.stream().filter(x -> x.getName().equals("Bob")).findFirst().orElseThrow();
+                    assertEquals(Set.of("A"),
+                            foundAda.getBooks().stream().map(Book::getTitle).collect(Collectors.toSet()));
+                    assertEquals(Set.of("B"),
+                            foundBob.getBooks().stream().map(Book::getTitle).collect(Collectors.toSet()));
+                })
+                .verifyComplete();
+    }
+
     // --- mixed cardinality ---------------------------------------------------
 
     @Test

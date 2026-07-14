@@ -476,7 +476,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             elements.add(element);
         }
         SqlRenderer renderer = dialect.sqlRenderer();
-        boolean composite = definition.composite();
+        // 단일 소스: 링크가 복합인지 여부는 항상 ManyToManyInfo.composite()(=FK 컬럼 수)로만 판정한다.
+        // key shape(collectionRepresentation)와 SQL 브랜치가 서로 다른 파생을 쓰면 desync해 asKey CCE/wrong SQL이 난다.
+        boolean composite = info.composite();
         List<Object> ownerColumnValues = composite
                 ? foreignKeyColumnValues(ownerMetadata, info.ownerForeignKeyColumns(), ownerId) : null;
         Mono<Void> delete = composite
@@ -602,6 +604,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@code @Id}(단일 또는 복합) 값을 값-비교 가능한 도메인 컴포넌트 키({@code idProperties()} 순서의 {@code List})로
      * 만든다. 복합키 holder/@IdClass의 equals/hashCode에 의존하지 않고 hydration 그룹핑·최소 diff에서 안전하게 쓰기
      * 위한 canonical 표현이다.
+     * <p>
+     * <b>round-trip 대칭성 제약</b>: 이 키는 도메인 값을 직접 읽고({@code idColumnValue}), link 행 쪽 키는
+     * {@link #decodeIdKeyFromRow}가 저장 표현에서 {@code toPropertyValue}로 복원한다. hydration에서 parent/target는
+     * 모두 DB 조회로 로드된 엔티티라 두 경로가 같은 driver-decoded 값을 보므로 정합하지만, 이는 복합 id 컴포넌트가
+     * <em>round-trip-stable</em> 타입(정수·문자열·UUID·enum 등, {@code equals}가 저장→복원에도 보존되는 타입)일 때만
+     * 성립한다. {@code BigDecimal} scale/timestamp precision처럼 저장·복원에서 {@code equals}가 깨질 수 있는 타입을 복합
+     * {@code @Id} 컴포넌트로 쓰면 키 매칭이 어긋나 under-hydrate 될 수 있다 — 단일키 {@code @Id}/to-one FK와 동일한
+     * de-facto 제약이다(복합 {@code @Id}에는 그런 스칼라를 쓰지 않는 것을 권장한다).
      */
     private static List<Object> idComponentKey(EntityMetadata<?> metadata, Object idObject) {
         List<PersistentProperty> idProperties = metadata.idProperties();
@@ -1891,7 +1901,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + property.propertyName() + "; add cascade=PERSIST to cascade transient targets"));
         }
         SqlRenderer renderer = dialect.sqlRenderer();
-        if (definition.composite()) {
+        if (info.composite()) {
             // 복합키: diff 키는 idComponentKey(List). owner 컬럼 값은 owner id 객체에서, target 컬럼 값은 키에서 유도.
             List<Object> ownerColumnValues =
                     foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
@@ -1982,7 +1992,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
         List<Object> targetIds = readManyToManyTargetIds(property, targetMetadata, owner);
         SqlRenderer renderer = dialect.sqlRenderer();
-        boolean composite = definition.composite();
+        boolean composite = info.composite();
         List<Object> ownerColumnValues = composite
                 ? foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId) : null;
         Mono<Void> delete = composite
@@ -2065,7 +2075,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // 단일키는 대상 id 값, 복합키(owner 또는 target)는 값-비교 가능한 도메인 컴포넌트 키(List)를 diff 키로
             // 쓴다(첫 컴포넌트만 보면 silent 손상 — trap #2 회피). owner가 복합키면 link 행도 복합 컬럼이므로
             // diffManyToMany가 List 키를 그대로 target 컬럼 값으로 되돌린다(단일키 target도 size-1 List로 통일).
-            boolean composite = metadata.hasCompositeId() || targetMetadata.hasCompositeId();
+            // 단일 소스: key shape 판정은 SQL 브랜치(diffManyToMany 등)와 반드시 같은 ManyToManyInfo.composite()를 쓴다
+            // — hasCompositeId 같은 독립 파생을 쓰면 미래 edge에서 desync해 asKey CCE/wrong SQL을 낸다.
+            boolean composite = property.manyToManyInfo().composite();
             for (Object element : (Iterable<?>) collection) {
                 keys.add(composite
                         ? idComponentKey(targetMetadata, targetMetadata.readIdValue(element))
@@ -2473,7 +2485,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
             JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
             // 복합키(owner 또는 target): 이 엔티티 기준으로 정규화된 owner FK 컬럼들을 id 객체에서 분해해 지운다.
-            Mono<Void> delete = definition.composite()
+            Mono<Void> delete = info.composite()
                     ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition,
                             foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId))).then()
                     : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
@@ -3381,7 +3393,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         ManyToManyInfo info = property.manyToManyInfo();
         EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
         JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
-        if (definition.composite()) {
+        if (info.composite()) {
             return hydrateOneManyToManyComposite(parents, metadata, targetMetadata, property, info, definition);
         }
         PersistentProperty parentIdProperty = metadata.idProperty();
