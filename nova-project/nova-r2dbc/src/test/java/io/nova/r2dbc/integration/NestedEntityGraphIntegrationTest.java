@@ -132,6 +132,33 @@ class NestedEntityGraphIntegrationTest {
         assertEquals(3, recorder.selectCount(), "부모 수와 무관하게 depth 2 SELECT 고정");
     }
 
+    @Test
+    void mixedBasicAndAssociationSubgraphLoadsAssociationWithoutFailing() {
+        // JPA 이식 흔한 패턴: subgraph 에 basic(title) + association(publisher) 혼합. basic 은 이미 로드돼 있고
+        // (mapRow), publisher 만 depth-2 로 로드된다 — basic 하나가 전체 nested fetch 를 깨뜨리지 않아야 한다.
+        EntityGraph<NestAuthor> graph = graphs.building(NestAuthor.class)
+                .addSubgraph("books")
+                .addAttributeNodes("title", "publisher")
+                .build();
+
+        List<NestAuthor> authors = new ArrayList<>();
+        recorder.clear();
+        StepVerifier.create(support.operations().findAll(NestAuthor.class, graph))
+                .recordWith(() -> authors)
+                .expectNextCount(2)
+                .verifyComplete();
+
+        for (NestAuthor author : authors) {
+            for (NestBook book : author.getBooks()) {
+                assertNotNull(book.getTitle(), "basic title 은 mapRow 로 이미 채워져 있다");
+                assertNotNull(book.getPublisher().getName(),
+                        "혼합 subgraph 에서도 association publisher 는 depth-2 로 fully-load 된다");
+            }
+        }
+        // basic title 은 추가 쿼리를 내지 않는다: root 1 + books IN 1 + publisher IN 1 = 3.
+        assertEquals(3, recorder.selectCount(), "basic leaf 는 no-op — SELECT 수를 늘리지 않는다");
+    }
+
     private Long adaId() {
         return support.operations().findAll(NestAuthor.class, io.nova.query.QuerySpec.empty())
                 .filter(a -> a.getName().equals("ada"))

@@ -100,7 +100,7 @@ public final class EntityGraphs {
         for (NodeSpec spec : specs) {
             attributeNames.add(spec.attributeName);
         }
-        List<FetchNode> fetchTree = resolveTree(rootType, specs);
+        List<FetchNode> fetchTree = resolveTree(rootType, specs, false);
         // always-eager: 매핑된 모든 to-one/to-many 연관을 배치 fetch하는 group을 담는다(명명 연관 ⊆ 이 group).
         // @ManyToMany/@ElementCollection 은 findAll/findById(FetchGroup) 경로의 M2M/EC hydration 이 로드한다.
         // 중첩(depth>1)은 fetchTree 가 담고, EntityGraph 오버로드가 flat group 로드 후 레벨별로 hydrate한다.
@@ -111,8 +111,17 @@ public final class EntityGraphs {
     /**
      * 주어진 엔티티 타입에서 각 {@link NodeSpec}을 검증하며 {@link FetchNode} 트리로 해석한다. 속성 존재
      * (typo fail-fast)를 확인하고, 자식(subgraph)을 가진 속성은 엔티티 연관이어야 하며 그 대상 타입으로 재귀한다.
+     *
+     * <p>leaf 노드는 <b>종류로 분류</b>한다 — 배치 로드 가능한 연관({@code @ManyToOne} 단일키/{@code @OneToMany}/
+     * inverse {@code @OneToOne}/{@code @ManyToMany})만 트리에 유지하고, basic 속성 leaf는 fetch 대상이 아니므로
+     * <b>드롭(no-op)</b>한다(mapRow가 이미 컬럼을 채우므로 "선언했는데 안 fetch"의 silent 누락이 아니다). 이렇게
+     * 하면 흔한 JPA 이식 패턴인 basic+association 혼합 subgraph가 basic 하나 때문에 hydration 시점에 전체 실패하지
+     * 않는다. depth&gt;1({@code nested})에서 배치 표현이 없는 {@code @ElementCollection}/복합키 타겟 to-one leaf는
+     * query-time이 아니라 <b>build-time fail-fast</b>로 거부한다(root 레벨에선 always-eager/mapRow가 로드하므로 드롭).
+     *
+     * @param nested 이 레벨이 subgraph 안(depth&gt;1)인지 여부. {@code false}면 root 레벨(always-eager가 로드).
      */
-    private List<FetchNode> resolveTree(Class<?> entityType, List<NodeSpec> specs) {
+    private List<FetchNode> resolveTree(Class<?> entityType, List<NodeSpec> specs, boolean nested) {
         EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(entityType);
         List<FetchNode> nodes = new ArrayList<>(specs.size());
         for (NodeSpec spec : specs) {
@@ -121,17 +130,65 @@ public final class EntityGraphs {
                             "EntityGraph attribute '" + spec.attributeName + "' does not exist on "
                                     + entityType.getName()));
             if (spec.children.isEmpty()) {
-                // 존재 검증(typo fail-fast)만 하고 종류는 제한하지 않는다 — 기본/연관 어느 쪽이든 허용한다
-                // (@ManyToMany/@ElementCollection 포함, JOIN FETCH 수용과 정합). 연관 로드는 findAll/findById의
-                // 배치 hydration이 담당하며, Nova는 always-eager라 명명 연관을 배제하지 않는다.
-                nodes.add(FetchNode.leaf(spec.attributeName));
+                resolveLeaf(entityType, spec.attributeName, property, nested).ifPresent(nodes::add);
                 continue;
             }
             Class<?> targetType = subgraphTargetType(entityType, spec.attributeName, property);
-            List<FetchNode> children = resolveTree(targetType, spec.children);
+            List<FetchNode> children = resolveTree(targetType, spec.children, true);
             nodes.add(new FetchNode(spec.attributeName, children));
         }
         return nodes;
+    }
+
+    /**
+     * leaf(자식 없는) spec을 종류로 분류해 트리에 넣을 {@link FetchNode}를 결정한다. 배치 로드 가능한 연관은
+     * leaf로 유지하고, basic 속성은 드롭(빈 Optional), depth&gt;1에서 배치 표현이 없는 종류는 fail-fast한다.
+     */
+    private static java.util.Optional<FetchNode> resolveLeaf(
+            Class<?> entityType, String attributeName, PersistentProperty property, boolean nested) {
+        if (isFetchableAssociation(property)) {
+            // to-one(단일키)/to-many/inverse @OneToOne/@ManyToMany 은 (root: always-eager, nested: 배치 hydration)
+            // 로 로드 가능하므로 leaf로 유지한다.
+            return java.util.Optional.of(FetchNode.leaf(attributeName));
+        }
+        if (property.elementCollection()) {
+            if (nested) {
+                throw new IllegalArgumentException(
+                        "EntityGraph subgraph attribute '" + entityType.getName() + "." + attributeName
+                                + "' is an @ElementCollection; nested (depth>1) fetch of an element collection is not "
+                                + "supported. Declare it at the root of the graph (loaded eagerly) instead.");
+            }
+            // root: always-eager @ElementCollection hydration이 이미 로드하므로 fetch tree에서 제외(no-op).
+            return java.util.Optional.empty();
+        }
+        if (property.isCompositeToOne()) {
+            if (nested) {
+                throw new IllegalArgumentException(
+                        "EntityGraph subgraph attribute '" + entityType.getName() + "." + attributeName
+                                + "' targets a composite-key (@EmbeddedId/@IdClass) entity; nested (depth>1) fetch "
+                                + "through a multi-column FK to-one is not supported.");
+            }
+            // root: mapRow가 복합 id stub을 이미 채우므로 fetch tree에서 제외(no-op).
+            return java.util.Optional.empty();
+        }
+        // basic 속성: fetch 대상이 아님 — root/nested 모두 드롭한다. mapRow가 이미 컬럼을 채우므로 silent 누락이
+        // 아니며, basic 하나가 유효한 deep association fetch를 깨뜨리지 않게 한다.
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * depth&gt;1 배치 hydration으로 로드 가능한 연관인지 — {@code @ManyToOne}(단일키)/{@code @OneToMany}/
+     * inverse {@code @OneToOne}/{@code @ManyToMany}. 복합키 타겟 to-one은 다중컬럼 FK라 단일 IN 배치가 불가해
+     * 제외한다(별도 분기에서 처리).
+     */
+    private static boolean isFetchableAssociation(PersistentProperty property) {
+        if (property.manyToMany()) {
+            return true;
+        }
+        if (property.oneToMany() || property.inverseToOne()) {
+            return true;
+        }
+        return property.manyToOne() && !property.isCompositeToOne();
     }
 
     /**

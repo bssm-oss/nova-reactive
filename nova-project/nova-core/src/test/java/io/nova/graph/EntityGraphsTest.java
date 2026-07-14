@@ -4,6 +4,9 @@ import io.nova.fetch.FetchGroup;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.support.fixtures.FixtureEntities.FkStudent;
+import jakarta.persistence.CollectionTable;
+import jakarta.persistence.Column;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
@@ -125,6 +128,41 @@ class EntityGraphsTest {
     }
 
     @Test
+    void basicLeafInSubgraphIsDroppedNotFailed() {
+        // 흔한 JPA 이식 패턴: subgraph 에 basic(id) + association(author) 혼합. basic 은 fetch 대상이 아니므로
+        // 드롭되고(mapRow 가 이미 채움) association 만 남아야 한다 — basic 하나가 전체 nested fetch 를 깨뜨리면 안 된다.
+        EntityGraph<GraphBook> graph = graphs.building(GraphBook.class)
+                .addSubgraph("author")
+                .addAttributeNodes("id", "awards")
+                .build();
+        assertTrue(graph.hasNestedFetch());
+        FetchNode authorNode = graph.fetchTree().stream()
+                .filter(n -> n.attributeName().equals("author")).findFirst().orElseThrow();
+        assertEquals(List.of("awards"),
+                authorNode.children().stream().map(FetchNode::attributeName).collect(Collectors.toList()),
+                "basic id 는 드롭되고 association awards 만 남는다");
+    }
+
+    @Test
+    void nestedElementCollectionLeafFailsFastAtBuildTime() {
+        // depth>1 @ElementCollection leaf 는 배치 표현이 없어 query-time throw 대신 build-time 으로 명확히 거부한다.
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> graphs.building(GraphAuthor.class)
+                        .addSubgraph("books")
+                        .addAttributeNodes("tags")
+                        .build());
+        assertTrue(ex.getMessage().contains("ElementCollection"), () -> "message: " + ex.getMessage());
+    }
+
+    @Test
+    void rootElementCollectionLeafIsAllowedAndDropped() {
+        // root 레벨 @ElementCollection 명명은 always-eager 가 로드하므로 거부하지 않고 조용히 no-op 으로 둔다.
+        EntityGraph<GraphBook> graph = assertDoesNotThrow(
+                () -> graphs.building(GraphBook.class).addAttributeNodes("tags").build());
+        assertTrue(graph.fetchTree().isEmpty(), "root basic/EC leaf 는 fetch tree 에서 드롭된다(no-op)");
+    }
+
+    @Test
     void subgraphOnNonAssociationFailsFast() {
         // @Id(basic) 위에 subgraph 를 선언하면 조용히 무시하지 않고 fail-fast 한다.
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -170,6 +208,10 @@ class EntityGraphsTest {
         @ManyToOne(targetEntity = GraphAuthor.class)
         @JoinColumn(name = "author_id")
         private GraphAuthor author;
+        @ElementCollection
+        @CollectionTable(name = "graph_book_tags", joinColumns = @JoinColumn(name = "book_id"))
+        @Column(name = "tag")
+        private Set<String> tags;
     }
 
     @Entity
