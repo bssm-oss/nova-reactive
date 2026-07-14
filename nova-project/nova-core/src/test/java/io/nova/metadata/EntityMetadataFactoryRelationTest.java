@@ -232,12 +232,21 @@ class EntityMetadataFactoryRelationTest {
     }
 
     @Test
-    void manyToOneToInheritedIdTargetFallsBackToLongMatchingReadPath() {
-        // read/write 경로(findIdField/extractReferencedId)는 getDeclaredFields()만 보고 조상 @Id를 못 찾는다.
-        // FK 타입 해석도 동일 규칙을 써야 하므로, @Id가 @MappedSuperclass에서 상속된 대상은 non-Long으로 해석하지
-        // 않고 Long(bigint)로 폴백한다 — helper가 해석한 타입은 read-path가 반드시 바인딩/디코드 가능해야 한다.
+    void manyToOneToInheritedSingleIdTargetHonorsInheritedIdStorage() {
+        // @Id가 @MappedSuperclass(UuidIdBase)에서 상속된 단일 키여도 FK 타입 해석은 조상까지 walk해 그 @Id를
+        // 찾아야 한다. read/write 경로(findIdField/extractReferencedId)도 동일하게 조상을 walk하므로 양쪽이
+        // 같은 @Id를 골라 UUID→varchar(String) 저장 표현으로 정렬된다. (상속 @Id 미탐지로 인한 런타임 즉사 회귀 방지.)
         PersistentProperty fk =
                 factory.getEntityMetadata(RefToInheritedUuidKeyed.class).manyToOneProperties().get(0);
+        assertSame(UUID.class, fk.javaType());
+        assertSame(String.class, fk.columnType());
+    }
+
+    @Test
+    void manyToOneToInheritedLongIdTargetStaysLongWithoutRegression() {
+        // 상속된 단일 Long @Id도 walk로 찾되 저장 표현은 bigint(Long) 그대로여야 한다(converter 없음).
+        PersistentProperty fk =
+                factory.getEntityMetadata(RefToInheritedLongKeyed.class).manyToOneProperties().get(0);
         assertSame(Long.class, fk.javaType());
         assertSame(Long.class, fk.columnType());
     }
@@ -419,6 +428,33 @@ class EntityMetadataFactoryRelationTest {
         private InheritedUuidKeyedTarget target;
 
         RefToInheritedUuidKeyed() {
+        }
+    }
+
+    @MappedSuperclass
+    static class LongIdBase {
+        @Id
+        private Long id;
+    }
+
+    @Entity
+    static class InheritedLongKeyedTarget extends LongIdBase {
+        private String name;
+
+        InheritedLongKeyedTarget() {
+        }
+    }
+
+    @Entity
+    static class RefToInheritedLongKeyed {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = InheritedLongKeyedTarget.class)
+        @JoinColumn(name = "target_id")
+        private InheritedLongKeyedTarget target;
+
+        RefToInheritedLongKeyed() {
         }
     }
 

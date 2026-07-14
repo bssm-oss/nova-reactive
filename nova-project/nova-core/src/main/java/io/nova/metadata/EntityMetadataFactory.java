@@ -2531,21 +2531,25 @@ public final class EntityMetadataFactory {
      * {@link Long} 기본값을 유지한다 — 복합키 to-one 참조는 확장하지 않고 기존 동작/실패 경로를 보존한다.
      * <p>
      * {@code @Id} 탐색은 read/write 경로({@link PersistentProperty#writeManyToOneStub}의 {@code findIdField},
-     * {@code extractReferencedId})와 <b>동일하게 {@code getDeclaredFields()}만</b> 본다(조상 walk 없음). 이렇게
-     * 해야 helper가 non-Long으로 해석한 FK 타입을 read-path가 반드시 바인딩/디코드할 수 있어, {@code @Id}가
-     * {@code @MappedSuperclass}에서 상속된 경우 양쪽이 함께 "미탐지"로 떨어져 {@code Long} 폴백으로 일치한다.
+     * {@code extractReferencedId})와 <b>동일하게</b> 대상 자신의 필드를 본 뒤 {@code @MappedSuperclass}/상위
+     * {@code @Entity} 조상 체인을 walk한다({@link #mappedFields} 규칙). 이렇게 해야 helper가 non-Long으로 해석한
+     * FK 타입을 read-path가 반드시 바인딩/디코드할 수 있고, {@code @Id}가 {@code @MappedSuperclass}에서 상속된
+     * 단일 키여도 양쪽이 함께 그 상속 {@code @Id}를 찾아 저장 표현이 일치한다. 조상까지 walk해도 단일 {@code @Id}가
+     * 아니면(복합키 {@code @EmbeddedId}/{@code @IdClass}) {@code null}로 떨어져 {@code Long} 폴백을 유지한다.
      */
     private static ForeignKeyStorage resolveToOneForeignKeyStorage(Class<?> targetType) {
         Field idField = null;
         int idCount = 0;
-        for (Field candidate : targetType.getDeclaredFields()) {
+        // 대상 자신 + @MappedSuperclass/상위 @Entity 조상 체인(root-first)을 훑어 @Id를 센다.
+        // 상속된 단일 @Id를 찾아 FK 저장 표현에 반영하되, 복합키(idCount != 1)는 Long 폴백을 유지한다.
+        for (Field candidate : mappedFields(targetType)) {
             if (candidate.isAnnotationPresent(Id.class)) {
                 idCount++;
                 idField = candidate;
             }
         }
         if (idCount != 1) {
-            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지(조상 상속 포함) — read-path와 동일하게 못 찾으면
+            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지 — read-path와 동일하게 단일 @Id가 아니면
             // 기존 Long 기본값을 유지한다(무리한 확장 금지, read-path 바인딩 가능성 보장).
             return null;
         }

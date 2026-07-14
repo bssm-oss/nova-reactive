@@ -859,25 +859,53 @@ public final class PersistentProperty {
     }
 
     /**
+     * to-one 참조 대상 클래스에서 단일 {@link jakarta.persistence.Id} 필드를 찾는다. 대상 자신의 선언 필드를
+     * 먼저 보고, 없으면 {@link jakarta.persistence.MappedSuperclass}/상위 {@link jakarta.persistence.Entity}
+     * 조상 체인을 위로 walk한다. 이렇게 해야 {@code @Id}를 {@code @MappedSuperclass}(또는 상위 엔티티)에서
+     * <em>상속</em>한 대상도 write({@code extractReferencedId})/read({@code findIdField}) 경로가 함께 그
+     * 상속 {@code @Id}를 찾아 FK 저장 표현({@code EntityMetadataFactory}의 to-one FK 타입 해석)과 일치한다.
+     * 못 찾으면 {@code null}. 복합키({@code @IdClass}) 대상은 자신에 여러 {@code @Id}를 선언하므로 자신 필드에서
+     * 첫 {@code @Id}를 반환해 기존 동작을 그대로 보존한다.
+     */
+    private static Field findReferencedIdField(Class<?> targetType) {
+        Class<?> current = targetType;
+        while (current != null && current != Object.class) {
+            for (Field candidate : current.getDeclaredFields()) {
+                if (candidate.isAnnotationPresent(jakarta.persistence.Id.class)) {
+                    return candidate;
+                }
+            }
+            Class<?> ancestor = current.getSuperclass();
+            if (ancestor == null || ancestor == Object.class
+                    || !(ancestor.isAnnotationPresent(jakarta.persistence.MappedSuperclass.class)
+                            || ancestor.isAnnotationPresent(jakarta.persistence.Entity.class))) {
+                return null;
+            }
+            current = ancestor;
+        }
+        return null;
+    }
+
+    /**
      * {@code @ManyToOne} 참조 대상 인스턴스에서 {@link jakarta.persistence.Id} 필드를 찾아 그 값을 꺼낸다.
-     * cycle-aware EntityMetadataFactory 없이도 동작하도록 직접 reflection으로 @Id를 탐색하며, target 클래스
-     * 계층에 @Id가 없으면 {@link IllegalStateException}으로 즉시 거부한다.
+     * cycle-aware EntityMetadataFactory 없이도 동작하도록 직접 reflection으로 @Id를 탐색하며(상속된 단일 @Id
+     * 포함, {@link #findReferencedIdField}), target 클래스 계층에 @Id가 없으면 {@link IllegalStateException}으로
+     * 즉시 거부한다.
      */
     private static Object extractReferencedId(Object referenced) {
         Class<?> type = referenced.getClass();
-        for (Field candidate : type.getDeclaredFields()) {
-            if (candidate.isAnnotationPresent(jakarta.persistence.Id.class)) {
-                candidate.setAccessible(true);
-                try {
-                    return candidate.get(referenced);
-                } catch (IllegalAccessException exception) {
-                    throw new IllegalStateException(
-                            "Cannot read @Id field on referenced entity " + type.getName(), exception);
-                }
-            }
+        Field idField = findReferencedIdField(type);
+        if (idField == null) {
+            throw new IllegalStateException(
+                    "@ManyToOne referenced entity " + type.getName() + " has no @Id field");
         }
-        throw new IllegalStateException(
-                "@ManyToOne referenced entity " + type.getName() + " has no @Id field");
+        idField.setAccessible(true);
+        try {
+            return idField.get(referenced);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot read @Id field on referenced entity " + type.getName(), exception);
+        }
     }
 
     /**
@@ -993,13 +1021,12 @@ public final class PersistentProperty {
     }
 
     private static Field findIdField(Class<?> targetType) {
-        for (Field candidate : targetType.getDeclaredFields()) {
-            if (candidate.isAnnotationPresent(jakarta.persistence.Id.class)) {
-                return candidate;
-            }
+        Field idField = findReferencedIdField(targetType);
+        if (idField == null) {
+            throw new IllegalStateException(
+                    "@ManyToOne target type " + targetType.getName() + " has no @Id field");
         }
-        throw new IllegalStateException(
-                "@ManyToOne target type " + targetType.getName() + " has no @Id field");
+        return idField;
     }
 
     private static Object instantiateEmbeddable(Class<?> embeddableType) {
