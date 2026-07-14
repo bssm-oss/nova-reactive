@@ -40,8 +40,10 @@ import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MapKey;
+import jakarta.persistence.MapKeyClass;
 import jakarta.persistence.MapKeyColumn;
 import jakarta.persistence.MapKeyEnumerated;
+import jakarta.persistence.MapKeyTemporal;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.LockModeType;
@@ -3221,19 +3223,45 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * {@code @ElementCollection Map}의 key 타입을 generic {@code Map<K,V>}의 첫 번째 타입 인자로 해석한다.
-     * raw {@code Map}이면 거부한다.
+     * {@code @ElementCollection Map}의 key 타입을 해석한다. 우선순위는:
+     * <ul>
+     *   <li>generic {@code Map<K,V>}의 첫 번째 타입 인자(reflectable {@code Class})가 있으면 그것을 후보로 삼는다.</li>
+     *   <li>{@code @MapKeyClass}가 있으면 그 클래스를 명시적 key 타입으로 쓴다. 파라미터화 타입 인자도 함께
+     *       reflectable하면 둘은 일치해야 하며(불일치 fail-fast), raw/generic {@code Map}처럼 인자를
+     *       reflect할 수 없을 때 key 타입을 결정하는 근거가 된다.</li>
+     * </ul>
+     * 둘 다 없으면(raw {@code Map} + {@code @MapKeyClass} 부재) fail-fast로 거부한다.
      */
     private static Class<?> resolveMapKeyType(Class<?> entityType, Field field, String location) {
+        Class<?> parameterizedKeyType = null;
         Type generic = field.getGenericType();
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 2 && arguments[0] instanceof Class<?> keyType) {
-                return keyType;
+                parameterizedKeyType = keyType;
             }
         }
+        MapKeyClass mapKeyClass = field.getAnnotation(MapKeyClass.class);
+        if (mapKeyClass != null) {
+            Class<?> declaredKeyType = mapKeyClass.value();
+            if (declaredKeyType == void.class || declaredKeyType == Void.class) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass requires a key class");
+            }
+            if (parameterizedKeyType != null && parameterizedKeyType != declaredKeyType) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass " + declaredKeyType.getName()
+                                + " does not match the parameterized Map key type "
+                                + parameterizedKeyType.getName());
+            }
+            return declaredKeyType;
+        }
+        if (parameterizedKeyType != null) {
+            return parameterizedKeyType;
+        }
         throw new IllegalArgumentException(
-                location + " @ElementCollection cannot infer the Map key type from a raw map; use a parameterized Map<K,V>");
+                location + " @ElementCollection cannot infer the Map key type from a raw map;"
+                        + " use a parameterized Map<K,V> or specify @MapKeyClass");
     }
 
     /**
@@ -3242,8 +3270,11 @@ public final class EntityMetadataFactory {
      *   <li>{@code @MapKey}(엔티티 property를 key로) — v1 미지원, fail-fast 거부.</li>
      *   <li>{@code @Embeddable} key 타입 — v1 미지원, fail-fast 거부.</li>
      *   <li>enum key — {@code @MapKeyEnumerated}로 STRING/ORDINAL 결정(미지정 시 JPA 기본 ORDINAL).</li>
+     *   <li>temporal key({@code java.util.Date}/{@code Calendar}) — {@code @MapKeyTemporal}(TemporalType)로 저장
+     *       정밀도(DATE/TIME/TIMESTAMP)를 정하고 {@code TemporalAttributeConverter}로 java.time 저장 표현에 왕복.
+     *       {@code @MapKeyTemporal} 없는 Date/Calendar key는 fail-fast 거부.</li>
      *   <li>기본 타입 key(String/Integer/Long/Short/Boolean/UUID) — 자기 자신(wrapper 정규화)으로 저장.</li>
-     *   <li>그 외 key 타입 / 비-enum에 {@code @MapKeyEnumerated} — fail-fast 거부.</li>
+     *   <li>그 외 key 타입 / 비-enum에 {@code @MapKeyEnumerated} / 비-temporal에 {@code @MapKeyTemporal} — fail-fast 거부.</li>
      * </ul>
      * key 컬럼 이름은 {@code @MapKeyColumn(name=...)} → naming strategy 기본 {@code <property>_key} 순으로 정한다.
      */
@@ -3273,6 +3304,34 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     location + " @MapKeyEnumerated is only valid on an enum map key, but the key type is "
                             + keyType.getName());
+        }
+        // 레거시 temporal map key(java.util.Date/Calendar)는 @MapKeyTemporal(TemporalType)로 저장 정밀도를
+        // 결정하고, 스칼라/EC 원소와 동일한 TemporalAttributeConverter 경로를 재사용해 java.time 저장 표현
+        // (LocalDate/LocalTime/LocalDateTime)으로 왕복한다. @MapKeyTemporal 없이 Date/Calendar key를 쓰면
+        // 매핑이 모호하므로(조용한 기본값 금지) fail-fast로 거부한다.
+        MapKeyTemporal mapKeyTemporal = field.getAnnotation(MapKeyTemporal.class);
+        boolean isUtilDate = keyType == java.util.Date.class;
+        boolean isCalendar = java.util.Calendar.class.isAssignableFrom(keyType);
+        if (mapKeyTemporal != null) {
+            if (!isUtilDate && !isCalendar) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyTemporal is only valid on a java.util.Date or java.util.Calendar"
+                                + " map key, but the key type is " + keyType.getName());
+            }
+            TemporalType temporalType = mapKeyTemporal.value();
+            Class<?> keyColumnType = switch (temporalType) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+            return new ElementCollectionInfo.MapKeyInfo(
+                    keyColumnName, keyType, keyColumnType, null,
+                    castConverter(new TemporalAttributeConverter(keyType, temporalType)));
+        }
+        if (isUtilDate || isCalendar) {
+            throw new IllegalArgumentException(
+                    location + " maps a java.util.Date/Calendar map key but is missing"
+                            + " @MapKeyTemporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
         }
         Class<?> wrapped = wrapPrimitiveType(keyType);
         if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapped)) {

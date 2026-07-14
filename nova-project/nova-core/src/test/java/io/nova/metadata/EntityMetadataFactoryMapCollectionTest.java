@@ -7,12 +7,20 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Id;
 import jakarta.persistence.MapKey;
+import jakarta.persistence.MapKeyClass;
 import jakarta.persistence.MapKeyColumn;
 import jakarta.persistence.MapKeyEnumerated;
+import jakarta.persistence.MapKeyTemporal;
 import jakarta.persistence.OrderColumn;
 import jakarta.persistence.Table;
+import jakarta.persistence.TemporalType;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.GregorianCalendar;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -124,6 +132,67 @@ class EntityMetadataFactoryMapCollectionTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(CollidingKeyMap.class));
         assertTrue(error.getMessage().contains("collides with another collection table column"));
+    }
+
+    @Test
+    void mapsTemporalDateKeyToLocalDateStorage() {
+        ElementCollectionInfo info = info(TemporalDateKeyMap.class, "byDay");
+
+        assertTrue(info.map());
+        assertEquals(Date.class, info.mapKey().keyType());
+        assertEquals(LocalDate.class, info.mapKey().keyColumnType());
+        assertNull(info.mapKey().keyEnumType());
+        assertFalse(info.mapKey().enumKey());
+        // temporal converter가 붙어 도메인 Date를 java.time 저장 표현으로 인코딩한다.
+        Object encoded = info.mapKey().encodeKey(new Date(0L));
+        assertTrue(encoded instanceof LocalDate, "expected LocalDate storage but got " + encoded.getClass());
+    }
+
+    @Test
+    void mapsTemporalCalendarTimestampKeyToLocalDateTimeStorage() {
+        ElementCollectionInfo info = info(TemporalCalendarKeyMap.class, "byMoment");
+
+        assertEquals(Calendar.class, info.mapKey().keyType());
+        assertEquals(LocalDateTime.class, info.mapKey().keyColumnType());
+        Object encoded = info.mapKey().encodeKey(new GregorianCalendar(2020, Calendar.JANUARY, 2, 3, 4, 5));
+        assertTrue(encoded instanceof LocalDateTime, "expected LocalDateTime storage but got " + encoded.getClass());
+    }
+
+    @Test
+    void resolvesRawMapKeyTypeViaMapKeyClass() {
+        ElementCollectionInfo info = info(MapKeyClassRawMap.class, "scores");
+
+        assertTrue(info.map());
+        assertEquals(String.class, info.mapKey().keyType());
+        assertEquals(String.class, info.mapKey().keyColumnType());
+    }
+
+    @Test
+    void rejectsDateKeyWithoutMapKeyTemporal() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(TemporalDateKeyMissingAnnotation.class));
+        assertTrue(error.getMessage().contains("@MapKeyTemporal(TemporalType.DATE|TIME|TIMESTAMP)"));
+    }
+
+    @Test
+    void rejectsMapKeyTemporalOnNonTemporalKey() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(MapKeyTemporalOnNonTemporalKey.class));
+        assertTrue(error.getMessage().contains("@MapKeyTemporal is only valid on a java.util.Date or java.util.Calendar"));
+    }
+
+    @Test
+    void rejectsMapKeyClassMismatchingParameterizedKey() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(MapKeyClassMismatch.class));
+        assertTrue(error.getMessage().contains("does not match the parameterized Map key type"));
+    }
+
+    @Test
+    void rejectsRawMapWithoutKeyTypeSource() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(RawMapNoKeyType.class));
+        assertTrue(error.getMessage().contains("cannot infer the Map key type from a raw map"));
     }
 
     private ElementCollectionInfo info(Class<?> type, String property) {
@@ -255,5 +324,89 @@ class EntityMetadataFactoryMapCollectionTest {
         @ElementCollection
         @MapKeyColumn(name = "scores")
         Map<String, Integer> scores;
+    }
+
+    @Entity
+    @Table(name = "temporal_date_key_map")
+    static class TemporalDateKeyMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyColumn(name = "day")
+        @MapKeyTemporal(TemporalType.DATE)
+        Map<Date, Integer> byDay;
+    }
+
+    @Entity
+    @Table(name = "temporal_calendar_key_map")
+    static class TemporalCalendarKeyMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyColumn(name = "moment")
+        @MapKeyTemporal(TemporalType.TIMESTAMP)
+        Map<Calendar, Integer> byMoment;
+    }
+
+    @Entity
+    @Table(name = "map_key_class_raw_map")
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    static class MapKeyClassRawMap {
+        @Id
+        Long id;
+
+        // raw Map: value 타입은 targetClass로, key 타입은 @MapKeyClass로 결정한다.
+        @ElementCollection(targetClass = Integer.class)
+        @MapKeyColumn(name = "score_key")
+        @Column(name = "score_val")
+        @MapKeyClass(String.class)
+        Map scores;
+    }
+
+    @Entity
+    @Table(name = "temporal_date_key_missing")
+    static class TemporalDateKeyMissingAnnotation {
+        @Id
+        Long id;
+
+        @ElementCollection
+        Map<Date, Integer> byDay;
+    }
+
+    @Entity
+    @Table(name = "map_key_temporal_non_temporal")
+    static class MapKeyTemporalOnNonTemporalKey {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyTemporal(TemporalType.DATE)
+        Map<String, Integer> scores;
+    }
+
+    @Entity
+    @Table(name = "map_key_class_mismatch")
+    static class MapKeyClassMismatch {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyClass(Long.class)
+        Map<String, Integer> scores;
+    }
+
+    @Entity
+    @Table(name = "raw_map_no_key_type")
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    static class RawMapNoKeyType {
+        @Id
+        Long id;
+
+        // value 타입은 targetClass로 해석되지만 raw Map + @MapKeyClass 부재라 key 타입은 결정할 수 없어야 한다.
+        @ElementCollection(targetClass = Integer.class)
+        @Column(name = "score_val")
+        Map scores;
     }
 }
