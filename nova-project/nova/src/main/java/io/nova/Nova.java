@@ -79,7 +79,7 @@ public final class Nova {
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
         ReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
-        return new SimpleReactiveEntityManager(operations, metadataFactory);
+        return new SimpleReactiveEntityManager(operations, metadataFactory, dialect);
     }
 
     /**

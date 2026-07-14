@@ -281,4 +281,27 @@ public interface Dialect {
             case FOR_SHARE -> " for share";
         };
     }
+
+    /**
+     * 저장 프로시저를 호출하는 SQL 문을 렌더링한다. {@code parameterCount}개의 IN 파라미터 자리를 dialect의
+     * {@link #bindMarkers()} 순서대로 채운다. CALL 문법은 DB마다 다르므로(예: JDBC escape {@code {call ...}},
+     * PostgreSQL의 함수는 {@code SELECT * FROM proc(...)}) 이 메서드를 dialect 모듈에서 override 한다 —
+     * nova-core에는 DB별 분기를 두지 않는다.
+     * <p>
+     * 기본 구현은 표준 {@code CALL procedureName(?, ?)} 형태이며 H2/MySQL/MariaDB/PostgreSQL(프로시저)이
+     * 받아들인다. {@code procedureName}은 애너테이션이 선언한 원본 식별자를 그대로 사용한다(quote 하지 않음).
+     *
+     * @param procedureName  호출할 데이터베이스 프로시저 이름
+     * @param parameterCount IN 파라미터(=bind marker) 개수
+     */
+    default String renderCall(String procedureName, int parameterCount) {
+        StringBuilder sql = new StringBuilder("CALL ").append(procedureName).append('(');
+        for (int i = 0; i < parameterCount; i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append(bindMarkers().marker(i));
+        }
+        return sql.append(')').toString();
+    }
 }

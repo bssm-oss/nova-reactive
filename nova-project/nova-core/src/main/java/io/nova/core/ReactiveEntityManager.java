@@ -1,9 +1,13 @@
 package io.nova.core;
 
+import io.nova.query.storedprocedure.NamedStoredProcedureRegistry;
+import io.nova.query.storedprocedure.ReactiveStoredProcedureQuery;
+import io.nova.query.storedprocedure.StoredProcedureParameterDefinition;
 import jakarta.persistence.FlushModeType;
 import jakarta.persistence.LockModeType;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -194,5 +198,55 @@ public interface ReactiveEntityManager {
      */
     default FlushModeType getFlushMode() {
         return FlushModeType.AUTO;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 저장 프로시저(@StoredProcedureQuery / @NamedStoredProcedureQuery) — W7, additive default 메서드.
+    // 기본 구현은 UnsupportedOperationException을 발행하고 {@link SimpleReactiveEntityManager}가 override한다.
+    // 리액티브 R2DBC 경로는 IN 파라미터 + result-set 프로시저를 지원하며, OUT/INOUT/REF_CURSOR는 실행 시
+    // fail-fast 한다(드라이버 한계).
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * ad-hoc 저장 프로시저 호출 핸들을 만든다(JPA {@code createStoredProcedureQuery}의 리액티브 등가).
+     * {@code parameters}는 IN 파라미터를 선언 순서대로 기술하며, result-set 이 없으면
+     * {@link ReactiveStoredProcedureQuery#executeUpdate()}로 실행한다.
+     */
+    default ReactiveStoredProcedureQuery<?> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters) {
+        return unsupportedStoredProcedure();
+    }
+
+    /**
+     * ad-hoc 저장 프로시저 호출 핸들을 만들고 result-set 행을 {@code resultClass} 엔티티로 매핑한다.
+     */
+    default <T> ReactiveStoredProcedureQuery<T> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters, Class<T> resultClass) {
+        return unsupportedStoredProcedure();
+    }
+
+    /**
+     * ad-hoc 저장 프로시저 호출 핸들을 만들고 result-set 행을 사용자 지정 {@code mapper}로 매핑한다
+     * ({@code @SqlResultSetMapping} 재사용 매퍼나 임의 투영에 사용).
+     */
+    default <T> ReactiveStoredProcedureQuery<T> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters,
+            Function<RowAccessor, T> mapper) {
+        return unsupportedStoredProcedure();
+    }
+
+    /**
+     * {@link NamedStoredProcedureRegistry}에 등록된 명명 저장 프로시저 핸들을 만든다(JPA
+     * {@code createNamedStoredProcedureQuery}의 리액티브 등가). 매니저는 엔티티 클래스 집합을 알지 못하므로
+     * 명명 프로시저 해석은 호출자가 구성한 registry에 위임한다.
+     */
+    default ReactiveStoredProcedureQuery<?> createNamedStoredProcedureQuery(
+            String name, NamedStoredProcedureRegistry registry) {
+        return unsupportedStoredProcedure();
+    }
+
+    private <X> X unsupportedStoredProcedure() {
+        throw new UnsupportedOperationException(
+                "stored procedure queries are not supported by " + getClass().getName());
     }
 }

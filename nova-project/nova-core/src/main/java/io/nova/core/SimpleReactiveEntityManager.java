@@ -10,7 +10,12 @@ import io.nova.query.LogicalOperator;
 import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
 import io.nova.query.CompoundPredicate;
+import io.nova.query.storedprocedure.NamedStoredProcedureRegistry;
+import io.nova.query.storedprocedure.ReactiveStoredProcedureQuery;
+import io.nova.query.storedprocedure.StoredProcedureParameterDefinition;
+import io.nova.query.storedprocedure.StoredProcedureRowMappers;
 import io.nova.exception.OptimisticLockingFailureException;
+import io.nova.sql.Dialect;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.FlushModeType;
 import jakarta.persistence.LockModeType;
@@ -43,16 +48,31 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
      * 심어 operations의 쿼리 전 auto-flush 동작을 제어한다.
      */
     private final FlushModeType flushMode;
+    /**
+     * 저장 프로시저 CALL 렌더링에 필요한 dialect. 이 collaborator 없이 만들어진 매니저(기존 2-arg 생성자)는
+     * SP 관련 메서드가 fail-fast 한다 — {@link Dialect}를 주입한 생성자로 만들어야 SP를 사용할 수 있다.
+     */
+    private final Dialect dialect;
 
     public SimpleReactiveEntityManager(
             ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory) {
-        this(operations, metadataFactory, FlushModeType.AUTO);
+        this(operations, metadataFactory, null, FlushModeType.AUTO);
+    }
+
+    /**
+     * 저장 프로시저(W7)를 사용하려면 {@link Dialect}를 함께 주입한다 — CALL 문 렌더링에 필요하다.
+     */
+    public SimpleReactiveEntityManager(
+            ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory, Dialect dialect) {
+        this(operations, metadataFactory, dialect, FlushModeType.AUTO);
     }
 
     private SimpleReactiveEntityManager(
-            ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory, FlushModeType flushMode) {
+            ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory,
+            Dialect dialect, FlushModeType flushMode) {
         this.operations = Objects.requireNonNull(operations, "operations must not be null");
         this.metadataFactory = Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
+        this.dialect = dialect;
         this.flushMode = Objects.requireNonNull(flushMode, "flushMode must not be null");
     }
 
@@ -182,12 +202,60 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         if (flushMode == this.flushMode) {
             return this;
         }
-        return new SimpleReactiveEntityManager(operations, metadataFactory, flushMode);
+        return new SimpleReactiveEntityManager(operations, metadataFactory, dialect, flushMode);
     }
 
     @Override
     public FlushModeType getFlushMode() {
         return flushMode;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 저장 프로시저(@StoredProcedureQuery / @NamedStoredProcedureQuery) — W7
+    // ---------------------------------------------------------------------------------------------
+
+    @Override
+    public ReactiveStoredProcedureQuery<?> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters) {
+        return newStoredProcedureQuery(procedureName, parameters, null);
+    }
+
+    @Override
+    public <T> ReactiveStoredProcedureQuery<T> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters, Class<T> resultClass) {
+        Objects.requireNonNull(resultClass, "resultClass must not be null");
+        return newStoredProcedureQuery(
+                procedureName, parameters, StoredProcedureRowMappers.entity(metadataFactory, resultClass));
+    }
+
+    @Override
+    public <T> ReactiveStoredProcedureQuery<T> createStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters,
+            Function<RowAccessor, T> mapper) {
+        Objects.requireNonNull(mapper, "mapper must not be null");
+        return newStoredProcedureQuery(procedureName, parameters, mapper);
+    }
+
+    @Override
+    public ReactiveStoredProcedureQuery<?> createNamedStoredProcedureQuery(
+            String name, NamedStoredProcedureRegistry registry) {
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(registry, "registry must not be null");
+        return registry.createNamedStoredProcedureQuery(name);
+    }
+
+    private <T> ReactiveStoredProcedureQuery<T> newStoredProcedureQuery(
+            String procedureName, List<StoredProcedureParameterDefinition> parameters,
+            Function<RowAccessor, T> mapper) {
+        Objects.requireNonNull(procedureName, "procedureName must not be null");
+        Objects.requireNonNull(parameters, "parameters must not be null");
+        if (dialect == null) {
+            throw new IllegalStateException(
+                    "This ReactiveEntityManager was constructed without a Dialect; stored procedure queries"
+                            + " require a Dialect to render the CALL statement. Build it with"
+                            + " new SimpleReactiveEntityManager(operations, metadataFactory, dialect).");
+        }
+        return new ReactiveStoredProcedureQuery<>(procedureName, parameters, mapper, operations, dialect);
     }
 
     // ---------------------------------------------------------------------------------------------
