@@ -44,8 +44,8 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
-| `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. `fetch = LAZY` / `cascade` are rejected. |
-| `@ManyToMany` / `@JoinTable` | Many-to-many via a link table. **Owning** side (`@JoinTable`, no `mappedBy`) defines the table + join columns; **inverse** side (`@ManyToMany(mappedBy = "...")`) reuses it. Both `List` and `Set` are supported. The link table is auto-created by the schema initializer. `save(owner)` reconciles the link rows (full-replace); both sides hydrate eagerly via a 2-hop IN-query. `cascade` is rejected; single-keyed owner/target only (v1). |
+| `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. `fetch = LAZY` is accepted and treated as eager (no lazy proxy); `cascade` (`PERSIST` / `MERGE` / `REMOVE`) propagates to the referenced entity on `save` / `delete`. |
+| `@ManyToMany` / `@JoinTable` | Many-to-many via a link table. **Owning** side (`@JoinTable`, no `mappedBy`) defines the table + join columns; **inverse** side (`@ManyToMany(mappedBy = "...")`) reuses it. Both `List` and `Set` are supported. The link table is auto-created by the schema initializer. `save(owner)` reconciles the link rows (full-replace); both sides hydrate eagerly via a 2-hop IN-query. Owning-side `cascade` (`PERSIST` / `MERGE`) propagates to the target entities on `save`; inverse-side `cascade` is rejected fail-fast. Single-keyed owner/target only (v1). |
 | `@ElementCollection` / `@CollectionTable` | A collection of **basic-typed** values (`List`/`Set` of `String`, `Integer`, …) stored in a separate `(owner_fk, value)` table, auto-created by the schema initializer. `@CollectionTable` / `@JoinColumn` / `@Column` override the table, owner-FK, and value column names. `save(owner)` reconciles the rows (full-replace); `findById` / `findAll` hydrate via one IN-query. `@Embeddable` element types are not supported yet (v1). |
 | `@OrderBy`        | On `@OneToMany`, orders hydrated children. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY` to the child query; an empty `@OrderBy` sorts by the child's `@Id` ascending. |
 | `@AttributeOverride` | On an `@Embedded` field, overrides a sub-property's column name with an absolute name (e.g. `@AttributeOverride(name = "city", column = @Column(name = "ship_city"))`). |
@@ -251,7 +251,7 @@ public class Passport {
 - The **inverse** side (`mappedBy`) has no column; `findById` / `findAll` hydrate the single owner
   by querying the owning table's FK. As with `@OneToMany`, declare `targetEntity` when the type
   cannot be inferred, and the inverse field is excluded from column mapping automatically.
-- `@OneToOne(fetch = LAZY)` and `cascade` are rejected fail-fast (no lazy proxy / no cascade graph).
+- `@OneToOne(fetch = LAZY)` is accepted and treated as eager (no lazy proxy). `cascade` (`PERSIST` / `MERGE` / `REMOVE`) is supported and propagates to the referenced entity on `save` / `delete`.
 
 ---
 
@@ -283,7 +283,7 @@ class Course {
 - **Link table** — auto-created by `SchemaInitializer.create(...)` as `(owner_fk, target_fk)` with a composite primary key. When `@JoinTable` (or its columns) is omitted, JPA default names apply (`owner_table_target_table`, `entity_id`). `List` and `Set` are both supported.
 - **Write (full-replace)** — `save(owner)` reconciles the owner's link rows: it deletes them and re-inserts the current collection, eagerly within the surrounding transaction. Targets must already be persisted (non-null id) — persist them first, like other relations. A `null` collection is left untouched; an empty collection clears all links. This yields the same end state as JPA for both adds and removes.
 - **Read (2-hop, no N+1)** — `findById` / `findAll` hydrate the collection on **both** owning and inverse sides with two IN-queries per association (the link table, then the targets). Declare `targetEntity` when the element type can't be inferred from a raw collection.
-- `cascade` is rejected fail-fast. v1 supports single-keyed owner/target only (composite-keyed `@ManyToMany` is rejected); `@OrderBy` on `@ManyToMany`, link cleanup on owner delete, and session collection-diff are deferred.
+- Owning-side `cascade` (`PERSIST` / `MERGE`) propagates to the target entities on `save`; inverse-side (`mappedBy`) `cascade` is rejected fail-fast. v1 supports single-keyed owner/target only (composite-keyed `@ManyToMany` is rejected); `@OrderBy` on `@ManyToMany`, link cleanup on owner delete, and session collection-diff are deferred.
 
 ---
 
@@ -474,7 +474,7 @@ Nova reuses the JPA annotations but is a non-blocking, persistence-context-free 
 | Annotation / attribute | Why rejected |
 |------------------------|--------------|
 | `@ManyToOne(fetch = LAZY)` / `@OneToOne(fetch = LAZY)` | No lazy proxy. Relations are fetched eagerly with a single IN-query, or explicitly via `FetchGroup`. The JPA default `EAGER` is honored. |
-| `@ManyToOne(cascade = ...)` / `@OneToMany(cascade = ...)` / `@OneToOne(cascade = ...)` | No persistence-context graph; persist related entities explicitly with `save` / `saveAll`. |
+| `@ManyToOne(cascade = ...)` / `@OneToMany(cascade = ...)` / `@OneToOne(cascade = ...)` | Supported: `PERSIST`/`MERGE`/`REMOVE` (and `ALL`) propagate to the related entity/collection on `save` / `delete`. `REFRESH`/`DETACH` are accepted but no-ops (no persistence-context graph). |
 | `@OneToMany(orphanRemoval = true)` | No dirty-tracking; delete children explicitly. |
 | `@Column(table = ...)` | Secondary tables are not supported. |
 | `@GeneratedValue(strategy = TABLE)` | Use `IDENTITY`, `SEQUENCE`, `UUID`, or `AUTO`. |

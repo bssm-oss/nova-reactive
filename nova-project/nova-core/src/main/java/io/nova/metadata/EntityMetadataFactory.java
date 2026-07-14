@@ -11,6 +11,7 @@ import jakarta.persistence.ConstructorResult;
 import jakarta.persistence.EntityResult;
 import jakarta.persistence.FieldResult;
 import io.nova.annotation.CreatedAt;
+import jakarta.persistence.Basic;
 import jakarta.persistence.Convert;
 import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorType;
@@ -2050,6 +2051,11 @@ public final class EntityMetadataFactory {
         boolean unique = column != null && column.unique();
         String columnDefinition = column == null ? "" : column.columnDefinition();
         boolean lob = field.isAnnotationPresent(Lob.class);
+        // @Basic(optional=false)은 @Column(nullable=false)과 동일하게 NOT NULL 제약으로 반영한다. JPA에서 basic
+        // 속성의 nullability는 @Column.nullable / @Basic.optional 중 하나라도 false면 NOT NULL이다. (@Basic.fetch는
+        // Nova에 lazy basic 개념이 없어 no-op으로 수용 — 관계 fetch=LAZY와 동일 정책.)
+        Basic basic = field.getAnnotation(Basic.class);
+        boolean nullable = (column == null || column.nullable()) && (basic == null || basic.optional());
         // @Access(AccessType.PROPERTY): 클래스 레벨 기본 access type + 멤버 레벨 override를 해석하고,
         // PROPERTY access이면 JavaBean getter/setter를 resolve해 PP에 캐시한다(resolve 실패 시 fail-fast).
         boolean propertyAccess = resolvePropertyAccess(field);
@@ -2066,7 +2072,7 @@ public final class EntityMetadataFactory {
                 field.getType(),
                 isId,
                 isVersion,
-                column == null || column.nullable(),
+                nullable,
                 length,
                 precision,
                 scale,
@@ -3090,7 +3096,8 @@ public final class EntityMetadataFactory {
      * {@code @ManyToOne}과 동일한 단건 참조 메커니즘({@code manyToOne=true})으로 모델링한다(FK는 unique 기본).
      * {@code mappedBy}가 있으면 inverse side로 컬럼 없는 {@code inverseToOne} 마커가 되고, 소유 측 FK로
      * 단건 child가 hydration된다. fetch=LAZY는 no-op으로 수용하고(Nova는 lazy proxy가 없어
-     * 관계는 FetchGroup으로만 populate되므로 EAGER와 LAZY가 런타임 동일), cascade는 거부한다.
+     * 관계는 FetchGroup으로만 populate되므로 EAGER와 LAZY가 런타임 동일), cascade(PERSIST/MERGE/REMOVE)는
+     * {@link ToOneCascadeInfo}로 캡처해 save/delete에서 참조 엔티티로 전파한다(REFRESH/DETACH는 no-op).
      */
     private PersistentProperty createOneToOneProperty(Class<?> entityType, Field field) {
         // 관계 property의 effective access 전략을 basic property와 동일 규칙으로 해석한다(owning/inverse 공통).

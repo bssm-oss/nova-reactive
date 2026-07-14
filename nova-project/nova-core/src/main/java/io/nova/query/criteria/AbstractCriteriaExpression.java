@@ -54,7 +54,8 @@ abstract class AbstractCriteriaExpression<T> implements Expression<T> {
 
     @Override
     public List<Selection<?>> getCompoundSelectionItems() {
-        throw new CriteriaException("Expression is not a compound selection");
+        throw new CriteriaException("getCompoundSelectionItems() is only valid on a compound selection "
+                + "(from cb.construct(...) / cb.tuple(...) / cb.array(...)); this is a single selection");
     }
 
     // --- Expression convenience (leaf-path only) ----------------------------------------------

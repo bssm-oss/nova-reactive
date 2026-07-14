@@ -360,6 +360,6 @@ public final class JpqlEntityQueryPlanner {
 
     private static JpqlException unsupported(String what) {
         return new JpqlException("Entity-returning JPQL queries do not support " + what
-                + " in v1. Rewrite as a scalar/aggregate projection, or wait for the Criteria API (Wave2 W1).");
+                + ". Rewrite it as a scalar/aggregate projection, or express the query with the Criteria API.");
     }
 }

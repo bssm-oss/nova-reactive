@@ -212,17 +212,17 @@ abstract class AbstractCriteriaFrom<Z, X> extends AbstractCriteriaExpression<X>
 
     @Override
     public <Y> Path<Y> get(SingularAttribute<? super X, Y> attribute) {
-        throw unsupported("From.get(SingularAttribute)");
+        throw metamodelPath();
     }
 
     @Override
     public <E, C extends java.util.Collection<E>> Expression<C> get(PluralAttribute<? super X, C, E> attribute) {
-        throw unsupported("From.get(PluralAttribute)");
+        throw metamodelPath();
     }
 
     @Override
     public <K, V, M extends Map<K, V>> Expression<M> get(MapAttribute<? super X, K, V> attribute) {
-        throw unsupported("From.get(MapAttribute)");
+        throw metamodelPath();
     }
 
     @Override
@@ -371,6 +371,11 @@ abstract class AbstractCriteriaFrom<Z, X> extends AbstractCriteriaExpression<X>
     @Override
     public <Y> Join<X, Y> join(EntityType<Y> entity, JoinType joinType) {
         throw metamodelJoins();
+    }
+
+    private static CriteriaException metamodelPath() {
+        return new CriteriaException("Metamodel/typed Criteria paths (get(SingularAttribute/PluralAttribute/"
+                + "MapAttribute)) are not supported in v1; use the string-based get(String) overload instead");
     }
 
     private static CriteriaException metamodelJoins() {
