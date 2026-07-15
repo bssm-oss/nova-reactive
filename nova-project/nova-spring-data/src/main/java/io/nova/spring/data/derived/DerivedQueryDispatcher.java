@@ -44,6 +44,20 @@ public final class DerivedQueryDispatcher {
         }
         switch (query.subject()) {
             case FIND_ALL -> {
+                if (query.hasPageable()) {
+                    // findBy<X>(…, Pageable) — 반환 타입이 결정한 페이징 컨테이너로 감싼다.
+                    Pageable pageable = requirePageable(query, safeArgs);
+                    return switch (query.pagingResult()) {
+                        // Flux<T>: LIMIT/OFFSET만 적용해 한 페이지 행을 스트리밍(총계/hasNext 없음).
+                        case FLUX -> operations.findAll((Class) entityType, spec.page(pageable));
+                        // Mono<Page<T>>: content + 별도 COUNT(*) 로 totalElements 계산.
+                        case PAGE -> operations.findAll((Class) entityType, spec, pageable);
+                        // Mono<Slice<T>>: limit+1 fetch 로 hasNext 판정(COUNT 없음).
+                        case SLICE -> operations.findSlice((Class) entityType, spec, pageable);
+                        case NONE -> throw new IllegalStateException(
+                                "Derived query has a Pageable parameter but no paging result shape");
+                    };
+                }
                 if (query.limit() != null) {
                     // findTop<N>By / findFirst<N>By (N >= 2) — DB-side LIMIT N, no OFFSET.
                     spec = spec.page(Pageable.of(query.limit(), 0L));
@@ -66,6 +80,20 @@ public final class DerivedQueryDispatcher {
             }
             default -> throw new IllegalStateException("Unknown derived subject: " + query.subject());
         }
+    }
+
+    private static Pageable requirePageable(DerivedQuery query, Object[] args) {
+        Object raw = args[query.pageableArgIndex()];
+        if (raw == null) {
+            throw new IllegalArgumentException(
+                    "Derived query paging requires a non-null io.nova.query.Pageable argument");
+        }
+        if (!(raw instanceof Pageable pageable)) {
+            throw new IllegalArgumentException(
+                    "Derived query paging expected an io.nova.query.Pageable argument but received "
+                            + raw.getClass().getName());
+        }
+        return pageable;
     }
 
     private static Predicate buildPredicate(DerivedQuery query, Object[] args) {

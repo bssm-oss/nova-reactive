@@ -1,8 +1,13 @@
 package io.nova.spring.data.derived;
 
+import io.nova.query.Page;
+import io.nova.query.Pageable;
+import io.nova.query.Slice;
 import io.nova.query.Sort;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -27,6 +32,11 @@ import java.util.regex.Pattern;
  *       {@link DerivedQuery#limit()}에 N을 싣는다 — N == 1은 기존 bare {@code findFirstBy}/
  *       {@code findTopBy}와 동일하게 {@link Subject#FIND_ONE}로 처리된다.</li>
  *   <li>{@code OrderBy} 토큰을 기준으로 predicate part와 sort part로 분리한다.</li>
+ *   <li>{@code findBy}/{@code findAllBy} 쿼리는 마지막 파라미터로 Nova {@link io.nova.query.Pageable}을
+ *       받을 수 있다. 이때 반환 타입이 페이징 형태를 결정한다 — {@code Flux<T>}(LIMIT/OFFSET만),
+ *       {@code Mono<Page<T>>}(content + COUNT), {@code Mono<Slice<T>>}(limit+1 fetch로 hasNext). count/
+ *       exists/delete·findFirst/findOne/findTop·findTop&lt;N&gt;와 Pageable 조합은 fail-fast한다. Spring
+ *       Data {@code Pageable}은 이 경로 이전에 {@code SimpleReactiveRepository}가 전용 브릿지로 라우팅한다.</li>
  *   <li>predicate part를 top-level {@code Or}로 1차 split, 각 conjunction을 {@code And}로 2차 split.</li>
  *   <li>각 conjunction 토큰에 대해 {@link EntityPropertyIndex}로 property를 greedy 매칭한다. 남은
  *       suffix가 {@code IgnoreCase}로 끝나면 떼어내 {@link Part#ignoreCase()} 플래그로 기록하고, 나머지를
@@ -106,15 +116,47 @@ public final class DerivedQueryParser {
         }
         Subject subject = subjectMatch.subject();
         Integer limit = subjectMatch.limit();
-        if (subject == Subject.FIND_ALL && reactor.core.publisher.Mono.class.isAssignableFrom(method.getReturnType())) {
+
+        // Pageable 파라미터(있으면 항상 마지막 1개)와 반환 타입의 페이징 컨테이너 형태를 먼저 확정한다.
+        int pageableArgIndex = findPageableParam(name, method.getParameterTypes());
+        boolean hasPageable = pageableArgIndex >= 0;
+        PagingResult paging = resolvePaging(name, method, hasPageable);
+
+        if (hasPageable && (subject != Subject.FIND_ALL || limit != null)) {
+            throw new IllegalArgumentException(
+                    "Derived query method '" + name + "' takes a Pageable parameter but is not a plain find query"
+                            + " — paging is only supported on findBy/findAllBy (not count/exists/delete,"
+                            + " findFirst/findOne/findTop, or findTop<N>/findFirst<N>)");
+        }
+        if ((paging == PagingResult.PAGE || paging == PagingResult.SLICE)) {
+            if (subject != Subject.FIND_ALL) {
+                throw new IllegalArgumentException(
+                        "Derived query method '" + name + "' returns Page/Slice but its subject is " + subject
+                                + " — Page/Slice results are only supported for findBy/findAllBy queries");
+            }
+            if (!hasPageable) {
+                throw new IllegalArgumentException(
+                        "Derived query method '" + name + "' returns Page/Slice but declares no Pageable parameter"
+                                + " — add a trailing io.nova.query.Pageable argument");
+            }
+        }
+
+        if (subject == Subject.FIND_ALL && paging == PagingResult.NONE
+                && reactor.core.publisher.Mono.class.isAssignableFrom(method.getReturnType())) {
             if (limit != null) {
                 throw new IllegalArgumentException(
                         "Derived query method '" + name + "' requests top " + limit
                                 + " result(s) but declares a Mono return type — Mono can only carry a single row;"
                                 + " use findFirstBy/findTop1By or change the return type to Flux");
             }
+            if (hasPageable) {
+                throw new IllegalArgumentException(
+                        "Derived query method '" + name + "' takes a Pageable parameter but returns a single-row"
+                                + " Mono<T> — return Flux<T>, Mono<Page<T>>, or Mono<Slice<T>> for paged results");
+            }
             subject = Subject.FIND_ONE;
         }
+
         String remainder = name.substring(subjectMatch.prefix().length());
         // body는 "By" 이후의 모든 토큰 (predicate + optional OrderBy clause).
         if (remainder.isEmpty()) {
@@ -150,14 +192,90 @@ public final class DerivedQueryParser {
                 expectedArgs += part.keyword().parameterCount();
             }
         }
-        if (expectedArgs != method.getParameterCount()) {
+        // predicate keyword 인자 + (있으면) Pageable 인자 1개 = 메서드 선언 파라미터 총수.
+        int declaredNonPageable = method.getParameterCount() - (hasPageable ? 1 : 0);
+        if (expectedArgs != declaredNonPageable) {
             throw new IllegalArgumentException(
                     "Derived query method '" + name + "' expects " + expectedArgs
-                            + " parameter(s) for its predicate keywords but the method declares "
-                            + method.getParameterCount());
+                            + " parameter(s) for its predicate keywords" + (hasPageable ? " plus a Pageable" : "")
+                            + " but the method declares " + method.getParameterCount());
         }
 
-        return Optional.of(new DerivedQuery(subject, orGroups, orderings, expectedArgs, limit));
+        return Optional.of(new DerivedQuery(
+                subject, orGroups, orderings, expectedArgs, limit, pageableArgIndex, paging));
+    }
+
+    /**
+     * 메서드 파라미터에서 {@link Pageable} 인자를 찾는다. 최대 1개까지 허용하며 반드시 마지막
+     * 파라미터여야 한다(Spring Data 관례). 없으면 {@code -1}.
+     *
+     * <p>Spring Data {@code org.springframework.data.domain.Pageable}은 이 경로에 도달하기 전에
+     * {@code SimpleReactiveRepository}가 전용 브릿지로 라우팅하므로 여기서는 Nova {@link Pageable}만
+     * 인식한다.
+     */
+    private static int findPageableParam(String name, Class<?>[] paramTypes) {
+        int index = -1;
+        for (int i = 0; i < paramTypes.length; i++) {
+            if (paramTypes[i] == Pageable.class) {
+                if (index >= 0) {
+                    throw new IllegalArgumentException(
+                            "Derived query method '" + name + "' declares more than one Pageable parameter");
+                }
+                index = i;
+            }
+        }
+        if (index >= 0 && index != paramTypes.length - 1) {
+            throw new IllegalArgumentException(
+                    "Derived query method '" + name + "' must declare its Pageable parameter last");
+        }
+        return index;
+    }
+
+    /**
+     * 반환 타입의 제네릭 형태에서 페이징 컨테이너를 해석한다. {@code Mono<Page<T>>}→{@link PagingResult#PAGE},
+     * {@code Mono<Slice<T>>}→{@link PagingResult#SLICE}, Pageable을 받는 {@code Flux<T>}→
+     * {@link PagingResult#FLUX}, 그 외에는 {@link PagingResult#NONE}. {@code Mono<T>}(단건)은 Pageable
+     * 유무와 무관하게 여기서 NONE으로 분류하고, Pageable과의 모순은 호출부에서 fail-fast한다.
+     */
+    private static PagingResult resolvePaging(String name, Method method, boolean hasPageable) {
+        Class<?> rawReturn = method.getReturnType();
+        if (reactor.core.publisher.Mono.class.isAssignableFrom(rawReturn)) {
+            Class<?> inner = monoInnerRawType(method);
+            if (inner == Page.class) {
+                return PagingResult.PAGE;
+            }
+            if (inner == Slice.class) {
+                return PagingResult.SLICE;
+            }
+            return PagingResult.NONE;
+        }
+        if (reactor.core.publisher.Flux.class.isAssignableFrom(rawReturn)) {
+            return hasPageable ? PagingResult.FLUX : PagingResult.NONE;
+        }
+        return PagingResult.NONE;
+    }
+
+    /**
+     * {@code Mono<X>}에서 {@code X}의 raw class를 뽑는다. {@code X}가 {@code Page<T>}처럼 다시
+     * 파라미터화되어 있으면 그 raw type({@code Page.class})을 반환한다. 해석 불가하면 {@code null}.
+     */
+    private static Class<?> monoInnerRawType(Method method) {
+        Type generic = method.getGenericReturnType();
+        if (!(generic instanceof ParameterizedType outer)) {
+            return null;
+        }
+        Type[] args = outer.getActualTypeArguments();
+        if (args.length == 0) {
+            return null;
+        }
+        Type inner = args[0];
+        if (inner instanceof ParameterizedType innerParam && innerParam.getRawType() instanceof Class<?> raw) {
+            return raw;
+        }
+        if (inner instanceof Class<?> raw) {
+            return raw;
+        }
+        return null;
     }
 
     /**

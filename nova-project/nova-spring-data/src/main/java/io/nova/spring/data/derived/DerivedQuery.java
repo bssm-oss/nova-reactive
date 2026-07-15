@@ -17,11 +17,21 @@ import java.util.List;
  * @param limit         {@code findTop<N>By}/{@code findFirst<N>By}(N &gt;= 2)에서 명시된 결과 행 수
  *                       상한. {@code null}이면 explicit limit 없음 — {@code subject}가 {@code FIND_ONE}인
  *                       경우는 이 필드와 무관하게 dispatcher가 항상 LIMIT 1을 적용한다.
+ * @param pageableArgIndex {@link io.nova.query.Pageable} 파라미터의 메서드 인자 인덱스. 없으면 {@code -1}.
+ *                       존재하면 항상 마지막 파라미터이며 predicate keyword 인자로 소비되지 않는다.
+ * @param pagingResult  Pageable이 있을 때 결과를 감쌀 페이징 컨테이너 형태. Pageable이 없으면
+ *                       {@link PagingResult#NONE}.
  */
 record DerivedQuery(
         Subject subject,
         List<List<Part>> orGroups,
         List<Ordering> orderings,
         int expectedArgs,
-        Integer limit) {
+        Integer limit,
+        int pageableArgIndex,
+        PagingResult pagingResult) {
+
+    boolean hasPageable() {
+        return pageableArgIndex >= 0;
+    }
 }
