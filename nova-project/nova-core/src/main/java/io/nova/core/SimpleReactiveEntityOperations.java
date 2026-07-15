@@ -2087,16 +2087,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     metadata.entityType().getName() + "." + property.propertyName()
                             + " @OneToMany(cascade/orphanRemoval) requires targetEntity to be specified"));
         }
-        if (property.oneToManyOrderColumn() != null) {
-            // M4: 세션 flush의 diffOneToMany는 멤버십(추가/제거)만 다루고 순서 재인덱싱은 하지 않는다(S2 예정).
-            // 신규 child는 persistChildInFlush로 INSERT까지는 도달 가능해서, 이대로 두면 order 컬럼이 조용히
-            // NULL로 남는다 — 명확히 거부한다. 세션 밖 stateless 경로(reindexOrderedOneToManyChildren)는 영향 없다.
-            return Mono.error(new IllegalStateException(
-                    metadata.entityType().getName() + "." + property.propertyName()
-                            + " @OneToMany with @OrderColumn is not supported under a persistence session yet"
-                            + " (order-column reindexing at flush is planned for a later track); use it without"
-                            + " an active session, or drop @OrderColumn for now"));
-        }
         EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
         PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
 
@@ -2123,8 +2113,37 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         boolean haveBaseline = baseline instanceof List<?> && baseline != PersistenceSession.FORCE_FULL;
         if (haveBaseline && newChildren.isEmpty()
                 && frequencies(currentIds).equals(frequencies((List<?>) baseline))) {
-            // Stage 1: 신규 child 없음 + id 멀티셋 불변 → 컬렉션 멤버십 SQL 없음.
+            // Stage 1: 신규 child 없음 + id 멀티셋 불변 → 컬렉션 멤버십 SQL 없음(스칼라만 바뀐 잔존 child는 자기
+            // flushEntry가 처리) — @OrderColumn 게이트보다 먼저 평가해, 멤버십이 실제로 안 바뀐 ordered 컬렉션도
+            // 무해하게 통과시킨다(LOW-1).
             return Mono.empty();
+        }
+
+        // baseline이 있으면 실제로 사라진 id를 여기서 미리 계산해 둔다(orphan 처리와 @OrderColumn 게이트가 함께
+        // 재사용). baseline이 없으면(detached) 무엇이 제거됐는지 알 수 없으므로 null로 둔다 — 아래 각 사용처가
+        // haveBaseline으로 분기한다.
+        List<Object> removedIds = haveBaseline ? removedKeys((List<?>) baseline, currentIds) : null;
+
+        if (property.oneToManyOrderColumn() != null) {
+            // LOW-1: Stage 1이 이미 "완전 무변경"을 걸러냈으므로, 여기 도달했다는 것은 최소한 baseline이 없거나
+            // (haveBaseline=false) 뭔가 다르다는 뜻이다. 하지만 "다르다"에는 (a) 진짜 멤버십 변경(추가/제거)과
+            // (b) 잔존 child의 스칼라 변경만 있고 멤버십은 그대로인 경우가 섞여 있다 — (b)는 세션 flush의
+            // 컬렉션 동기화(diffOneToMany)가 전혀 손댈 필요가 없는 케이스라 fail-fast 대상이 아니다. 실제로
+            // 신규 child가 있거나(newChildren) 사라진 id가 있을 때만(haveBaseline && !removedIds.isEmpty(), 또는
+            // baseline 자체가 없어 무엇이 바뀌었는지 판단 불가) S2 미지원으로 거부한다. 신규 child는
+            // persistChildInFlush로 INSERT까지 도달 가능해 order 컬럼이 조용히 NULL로 남을 수 있고, 제거도
+            // 재인덱싱 없이는 순서에 구멍이 생기므로 계속 막는다. 세션 밖 stateless 경로(reindexOrderedOneToManyChildren)는
+            // 영향 없다.
+            boolean membershipChanged = !newChildren.isEmpty() || !haveBaseline || !removedIds.isEmpty();
+            if (membershipChanged) {
+                return Mono.error(new IllegalStateException(
+                        metadata.entityType().getName() + "." + property.propertyName()
+                                + " @OneToMany with @OrderColumn is not supported under a persistence session yet"
+                                + " when its membership changes (child added/removed)"
+                                + " (order-column reindexing at flush is planned for a later track); use it without"
+                                + " an active session, or drop @OrderColumn for now. Scalar-only changes on"
+                                + " retained children are unaffected."));
+            }
         }
 
         // D2/M2: baseline에 없다가 이번에 나타난(non-null id) child = reparenting 의심. 이 child의 own mappedBy
@@ -2167,14 +2186,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 })
                 .then();
 
-        // baseline이 있으면 실제로 사라진 id만 계산해, 아무 것도 안 지워졌을 때 불필요한 DELETE/UPDATE를 내지
-        // 않는다(Stage 1과 같은 최소-SQL 정신을 orphan 처리에도 적용). baseline이 없으면(detached) 무엇이
-        // 제거됐는지 알 수 없으므로 orphanRemoval=true에서만 현행 eager와 동일하게 항상 정리를 시도한다.
-        // removeOrphans는 currentChildren의 id를 동기로 읽는다 — newChildren의 id는 persistNew가 실제 구독돼
-        // INSERT가 완료돼야 채워지므로, 그 계산 자체를 Mono.defer로 감싸 subscription 시점(=persistNew 완료 후)에
-        // 평가되게 한다. 그러지 않으면 assembly 시점에 아직 null인 신규 child id를 retainedIds에서 빠뜨려 방금
-        // INSERT한 child까지 orphan으로 오인해 지워버린다(기존 cascadeOneToManyProperty의 동일 함정과 대칭).
-        List<Object> removedIds = haveBaseline ? removedKeys((List<?>) baseline, currentIds) : null;
+        // removedIds는 위(@OrderColumn 게이트 자리)에서 이미 계산해 뒀다 — 아무 것도 안 지워졌을 때 불필요한
+        // DELETE/UPDATE를 내지 않는다(Stage 1과 같은 최소-SQL 정신을 orphan 처리에도 적용). baseline이 없으면
+        // (detached) 무엇이 제거됐는지 알 수 없으므로 orphanRemoval=true에서만 현행 eager와 동일하게 항상 정리를
+        // 시도한다. removeOrphans는 currentChildren의 id를 동기로 읽는다 — newChildren의 id는 persistNew가 실제
+        // 구독돼 INSERT가 완료돼야 채워지므로, 그 계산 자체를 Mono.defer로 감싸 subscription 시점(=persistNew
+        // 완료 후)에 평가되게 한다. 그러지 않으면 assembly 시점에 아직 null인 신규 child id를 retainedIds에서
+        // 빠뜨려 방금 INSERT한 child까지 orphan으로 오인해 지워버린다(기존 cascadeOneToManyProperty의 동일 함정과 대칭).
         Mono<Void> handleOrphans;
         if (property.orphanRemoval()) {
             handleOrphans = (haveBaseline && removedIds.isEmpty())
@@ -4235,8 +4253,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         if (parentIds.isEmpty()) {
             // null id로만 이루어진 parents — child query를 건너뛰고 모든 parent에 빈 리스트를 주입한다.
+            // LOW-2: assignChildrenToParents(D1)와 같은 불변식 — 항상 가변 ArrayList를 주입한다. List.of()를
+            // 주입하면 세션에서 로드 직후 parent.getItems().add(child)가 UnsupportedOperationException으로 죽는다.
             for (P parent : parents) {
-                spec.setter().accept(parent, List.of());
+                spec.setter().accept(parent, new ArrayList<>());
             }
             return Mono.empty();
         }
