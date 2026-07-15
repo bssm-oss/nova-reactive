@@ -323,22 +323,62 @@ public final class JpqlSqlBuilder {
         columns[0]++;
     }
 
+    /**
+     * GROUP BY 절 본문. 각 경로가 복합키 타겟 to-one terminal이면 {@link #compositeToOneRef}로 감지해
+     * canonical FK 컬럼 순서({@code toOneForeignKey().columns()})대로 N개 컬럼으로 전개하고, 아니면 기존
+     * 단일 컬럼 해석({@link #pathColumn})을 쓴다. 복합 item 1개가 N개 컬럼으로 늘어날 수 있어 콤마는
+     * item 인덱스가 아니라 실제 emit되는 컬럼 스트림 기준 단일 플래그로 관리한다.
+     */
     private void renderGroupByBody(Ctx ctx, List<Expression.Path> groupBy) {
-        for (int i = 0; i < groupBy.size(); i++) {
-            if (i > 0) {
-                ctx.sql.append(", ");
+        boolean first = true;
+        for (Expression.Path p : groupBy) {
+            CompositeToOneRef ref = compositeToOneRef(ctx, p);
+            if (ref != null) {
+                for (ToOneForeignKeyColumn column : ref.property().toOneForeignKey().columns()) {
+                    if (!first) {
+                        ctx.sql.append(", ");
+                    }
+                    first = false;
+                    appendCompositeColumn(ctx, ref.alias(), column);
+                }
+            } else {
+                if (!first) {
+                    ctx.sql.append(", ");
+                }
+                first = false;
+                ctx.sql.append(pathColumn(ctx, p));
             }
-            ctx.sql.append(pathColumn(ctx, groupBy.get(i)));
         }
     }
 
+    /**
+     * ORDER BY 절 본문. 복합키 타겟 to-one terminal이면 canonical FK 컬럼 순서로 전개하며, 모든 컴포넌트에
+     * 항목의 동일 방향({@code asc}/{@code desc})을 붙인다. 최종 소유 별칭은 다중세그먼트 path의 owner alias인
+     * {@link CompositeToOneRef#alias()}를 쓴다({@code OrderItem.expression().alias()}가 아니다). 그 외는
+     * 기존 {@link #renderExpression} + 방향 렌더를 쓴다. 콤마는 GROUP BY와 동일하게 컬럼 스트림 기준 플래그로 관리한다.
+     */
     private void renderOrderByBody(Ctx ctx, List<OrderItem> orderBy) {
-        for (int i = 0; i < orderBy.size(); i++) {
-            if (i > 0) {
-                ctx.sql.append(", ");
+        boolean first = true;
+        for (OrderItem item : orderBy) {
+            String dir = item.ascending() ? " asc" : " desc";
+            CompositeToOneRef ref = compositeToOneRef(ctx, item.expression());
+            if (ref != null) {
+                for (ToOneForeignKeyColumn column : ref.property().toOneForeignKey().columns()) {
+                    if (!first) {
+                        ctx.sql.append(", ");
+                    }
+                    first = false;
+                    appendCompositeColumn(ctx, ref.alias(), column);
+                    ctx.sql.append(dir);
+                }
+            } else {
+                if (!first) {
+                    ctx.sql.append(", ");
+                }
+                first = false;
+                renderExpression(ctx, item.expression());
+                ctx.sql.append(dir);
             }
-            renderExpression(ctx, orderBy.get(i).expression());
-            ctx.sql.append(orderBy.get(i).ascending() ? " asc" : " desc");
         }
     }
 
@@ -958,12 +998,12 @@ public final class JpqlSqlBuilder {
                     + "' is not supported; use an explicit JOIN or SIZE(...)");
         }
         if (property.manyToOne() && property.isCompositeToOne()) {
-            // 단일 컬럼 자리(SELECT 투영/GROUP BY/ORDER BY/산술)에서 복합키 to-one은 대표 컬럼 하나로 축약할 수
-            // 없다 — 조용한 오답 대신 거부한다. 비교(= <> < <= > >=)/BETWEEN/IN/IS NULL은 WHERE 술어 렌더가 컴포넌트로 전개한다.
+            // 단일 컬럼 자리(SELECT 투영/산술/함수 인자 등)에서 복합키 to-one은 대표 컬럼 하나로 축약할 수 없다
+            // — 조용한 오답 대신 거부한다. 비교(= <> < <= > >=)/BETWEEN/IN/IS NULL/GROUP BY/ORDER BY는 각 렌더가
+            // 컴포넌트로 전개한다(renderComparison/renderNull/renderBetween/renderInList/renderGroupByBody/renderOrderByBody).
             throw new JpqlException("Reference to composite-key to-one association '" + property.propertyName()
                     + "' as a single column is not supported (its foreign key spans multiple columns); "
-                    + "it is only usable in a WHERE predicate (= <> < <= > >= BETWEEN IN IS NULL) or a JOIN, "
-                    + "not as a SELECT/GROUP BY/ORDER BY projection; reference its @Id components explicitly instead");
+                    + "reference its @Id components explicitly instead, not as a SELECT projection");
         }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? resolved.alias() + "." + col : col;

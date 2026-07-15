@@ -428,6 +428,55 @@ class JpqlSqlBuilderTest {
                 t.sql());
     }
 
+    @Test
+    void orderByAscOverCompositeKeyToOneExpandsAllForeignKeyColumnsAscending() {
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c ORDER BY c.parent ASC");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c "
+                        + "order by c.\"p_k1\" asc, c.\"p_k2\" asc",
+                t.sql());
+    }
+
+    @Test
+    void orderByDescOverCompositeKeyToOneAppliesSameDirectionToAllComponents() {
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c ORDER BY c.parent DESC");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c "
+                        + "order by c.\"p_k1\" desc, c.\"p_k2\" desc",
+                t.sql());
+    }
+
+    @Test
+    void orderByInterleavesCompositeKeyToOneExpansionWithScalarItemsAndCommaBookkeepingStaysCorrect() {
+        TranslatedSql t = compositeScalar(
+                "SELECT c.id FROM CompositeJoinChild c ORDER BY c.parent ASC, c.label DESC");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c "
+                        + "order by c.\"p_k1\" asc, c.\"p_k2\" asc, c.\"label\" desc",
+                t.sql());
+    }
+
+    @Test
+    void groupByOverCompositeKeyToOneExpandsToAllForeignKeyColumns() {
+        TranslatedSql t = compositeScalar(
+                "SELECT COUNT(c.id) FROM CompositeJoinChild c GROUP BY c.parent");
+        assertEquals(
+                "select count(c.\"id\") as \"c0\" from \"gc_composite_child\" c "
+                        + "group by c.\"p_k1\", c.\"p_k2\"",
+                t.sql());
+    }
+
+    @Test
+    void groupByOverCompositeKeyToOneWithHavingAggregateRendersExpandedGroupAndHaving() {
+        TranslatedSql t = compositeScalar(
+                "SELECT COUNT(c.id) FROM CompositeJoinChild c GROUP BY c.parent HAVING COUNT(c.id) > 1");
+        assertEquals(
+                "select count(c.\"id\") as \"c0\" from \"gc_composite_child\" c "
+                        + "group by c.\"p_k1\", c.\"p_k2\" having count(c.\"id\") > ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal(1L)), t.bindings());
+    }
+
     // ------------------------------------------------------------------------------------
     // TYPE() / TREAT() polymorphism
     // ------------------------------------------------------------------------------------
