@@ -31,6 +31,8 @@ public final class JpqlParser {
     private static final Set<String> AGGREGATE_NAMES = Set.of("COUNT", "SUM", "AVG", "MIN", "MAX");
     // 인자 없이 쓰는 시간 함수(JPQL은 괄호 없이 표기).
     private static final Set<String> NO_ARG_FUNCTIONS = Set.of("CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP");
+    // 컬렉션/맵 조인 별칭이 필요한 한정 함수 — v1 스칼라 쿼리에서 미지원이므로 정밀 거부한다.
+    private static final Set<String> COLLECTION_QUALIFIER_FUNCTIONS = Set.of("KEY", "VALUE", "ENTRY", "INDEX");
 
     private final List<JpqlToken> tokens;
     private int index;
@@ -292,6 +294,17 @@ public final class JpqlParser {
         // 비교 연산자
         if (peek().type() == TokenType.OPERATOR && isComparisonSymbol(peek().text())) {
             String symbol = advance().text();
+            // 정량 서브쿼리 비교: left op {ANY|ALL|SOME} (subquery). SOME은 ANY로 정규화.
+            if (isKeyword("ANY") || isKeyword("ALL") || isKeyword("SOME")) {
+                Expression.Quantifier quantifier =
+                        isKeyword("ALL") ? Expression.Quantifier.ALL : Expression.Quantifier.ANY;
+                advance();
+                expectOperator("(");
+                Subquery sub = parseSubquery();
+                expectOperator(")");
+                return new Predicate.Comparison(
+                        ComparisonOp.fromSymbol(symbol), left, new Expression.QuantifiedSubquery(quantifier, sub));
+            }
             // 스칼라 서브쿼리 비교: left op (subquery)
             Expression right = parseExpression();
             return new Predicate.Comparison(ComparisonOp.fromSymbol(symbol), left, right);
@@ -452,6 +465,16 @@ public final class JpqlParser {
                 if (kw.equals("TREAT")) {
                     return parseTreat();
                 }
+                // LEFT/RIGHT는 조인 키워드지만, 뒤에 '('가 오면 함수형 LEFT(str, n)/RIGHT(str, n)이다(문맥 분기).
+                // 조인 절 파싱(parseJoins)은 parseExpression 밖에서 구조적으로 처리되므로 LEFT JOIN과 충돌하지 않는다.
+                if (kw.equals("LEFT") || kw.equals("RIGHT")) {
+                    advance();
+                    if (isOperator("(")) {
+                        return parseFunctionCall(kw);
+                    }
+                    throw syntax("'" + t.text() + "' is a reserved JOIN keyword here; the string function form "
+                            + "requires arguments, e.g. " + kw + "(e.name, 3)");
+                }
                 throw syntax("Unexpected keyword '" + t.text() + "' in expression");
             }
             case OPERATOR -> {
@@ -490,6 +513,27 @@ public final class JpqlParser {
         if (upper.equals("CAST") && isOperator("(")) {
             return parseCast();
         }
+        // EXTRACT(field FROM source) — FROM 키워드가 있어 일반 comma-arg 파싱과 다르게 처리한다.
+        if (upper.equals("EXTRACT") && isOperator("(")) {
+            return parseExtract();
+        }
+        // TRIM([LEADING|TRAILING|BOTH] [trimChar] FROM value) — 수식어/FROM 문법 특례. 평범한 TRIM(x)도 여기서 처리.
+        if (upper.equals("TRIM") && isOperator("(")) {
+            return parseTrim();
+        }
+        // KEY/VALUE/ENTRY/INDEX(alias) — 컬렉션/맵 조인 별칭이 필요해 v1 스칼라 쿼리에서 미지원. 정밀 거부.
+        if (COLLECTION_QUALIFIER_FUNCTIONS.contains(upper) && isOperator("(")) {
+            throw syntax("KEY/VALUE/ENTRY/INDEX require a collection/map JOIN alias, "
+                    + "which is not supported in v1 scalar queries.");
+        }
+        // LOCAL DATE / LOCAL TIME / LOCAL DATETIME — JPA 3.1 인자 없는 로컬 시각 함수(두 단어 토큰).
+        if (upper.equals("LOCAL") && peek().type() == TokenType.IDENTIFIER) {
+            String part = peek().text().toUpperCase(Locale.ROOT);
+            if (part.equals("DATE") || part.equals("TIME") || part.equals("DATETIME")) {
+                advance();
+                return new Expression.FunctionCall("LOCAL_" + part, List.of());
+            }
+        }
         // 일반 함수 호출
         if (isOperator("(")) {
             return parseFunctionCall(upper);
@@ -523,6 +567,58 @@ public final class JpqlParser {
         String type = expectIdentifier("CAST target type");
         expectOperator(")");
         return new Expression.Cast(value, type.toUpperCase(Locale.ROOT));
+    }
+
+    /** {@code EXTRACT(field FROM source)} — field는 표준 필드 토큰(빌더가 화이트리스트로 검증). */
+    private Expression parseExtract() {
+        expectOperator("(");
+        String field = expectIdentifier("EXTRACT field (e.g. YEAR, MONTH, DAY)").toUpperCase(Locale.ROOT);
+        expectKeyword("FROM");
+        Expression source = parseExpression();
+        expectOperator(")");
+        return new Expression.Extract(field, source);
+    }
+
+    /**
+     * {@code TRIM([LEADING|TRAILING|BOTH] [trimChar] FROM value)} 및 평범한 {@code TRIM(value)}를 파싱한다.
+     * spec/trimChar/FROM은 모두 선택이다. spec은 빌더가 키워드 화이트리스트로 검증한다.
+     */
+    private Expression parseTrim() {
+        expectOperator("(");
+        String spec = null;
+        if (peek().type() == TokenType.IDENTIFIER && isTrimSpec(peek().text())) {
+            spec = advance().text().toUpperCase(Locale.ROOT);
+        }
+        Expression trimChar = null;
+        Expression value;
+        if (spec != null) {
+            // 수식어가 있으면 FROM 형이 보장된다. FROM 앞에 선택적 trimChar가 올 수 있다.
+            if (!isKeyword("FROM")) {
+                trimChar = parseExpression();
+            }
+            expectKeyword("FROM");
+            value = parseExpression();
+        } else if (consumeKeyword("FROM")) {
+            // TRIM(FROM value)
+            value = parseExpression();
+        } else {
+            Expression first = parseExpression();
+            if (consumeKeyword("FROM")) {
+                // TRIM('x' FROM value)
+                trimChar = first;
+                value = parseExpression();
+            } else {
+                // 평범한 TRIM(value)
+                value = first;
+            }
+        }
+        expectOperator(")");
+        return new Expression.Trim(spec, trimChar, value);
+    }
+
+    private static boolean isTrimSpec(String text) {
+        String u = text.toUpperCase(Locale.ROOT);
+        return u.equals("LEADING") || u.equals("TRAILING") || u.equals("BOTH");
     }
 
     private Expression parseFunctionCall(String name) {

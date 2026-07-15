@@ -42,12 +42,36 @@ import java.util.Set;
  */
 public final class JpqlSqlBuilder {
 
-    /** 1:1로 표준/H2 SQL에 매핑되는 스칼라 함수 allowlist(대문자). 그 외 함수는 fail-fast. */
+    /**
+     * 1:1로 표준/portable SQL(H2/PostgreSQL/MySQL 공통 수용)에 매핑되는 스칼라 함수 allowlist(대문자). 그 외
+     * 함수는 fail-fast. {@code EXTRACT}/{@code TRIM}은 FROM 문법 때문에 전용 AST 노드로 파싱돼 별도로 렌더된다.
+     */
     private static final Set<String> ALLOWED_FUNCTIONS = Set.of(
             "LOWER", "UPPER", "LENGTH", "TRIM", "CONCAT", "ABS", "MOD", "SQRT",
             "COALESCE", "NULLIF", "SUBSTRING", "LOCATE",
-            "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP");
-    private static final Set<String> NO_ARG_FUNCTIONS = Set.of("CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP");
+            "CEILING", "FLOOR", "EXP", "LN", "POWER", "ROUND", "SIGN", "LEFT", "RIGHT", "REPLACE",
+            "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP",
+            "LOCAL_DATE", "LOCAL_TIME", "LOCAL_DATETIME");
+    private static final Set<String> NO_ARG_FUNCTIONS = Set.of(
+            "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP",
+            "LOCAL_DATE", "LOCAL_TIME", "LOCAL_DATETIME");
+    /**
+     * 인자 없는 시간 함수의 표준·portable SQL 렌더링(H2/PostgreSQL/MySQL 공통 수용). JPA 3.1의 LOCAL DATE/TIME/
+     * DATETIME은 세 DB가 공통 수용하는 {@code current_*} 무-괄호 키워드로 매핑한다(LOCAL DATETIME은 tz 없는
+     * 로컬 타임스탬프 의미를 {@code current_timestamp}로 근사).
+     */
+    private static final Map<String, String> NO_ARG_SQL = Map.of(
+            "CURRENT_DATE", "current_date",
+            "CURRENT_TIME", "current_time",
+            "CURRENT_TIMESTAMP", "current_timestamp",
+            "LOCAL_DATE", "current_date",
+            "LOCAL_TIME", "current_time",
+            "LOCAL_DATETIME", "current_timestamp");
+    /** {@code EXTRACT(field FROM ...)}의 portable 필드 화이트리스트(H2/PG/MySQL 공통 수용). */
+    private static final Set<String> EXTRACT_FIELDS = Set.of(
+            "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND", "WEEK", "QUARTER");
+    /** {@code TRIM([spec] ...)}의 위치 한정사 화이트리스트. */
+    private static final Set<String> TRIM_SPECS = Set.of("LEADING", "TRAILING", "BOTH");
 
     /**
      * {@code CAST(x AS type)}의 JPQL 타입 토큰 → 안전한 표준 SQL 타입 화이트리스트. 여기 없는 타입은 fail-fast하며,
@@ -765,7 +789,49 @@ public final class JpqlSqlBuilder {
                 ctx.sql.append(marker(ctx));
             }
             case Expression.Treat tr -> ctx.sql.append(treatColumn(ctx, tr));
+            case Expression.QuantifiedSubquery q -> {
+                ctx.sql.append(q.quantifier() == Expression.Quantifier.ANY ? "any (" : "all (");
+                renderSubquery(ctx, q.subquery());
+                ctx.sql.append(')');
+            }
+            case Expression.Extract extract -> renderExtract(ctx, extract);
+            case Expression.Trim trim -> renderTrim(ctx, trim);
         }
+    }
+
+    private void renderExtract(Ctx ctx, Expression.Extract extract) {
+        if (!EXTRACT_FIELDS.contains(extract.field())) {
+            throw new JpqlException("EXTRACT field '" + extract.field() + "' is not supported. Supported: "
+                    + EXTRACT_FIELDS);
+        }
+        ctx.sql.append("extract(").append(extract.field().toLowerCase(Locale.ROOT)).append(" from ");
+        renderExpression(ctx, extract.source());
+        ctx.sql.append(')');
+    }
+
+    private void renderTrim(Ctx ctx, Expression.Trim trim) {
+        // spec/trimChar 둘 다 기본이면 평범한 trim(value) — 기존 TRIM(x) 동작과 동일(회귀 없음).
+        if (trim.spec() == null && trim.trimChar() == null) {
+            ctx.sql.append("trim(");
+            renderExpression(ctx, trim.value());
+            ctx.sql.append(')');
+            return;
+        }
+        ctx.sql.append("trim(");
+        if (trim.spec() != null) {
+            if (!TRIM_SPECS.contains(trim.spec())) {
+                throw new JpqlException("TRIM specifier '" + trim.spec()
+                        + "' is not supported; use LEADING, TRAILING, or BOTH");
+            }
+            ctx.sql.append(trim.spec().toLowerCase(Locale.ROOT)).append(' ');
+        }
+        if (trim.trimChar() != null) {
+            renderExpression(ctx, trim.trimChar());
+            ctx.sql.append(' ');
+        }
+        ctx.sql.append("from ");
+        renderExpression(ctx, trim.value());
+        ctx.sql.append(')');
     }
 
     private void renderAggregate(Ctx ctx, Expression.Aggregate agg) {
@@ -801,7 +867,7 @@ public final class JpqlSqlBuilder {
             if (!fn.arguments().isEmpty()) {
                 throw new JpqlException(name + " does not take arguments");
             }
-            ctx.sql.append(name.toLowerCase(Locale.ROOT));
+            ctx.sql.append(NO_ARG_SQL.get(name));
             return;
         }
         ctx.sql.append(name.toLowerCase(Locale.ROOT)).append('(');

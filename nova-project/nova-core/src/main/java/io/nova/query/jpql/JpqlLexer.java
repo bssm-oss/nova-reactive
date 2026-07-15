@@ -24,6 +24,7 @@ public final class JpqlLexer {
             "SELECT", "DISTINCT", "FROM", "WHERE", "GROUP", "BY", "HAVING", "ORDER", "ASC", "DESC",
             "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "FETCH", "ON", "AS",
             "AND", "OR", "NOT", "LIKE", "IN", "BETWEEN", "IS", "NULL", "EXISTS", "MEMBER", "OF",
+            "ANY", "ALL", "SOME",
             "UPDATE", "SET", "DELETE", "NEW",
             "CASE", "WHEN", "THEN", "ELSE", "END", "TRUE", "FALSE",
             "TREAT", "TYPE", "ESCAPE", "EMPTY");

@@ -9,7 +9,7 @@ public sealed interface Expression
         permits Expression.Path, Expression.Literal, Expression.NamedParameter, Expression.PositionalParameter,
         Expression.FunctionCall, Expression.Aggregate, Expression.Arithmetic, Expression.Case,
         Expression.ScalarSubquery, Expression.Cast, Expression.Type, Expression.EntityTypeLiteral,
-        Expression.Treat {
+        Expression.Treat, Expression.QuantifiedSubquery, Expression.Extract, Expression.Trim {
 
     /** {@code alias.field.subfield} 경로 식. 첫 세그먼트는 별칭, 나머지는 필드 경로다. */
     record Path(String alias, List<String> segments) implements Expression {
@@ -90,5 +90,30 @@ public sealed interface Expression
         public Treat {
             segments = List.copyOf(segments);
         }
+    }
+
+    /** {@code = ANY (subquery)} / {@code > ALL (subquery)} 등 정량 서브쿼리 비교의 우변. {@code SOME}은 파서가 {@code ANY}로 정규화한다. */
+    record QuantifiedSubquery(Quantifier quantifier, Subquery subquery) implements Expression {
+    }
+
+    /** 정량 비교 한정사. JPQL {@code SOME}은 {@code ANY}와 동치이므로 파서 단계에서 {@link #ANY}로 정규화한다. */
+    enum Quantifier {
+        ANY, ALL
+    }
+
+    /**
+     * {@code EXTRACT(field FROM source)} — 날짜/시간 필드 추출식. {@code field}는 파서가 대문자로 정규화한 표준
+     * 필드 토큰(예 {@code YEAR}, {@code MONTH})이며, SQL 렌더 단계에서 화이트리스트로 검증돼 그대로 방출된다
+     * (임의 문자열이 SQL에 삽입되지 않는다).
+     */
+    record Extract(String field, Expression source) implements Expression {
+    }
+
+    /**
+     * {@code TRIM([LEADING|TRAILING|BOTH] [trimChar] FROM value)} 문자열 트림식. {@code spec}은 파서가 대문자로
+     * 정규화한 위치 한정사(생략 시 {@code BOTH})이며 SQL 렌더 단계에서 화이트리스트 키워드로만 방출된다.
+     * {@code trimChar}가 {@code null}이면 기본 공백 트림이고, 셋 다 기본이면 평범한 {@code trim(value)}로 렌더된다.
+     */
+    record Trim(String spec, Expression trimChar, Expression value) implements Expression {
     }
 }
