@@ -299,9 +299,9 @@ class JpqlSqlBuilderTest {
     void rendersLocalTemporalFunctions() {
         assertEquals("select current_date as \"c0\" from \"employee\" e",
                 scalar("SELECT LOCAL DATE FROM Employee e").sql());
-        assertEquals("select current_time as \"c0\" from \"employee\" e",
+        assertEquals("select localtime as \"c0\" from \"employee\" e",
                 scalar("SELECT LOCAL TIME FROM Employee e").sql());
-        assertEquals("select current_timestamp as \"c0\" from \"employee\" e",
+        assertEquals("select localtimestamp as \"c0\" from \"employee\" e",
                 scalar("SELECT LOCAL DATETIME FROM Employee e").sql());
     }
 
@@ -698,6 +698,47 @@ class JpqlSqlBuilderTest {
         assertThrows(JpqlException.class, () ->
                 scalar("SELECT v.name FROM Vehicle v WHERE v.id IN "
                         + "(SELECT w.id FROM Vehicle w WHERE TYPE(w) = Car)"));
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Regression: TREAT wrapped inside EXTRACT/TRIM must still trigger the discriminator
+    // guard (walkTreats) and the subquery polymorphism fail-fast (usesPolymorphic). Both
+    // traversal visitors switch on Expression and previously fell through Extract/Trim to
+    // 'default', silently dropping the TREAT nested inside them.
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void trimWrappingTreatAppliesDiscriminatorConstraint() {
+        TranslatedSql t = scalar("SELECT TRIM(TREAT(e AS Car).name) FROM Vehicle e");
+        assertEquals(
+                "select trim(e.\"name\") as \"c0\" from \"vehicle\" e where e.\"kind\" = ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void extractWrappingTreatAppliesDiscriminatorConstraint() {
+        TranslatedSql t = scalar("SELECT EXTRACT(YEAR FROM TREAT(e AS Car).doors) FROM Vehicle e");
+        assertEquals(
+                "select extract(year from e.\"doors\") as \"c0\" from \"vehicle\" e where e.\"kind\" = ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void failsFastOnTreatWrappedInExtractInsideSubqueryProjection() {
+        JpqlException ex = assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE v.id IN "
+                        + "(SELECT EXTRACT(YEAR FROM TREAT(w AS Car).doors) FROM Vehicle w)"));
+        assertTrue(ex.getMessage().contains("subquery"));
+    }
+
+    @Test
+    void failsFastOnTreatWrappedInTrimInsideSubqueryWhere() {
+        JpqlException ex = assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE v.id IN "
+                        + "(SELECT w.id FROM Vehicle w WHERE TRIM(TREAT(w AS Car).name) = 'x')"));
+        assertTrue(ex.getMessage().contains("subquery"));
     }
 
     // ------------------------------------------------------------------------------------
