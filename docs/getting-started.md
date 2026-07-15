@@ -2,7 +2,7 @@
 
 # Getting started
 
-Nova `2.7.0` is available from Maven Central. Entities are mapped with the standard `jakarta.persistence` annotations (Nova exports `jakarta.persistence-api` transitively); the move off the `1.x` `io.nova.annotation` clones happened in the breaking `2.0.0` release. Everything since `2.0.0` has been additive: composite keys (`@EmbeddedId` / `@IdClass`, including as relation targets), the full relationship set (`@OneToOne` / `@OneToMany` / `@ManyToMany` / `@ElementCollection`), inheritance, `@Convert`, a reactive `EntityManager`, JPQL and the Criteria API, `@NamedQuery` / `@NamedEntityGraph` / `@SqlResultSetMapping` / `@StoredProcedureQuery`, and a 2nd-level cache. Reactive equivalents return `Mono` / `Flux` rather than blocking. See [JPA compatibility](jpa-compatibility.md) for the full support matrix and [Entities](entities.md) for the annotation reference.
+Nova `2.8.0` is available from Maven Central. Entities are mapped with the standard `jakarta.persistence` annotations (Nova exports `jakarta.persistence-api` transitively); the move off the `1.x` `io.nova.annotation` clones happened in the breaking `2.0.0` release. Everything since `2.0.0` has been additive: composite keys (`@EmbeddedId` / `@IdClass`, including as relation targets), the full relationship set (`@OneToOne` / `@OneToMany` / `@ManyToMany` / `@ElementCollection`), inheritance, `@Convert`, a reactive `EntityManager`, JPQL and the Criteria API, `@NamedQuery` / `@NamedEntityGraph` / `@SqlResultSetMapping` / `@StoredProcedureQuery`, and a 2nd-level cache. Reactive equivalents return `Mono` / `Flux` rather than blocking. See [JPA compatibility](jpa-compatibility.md) for the full support matrix and [Entities](entities.md) for the annotation reference.
 
 ## 1. Add dependencies
 
@@ -15,7 +15,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.7.0")
+    implementation("io.github.bssm-oss:nova:2.8.0")
 
     // The R2DBC driver for your database (pick one)
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
@@ -29,9 +29,9 @@ To pull in only a specific dialect instead of the aggregate, depend on `nova-cor
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-core:2.7.0")
-    implementation("io.github.bssm-oss:nova-r2dbc:2.7.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.7.0")
+    implementation("io.github.bssm-oss:nova-core:2.8.0")
+    implementation("io.github.bssm-oss:nova-r2dbc:2.8.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.8.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -41,7 +41,7 @@ Groovy DSL:
 ```groovy
 // build.gradle
 dependencies {
-    implementation 'io.github.bssm-oss:nova:2.7.0'
+    implementation 'io.github.bssm-oss:nova:2.8.0'
     runtimeOnly 'io.r2dbc:r2dbc-h2:1.0.0.RELEASE'
 }
 ```

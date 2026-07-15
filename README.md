@@ -44,7 +44,7 @@ core module depends only on the R2DBC SPI.
 repositories { mavenCentral() }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.7.0")
+    implementation("io.github.bssm-oss:nova:2.8.0")
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
     // runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
@@ -131,7 +131,7 @@ Nova core depends only on the R2DBC **SPI**. Add the matching R2DBC driver (`r2d
 | `nova-spring-data`           | Spring Data-style `ReactiveCrudRepository<T, ID>` + `@EnableNovaRepositories` |
 | `nova-metrics-micrometer`    | Micrometer adapter (`MicrometerSqlExecutionListener`)                          |
 
-Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.7.0`.
+Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.8.0`.
 
 ---
 
@@ -178,7 +178,7 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 - [x] `@Column(length / precision / scale)` and `BigDecimal` columns
 - [x] 1.0 GA released to Maven Central (`io.github.bssm-oss:nova:1.0.0` — all 11 modules published)
 
-### JPA / jakarta.persistence parity (`2.0.0` → `2.7.0`)
+### JPA / jakarta.persistence parity (`2.0.0` → `2.8.0`)
 
 Reactive equivalents of the standard `jakarta.persistence` surface — see the full
 [JPA compatibility matrix](docs/jpa-compatibility.md).
