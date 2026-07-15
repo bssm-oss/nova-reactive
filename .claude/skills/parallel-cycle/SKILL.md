@@ -95,7 +95,18 @@ review의 critical/major를 **머지 전에** 해당 worktree에서 해소한다
 4. metadata factory class-level scan → rebase + ff-merge
 5. metadata factory field-level loop + ops hub (가장 충돌) → rebase + ff-merge (수동 해소)
 
-각 단계 후 `./gradlew build`. **BSD grep이 한글 주석 파일을 binary로 오판**하므로 머지 손실 검증은 `grep -a` 필수(false alarm 주의). textual auto-merge가 clean해도 semantic 검증은 전체 build로.
+각 단계 후 `./gradlew build`.
+
+### 머지-안전 체크리스트 (매 병합마다, 순서대로)
+
+세션마다 즉석 판단하지 말고 이 목록을 그대로 밟는다. 각 항목은 과거 실제 손실/오판 사례에서 나왔다.
+
+1. **stale-base 확인 → 통째 머지 금물.** worktree가 다른 트랙 착지 **이전** main에서 분기됐으면 `git diff main..<branch>`가 그 사이 착지분을 "삭제"로 보여준다. 브랜치 통째 rebase/merge 대신 **해당 트랙 커밋만 cherry-pick**한다. cherry-pick 전 `git show --stat <commit> | grep -v <자기모듈>`로 그 커밋이 정말 disjoint(자기 모듈 한정)인지 확인.
+2. **사전 충돌 예측.** hub 인접부를 건드리는 두 트랙은 병합 전에 `git merge-tree`로 충돌 지점을 미리 본다. 충돌 블록 5+ / 양쪽 핵심 로직이면 아래 abort criterion으로.
+3. **trailing-param auto-merge 손실 주의.** 두 feature가 같은 생성자(`PersistentProperty`/`EntityMetadata`)에 trailing param을 append하면 호출부 auto-merge가 한쪽만 채워 조용히 깨진다([[feedback_parallel_trailing_param_merge]]). 생성자 append는 **한 worktree만** 하도록 배정(나머지는 Info record 내부 흡수). 손실 의심 시 python으로 재머지 검증.
+4. **`grep -a` 필수.** 머지 손실/dead-code 검증 grep은 반드시 `-a`. **BSD grep이 한글 주석 `.java`를 binary로 오판**해 매치를 숨겨 false alarm(있는 코드를 없다고 판단)을 낸다([[feedback_grep_binary_korean]]).
+5. **cwd vs Edit absolute path.** worktree에서 작업 시 Edit의 absolute path가 main repo로 새지 않는지 확인([[feedback_worktree_cwd_file_path]]).
+6. **semantic 검증 = 전체 build.** textual auto-merge가 clean해도 semantic 충돌(한 feature가 fail-fast 단언 테스트를 추가하고 다른 feature가 그걸 지원으로 구현하는 식)은 개별 리뷰가 못 잡는다 — **`./gradlew build` 전체가 유일한 검출기**다. 각 병합 후 필수.
 
 ### Hub 충돌 abort criterion
 
