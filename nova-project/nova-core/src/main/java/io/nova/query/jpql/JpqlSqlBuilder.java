@@ -378,26 +378,9 @@ public final class JpqlSqlBuilder {
                     ctx.sql.append(marker(ctx));
                 }
             }
-            case Predicate.Between b -> {
-                renderExpression(ctx, b.value());
-                ctx.sql.append(b.negated() ? " not between " : " between ");
-                renderExpression(ctx, b.low());
-                ctx.sql.append(" and ");
-                renderExpression(ctx, b.high());
-            }
+            case Predicate.Between b -> renderBetween(ctx, b);
             case Predicate.Null n -> renderNull(ctx, n);
-            case Predicate.InList in -> {
-                renderExpression(ctx, in.value());
-                ctx.sql.append(in.negated() ? " not in (" : " in (");
-                List<Expression> items = in.items();
-                for (int i = 0; i < items.size(); i++) {
-                    if (i > 0) {
-                        ctx.sql.append(", ");
-                    }
-                    renderExpression(ctx, items.get(i));
-                }
-                ctx.sql.append(')');
-            }
+            case Predicate.InList in -> renderInList(ctx, in);
             case Predicate.InSubquery in -> {
                 renderExpression(ctx, in.value());
                 ctx.sql.append(in.negated() ? " not in (" : " in (");
@@ -419,18 +402,31 @@ public final class JpqlSqlBuilder {
      */
     private void renderComparison(Ctx ctx, Predicate.Comparison c) {
         CompositeToOneRef ref = compositeToOneRef(ctx, c.left());
-        Expression other = c.right();
-        if (ref == null) {
-            ref = compositeToOneRef(ctx, c.right());
-            other = c.left();
-        }
         if (ref != null) {
-            renderCompositeComparison(ctx, ref, c.op(), other);
+            renderCompositeComparison(ctx, ref, c.op(), c.right());
+            return;
+        }
+        ref = compositeToOneRef(ctx, c.right());
+        if (ref != null) {
+            // 참조가 우변이면 연산 방향을 뒤집는다({@code :x < c.parent} == {@code c.parent > :x}).
+            renderCompositeComparison(ctx, ref, flipOperand(c.op()), c.left());
             return;
         }
         renderExpression(ctx, c.left());
         ctx.sql.append(' ').append(c.op().symbol()).append(' ');
         renderExpression(ctx, c.right());
+    }
+
+    /** 복합키 to-one 참조가 비교의 우변에 올 때 좌우를 바꾸기 위한 연산자 방향 반전(등치/부등은 대칭). */
+    private static ComparisonOp flipOperand(ComparisonOp op) {
+        return switch (op) {
+            case LT -> ComparisonOp.GT;
+            case GT -> ComparisonOp.LT;
+            case LE -> ComparisonOp.GE;
+            case GE -> ComparisonOp.LE;
+            case EQ -> ComparisonOp.EQ;
+            case NE -> ComparisonOp.NE;
+        };
     }
 
     /** IS [NOT] NULL 술어. 복합키 to-one terminal이면 모든 FK 컬럼의 IS [NOT] NULL을 and로 전개한다. */
@@ -453,6 +449,72 @@ public final class JpqlSqlBuilder {
         ctx.sql.append(n.negated() ? " is not null" : " is null");
     }
 
+    /**
+     * BETWEEN 술어. 복합키 to-one terminal이면 {@code parent BETWEEN :lo AND :hi}를
+     * {@code (parent >= :lo) and (parent <= :hi)}의 lexicographic 다중컬럼 전개로 렌더한다(NOT BETWEEN은 {@code not (...)}).
+     */
+    private void renderBetween(Ctx ctx, Predicate.Between b) {
+        CompositeToOneRef ref = compositeToOneRef(ctx, b.value());
+        if (ref != null) {
+            List<ToOneForeignKeyColumn> columns = ref.property().toOneForeignKey().columns();
+            JpqlBinding low = compositeComparisonSource(b.low(), ref);
+            JpqlBinding high = compositeComparisonSource(b.high(), ref);
+            if (b.negated()) {
+                ctx.sql.append("not ");
+            }
+            ctx.sql.append('(');
+            renderCompositeOrdering(ctx, ref.alias(), columns, low, ComparisonOp.GE);
+            ctx.sql.append(" and ");
+            renderCompositeOrdering(ctx, ref.alias(), columns, high, ComparisonOp.LE);
+            ctx.sql.append(')');
+            return;
+        }
+        renderExpression(ctx, b.value());
+        ctx.sql.append(b.negated() ? " not between " : " between ");
+        renderExpression(ctx, b.low());
+        ctx.sql.append(" and ");
+        renderExpression(ctx, b.high());
+    }
+
+    /**
+     * IN (리스트) 술어. 복합키 to-one terminal이면 각 참조를 컴포넌트 동등의 {@code and}로 묶고 그 그룹들을
+     * {@code or}로 잇는 OR-of-ANDs 다중컬럼 IN으로 전개한다(row-value IN 미지원 dialect 회피). NOT IN은 {@code not (...)}.
+     * 빈 리스트는 {@code 1 = 0}(NOT IN은 {@code 1 = 1})로 단락한다.
+     */
+    private void renderInList(Ctx ctx, Predicate.InList in) {
+        CompositeToOneRef ref = compositeToOneRef(ctx, in.value());
+        List<Expression> items = in.items();
+        if (ref != null) {
+            if (items.isEmpty()) {
+                ctx.sql.append(in.negated() ? "1 = 1" : "1 = 0");
+                return;
+            }
+            List<ToOneForeignKeyColumn> columns = ref.property().toOneForeignKey().columns();
+            if (in.negated()) {
+                ctx.sql.append("not ");
+            }
+            ctx.sql.append('(');
+            for (int i = 0; i < items.size(); i++) {
+                if (i > 0) {
+                    ctx.sql.append(" or ");
+                }
+                JpqlBinding source = compositeComparisonSource(items.get(i), ref);
+                renderCompositeEquality(ctx, ref.alias(), columns, source, false);
+            }
+            ctx.sql.append(')');
+            return;
+        }
+        renderExpression(ctx, in.value());
+        ctx.sql.append(in.negated() ? " not in (" : " in (");
+        for (int i = 0; i < items.size(); i++) {
+            if (i > 0) {
+                ctx.sql.append(", ");
+            }
+            renderExpression(ctx, items.get(i));
+        }
+        ctx.sql.append(')');
+    }
+
     /** 식이 복합키 타겟 to-one terminal 경로면 그 참조(별칭+관계)를, 아니면 {@code null}을 돌려준다. */
     private CompositeToOneRef compositeToOneRef(Ctx ctx, Expression expression) {
         if (!(expression instanceof Expression.Path path)) {
@@ -467,25 +529,65 @@ public final class JpqlSqlBuilder {
     }
 
     private void renderCompositeComparison(Ctx ctx, CompositeToOneRef ref, ComparisonOp op, Expression other) {
-        boolean eq = op == ComparisonOp.EQ;
-        boolean ne = op == ComparisonOp.NE;
-        if (!eq && !ne) {
-            throw new JpqlException("Ordering comparison (" + op.symbol() + ") on composite-key to-one '"
-                    + ref.property().propertyName() + "' is not supported; only = and <> are, or compare its "
-                    + "@Id components individually");
-        }
         JpqlBinding source = compositeComparisonSource(other, ref);
         List<ToOneForeignKeyColumn> columns = ref.property().toOneForeignKey().columns();
+        switch (op) {
+            case EQ -> renderCompositeEquality(ctx, ref.alias(), columns, source, false);
+            case NE -> renderCompositeEquality(ctx, ref.alias(), columns, source, true);
+            case LT, LE, GT, GE -> renderCompositeOrdering(ctx, ref.alias(), columns, source, op);
+        }
+    }
+
+    /**
+     * {@code =}는 각 FK 컴포넌트 eq의 {@code and}(튜플 동등), {@code <>}는 각 컴포넌트 neq의 {@code or}
+     * (튜플 부등)로 전개한다. 각 값은 참조 엔티티에서 해당 {@code @Id} 컴포넌트를 꺼내 저장 표현으로 인코딩한다.
+     */
+    private void renderCompositeEquality(
+            Ctx ctx, String alias, List<ToOneForeignKeyColumn> columns, JpqlBinding source, boolean ne) {
         ctx.sql.append('(');
         for (int i = 0; i < columns.size(); i++) {
             if (i > 0) {
                 ctx.sql.append(ne ? " or " : " and ");
             }
             ToOneForeignKeyColumn column = columns.get(i);
-            appendCompositeColumn(ctx, ref.alias(), column);
-            ctx.sql.append(eq ? " = " : " <> ");
+            appendCompositeColumn(ctx, alias, column);
+            ctx.sql.append(ne ? " <> " : " = ");
             ctx.bind(new JpqlBinding.Component(source, column));
             ctx.sql.append(marker(ctx));
+        }
+        ctx.sql.append(')');
+    }
+
+    /**
+     * {@code <}/{@code <=}/{@code >}/{@code >=}를 컴포넌트 순서(canonical {@code ToOneForeignKey} 순서)에 따른
+     * lexicographic 다중컬럼 비교로 전개한다. n개 컴포넌트에 대해 각 항 k는 앞선 컴포넌트들의 동등({@code =})과
+     * k번째 컴포넌트의 strict 비교를 {@code and}로 잇고, 그 항들을 {@code or}로 묶는다. {@code <=}/{@code >=}는
+     * 마지막 컴포넌트만 non-strict로 두어 튜플 동등 케이스를 포함한다.
+     */
+    private void renderCompositeOrdering(
+            Ctx ctx, String alias, List<ToOneForeignKeyColumn> columns, JpqlBinding source, ComparisonOp op) {
+        String strict = (op == ComparisonOp.LT || op == ComparisonOp.LE) ? "<" : ">";
+        boolean orEqualLast = op == ComparisonOp.LE || op == ComparisonOp.GE;
+        int n = columns.size();
+        ctx.sql.append('(');
+        for (int k = 0; k < n; k++) {
+            if (k > 0) {
+                ctx.sql.append(" or ");
+            }
+            ctx.sql.append('(');
+            for (int j = 0; j < k; j++) {
+                appendCompositeColumn(ctx, alias, columns.get(j));
+                ctx.sql.append(" = ");
+                ctx.bind(new JpqlBinding.Component(source, columns.get(j)));
+                ctx.sql.append(marker(ctx));
+                ctx.sql.append(" and ");
+            }
+            appendCompositeColumn(ctx, alias, columns.get(k));
+            String cmp = (k == n - 1 && orEqualLast) ? strict + "=" : strict;
+            ctx.sql.append(' ').append(cmp).append(' ');
+            ctx.bind(new JpqlBinding.Component(source, columns.get(k)));
+            ctx.sql.append(marker(ctx));
+            ctx.sql.append(')');
         }
         ctx.sql.append(')');
     }
@@ -857,10 +959,11 @@ public final class JpqlSqlBuilder {
         }
         if (property.manyToOne() && property.isCompositeToOne()) {
             // 단일 컬럼 자리(SELECT 투영/GROUP BY/ORDER BY/산술)에서 복합키 to-one은 대표 컬럼 하나로 축약할 수
-            // 없다 — 조용한 오답 대신 거부한다. 비교/IS NULL은 renderComparison/renderNull이 컴포넌트로 전개한다.
+            // 없다 — 조용한 오답 대신 거부한다. 비교(= <> < <= > >=)/BETWEEN/IN/IS NULL은 WHERE 술어 렌더가 컴포넌트로 전개한다.
             throw new JpqlException("Reference to composite-key to-one association '" + property.propertyName()
                     + "' as a single column is not supported (its foreign key spans multiple columns); "
-                    + "compare it with = / <> / IS NULL, join it, or reference its @Id components explicitly");
+                    + "it is only usable in a WHERE predicate (= <> < <= > >= BETWEEN IN IS NULL) or a JOIN, "
+                    + "not as a SELECT/GROUP BY/ORDER BY projection; reference its @Id components explicitly instead");
         }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? resolved.alias() + "." + col : col;
@@ -876,11 +979,12 @@ public final class JpqlSqlBuilder {
                     + "' is not supported; use an explicit JOIN or SIZE(...)");
         }
         if (property.manyToOne() && property.isCompositeToOne()) {
-            // terminal 단일 세그먼트로 복합키 to-one을 참조(WHERE c.parent = :p / IS NULL / SELECT c.parent)하면
-            // 대표 FK 컬럼 하나만 반환돼 조용한 오답이 된다(join의 silent-first-column과 같은 부류). 명확히 거부한다.
+            // terminal 단일 세그먼트로 복합키 to-one을 단일 컬럼 자리(SELECT c.parent 등)에서 참조하면 대표 FK
+            // 컬럼 하나만 반환돼 조용한 오답이 된다(join의 silent-first-column과 같은 부류). 명확히 거부한다.
+            // (WHERE 비교/BETWEEN/IN/IS NULL은 컴포넌트 전개 경로가 별도로 처리한다.)
             throw new JpqlException("Reference to composite-key to-one association '" + field
                     + "' as a single column is not supported (its foreign key spans multiple columns); "
-                    + "compare or select its @Id components explicitly");
+                    + "select its @Id components explicitly instead");
         }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? alias + "." + col : col;

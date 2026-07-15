@@ -182,10 +182,19 @@ final class AliasedCriteriaSqlBuilder {
                 bindMarker(ctx, predicate.value());
             }
             case LIKE -> {
+                if (isCompositeToOne(predicate.path())) {
+                    throw new CriteriaException("LIKE on composite-key to-one '"
+                            + predicate.path().property().propertyName() + "' is not supported; its foreign key "
+                            + "spans multiple columns with no single text representation");
+                }
                 ctx.sql.append(column(predicate.path())).append(predicate.negated() ? " not like " : " like ");
                 bindMarker(ctx, predicate.value());
             }
             case BETWEEN -> {
+                if (isCompositeToOne(predicate.path())) {
+                    renderCompositeToOneBetween(ctx, predicate.path(), predicate.low(), predicate.high());
+                    break;
+                }
                 ctx.sql.append(column(predicate.path())).append(" between ");
                 bindMarker(ctx, predicate.low());
                 ctx.sql.append(" and ");
@@ -234,6 +243,10 @@ final class AliasedCriteriaSqlBuilder {
 
     private void renderIn(Ctx ctx, CriteriaPredicate predicate) {
         List<Object> values = predicate.inValues();
+        if (isCompositeToOne(predicate.path())) {
+            renderCompositeToOneIn(ctx, predicate.path(), values, predicate.negated());
+            return;
+        }
         if (values.isEmpty()) {
             ctx.sql.append(predicate.negated() ? "1 = 1" : "1 = 0");
             return;
@@ -307,10 +320,12 @@ final class AliasedCriteriaSqlBuilder {
         PersistentProperty property = path.property();
         if (property.manyToOne() && property.isCompositeToOne()) {
             // 복합키 타겟 to-one을 단일 컬럼으로 렌더하는 자리(SELECT 투영/GROUP BY/ORDER BY/집계)는 대표 컬럼
-            // 하나로 축약할 수 없다 — 조용한 오답 대신 명확히 거부한다. 비교/IS NULL만 컴포넌트로 전개된다.
+            // 하나로 축약할 수 없다 — 조용한 오답 대신 명확히 거부한다. WHERE 비교(= <> < <= > >=)/BETWEEN/IN/
+            // IS NULL만 컴포넌트로 전개된다.
             throw new CriteriaException("Composite-key to-one association '" + property.propertyName()
                     + "' cannot be used as a single column here (its foreign key spans multiple columns); "
-                    + "it is only supported in a join, an equality/inequality comparison, or an IS [NOT] NULL test");
+                    + "it is only supported in a join or a WHERE predicate "
+                    + "(=, <>, <, <=, >, >=, BETWEEN, IN, IS [NOT] NULL), not as a projection/GROUP BY/ORDER BY");
         }
         CriteriaFrom source = path.source();
         String columnName = property.columnName();
@@ -330,32 +345,113 @@ final class AliasedCriteriaSqlBuilder {
     }
 
     /**
-     * {@code alias.parent = :ref} / {@code alias.parent <> :ref}를 모든 FK 컴포넌트 비교로 전개한다.
-     * {@code =}는 각 컴포넌트 eq의 {@code and}, {@code <>}는 각 컴포넌트 neq의 {@code or}(튜플 부등)로 렌더하며,
-     * 각 bind 값은 참조 엔티티에서 해당 {@code @Id} 컴포넌트를 꺼내 저장 표현으로 인코딩한다.
+     * {@code alias.parent <op> :ref}를 참조 엔티티의 복합 {@code @Id} 컴포넌트별 다중컬럼 비교로 전개한다.
+     * {@code =}/{@code <>}는 튜플 동등/부등, {@code < <= > >=}는 컴포넌트 순서(canonical {@code ToOneForeignKey}
+     * 순서)에 따른 lexicographic 비교다. 각 bind 값은 참조 엔티티에서 해당 컴포넌트를 꺼내 저장 표현으로 인코딩한다.
      */
     private void renderCompositeToOneComparison(Ctx ctx, CriteriaColumnPath path, CompareOp op, Object reference) {
-        boolean eq = op == CompareOp.EQ;
-        boolean ne = op == CompareOp.NE;
-        if (!eq && !ne) {
-            throw new CriteriaException("Ordering comparison (" + op.symbol() + ") on composite-key to-one '"
-                    + path.property().propertyName() + "' is not supported; only equal/notEqual are, "
-                    + "or compare its @Id components individually");
-        }
         String alias = path.source() == null ? null : path.source().alias();
         List<io.nova.metadata.ToOneForeignKeyColumn> columns = path.property().toOneForeignKey().columns();
+        switch (op) {
+            case EQ -> renderCompositeEquality(ctx, alias, columns, reference, false);
+            case NE -> renderCompositeEquality(ctx, alias, columns, reference, true);
+            case LT, LE, GT, GE -> renderCompositeOrdering(ctx, alias, columns, reference, op);
+        }
+    }
+
+    /** {@code =}는 컴포넌트 eq의 {@code and}(튜플 동등), {@code <>}는 컴포넌트 neq의 {@code or}(튜플 부등). */
+    private void renderCompositeEquality(
+            Ctx ctx, String alias, List<io.nova.metadata.ToOneForeignKeyColumn> columns, Object reference, boolean ne) {
         ctx.sql.append('(');
         for (int i = 0; i < columns.size(); i++) {
             if (i > 0) {
                 ctx.sql.append(ne ? " or " : " and ");
             }
             io.nova.metadata.ToOneForeignKeyColumn fk = columns.get(i);
-            ctx.sql.append(alias == null ? dialect.quote(fk.columnName()) : qualified(alias, fk.columnName()))
-                    .append(eq ? " = " : " <> ");
-            Object domain = reference == null ? null : fk.readReferencedValue(reference);
-            bindMarker(ctx, fk.toColumnValue(domain));
+            appendCompositeColumn(ctx, alias, fk).append(ne ? " <> " : " = ");
+            bindComponent(ctx, fk, reference);
         }
         ctx.sql.append(')');
+    }
+
+    /**
+     * {@code < <= > >=}를 lexicographic 다중컬럼 비교로 전개한다. n개 컴포넌트에 대해 각 항 k는 앞선 컴포넌트들의
+     * 동등({@code =})과 k번째 컴포넌트의 strict 비교를 {@code and}로 잇고, 그 항들을 {@code or}로 묶는다.
+     * {@code <=}/{@code >=}는 마지막 컴포넌트만 non-strict로 두어 튜플 동등 케이스를 포함한다.
+     */
+    private void renderCompositeOrdering(
+            Ctx ctx, String alias, List<io.nova.metadata.ToOneForeignKeyColumn> columns, Object reference,
+            CompareOp op) {
+        String strict = (op == CompareOp.LT || op == CompareOp.LE) ? "<" : ">";
+        boolean orEqualLast = op == CompareOp.LE || op == CompareOp.GE;
+        int n = columns.size();
+        ctx.sql.append('(');
+        for (int k = 0; k < n; k++) {
+            if (k > 0) {
+                ctx.sql.append(" or ");
+            }
+            ctx.sql.append('(');
+            for (int j = 0; j < k; j++) {
+                appendCompositeColumn(ctx, alias, columns.get(j)).append(" = ");
+                bindComponent(ctx, columns.get(j), reference);
+                ctx.sql.append(" and ");
+            }
+            String cmp = (k == n - 1 && orEqualLast) ? strict + "=" : strict;
+            appendCompositeColumn(ctx, alias, columns.get(k)).append(' ').append(cmp).append(' ');
+            bindComponent(ctx, columns.get(k), reference);
+            ctx.sql.append(')');
+        }
+        ctx.sql.append(')');
+    }
+
+    /**
+     * {@code alias.parent BETWEEN :lo AND :hi}를 {@code (parent >= :lo) and (parent <= :hi)}의 lexicographic
+     * 다중컬럼 전개로 렌더한다.
+     */
+    private void renderCompositeToOneBetween(Ctx ctx, CriteriaColumnPath path, Object low, Object high) {
+        String alias = path.source() == null ? null : path.source().alias();
+        List<io.nova.metadata.ToOneForeignKeyColumn> columns = path.property().toOneForeignKey().columns();
+        ctx.sql.append('(');
+        renderCompositeOrdering(ctx, alias, columns, low, CompareOp.GE);
+        ctx.sql.append(" and ");
+        renderCompositeOrdering(ctx, alias, columns, high, CompareOp.LE);
+        ctx.sql.append(')');
+    }
+
+    /**
+     * {@code alias.parent IN (:refs)}를 각 참조의 컴포넌트 동등({@code and})을 {@code or}로 잇는 OR-of-ANDs
+     * 다중컬럼 IN으로 전개한다(row-value IN 미지원 dialect 회피). NOT IN은 {@code not (...)}. 빈 리스트는
+     * {@code 1 = 0}(NOT IN은 {@code 1 = 1})로 단락한다.
+     */
+    private void renderCompositeToOneIn(Ctx ctx, CriteriaColumnPath path, List<Object> values, boolean negated) {
+        if (values.isEmpty()) {
+            ctx.sql.append(negated ? "1 = 1" : "1 = 0");
+            return;
+        }
+        String alias = path.source() == null ? null : path.source().alias();
+        List<io.nova.metadata.ToOneForeignKeyColumn> columns = path.property().toOneForeignKey().columns();
+        if (negated) {
+            ctx.sql.append("not ");
+        }
+        ctx.sql.append('(');
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                ctx.sql.append(" or ");
+            }
+            renderCompositeEquality(ctx, alias, columns, values.get(i), false);
+        }
+        ctx.sql.append(')');
+    }
+
+    /** FK 컬럼을 (별칭이 있으면) alias 한정으로 SQL에 붙이고 {@code ctx.sql}을 반환해 체이닝한다. */
+    private StringBuilder appendCompositeColumn(Ctx ctx, String alias, io.nova.metadata.ToOneForeignKeyColumn fk) {
+        return ctx.sql.append(alias == null ? dialect.quote(fk.columnName()) : qualified(alias, fk.columnName()));
+    }
+
+    /** 참조 엔티티에서 이 FK 컴포넌트의 {@code @Id} 값을 꺼내 저장 표현으로 인코딩해 bind marker로 바인딩한다. */
+    private void bindComponent(Ctx ctx, io.nova.metadata.ToOneForeignKeyColumn fk, Object reference) {
+        Object domain = reference == null ? null : fk.readReferencedValue(reference);
+        bindMarker(ctx, fk.toColumnValue(domain));
     }
 
     /** {@code alias.parent IS [NOT] NULL}을 모든 FK 컬럼의 IS [NOT] NULL {@code and}로 전개한다. */

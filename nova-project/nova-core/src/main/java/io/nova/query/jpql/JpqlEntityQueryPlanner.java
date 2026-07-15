@@ -82,11 +82,11 @@ public final class JpqlEntityQueryPlanner {
      * 엔티티 반환 ORDER BY를 루트 필드 한정 {@link Sort}로 변환한다. 조인 별칭/다세그먼트 경로 정렬은 IN
      * 하이드레이션 후 재현할 수 없으므로 fail-fast한다. 비어 있으면 {@code null}.
      */
-    public Sort translateRootOrderBy(List<OrderItem> orderBy, String rootAlias) {
+    public Sort translateRootOrderBy(List<OrderItem> orderBy, String rootAlias, EntityMetadata<?> rootMeta) {
         if (orderBy.isEmpty()) {
             return null;
         }
-        return translateSort(orderBy, rootAlias);
+        return translateSort(orderBy, rootAlias, rootMeta);
     }
 
     /**
@@ -138,10 +138,10 @@ public final class JpqlEntityQueryPlanner {
 
         QuerySpec spec = QuerySpec.empty();
         if (narrowing.remaining() != null) {
-            spec = spec.where(translatePredicate(narrowing.remaining(), alias, parameters));
+            spec = spec.where(translatePredicate(narrowing.remaining(), alias, metadata, parameters));
         }
         if (!select.orderBy().isEmpty()) {
-            spec = spec.orderBy(translateSort(select.orderBy(), alias));
+            spec = spec.orderBy(translateSort(select.orderBy(), alias, metadata));
         }
         return new EntityPlan(narrowing.target(), spec);
     }
@@ -261,27 +261,28 @@ public final class JpqlEntityQueryPlanner {
     // ----------------------------------------------------------------------------------------
 
     private Predicate translatePredicate(
-            io.nova.query.jpql.ast.Predicate predicate, String rootAlias, JpqlParameters params) {
+            io.nova.query.jpql.ast.Predicate predicate, String rootAlias, EntityMetadata<?> rootMeta,
+            JpqlParameters params) {
         return switch (predicate) {
             case io.nova.query.jpql.ast.Predicate.And and -> Criteria.and(
-                    translatePredicate(and.left(), rootAlias, params),
-                    translatePredicate(and.right(), rootAlias, params));
+                    translatePredicate(and.left(), rootAlias, rootMeta, params),
+                    translatePredicate(and.right(), rootAlias, rootMeta, params));
             case io.nova.query.jpql.ast.Predicate.Or or -> Criteria.or(
-                    translatePredicate(or.left(), rootAlias, params),
-                    translatePredicate(or.right(), rootAlias, params));
+                    translatePredicate(or.left(), rootAlias, rootMeta, params),
+                    translatePredicate(or.right(), rootAlias, rootMeta, params));
             case io.nova.query.jpql.ast.Predicate.Not not ->
-                    Criteria.not(translatePredicate(not.inner(), rootAlias, params));
-            case io.nova.query.jpql.ast.Predicate.Comparison c -> comparison(c, rootAlias, params);
-            case io.nova.query.jpql.ast.Predicate.Like like -> like(like, rootAlias, params);
+                    Criteria.not(translatePredicate(not.inner(), rootAlias, rootMeta, params));
+            case io.nova.query.jpql.ast.Predicate.Comparison c -> comparison(c, rootAlias, rootMeta, params);
+            case io.nova.query.jpql.ast.Predicate.Like like -> like(like, rootAlias, rootMeta, params);
             case io.nova.query.jpql.ast.Predicate.Between b -> Criteria.between(
-                    field(b.value(), rootAlias),
+                    field(b.value(), rootAlias, rootMeta),
                     value(b.low(), params),
                     value(b.high(), params));
             case io.nova.query.jpql.ast.Predicate.Null n -> n.negated()
-                    ? Criteria.isNotNull(field(n.value(), rootAlias))
-                    : Criteria.isNull(field(n.value(), rootAlias));
+                    ? Criteria.isNotNull(field(n.value(), rootAlias, rootMeta))
+                    : Criteria.isNull(field(n.value(), rootAlias, rootMeta));
             case io.nova.query.jpql.ast.Predicate.InList in -> {
-                String field = field(in.value(), rootAlias);
+                String field = field(in.value(), rootAlias, rootMeta);
                 List<Object> values = new ArrayList<>();
                 for (Expression item : in.items()) {
                     values.add(value(item, params));
@@ -296,8 +297,9 @@ public final class JpqlEntityQueryPlanner {
     }
 
     private Predicate comparison(
-            io.nova.query.jpql.ast.Predicate.Comparison c, String rootAlias, JpqlParameters params) {
-        String field = field(c.left(), rootAlias);
+            io.nova.query.jpql.ast.Predicate.Comparison c, String rootAlias, EntityMetadata<?> rootMeta,
+            JpqlParameters params) {
+        String field = field(c.left(), rootAlias, rootMeta);
         Object value = value(c.right(), params);
         return switch (c.op()) {
             case EQ -> value == null ? Criteria.isNull(field) : Criteria.eq(field, value);
@@ -309,19 +311,21 @@ public final class JpqlEntityQueryPlanner {
         };
     }
 
-    private Predicate like(io.nova.query.jpql.ast.Predicate.Like like, String rootAlias, JpqlParameters params) {
+    private Predicate like(
+            io.nova.query.jpql.ast.Predicate.Like like, String rootAlias, EntityMetadata<?> rootMeta,
+            JpqlParameters params) {
         if (like.escape() != null) {
             throw unsupported("LIKE ... ESCAPE in an entity-returning query");
         }
-        String field = field(like.value(), rootAlias);
+        String field = field(like.value(), rootAlias, rootMeta);
         Object pattern = value(like.pattern(), params);
         return like.negated() ? Criteria.notLike(field, pattern) : Criteria.like(field, pattern);
     }
 
-    private Sort translateSort(List<OrderItem> orderBy, String rootAlias) {
+    private Sort translateSort(List<OrderItem> orderBy, String rootAlias, EntityMetadata<?> rootMeta) {
         List<Sort.Order> orders = new ArrayList<>();
         for (OrderItem item : orderBy) {
-            String field = field(item.expression(), rootAlias);
+            String field = field(item.expression(), rootAlias, rootMeta);
             orders.add(new Sort.Order(field, item.ascending() ? Sort.Direction.ASC : Sort.Direction.DESC));
         }
         return new Sort(orders);
@@ -332,7 +336,7 @@ public final class JpqlEntityQueryPlanner {
     // ----------------------------------------------------------------------------------------
 
     /** {@code alias.field} 경로에서 Nova Criteria가 쓰는 property name(필드명)을 뽑는다. */
-    private String field(Expression expression, String rootAlias) {
+    private String field(Expression expression, String rootAlias, EntityMetadata<?> rootMeta) {
         if (!(expression instanceof Expression.Path path)) {
             throw unsupported("non-path operand (" + expression.getClass().getSimpleName()
                     + ") on the left side of a predicate");
@@ -345,7 +349,29 @@ public final class JpqlEntityQueryPlanner {
             throw unsupported("multi-segment or bare-alias path '" + path.alias()
                     + (path.segments().isEmpty() ? "" : "." + String.join(".", path.segments())) + "'");
         }
-        return path.segments().get(0);
+        String name = path.segments().get(0);
+        rejectCompositeToOne(name, rootMeta);
+        return name;
+    }
+
+    /**
+     * 이 엔티티 반환 경로는 property를 단일 컬럼({@link io.nova.metadata.PersistentProperty#columnName()})으로만
+     * 해석하는 코어 {@code AbstractSqlRenderer}에 위임한다. 복합키 타겟 to-one은 그 FK가 N개 컬럼이지만
+     * {@code columnName()}이 <b>첫 FK 컬럼</b>만 대표로 돌려주므로, 이 자리에서 비교/정렬하면 나머지 컴포넌트를
+     * 조용히 누락한 SQL(첫 컬럼만 비교)이 되어 <b>silent wrong-row</b> 위험이 있다. 등치/IS NULL 포함 모든 연산에서
+     * build-time에 명확히 거부하고, 컴포넌트로 전개되는 대안(스칼라 프로젝션 또는 Criteria API)으로 안내한다.
+     */
+    private void rejectCompositeToOne(String propertyName, EntityMetadata<?> rootMeta) {
+        rootMeta.findProperty(propertyName).ifPresent(property -> {
+            if (property.manyToOne() && property.isCompositeToOne()) {
+                throw new JpqlException("Composite-key to-one association '" + propertyName
+                        + "' cannot be used in a WHERE/ORDER BY of an entity-returning JPQL query (its foreign key "
+                        + "spans multiple columns; this path would compare only the first column and could return "
+                        + "wrong rows). Rewrite it as a scalar projection (e.g. SELECT c.id FROM ... WHERE c."
+                        + propertyName + " <op> :ref, which expands to all foreign-key components), or express the "
+                        + "query with the Criteria API.");
+            }
+        });
     }
 
     private Object value(Expression expression, JpqlParameters params) {

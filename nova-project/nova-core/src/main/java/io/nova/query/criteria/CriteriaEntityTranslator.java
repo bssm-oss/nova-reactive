@@ -78,12 +78,14 @@ final class CriteriaEntityTranslator {
     private static String name(CriteriaPredicate predicate) {
         io.nova.metadata.PersistentProperty property = predicate.path().property();
         if (property.manyToOne() && property.isCompositeToOne()) {
-            // 복합키 타겟 to-one의 다중컬럼 FK는 단일 property 이름으로 표현할 수 없다. 동등(=)/부등(<>)/
-            // IS [NOT] NULL만 alias SQL 경로에서 컴포넌트로 전개돼 지원되며, LIKE/BETWEEN/IN 등 이 자리에
-            // 도달하는 술어에는 전개할 alias 경로가 없다 — 조용한 오답 대신 정확한 미지원 사유로 fail-fast.
+            // 복합키 타겟 to-one의 다중컬럼 FK는 단일 property 이름으로 표현할 수 없다. 비교(= <> < <= > >=)/
+            // BETWEEN/IN/IS [NOT] NULL은 CriteriaQueryImpl#usesAliasedPredicate가 alias SQL 경로로 라우팅해
+            // 컴포넌트로 전개하므로 이 QuerySpec 변환기에는 도달하지 않는다. 여기 도달하는 술어(LIKE 등)는
+            // 복합 FK에 대응하는 단일 텍스트/컬럼 표현이 없어 전개 불가 — 조용한 오답 대신 fail-fast한다.
             throw new CriteriaException("Composite-key to-one association '" + property.propertyName()
                     + "' is not supported in a " + predicate.kind() + " predicate (its foreign key spans "
-                    + "multiple columns); only equality (=), inequality (<>), and IS [NOT] NULL tests are supported");
+                    + "multiple columns with no single text/column representation); use =, <>, <, <=, >, >=, "
+                    + "BETWEEN, IN, or IS [NOT] NULL (which expand to all foreign-key components)");
         }
         return property.propertyName();
     }
