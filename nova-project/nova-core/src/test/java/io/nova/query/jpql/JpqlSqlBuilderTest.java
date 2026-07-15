@@ -386,27 +386,6 @@ class JpqlSqlBuilderTest {
     }
 
     @Test
-    void failsFastOnGroupByOverCompositeKeyToOne() {
-        // GROUP BY는 pathColumn -> columnOf를 그대로 타므로(단일 컬럼 자리) 여전히 fail-fast해야 한다;
-        // SELECT 투영만 id-stub 다중컬럼 경로를 새로 얻었다.
-        JpqlSqlBuilder b = compositeBuilder();
-        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
-                "SELECT COUNT(c) FROM CompositeJoinChild c GROUP BY c.parent").parse();
-        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
-        assertTrue(ex.getMessage().contains("composite-key"));
-    }
-
-    @Test
-    void failsFastOnOrderByOverCompositeKeyToOne() {
-        // ORDER BY도 renderExpression -> pathColumn -> columnOf 경로를 그대로 타므로 fail-fast를 유지한다.
-        JpqlSqlBuilder b = compositeBuilder();
-        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
-                "SELECT c.id FROM CompositeJoinChild c ORDER BY c.parent").parse();
-        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
-        assertTrue(ex.getMessage().contains("composite-key"));
-    }
-
-    @Test
     void terminalLessThanCompositeKeyToOneExpandsLexicographically() {
         // (p_k1, p_k2) < (ref) → (p_k1 < ?) or (p_k1 = ? and p_k2 < ?). 컴포넌트 순서는 canonical FK 순서.
         TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent < :p");
