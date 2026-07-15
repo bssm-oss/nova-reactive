@@ -146,6 +146,137 @@ class JpqlIntegrationTest {
     }
 
     @Test
+    void quantifiedAllReturnsMaxRow() {
+        // >= ALL(모든 salary) → 최댓값(Ada=150)만 만족한다.
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e.name FROM Employee e WHERE e.salary >= ALL "
+                                                + "(SELECT m.salary FROM Employee m)", String.class)
+                                .getResultList())
+                .expectNext("Ada")
+                .verifyComplete();
+    }
+
+    @Test
+    void quantifiedAnyMatchesSubqueryMember() {
+        // = ANY(age=25인 salary=90) → Bob.
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e.name FROM Employee e WHERE e.salary = ANY "
+                                                + "(SELECT m.salary FROM Employee m WHERE m.age = :a)", String.class)
+                                .setParameter("a", 25)
+                                .getResultList())
+                .expectNext("Bob")
+                .verifyComplete();
+    }
+
+    @Test
+    void quantifiedAllOverEmptySubqueryIsTrueForAllRows() {
+        // 빈 서브쿼리에 대한 > ALL은 표준 3-값 논리로 TRUE(모든 행 통과) — Nova는 네이티브 방출로 DB에 위임한다.
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e.name FROM Employee e WHERE e.salary > ALL "
+                                                + "(SELECT m.salary FROM Employee m WHERE m.age > 100) "
+                                                + "ORDER BY e.name", String.class)
+                                .getResultList())
+                .expectNext("Ada", "Bob", "Cara")
+                .verifyComplete();
+    }
+
+    @Test
+    void jpa31StringFunctionsRoundTrip() {
+        StepVerifier.create(
+                        jpql.createQuery("SELECT LEFT(e.name, 2) FROM Employee e WHERE e.name = 'Ada'", String.class)
+                                .getSingleResult())
+                .expectNext("Ad")
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT RIGHT(e.name, 2) FROM Employee e WHERE e.name = 'Cara'", String.class)
+                                .getSingleResult())
+                .expectNext("ra")
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT REPLACE(e.name, 'a', 'X') FROM Employee e WHERE e.name = 'Ada'",
+                                        String.class)
+                                .getSingleResult())
+                .expectNext("AdX")
+                .verifyComplete();
+    }
+
+    @Test
+    void jpa31NumericFunctionsRoundTrip() {
+        StepVerifier.create(
+                        jpql.createQuery("SELECT CEILING(e.salary) FROM Employee e WHERE e.name = 'Cara'", Object.class)
+                                .getSingleResult())
+                .assertNext(v -> assertEquals(120, ((Number) v).intValue()))
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT POWER(e.age, 2) FROM Employee e WHERE e.name = 'Bob'", Object.class)
+                                .getSingleResult())
+                .assertNext(v -> assertEquals(625.0, ((Number) v).doubleValue()))
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT SIGN(e.salary) FROM Employee e WHERE e.name = 'Bob'", Object.class)
+                                .getSingleResult())
+                .assertNext(v -> assertEquals(1, ((Number) v).intValue()))
+                .verifyComplete();
+    }
+
+    @Test
+    void extractFieldRoundTrip() {
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT EXTRACT(YEAR FROM CURRENT_DATE) FROM Employee e WHERE e.name = 'Ada'",
+                                        Object.class)
+                                .getSingleResult())
+                .assertNext(v -> assertTrue(((Number) v).intValue() >= 2024))
+                .verifyComplete();
+    }
+
+    @Test
+    void localTemporalRoundTrip() {
+        // LOCAL DATE는 portable current_date로 렌더돼 H2에서 실행된다.
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT EXTRACT(YEAR FROM LOCAL DATE) FROM Employee e WHERE e.name = 'Ada'",
+                                        Object.class)
+                                .getSingleResult())
+                .assertNext(v -> assertTrue(((Number) v).intValue() >= 2024))
+                .verifyComplete();
+    }
+
+    @Test
+    void trimModifierRoundTrip() {
+        StepVerifier.create(
+                        jpql.createQuery("SELECT TRIM(LEADING 'A' FROM e.name) FROM Employee e WHERE e.name = 'Ada'",
+                                        String.class)
+                                .getSingleResult())
+                .expectNext("da")
+                .verifyComplete();
+    }
+
+    @Test
+    void coalesceAndNullifRoundTrip() {
+        StepVerifier.create(
+                        jpql.createQuery("SELECT COALESCE(e.name, :d) FROM Employee e WHERE e.name = 'Bob'",
+                                        String.class)
+                                .setParameter("d", "fallback")
+                                .getSingleResult())
+                .expectNext("Bob")
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT NULLIF(e.age, 0) FROM Employee e WHERE e.name = 'Bob'", Object.class)
+                                .getSingleResult())
+                .assertNext(v -> assertEquals(25, ((Number) v).intValue()))
+                .verifyComplete();
+    }
+
+    @Test
     void missingParameterFailsFast() {
         StepVerifier.create(
                         jpql.createQuery("SELECT e.name FROM Employee e WHERE e.name = :n", String.class)
