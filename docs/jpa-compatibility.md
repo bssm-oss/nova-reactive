@@ -124,6 +124,17 @@ These declare cleanly but are rejected with a message until implemented — Nova
 - Stored-procedure `OUT` / `INOUT` / `REF_CURSOR` parameters (r2dbc-h2 driver limitation).
 - `@MapKeyClass` naming a **composite-`@Id`** entity key class (single-`@Id` entity and `@Embeddable` key classes are supported).
 - In-place mutation of a *loaded* referenced entity's `@Id` (JPA-forbidden) is not change-tracked.
+- Under a transaction-bound persistence session, moving an already-managed `@OneToMany` child between two
+  parents' collections (`a.getChildren().remove(x); b.getChildren().add(x);`) without also setting the
+  child's own owning `@ManyToOne` field. Set the `@ManyToOne` side explicitly so its own dirty-check drives
+  the foreign-key update; collection-membership-only reparenting is rejected rather than silently orphaning
+  or deleting the child on the losing side.
+- Under a session, removing a child from a non-`orphanRemoval` `@OneToMany` collection when the child's
+  owning `@ManyToOne` foreign key is non-nullable (`optional = false` / `@JoinColumn(nullable = false)`) —
+  nulling it would violate the column constraint. Use `orphanRemoval = true` or reparent explicitly instead.
+- Under a session, `@OneToMany(mappedBy = ...)` combined with `@OrderColumn` — the session's diff-at-flush
+  collection sync does not reindex order yet. Use it outside a session (stateless save), where reindexing
+  already works.
 
 > Composite `@Id` components should be round-trip-stable types (integers, `String`, `UUID`, enums).
 > Types whose stored form does not decode back byte-for-byte (`BigDecimal` scale drift, sub-second

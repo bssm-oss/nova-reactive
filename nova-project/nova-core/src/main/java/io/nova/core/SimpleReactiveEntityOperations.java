@@ -2074,8 +2074,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@link PersistenceSession.ManagedEntry}가 {@link #flushEntry}에서 스칼라 dirty diff를 처리한다. baseline이
      * 없으면(detached parent를 세션에 직접 편입한 경우) 전체 current child를 persist하고(신규만 실제 INSERT),
      * orphanRemoval이면 정리한다 — 현행 eager cascade와 동등한 의미의 flush-safe 버전이다. 복합키 child는
-     * {@link #resolveMappedByProperty}가 이미 fail-fast로 거부한다(단일 {@code @Id}만 지원). {@code @OrderColumn}
-     * 재인덱싱은 이 자리에서 하지 않는다(S2).
+     * {@link #resolveMappedByProperty}가 이미 fail-fast로 거부한다(단일 {@code @Id}만 지원). {@code @OrderColumn}이
+     * 있으면 재인덱싱을 하지 않고 fail-fast한다(S2 전까지 세션 미지원, 아래 참고). 이미 관리 중인(non-null id) child가
+     * baseline에 없는 상태로 나타나면(다른 parent 컬렉션에서 옮겨온 reparenting) 조용히 orphan 처리/무시하는 대신
+     * fail-fast한다 — 실제 지원은 후속(S1은 detect-and-reject까지만).
      */
     private Mono<Void> diffOneToMany(
             PersistenceSession session, PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata,
@@ -2084,6 +2086,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.error(new IllegalStateException(
                     metadata.entityType().getName() + "." + property.propertyName()
                             + " @OneToMany(cascade/orphanRemoval) requires targetEntity to be specified"));
+        }
+        if (property.oneToManyOrderColumn() != null) {
+            // M4: 세션 flush의 diffOneToMany는 멤버십(추가/제거)만 다루고 순서 재인덱싱은 하지 않는다(S2 예정).
+            // 신규 child는 persistChildInFlush로 INSERT까지는 도달 가능해서, 이대로 두면 order 컬럼이 조용히
+            // NULL로 남는다 — 명확히 거부한다. 세션 밖 stateless 경로(reindexOrderedOneToManyChildren)는 영향 없다.
+            return Mono.error(new IllegalStateException(
+                    metadata.entityType().getName() + "." + property.propertyName()
+                            + " @OneToMany with @OrderColumn is not supported under a persistence session yet"
+                            + " (order-column reindexing at flush is planned for a later track); use it without"
+                            + " an active session, or drop @OrderColumn for now"));
         }
         EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
         PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
@@ -2113,6 +2125,39 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 && frequencies(currentIds).equals(frequencies((List<?>) baseline))) {
             // Stage 1: 신규 child 없음 + id 멀티셋 불변 → 컬렉션 멤버십 SQL 없음.
             return Mono.empty();
+        }
+
+        // D2/M2: baseline에 없다가 이번에 나타난(non-null id) child = reparenting 의심. 이 child의 own mappedBy
+        // 참조(@ManyToOne 필드 — row 디코딩이 심어둔 id-only stub이거나 사용자가 명시적으로 set한 실제 참조)가
+        // 이 owner를 가리키지 않으면, 컬렉션 멤버십만으로 A→B 이동을 시도한 것이다. 이대로 두면 A쪽 diffOneToMany가
+        // (orphanRemoval 여부에 따라) 이 child를 DELETE하거나 FK-null 해버리고 B쪽은 그 사실을 모른 채 아무 SQL도
+        // 내지 않아 데이터가 조용히 사라진다(양쪽 다 flush 대상이라 순서와 무관하게 발생) — 조용한 손실 대신 명확히
+        // 거부한다. 사용자가 child의 mappedBy 필드까지 직접 set해 두면(진짜 reparent 의도가 명시적) 그 참조 id가
+        // owner와 일치하므로 여기서는 걸리지 않고, child 자신의 scalar dirty-check가 FK UPDATE를 자연히 발행한다.
+        if (haveBaseline) {
+            List<Object> appearedIds = addedKeys((List<?>) baseline, currentIds);
+            if (!appearedIds.isEmpty()) {
+                java.util.Set<Object> appearedSet = new java.util.HashSet<>(appearedIds);
+                for (Object child : currentChildren) {
+                    Object childId = childMetadata.idProperty().read(child);
+                    if (childId == null || !appearedSet.contains(childId)) {
+                        continue;
+                    }
+                    Object currentOwnerRef = mappedByProperty.readReferenceInstance(child);
+                    Object currentOwnerId = currentOwnerRef == null ? null : metadata.readIdValue(currentOwnerRef);
+                    if (!Objects.equals(currentOwnerId, ownerId)) {
+                        return Mono.error(new IllegalStateException(
+                                metadata.entityType().getName() + "." + property.propertyName()
+                                        + ": moving an already-managed @OneToMany child (id=" + childId
+                                        + ") into this collection without updating its owning @ManyToOne ("
+                                        + mappedByProperty.propertyName() + ") is not supported yet — reparenting"
+                                        + " between collections in the same session would silently orphan/delete"
+                                        + " the child on the losing side. Set " + mappedByProperty.propertyName()
+                                        + " on the child explicitly (in addition to the collection add/remove) so"
+                                        + " its own dirty-check drives the foreign-key update."));
+                    }
+                }
+            }
         }
 
         Mono<Void> persistNew = Flux.fromIterable(newChildren)
@@ -2158,9 +2203,21 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@code orphanRemoval=false}인 {@code @OneToMany}에서 baseline 대비 사라진 child를 삭제하지 않고 FK만 null로
      * 되돌린다 — child 측 mappedBy FK 컬럼이 parentId이면서 지정된 id 목록에 속하는 행을 단일 UPDATE로 갱신한다.
      * {@link #sqlExecutor}만 호출한다(flush 불변식). {@code removedIds}가 비어 있으면 호출부가 부르지 않는다.
+     * <p>
+     * M3: child의 mappedBy {@code @ManyToOne} 컬럼이 non-nullable({@code @ManyToOne(optional=false)} 또는
+     * {@code @JoinColumn(nullable=false)})이면 {@code SET fk = NULL}은 DB 제약을 위반해 driver에서 raw
+     * constraint-violation 예외로 실패한다 — 그 전에 명확한 메시지로 먼저 거부한다.
      */
     private Mono<Void> disownOrphans(
             EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId, List<Object> removedIds) {
+        if (!mappedByProperty.manyToOneNullable()) {
+            return Mono.error(new IllegalStateException(
+                    childMetadata.entityType().getName() + "." + mappedByProperty.propertyName()
+                            + " is a non-nullable @ManyToOne; removing a child from a non-orphanRemoval @OneToMany"
+                            + " collection cannot null its foreign key. Set orphanRemoval=true to delete the child"
+                            + " instead, or reparent it explicitly (set " + mappedByProperty.propertyName()
+                            + " on the child) before flush."));
+        }
         LinkedHashMap<String, Object> fieldValues = new LinkedHashMap<>();
         fieldValues.put(mappedByProperty.propertyName(), null);
         QuerySpec spec = QuerySpec.empty().where(Criteria.and(
@@ -2177,6 +2234,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 자신이 cascade-persist/orphanRemoval {@code @OneToMany}·owning {@code @ManyToMany}·{@code @ElementCollection}을
      * 가지면(재귀 소유), 이 flush의 {@code managedEntries} 스냅샷은 이미 고정돼 새로 편입된 이 엔트리를 순회하지
      * 않으므로, 등록 직후 그 child의 {@link #syncCollections}를 즉시 호출해 중첩 컬렉션도 이번 flush에서 반영한다.
+     * <p>
+     * <b>M5(알려진 한계, 문서화만 — 미구현):</b> (a)단계가 재귀하는 {@code save(reference)}는 세션이 있으면
+     * {@code reference} 자신도 세션에 등록만 하고 그 reference 소유의 {@code @OneToMany}는 own flush로 미룬다(:207-215
+     * 게이트와 동일 규칙). 하지만 그 reference는 <em>이번 flush() 호출이 이미 스냅샷을 뜬 뒤에</em> 새로 등록되므로,
+     * 이번 flush 루프는 그 reference를 순회하지 않는다 — child의 to-one cascade 타겟이 자기 소유의 컬렉션을 가진
+     * 드문 토폴로지(예: 신규 child → cascade=PERSIST to-one 참조 → 그 참조 자신의 cascade @OneToMany)에서는 그
+     * 참조의 컬렉션이 이번 flush에 반영되지 않고 다음 flush(다음 auto-flush/명시적 flush)까지 미뤄진다. 매 트랜잭션이
+     * 최소 한 번은(커밋 시) flush를 거치므로 유실은 아니지만, 같은 flush 안에서 즉시 반영을 기대하면 놀랄 수 있다.
      */
     @SuppressWarnings("unchecked")
     private Mono<Object> persistNewChild(PersistenceSession session, EntityMetadata<?> childMetadata, Object child) {
