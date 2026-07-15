@@ -206,6 +206,117 @@ class JpqlSqlBuilderTest {
         assertEquals(3, t.selectionCount());
     }
 
+    // ------------------------------------------------------------------------------------
+    // ANY / ALL quantified subquery comparison
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void rendersEqualAnyQuantifiedSubquery() {
+        TranslatedSql t = scalar(
+                "SELECT e.id FROM Employee e WHERE e.salary = ANY (SELECT m.salary FROM Employee m)");
+        assertEquals(
+                "select e.\"id\" as \"c0\" from \"employee\" e where e.\"salary\" = any ("
+                        + "select m.\"salary\" from \"employee\" m)",
+                t.sql());
+    }
+
+    @Test
+    void rendersGreaterAllQuantifiedSubquery() {
+        TranslatedSql t = scalar(
+                "SELECT e.id FROM Employee e WHERE e.salary > ALL (SELECT m.salary FROM Employee m WHERE m.age < :a)");
+        assertEquals(
+                "select e.\"id\" as \"c0\" from \"employee\" e where e.\"salary\" > all ("
+                        + "select m.\"salary\" from \"employee\" m where m.\"age\" < ?)",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Named("a")), t.bindings());
+    }
+
+    @Test
+    void normalizesSomeToAnyInRenderedSql() {
+        TranslatedSql t = scalar(
+                "SELECT e.id FROM Employee e WHERE e.salary <= SOME (SELECT m.salary FROM Employee m)");
+        assertTrue(t.sql().contains("<= any ("), t.sql());
+    }
+
+    // ------------------------------------------------------------------------------------
+    // JPA 3.1 scalar functions: extended set, EXTRACT, TRIM modifiers, LOCAL temporal
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void rendersExtendedScalarFunctions() {
+        assertEquals("select ceiling(e.\"salary\") as \"c0\" from \"employee\" e",
+                scalar("SELECT CEILING(e.salary) FROM Employee e").sql());
+        assertEquals("select floor(e.\"salary\") as \"c0\" from \"employee\" e",
+                scalar("SELECT FLOOR(e.salary) FROM Employee e").sql());
+        assertEquals("select sign(e.\"salary\") as \"c0\" from \"employee\" e",
+                scalar("SELECT SIGN(e.salary) FROM Employee e").sql());
+        assertEquals("select exp(e.\"salary\") as \"c0\" from \"employee\" e",
+                scalar("SELECT EXP(e.salary) FROM Employee e").sql());
+        assertEquals("select ln(e.\"salary\") as \"c0\" from \"employee\" e",
+                scalar("SELECT LN(e.salary) FROM Employee e").sql());
+        assertEquals("select power(e.\"salary\", ?) as \"c0\" from \"employee\" e",
+                scalar("SELECT POWER(e.salary, 2) FROM Employee e").sql());
+        assertEquals("select round(e.\"salary\", ?) as \"c0\" from \"employee\" e",
+                scalar("SELECT ROUND(e.salary, 0) FROM Employee e").sql());
+        assertEquals("select left(e.\"name\", ?) as \"c0\" from \"employee\" e",
+                scalar("SELECT LEFT(e.name, 3) FROM Employee e").sql());
+        assertEquals("select right(e.\"name\", ?) as \"c0\" from \"employee\" e",
+                scalar("SELECT RIGHT(e.name, 2) FROM Employee e").sql());
+        assertEquals("select replace(e.\"name\", ?, ?) as \"c0\" from \"employee\" e",
+                scalar("SELECT REPLACE(e.name, 'a', 'A') FROM Employee e").sql());
+    }
+
+    @Test
+    void rendersExtractField() {
+        // 필드는 화이트리스트로 검증돼 그대로 방출된다(SQL-shape 검증 — 컬럼 타입은 무관).
+        assertEquals("select extract(year from e.\"age\") as \"c0\" from \"employee\" e",
+                scalar("SELECT EXTRACT(YEAR FROM e.age) FROM Employee e").sql());
+        assertEquals("select extract(month from e.\"age\") as \"c0\" from \"employee\" e",
+                scalar("SELECT EXTRACT(MONTH FROM e.age) FROM Employee e").sql());
+    }
+
+    @Test
+    void rejectsUnknownExtractField() {
+        assertThrows(JpqlException.class, () -> scalar("SELECT EXTRACT(CENTURY FROM e.age) FROM Employee e"));
+    }
+
+    @Test
+    void rendersTrimModifiers() {
+        assertEquals("select trim(leading from e.\"name\") as \"c0\" from \"employee\" e",
+                scalar("SELECT TRIM(LEADING FROM e.name) FROM Employee e").sql());
+        assertEquals("select trim(trailing ? from e.\"name\") as \"c0\" from \"employee\" e",
+                scalar("SELECT TRIM(TRAILING 'x' FROM e.name) FROM Employee e").sql());
+        assertEquals("select trim(both ? from e.\"name\") as \"c0\" from \"employee\" e",
+                scalar("SELECT TRIM(BOTH 'x' FROM e.name) FROM Employee e").sql());
+        assertEquals("select trim(? from e.\"name\") as \"c0\" from \"employee\" e",
+                scalar("SELECT TRIM('x' FROM e.name) FROM Employee e").sql());
+        // 회귀: 평범한 TRIM(x)는 기존과 동일하게 렌더된다.
+        assertEquals("select trim(e.\"name\") as \"c0\" from \"employee\" e",
+                scalar("SELECT TRIM(e.name) FROM Employee e").sql());
+    }
+
+    @Test
+    void rendersLocalTemporalFunctions() {
+        assertEquals("select current_date as \"c0\" from \"employee\" e",
+                scalar("SELECT LOCAL DATE FROM Employee e").sql());
+        assertEquals("select localtime as \"c0\" from \"employee\" e",
+                scalar("SELECT LOCAL TIME FROM Employee e").sql());
+        assertEquals("select localtimestamp as \"c0\" from \"employee\" e",
+                scalar("SELECT LOCAL DATETIME FROM Employee e").sql());
+    }
+
+    // ------------------------------------------------------------------------------------
+    // COALESCE / NULLIF (already first-class; coverage lock)
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void rendersCoalesceAndNullif() {
+        assertEquals("select coalesce(e.\"name\", ?) as \"c0\" from \"employee\" e",
+                scalar("SELECT COALESCE(e.name, :d) FROM Employee e").sql());
+        assertEquals("select nullif(e.\"age\", ?) as \"c0\" from \"employee\" e",
+                scalar("SELECT NULLIF(e.age, 0) FROM Employee e").sql());
+    }
+
     @Test
     void rejectsNativeFunctionNameWithUnsafeCharacters() {
         assertThrows(JpqlException.class,
@@ -587,6 +698,47 @@ class JpqlSqlBuilderTest {
         assertThrows(JpqlException.class, () ->
                 scalar("SELECT v.name FROM Vehicle v WHERE v.id IN "
                         + "(SELECT w.id FROM Vehicle w WHERE TYPE(w) = Car)"));
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Regression: TREAT wrapped inside EXTRACT/TRIM must still trigger the discriminator
+    // guard (walkTreats) and the subquery polymorphism fail-fast (usesPolymorphic). Both
+    // traversal visitors switch on Expression and previously fell through Extract/Trim to
+    // 'default', silently dropping the TREAT nested inside them.
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void trimWrappingTreatAppliesDiscriminatorConstraint() {
+        TranslatedSql t = scalar("SELECT TRIM(TREAT(e AS Car).name) FROM Vehicle e");
+        assertEquals(
+                "select trim(e.\"name\") as \"c0\" from \"vehicle\" e where e.\"kind\" = ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void extractWrappingTreatAppliesDiscriminatorConstraint() {
+        TranslatedSql t = scalar("SELECT EXTRACT(YEAR FROM TREAT(e AS Car).doors) FROM Vehicle e");
+        assertEquals(
+                "select extract(year from e.\"doors\") as \"c0\" from \"vehicle\" e where e.\"kind\" = ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void failsFastOnTreatWrappedInExtractInsideSubqueryProjection() {
+        JpqlException ex = assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE v.id IN "
+                        + "(SELECT EXTRACT(YEAR FROM TREAT(w AS Car).doors) FROM Vehicle w)"));
+        assertTrue(ex.getMessage().contains("subquery"));
+    }
+
+    @Test
+    void failsFastOnTreatWrappedInTrimInsideSubqueryWhere() {
+        JpqlException ex = assertThrows(JpqlException.class, () ->
+                scalar("SELECT v.name FROM Vehicle v WHERE v.id IN "
+                        + "(SELECT w.id FROM Vehicle w WHERE TRIM(TREAT(w AS Car).name) = 'x')"));
+        assertTrue(ex.getMessage().contains("subquery"));
     }
 
     // ------------------------------------------------------------------------------------

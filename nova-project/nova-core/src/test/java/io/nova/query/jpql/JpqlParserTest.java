@@ -332,4 +332,116 @@ class JpqlParserTest {
         assertThrows(JpqlSyntaxException.class,
                 () -> parse("SELECT e FROM Employee e WHERE e.roles IS EMPTY"));
     }
+
+    // ------------------------------------------------------------------------------------
+    // ANY / ALL / SOME quantified subquery comparison
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void parsesEqualAnyQuantifiedSubquery() {
+        JpqlStatement.Select select = parseSelect(
+                "SELECT e FROM Employee e WHERE e.salary = ANY (SELECT m.salary FROM Employee m)");
+        Predicate.Comparison c = assertInstanceOf(Predicate.Comparison.class, select.where());
+        assertEquals(ComparisonOp.EQ, c.op());
+        Expression.QuantifiedSubquery q = assertInstanceOf(Expression.QuantifiedSubquery.class, c.right());
+        assertEquals(Expression.Quantifier.ANY, q.quantifier());
+        assertEquals("Employee", q.subquery().rootEntity());
+    }
+
+    @Test
+    void parsesGreaterAllQuantifiedSubquery() {
+        JpqlStatement.Select select = parseSelect(
+                "SELECT e FROM Employee e WHERE e.salary > ALL (SELECT m.salary FROM Employee m WHERE m.age < 30)");
+        Predicate.Comparison c = assertInstanceOf(Predicate.Comparison.class, select.where());
+        assertEquals(ComparisonOp.GT, c.op());
+        Expression.QuantifiedSubquery q = assertInstanceOf(Expression.QuantifiedSubquery.class, c.right());
+        assertEquals(Expression.Quantifier.ALL, q.quantifier());
+    }
+
+    @Test
+    void normalizesSomeToAny() {
+        JpqlStatement.Select select = parseSelect(
+                "SELECT e FROM Employee e WHERE e.salary >= SOME (SELECT m.salary FROM Employee m)");
+        Predicate.Comparison c = assertInstanceOf(Predicate.Comparison.class, select.where());
+        Expression.QuantifiedSubquery q = assertInstanceOf(Expression.QuantifiedSubquery.class, c.right());
+        assertEquals(Expression.Quantifier.ANY, q.quantifier());
+    }
+
+    // ------------------------------------------------------------------------------------
+    // JPA 3.1 scalar functions: EXTRACT, TRIM modifiers, LEFT/RIGHT, LOCAL temporal
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void parsesExtractField() {
+        Expression.Extract extract = assertInstanceOf(Expression.Extract.class,
+                parseSelect("SELECT EXTRACT(YEAR FROM e.hired) FROM Employee e").selectItems().get(0).expression());
+        assertEquals("YEAR", extract.field());
+        assertInstanceOf(Expression.Path.class, extract.source());
+    }
+
+    @Test
+    void parsesTrimModifierForms() {
+        Expression.Trim leading = assertInstanceOf(Expression.Trim.class,
+                parseSelect("SELECT TRIM(LEADING FROM e.name) FROM Employee e").selectItems().get(0).expression());
+        assertEquals("LEADING", leading.spec());
+        assertNull(leading.trimChar());
+
+        Expression.Trim bothChar = assertInstanceOf(Expression.Trim.class,
+                parseSelect("SELECT TRIM(BOTH 'x' FROM e.name) FROM Employee e").selectItems().get(0).expression());
+        assertEquals("BOTH", bothChar.spec());
+        assertInstanceOf(Expression.Literal.class, bothChar.trimChar());
+
+        Expression.Trim charFrom = assertInstanceOf(Expression.Trim.class,
+                parseSelect("SELECT TRIM('x' FROM e.name) FROM Employee e").selectItems().get(0).expression());
+        assertNull(charFrom.spec());
+        assertInstanceOf(Expression.Literal.class, charFrom.trimChar());
+
+        Expression.Trim plain = assertInstanceOf(Expression.Trim.class,
+                parseSelect("SELECT TRIM(e.name) FROM Employee e").selectItems().get(0).expression());
+        assertNull(plain.spec());
+        assertNull(plain.trimChar());
+    }
+
+    @Test
+    void parsesLeftAndRightAsStringFunctionsWhenFollowedByParen() {
+        Expression.FunctionCall left = assertInstanceOf(Expression.FunctionCall.class,
+                parseSelect("SELECT LEFT(e.name, 3) FROM Employee e").selectItems().get(0).expression());
+        assertEquals("LEFT", left.name());
+        assertEquals(2, left.arguments().size());
+
+        Expression.FunctionCall right = assertInstanceOf(Expression.FunctionCall.class,
+                parseSelect("SELECT RIGHT(e.name, 2) FROM Employee e").selectItems().get(0).expression());
+        assertEquals("RIGHT", right.name());
+    }
+
+    @Test
+    void leftJoinStillParsesAfterAddingLeftFunction() {
+        // 회귀 방지: LEFT는 뒤에 '('가 아니라 JOIN이 오면 여전히 조인 키워드다.
+        JpqlStatement.Select select = parseSelect("SELECT e FROM Employee e LEFT JOIN e.department d");
+        assertEquals(1, select.joins().size());
+        assertFalse(select.joins().get(0).inner());
+        assertEquals("department", select.joins().get(0).relation());
+    }
+
+    @Test
+    void parsesLocalTemporalFunctions() {
+        Expression.FunctionCall date = assertInstanceOf(Expression.FunctionCall.class,
+                parseSelect("SELECT LOCAL DATE FROM Employee e").selectItems().get(0).expression());
+        assertEquals("LOCAL_DATE", date.name());
+        assertTrue(date.arguments().isEmpty());
+
+        Expression.FunctionCall dt = assertInstanceOf(Expression.FunctionCall.class,
+                parseSelect("SELECT LOCAL DATETIME FROM Employee e").selectItems().get(0).expression());
+        assertEquals("LOCAL_DATETIME", dt.name());
+    }
+
+    @Test
+    void rejectsKeyValueEntryIndexWithPreciseMessage() {
+        JpqlSyntaxException ex = assertThrows(JpqlSyntaxException.class,
+                () -> parse("SELECT KEY(m) FROM Employee e"));
+        assertTrue(ex.getMessage().contains("KEY/VALUE/ENTRY/INDEX"));
+        assertThrows(JpqlSyntaxException.class, () -> parse("SELECT VALUE(m) FROM Employee e"));
+        assertThrows(JpqlSyntaxException.class, () -> parse("SELECT ENTRY(m) FROM Employee e"));
+        assertThrows(JpqlSyntaxException.class, () -> parse("SELECT INDEX(m) FROM Employee e"));
+    }
 }
