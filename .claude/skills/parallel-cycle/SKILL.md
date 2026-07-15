@@ -7,7 +7,7 @@ description: Nova의 표준 multi-feature 작업 패턴. 사용자가 한 번에
 
 Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 
-**스코프 분리 → 병렬 팀 작업 → (병렬 리뷰 ↔ 보완)\* → 병합 → (E2E 테스트 ↔ 보완)\* → PR 생성·머지 → 다음 cycle confirm**
+**스코프 분리 → 설계-우선 병렬 개발(opus 설계→sonnet 구현) → (위험도 차등 병렬 리뷰 ↔ 보완)\* → 수렴-즉시 스트리밍 병합 → (E2E 전용 opus agent ↔ 보완)\* → PR 생성·머지 → 다음 cycle confirm**
 
 (↔)\*는 **문제(critical/major) 0이 될 때까지 반복하는 수렴 루프**다 — 보완 후 반드시 재리뷰/재E2E해서 새 결함이 없음을 확인해야 다음 단계로 간다. 리뷰는 **병합 전** worktree 브랜치에서 하고, 수렴 후 통합 브랜치로 병합한다. 통합 브랜치에서 E2E를 돌리고, 보완한 뒤 origin에 PR을 올려 squash-merge 한다. (현행처럼 로컬 main 직접 커밋이 아니라 PR 기반.)
 
@@ -26,9 +26,11 @@ Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 3. scope를 사용자가 명시 안 했으면 후보 제시 후 `AskUserQuestion`으로 확정.
 4. **통합 브랜치 생성**: `git switch -c cycle/<topic> main`. 모든 worktree는 이 브랜치(또는 main, 동일 base)로 ff-merge되고 최종 PR의 head가 된다.
 
-## Phase 2 — 병렬 팀 작업 (worktree spawn)
+## Phase 2 — 설계-우선 병렬 개발 (worktree spawn)
 
-- 분리한 단위 수만큼 worktree spawn(기본 4, 결합도에 따라 조정). 각 worktree는 `isolation: "worktree"` + `run_in_background: true`, `hephaestus`(model opus).
+- 분리한 단위 수만큼 worktree spawn(기본 4, 결합도에 따라 조정). 각 worktree는 `isolation: "worktree"` + `run_in_background: true`.
+- **설계-우선(2-agent)**: 각 worktree에서 먼저 **opus 시니어 아키텍트**가 설계(접근/변경 파일/함정/테스트 계획)를 산출한 뒤, **sonnet 구현 agent**가 그 설계대로 구현한다(architect→executor). 단순 fail-fast 제거 등 저난도 feature는 설계를 경량화하거나 단일 구현 agent로 축소.
+- **모델 라우팅 기본 = 난도별 분기** (opus 일색 금지): 기계적/재사용 위주 → sonnet, 신규 알고리즘·복잡 SQL·hub 광범위 → opus. 참조 [[feedback_pipeline_track_streaming]].
 - agent prompt 공통 헤더:
 
   ```
@@ -50,9 +52,9 @@ Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 
 같은 metadata hub를 건드릴 두 feature 동시 spawn 시 각 agent prompt에서 **PersistentProperty marker field 이름을 명시적으로 다르게** 지정한다(예 A=`manyToOne*`, B=`oneToMany*`). 그러면 PP 생성자가 자동 머지된다. 단 `SimpleReactiveEntityOperations.mapRow`처럼 둘 다 광범위 rewrite하는 hub는 marker 분리로도 해소 불가 → 두 feature를 **단일 worktree로 통합 spawn**. PP/EntityMetadata 생성자에 trailing field append는 한 worktree만 하도록 배정(나머지는 Info record 내부 흡수)해 trailing-param auto-merge 손실을 피한다.
 
-## Phase 3 — 병렬 리뷰 (병합 전)
+## Phase 3 — 위험도 차등 병렬 리뷰 (병합 전)
 
-각 worktree agent 완료 시, **머지 전에** 그 worktree 브랜치 commit range로 `senior-backend-code-reviewer` 병렬 review:
+각 worktree agent 완료 시, **머지 전에** 그 worktree 브랜치 commit range로 병렬 review. **리뷰어 모델은 위험도 차등 라우팅**: 저위험(fail-fast 제거 + 기존 machinery 재사용) → **sonnet**; 고위험(신규 SQL 생성·silent-corruption 위험·hub 광범위 rewrite·보호 contract 인접) → **opus**.
 
 ```
 git -C <worktree path> log --oneline main..HEAD
@@ -71,9 +73,9 @@ review의 critical/major를 **머지 전에** 해당 worktree에서 해소한다
 
 **핵심: 보완은 단발이 아니라 수렴 루프다.** 보완할 때마다 **반드시 그 변경분을 재리뷰**하고(같은 reviewer 또는 새 reviewer에 변경 commit range 전달), 새 critical/major가 없을 때까지 보완→재리뷰를 반복한다. 종료 조건: 리뷰어가 critical/major **0건**으로 확인(보완이 새 결함을 만들지 않았음까지 검증). minor는 기록만 하고 넘어갈 수 있으나, 누적 minor가 많으면 한 번 더 정리. 설계 결정이 필요해 이 cycle에서 못 닫는 major는 명시적으로 backlog 분류하고 사용자에게 보고(무한 루프 방지) — 단 "문제 없음" 선언은 미해소 critical/major가 0일 때만.
 
-## Phase 5 — 병합 (통합 브랜치로)
+## Phase 5 — 스트리밍 병합 (통합 브랜치로)
 
-격리도 ↑ → hub ↓ 순서로 통합 브랜치에 sequential rebase + ff-merge:
+**트랙-내부 스트리밍**: feature는 **자신의 리뷰가 수렴(critical/major 0)되는 즉시** 통합 브랜치로 병합한다 — 전체 feature가 다 끝나길 기다리는 배리어를 두지 않는다(제일 느린 feature가 나머지를 인질로 잡지 않게). 단 **hub 충돌 위험 feature는 여전히 격리도 ↑ → hub ↓ 순서로 직렬화**하고, 먼저 병합된 것 위로 rebase한다. 병합 순서 원칙:
 
 1. 신규 모듈 추가 (완전 격리) → ff-merge
 2. `*.gradle.kts` settings만 touch → rebase + ff-merge
@@ -90,9 +92,9 @@ review의 critical/major를 **머지 전에** 해당 worktree에서 해소한다
 - 충돌 block 5+ 개가 한 파일에 누적 + 양쪽 핵심 로직
 - conflict 해소 30분 초과
 
-## Phase 6 — E2E 테스트 (통합 브랜치)
+## Phase 6 — E2E 테스트 (통합 브랜치, 전용 opus agent)
 
-통합 브랜치에서 머지 결과 전체를 end-to-end 검증한다:
+통합 브랜치 머지 결과 전체의 end-to-end 검증은 **opus 전용 E2E agent**에 위임한다(오케스트레이터 인라인 대신 별도 컨텍스트). 검증 항목:
 1. `./gradlew build` (전 모듈 컴파일 + 단위/통합 테스트).
 2. **실제 앱 구동**: `nova-example`의 `NovaReactiveExample`(필요 시 `HibernateReactiveExample` 대조)을 실행해 ORM이 실 driver로 동작하는지 확인 — schema 생성, save/find, 관계/컬렉션, 트랜잭션·flush까지 한 흐름으로.
 3. 관련 dialect 통합(H2) + (해당 시) `nova-spring-boot-starter`/`nova-spring-data` 통합.
@@ -116,6 +118,7 @@ E2E에서 드러난 결함을 통합 브랜치에서 직접 fix-commit + 회귀 
 ## Memory 참조
 
 - `feedback_parallel_cycle_workflow.md` — 기본 패턴
+- `feedback_pipeline_track_streaming.md` — 이 파이프라인 변경(설계-우선·위험도 차등 리뷰·스트리밍 병합·E2E 전용 agent)의 근거
 - `feedback_worktree_base_alignment.md` — `git rebase main` (LOCAL) 필수
 - `feedback_worktree_cwd_file_path.md` — Edit absolute path가 main repo로 가는 함정
 - `feedback_grep_binary_korean.md` — BSD grep 한글파일 binary 오판 → `grep -a`
