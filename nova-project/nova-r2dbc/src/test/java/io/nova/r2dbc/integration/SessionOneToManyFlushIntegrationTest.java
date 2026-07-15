@@ -215,6 +215,54 @@ class SessionOneToManyFlushIntegrationTest {
     }
 
     @Test
+    void orderedOneToManyAllowsParentScalarChangeWhenMembershipUnchanged() {
+        // LOW-1 회귀 가드: @OrderColumn 게이트는 Stage 1(멤버십 무변경) 이후로 옮겨졌고, 실제 add/remove가 있을
+        // 때만 발동해야 한다. 컬렉션은 그대로 두고 parent 스칼라만 바꾸는 흔한 경로가 예외 없이 flush돼야 한다.
+        OrderedOwner owner = new OrderedOwner();
+        owner.setLabel("v1");
+        owner.add(new OrderedItem("gamma"));
+        owner.add(new OrderedItem("alpha"));
+        Long id = support.operations().save(owner).map(OrderedOwner::getId).block();
+
+        listener.clear();
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(OrderedOwner.class, id)
+                                .doOnNext(loaded -> loaded.setLabel("v2"))
+                                .then()))
+                .verifyComplete();
+
+        assertEquals(1, listener.count("ordered_owner", "update"),
+                "ordered @OneToMany parent의 스칼라 변경만으로는 예외 없이 UPDATE 1건이어야 한다: " + listener.statements());
+        assertEquals(0, listener.count("ordered_item", "insert"), "컬렉션은 무변경이므로 INSERT 없음: " + listener.statements());
+        assertEquals(0, listener.count("ordered_item", "delete"), "컬렉션은 무변경이므로 DELETE 없음: " + listener.statements());
+
+        StepVerifier.create(support.operations().findById(OrderedOwner.class, id))
+                .assertNext(reloaded -> {
+                    assertEquals("v2", reloaded.getLabel());
+                    assertEquals(List.of("gamma", "alpha"), titles(reloaded), "순서도 그대로 유지돼야 한다");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void orderedOneToManyStillFailsFastOnActualMembershipChange() {
+        // LOW-1이 게이트를 느슨하게 하되 실제 멤버십 변경(add/remove)에서는 여전히 S2 미지원으로 거부해야 한다.
+        OrderedOwner owner = new OrderedOwner();
+        owner.add(new OrderedItem("gamma"));
+        owner.add(new OrderedItem("alpha"));
+        Long id = support.operations().save(owner).map(OrderedOwner::getId).block();
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(OrderedOwner.class, id)
+                                .doOnNext(loaded -> loaded.getItems().add(new OrderedItem("beta")))
+                                .then()))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("@OrderColumn")
+                        && error.getMessage().contains("membership"))
+                .verify();
+    }
+
+    @Test
     void commitThenFreshFindByIdMatchesExpectedChildSet() {
         Owner seeded = seedOwnerWithTwoItems();
 
@@ -395,6 +443,7 @@ class SessionOneToManyFlushIntegrationTest {
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
+        private String label;
 
         @OneToMany(targetEntity = OrderedItem.class, mappedBy = "owner", cascade = CascadeType.ALL, orphanRemoval = true)
         @OrderColumn(name = "items_order")
@@ -405,6 +454,14 @@ class SessionOneToManyFlushIntegrationTest {
 
         public Long getId() {
             return id;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public void setLabel(String label) {
+            this.label = label;
         }
 
         public List<OrderedItem> getItems() {

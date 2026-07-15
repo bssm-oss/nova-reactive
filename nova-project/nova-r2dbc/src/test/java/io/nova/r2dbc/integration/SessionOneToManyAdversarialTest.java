@@ -16,6 +16,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
@@ -367,6 +368,113 @@ class SessionOneToManyAdversarialTest {
                     assertNotNull(marble.getBag(), "롤백 후에도 marble FK가 null로 붕괴하면 안 된다");
                     assertEquals(a.getId(), marble.getBag().getId(), "롤백 후 marble은 여전히 원래 bag A 소속이어야 한다");
                 })
+                .verifyComplete();
+    }
+
+    // ---------------------------------------------------------------------
+    // Edge 6c/6d (open question): D2 예외 메시지가 안내하는 "정식" reparent 경로 — child의 owning @ManyToOne을
+    // 직접 set한 뒤 컬렉션을 옮기면(양쪽 다 갱신) fail-fast에 걸리지 않고 실제로 안전하게 이동하는지 검증한다.
+    // ---------------------------------------------------------------------
+    @Test
+    void properReparentByUpdatingOwningSideMovesChildToNewParent_noOrphanRemoval() {
+        // Shelf: cascade=PERSIST만, orphanRemoval=false.
+        Shelf a = seedShelf("a", "novel");
+        Shelf b = seedShelf("b", "filler");
+        Long bookId = support.operations().findById(Shelf.class, a.getId())
+                .map(shelf -> shelf.getBooks().get(0).getId()).block();
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(Shelf.class, a.getId())
+                                .flatMap(shelfA -> ops.findById(Shelf.class, b.getId())
+                                        .doOnNext(shelfB -> {
+                                            Book moved = shelfA.getBooks().get(0);
+                                            // 정식 경로: 소유측(@ManyToOne)을 직접 set한 뒤 양쪽 컬렉션을 옮긴다.
+                                            moved.setShelf(shelfB);
+                                            shelfA.getBooks().remove(moved);
+                                            shelfB.getBooks().add(moved);
+                                        }))
+                                .then()))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Book.class, bookId))
+                .assertNext(book -> {
+                    assertNotNull(book.getShelf(), "정식 reparent 후 FK가 null이면 안 된다");
+                    assertEquals(b.getId(), book.getShelf().getId(), "정식 reparent 후 book은 shelf B를 가리켜야 한다");
+                })
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Shelf.class, b.getId()))
+                .assertNext(shelf -> assertEquals(Set.of("filler", "novel"),
+                        shelf.getBooks().stream().map(Book::getTitle).collect(Collectors.toSet()),
+                        "shelf B가 filler와 이동한 novel을 담아야 한다"))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Shelf.class, a.getId()))
+                .assertNext(shelf -> assertEquals(Set.of(),
+                        shelf.getBooks().stream().map(Book::getTitle).collect(Collectors.toSet()),
+                        "shelf A는 더 이상 novel을 담지 않아야 한다"))
+                .verifyComplete();
+    }
+
+    @Test
+    @Disabled("KNOWN DEFECT (open question, reported not fixed): flush iteration order races the losing side's"
+            + " removeOrphans DELETE against the moved child's own scalar-dirty-check FK UPDATE. Session"
+            + " registration order for this scenario is [bagA, movedMarble, bagB, fillerMarble] (parent registered"
+            + " on load, its then-current children registered right after via captureCollectionSnapshots ->"
+            + " registerLoadedOneToManyChildren, before the next findById begins). flush() iterates managedEntries()"
+            + " in that exact order, so flushEntry(bagA) — which runs diffOneToMany and, because orphanRemoval=true"
+            + " and the moved marble is no longer in bagA's current collection, calls removeOrphans (SimpleReactiveEntityOperations"
+            + " ~diffOneToMany orphan-handling, method around :2200) — executes and DELETEs the marble row *before*"
+            + " flushEntry(movedMarble) ever runs. removeOrphans is an unconditional DELETE ... WHERE bag_id = A AND"
+            + " id NOT IN (retained); it has no way to know the row is about to be re-homed by a later flushEntry in"
+            + " the same flush. By the time movedMarble's own flushEntry executes its dirty-check UPDATE (SET"
+            + " bag_id = B), the row no longer exists, so the UPDATE silently affects 0 rows. Net effect: even"
+            + " though the user followed the exact 'set the owning @ManyToOne side' procedure the D2 fail-fast"
+            + " message recommends, the marble is permanently lost when orphanRemoval=true. The FK-null variant"
+            + " (properReparentByUpdatingOwningSideMovesChildToNewParent_noOrphanRemoval, orphanRemoval=false) does"
+            + " NOT lose data because disownOrphans issues an UPDATE ... SET fk = NULL instead of a DELETE, and"
+            + " movedBook's later flushEntry UPDATE simply overwrites that NULL back to the correct owner — a"
+            + " row survives an UPDATE-then-UPDATE race but not a DELETE-then-UPDATE race. Repro: input = seed bagA"
+            + " with 1 marble + bagB with 1 marble, in one session load both, call moved.setBag(bagB) (owning-side"
+            + " update) then move it between the in-memory collections, commit; expected = 2 marble rows survive"
+            + " (filler + moved, moved pointing at bagB); actual = 1 row (moved was deleted). Left disabled per"
+            + " coordinator instruction (report, do not fix in this round).")
+    void properReparentByUpdatingOwningSideMovesChildToNewParent_withOrphanRemoval() {
+        // Bag: cascade=ALL + orphanRemoval=true — losing side(A)의 removeOrphans가 DELETE를 낼 수 있는 더 위험한 조합.
+        Bag a = seedBag("a", "onlymarble");
+        Bag b = seedBag("b", "filler");
+        Long marbleId = support.operations().findById(Bag.class, a.getId())
+                .map(bag -> bag.getItems().get(0).getId()).block();
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(Bag.class, a.getId())
+                                .flatMap(bagA -> ops.findById(Bag.class, b.getId())
+                                        .doOnNext(bagB -> {
+                                            Marble moved = bagA.getItems().get(0);
+                                            // 정식 경로: 소유측(@ManyToOne)을 직접 set한 뒤 양쪽 컬렉션을 옮긴다.
+                                            moved.setBag(bagB);
+                                            bagA.getItems().remove(moved);
+                                            bagB.getItems().add(moved);
+                                        }))
+                                .then()))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().count(Marble.class, QuerySpec.empty()))
+                .assertNext(count -> assertEquals(2L, count,
+                        "정식 reparent는 이동한 marble을 orphanRemoval로 지우면 안 된다(filler+moved=2행 유지)"))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Marble.class, marbleId))
+                .assertNext(marble -> {
+                    assertNotNull(marble.getBag(), "정식 reparent 후 FK가 null이면 안 된다");
+                    assertEquals(b.getId(), marble.getBag().getId(), "정식 reparent 후 marble은 bag B를 가리켜야 한다");
+                })
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Bag.class, b.getId()))
+                .assertNext(bag -> assertEquals(Set.of("filler", "onlymarble"),
+                        bag.getItems().stream().map(Marble::getColor).collect(Collectors.toSet()),
+                        "bag B가 filler와 이동한 onlymarble을 담아야 한다"))
                 .verifyComplete();
     }
 
