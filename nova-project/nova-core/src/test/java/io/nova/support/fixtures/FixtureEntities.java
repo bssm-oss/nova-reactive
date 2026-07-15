@@ -3157,6 +3157,64 @@ public final class FixtureEntities {
         }
     }
 
+    /**
+     * 중간 {@code @MappedSuperclass}가 상위 {@code @MappedSuperclass}({@link AssocRegionBase})에서 상속한
+     * {@code country} 관계의 join 컬럼을 {@code @AssociationOverride}로 재지정한다. concrete 서브클래스는
+     * 아무 override도 선언하지 않으므로, 중간 {@code @MappedSuperclass}의 override가 계층 walk로 적용돼야 한다.
+     */
+    @MappedSuperclass
+    @jakarta.persistence.AssociationOverride(
+            name = "country",
+            joinColumns = @JoinColumn(name = "mid_country_id"))
+    public static abstract class AssocIntermediateBase extends AssocRegionBase {
+        @Column(name = "district")
+        private String district;
+
+        public String getDistrict() {
+            return district;
+        }
+    }
+
+    /**
+     * 중간 {@code @MappedSuperclass}({@link AssocIntermediateBase})의 {@code @AssociationOverride}만으로 FK
+     * 컬럼이 {@code mid_country_id}로 재지정돼야 하는 concrete 엔티티(자신은 override를 선언하지 않는다).
+     */
+    @Entity
+    @Table(name = "assoc_mid_city")
+    public static class AssocMidCity extends AssocIntermediateBase {
+        @Column(name = "population")
+        private Integer population;
+
+        public AssocMidCity() {
+        }
+
+        public Integer getPopulation() {
+            return population;
+        }
+    }
+
+    /**
+     * 중간 {@code @MappedSuperclass}({@link AssocIntermediateBase})가 이미 {@code country}를
+     * {@code mid_country_id}로 재지정했지만, 이 concrete 서브클래스가 같은 {@code name}을
+     * {@code sub_country_id}로 다시 재지정한다. 우선순위 규칙상 더 파생된 서브클래스 선언이 이겨야 한다.
+     */
+    @Entity
+    @Table(name = "assoc_sub_city")
+    @jakarta.persistence.AssociationOverride(
+            name = "country",
+            joinColumns = @JoinColumn(name = "sub_country_id"))
+    public static class AssocSubCity extends AssocIntermediateBase {
+        @Column(name = "population")
+        private Integer population;
+
+        public AssocSubCity() {
+        }
+
+        public Integer getPopulation() {
+            return population;
+        }
+    }
+
     /** 복합키(@EmbeddedId) 부모 — 다중컬럼 FK로 참조되는 유효한 to-one 타겟(가드/조립 테스트용). */
     @Embeddable
     public static class CompositeJoinKey {

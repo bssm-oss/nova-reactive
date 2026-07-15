@@ -2932,26 +2932,45 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * 서브클래스에 선언된 {@link AssociationOverride}(반복 애너테이션, 컨테이너 {@code @AssociationOverrides})를
-     * 읽어, {@code @MappedSuperclass}에서 상속한 이름이 일치하는 owning to-one({@code @ManyToOne}/owning
-     * {@code @OneToOne}) property의 FK 컬럼명을 재지정한다. 관계 property는 상속 필드 스캔으로 이미
-     * {@code properties}에 조립돼 있으므로, {@code createManyToOneProperty} 본문을 건드리지 않고 조립된
-     * property를 {@link PersistentProperty#withColumnName(String)}로 교체하는 post-processing이다.
+     * concrete 엔티티 자신뿐 아니라 매핑에 기여하는 조상({@code @MappedSuperclass} / 상속 상위 {@code @Entity})에
+     * 선언된 {@link AssociationOverride}(반복 애너테이션, 컨테이너 {@code @AssociationOverrides})까지 계층을
+     * walk하여 수집한 뒤, {@code @MappedSuperclass}에서 상속한 이름이 일치하는 owning
+     * to-one({@code @ManyToOne}/owning {@code @OneToOne}) property의 FK 컬럼명을 재지정한다. 관계 property는
+     * 상속 필드 스캔으로 이미 {@code properties}에 조립돼 있으므로, {@code createManyToOneProperty} 본문을
+     * 건드리지 않고 조립된 property를 {@link PersistentProperty#withColumnName(String)}로 교체하는
+     * post-processing이다.
+     *
+     * <p>우선순위: 같은 {@code name}에 대해 더 파생된(서브클래스) 선언이 상위(중간 {@code @MappedSuperclass} 또는
+     * 상속 상위 {@code @Entity}) 선언을 override한다. entityType부터 위로 올라가며 most-derived-first로 수집하고
+     * {@code putIfAbsent}로 먼저 본(더 하위) 선언을 남긴다.
      *
      * <p>fail-fast: override가 존재하지 않는 property를 지목하거나 owning to-one이 아닌 property를 지목하면,
      * 또는 embedded association(dot 표기, 미지원)이나 다중/공백 join 컬럼을 지정하면 명확한 예외를 던진다.
      */
     private void applyAssociationOverrides(Class<?> entityType, List<PersistentProperty> properties) {
-        AssociationOverride[] overrides = entityType.getAnnotationsByType(AssociationOverride.class);
-        if (overrides.length == 0) {
+        // entityType 자신 + 매핑 기여 조상(@MappedSuperclass / 상속 상위 @Entity)을 most-derived-first로 walk한다.
+        // 같은 name 충돌 시 먼저 본(더 하위) 선언이 이기도록 putIfAbsent로 수집한다.
+        Map<String, AssociationOverride> collected = new LinkedHashMap<>();
+        Class<?> current = entityType;
+        while (current != null && current != Object.class
+                && (current == entityType
+                || current.isAnnotationPresent(MappedSuperclass.class)
+                || current.isAnnotationPresent(Entity.class))) {
+            for (AssociationOverride override : current.getDeclaredAnnotationsByType(AssociationOverride.class)) {
+                String name = override.name();
+                if (name == null || name.isBlank()) {
+                    throw new IllegalArgumentException(
+                            current.getName() + " declares an @AssociationOverride with a blank name");
+                }
+                collected.putIfAbsent(name, override);
+            }
+            current = current.getSuperclass();
+        }
+        if (collected.isEmpty()) {
             return;
         }
-        for (AssociationOverride override : overrides) {
+        for (AssociationOverride override : collected.values()) {
             String name = override.name();
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException(
-                        entityType.getName() + " declares an @AssociationOverride with a blank name");
-            }
             // embedded association override(예: name="address.country")는 dot 표기를 쓴다. Nova는
             // embedded 안의 association을 매핑하지 않으므로 조용히 무시하지 않고 명확히 거부한다.
             if (name.contains(".")) {
