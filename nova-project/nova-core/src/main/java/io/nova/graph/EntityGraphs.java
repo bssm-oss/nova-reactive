@@ -141,8 +141,9 @@ public final class EntityGraphs {
     }
 
     /**
-     * leaf(자식 없는) spec을 종류로 분류해 트리에 넣을 {@link FetchNode}를 결정한다. 배치 로드 가능한 연관은
-     * leaf로 유지하고, basic 속성은 드롭(빈 Optional), depth&gt;1에서 배치 표현이 없는 종류는 fail-fast한다.
+     * leaf(자식 없는) spec을 종류로 분류해 트리에 넣을 {@link FetchNode}를 결정한다. 배치 로드 가능한 연관
+     * (단일키 to-one/to-many/inverse @OneToOne/@ManyToMany + 복합키 타겟 to-one)은 leaf로 유지하고, basic
+     * 속성은 드롭(빈 Optional), depth&gt;1에서 배치 표현이 없는 종류(@ElementCollection)는 fail-fast한다.
      */
     private static java.util.Optional<FetchNode> resolveLeaf(
             Class<?> entityType, String attributeName, PersistentProperty property, boolean nested) {
@@ -163,10 +164,11 @@ public final class EntityGraphs {
         }
         if (property.isCompositeToOne()) {
             if (nested) {
-                throw new IllegalArgumentException(
-                        "EntityGraph subgraph attribute '" + entityType.getName() + "." + attributeName
-                                + "' targets a composite-key (@EmbeddedId/@IdClass) entity; nested (depth>1) fetch "
-                                + "through a multi-column FK to-one is not supported.");
+                // depth>1 leaf: 복합키(@EmbeddedId/@IdClass) 타겟 to-one은 다중컬럼 FK(OR-of-ANDs) 배치 로드로
+                // hydrate할 수 있으므로 leaf로 유지한다. 소비 측(hydrateFetchTree → loadSingleAttribute)이 이미
+                // 존재하는 composite to-one 배치 spec을 재사용해 레벨당 1쿼리로 로드한다(N+1 없음). 단, 이 복합키
+                // to-one 아래로 더 깊은 subgraph를 선언하는 것(children 보유)은 여전히 subgraphTargetType가 fail-fast.
+                return java.util.Optional.of(FetchNode.leaf(attributeName));
             }
             // root: mapRow가 복합 id stub을 이미 채우므로 fetch tree에서 제외(no-op).
             return java.util.Optional.empty();

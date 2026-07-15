@@ -3,6 +3,7 @@ package io.nova.graph;
 import io.nova.fetch.FetchGroup;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.support.fixtures.FixtureEntities.CompositeJoinChild;
 import io.nova.support.fixtures.FixtureEntities.FkStudent;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
@@ -176,6 +177,37 @@ class EntityGraphsTest {
                 () -> graphs.named(GraphAuthor.class, "GraphAuthor.nope"));
     }
 
+    @Test
+    void nestedCompositeToOneLeafResolvesToFetchTree() {
+        // depth>1: GcRoot -> middle(@ManyToOne CompositeJoinChild) -> parent(복합키 @ManyToOne leaf).
+        // 이전에는 복합키 to-one leaf 가 nested 에서 build-time fail-fast 됐으나, 이제 다중컬럼 FK 배치 로드로
+        // hydrate 가능하므로 leaf 로 유지돼야 한다.
+        EntityGraph<GcRoot> graph = graphs.building(GcRoot.class)
+                .addSubgraph("middle")
+                .addAttributeNodes("parent")
+                .build();
+        assertTrue(graph.hasNestedFetch(), "subgraph 선언이 있으면 중첩 fetch 로 표시된다");
+
+        FetchNode middleNode = graph.fetchTree().stream()
+                .filter(n -> n.attributeName().equals("middle")).findFirst().orElseThrow();
+        assertEquals(List.of("parent"),
+                middleNode.children().stream().map(FetchNode::attributeName).collect(Collectors.toList()),
+                "복합키 to-one leaf(parent) 가 nested subgraph 에 유지된다(더 이상 fail-fast 아님)");
+    }
+
+    @Test
+    void compositeToOneWithDeeperSubgraphStillFailsFast() {
+        // 복합키 to-one 을 leaf 로 두는 것은 지원하지만, 그 아래로 <b>더 깊은</b> subgraph 를 선언하면(children 보유)
+        // 여전히 fail-fast 한다 — 이 가드는 유지된다(복합 FK 를 통과한 재귀 fetch 미지원).
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> graphs.building(GcRoot.class)
+                        .addSubgraph("middle")
+                        .addSubgraph("parent")
+                        .addAttributeNodes("label")
+                        .build());
+        assertTrue(ex.getMessage().contains("composite-key"), () -> "message: " + ex.getMessage());
+    }
+
     @Entity
     @Table(name = "graph_author")
     @NamedEntityGraphs({
@@ -222,5 +254,20 @@ class EntityGraphsTest {
         @ManyToOne(targetEntity = GraphAuthor.class)
         @JoinColumn(name = "author_id")
         private GraphAuthor author;
+    }
+
+    /**
+     * 중첩 subgraph 의 복합키 to-one leaf 해석용 루트 fixture: GcRoot → {@code middle}(@ManyToOne
+     * {@link CompositeJoinChild}, 단일키) → {@code parent}(@ManyToOne 복합키 타겟, leaf). {@code middle}·
+     * {@code parent} 는 재사용 fixture {@link CompositeJoinChild} 에 이미 선언돼 있다.
+     */
+    @Entity
+    @Table(name = "gc_root")
+    public static class GcRoot {
+        @Id
+        private Long id;
+        @ManyToOne(targetEntity = CompositeJoinChild.class)
+        @JoinColumn(name = "middle_id")
+        private CompositeJoinChild middle;
     }
 }
