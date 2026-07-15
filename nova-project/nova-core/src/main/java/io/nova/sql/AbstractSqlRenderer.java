@@ -575,7 +575,13 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         RenderContext context = new RenderContext();
         StringBuilder projection = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
-        if (definition.map()) {
+        if (definition.embeddableMapKey()) {
+            // Map<@Embeddable,V>: owner FK 다음에 펼친 key 컬럼들을 select 해 hydration이 (owner, key columns, value)로
+            // Map을 복원한다.
+            for (io.nova.metadata.CollectionTableDefinition.ElementColumn keyColumn : definition.mapKeyColumns()) {
+                projection.append(", ").append(dialect.quote(keyColumn.columnName()));
+            }
+        } else if (definition.map()) {
             // Map<K,V>: owner FK 다음에 key 컬럼을 select 해 hydration이 (owner, key, value)로 Map을 복원한다.
             projection.append(", ").append(dialect.quote(definition.mapKey().columnName()));
         }
@@ -644,6 +650,70 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         context.addBinding(key);
         for (int i = 0; i < columns.size(); i++) {
             names.append(", ").append(dialect.quote(columns.get(i).columnName()));
+            markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(columnValues.get(i));
+        }
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + names + ") values (" + markers + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement insertMapCollectionRow(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId,
+            List<Object> keyColumnValues, Object value) {
+        // Map<@Embeddable,V> 기본 타입 value: (owner FK, keyCol1, keyCol2, ..., value) 한 row로 insert한다.
+        List<io.nova.metadata.CollectionTableDefinition.ElementColumn> keyColumns = definition.mapKeyColumns();
+        if (keyColumnValues.size() != keyColumns.size()) {
+            throw new IllegalArgumentException(
+                    "insertMapCollectionRow expects " + keyColumns.size()
+                            + " key column values but got " + keyColumnValues.size());
+        }
+        RenderContext context = new RenderContext();
+        StringBuilder names = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
+        StringBuilder markers = new StringBuilder(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(ownerId);
+        for (int i = 0; i < keyColumns.size(); i++) {
+            names.append(", ").append(dialect.quote(keyColumns.get(i).columnName()));
+            markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(keyColumnValues.get(i));
+        }
+        names.append(", ").append(dialect.quote(definition.valueColumn()));
+        markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(value);
+        String sql = "insert into " + dialect.quote(definition.tableName())
+                + " (" + names + ") values (" + markers + ")";
+        return new SqlStatement(sql, context.bindings());
+    }
+
+    @Override
+    public SqlStatement insertEmbeddableMapCollectionRow(
+            io.nova.metadata.CollectionTableDefinition definition, Object ownerId,
+            List<Object> keyColumnValues, List<Object> columnValues) {
+        // Map<@Embeddable,@Embeddable>: (owner FK, keyCol1, ..., valCol1, ...) 한 row로 insert한다.
+        List<io.nova.metadata.CollectionTableDefinition.ElementColumn> keyColumns = definition.mapKeyColumns();
+        List<io.nova.metadata.CollectionTableDefinition.ElementColumn> valueColumns = definition.elementColumns();
+        if (keyColumnValues.size() != keyColumns.size()) {
+            throw new IllegalArgumentException(
+                    "insertEmbeddableMapCollectionRow expects " + keyColumns.size()
+                            + " key column values but got " + keyColumnValues.size());
+        }
+        if (columnValues.size() != valueColumns.size()) {
+            throw new IllegalArgumentException(
+                    "insertEmbeddableMapCollectionRow expects " + valueColumns.size()
+                            + " value column values but got " + columnValues.size());
+        }
+        RenderContext context = new RenderContext();
+        StringBuilder names = new StringBuilder(dialect.quote(definition.ownerForeignKeyColumn()));
+        StringBuilder markers = new StringBuilder(dialect.bindMarkers().marker(context.nextIndex()));
+        context.addBinding(ownerId);
+        for (int i = 0; i < keyColumns.size(); i++) {
+            names.append(", ").append(dialect.quote(keyColumns.get(i).columnName()));
+            markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
+            context.addBinding(keyColumnValues.get(i));
+        }
+        for (int i = 0; i < valueColumns.size(); i++) {
+            names.append(", ").append(dialect.quote(valueColumns.get(i).columnName()));
             markers.append(", ").append(dialect.bindMarkers().marker(context.nextIndex()));
             context.addBinding(columnValues.get(i));
         }

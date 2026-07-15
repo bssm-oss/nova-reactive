@@ -82,7 +82,14 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                 + " " + fkColumnType(definition.ownerForeignKeyType()) + " not null";
         List<String> columns = new ArrayList<>();
         columns.add(ownerColumn);
-        if (definition.map()) {
+        if (definition.embeddableMapKey()) {
+            // Map<@Embeddable,V>: owner FK 다음에 펼친 key 컬럼들을 둔다(owner FK, key1, key2, ..., value[s]).
+            // 각 key 컬럼은 not null(JPA map key는 null을 허용하지 않는다).
+            for (CollectionTableDefinition.ElementColumn keyColumn : definition.mapKeyColumns()) {
+                columns.add(dialect.quote(keyColumn.columnName())
+                        + " " + elementColumnType(keyColumn.columnType()) + " not null");
+            }
+        } else if (definition.map()) {
             // Map<K,V>: owner FK 다음에 key 컬럼을 둔다(owner FK, key, value[s]). key는 not null.
             columns.add(dialect.quote(definition.mapKey().columnName())
                     + " " + elementColumnType(definition.mapKey().columnType()) + " not null");

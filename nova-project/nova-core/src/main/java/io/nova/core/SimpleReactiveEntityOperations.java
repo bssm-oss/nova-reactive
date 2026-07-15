@@ -763,22 +763,55 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (entries.isEmpty()) {
             return delete;
         }
-        boolean embeddable = info.embeddable();
+        boolean embeddableValue = info.embeddable();
+        boolean embeddableKey = info.mapKey().embeddableKey();
         return delete.thenMany(Flux.fromIterable(entries)
                         .concatMap(entry -> {
-                            Object key = encodeMapKey(info, entry.getKey());
                             SqlStatement statement;
-                            if (embeddable) {
-                                List<Object> columnValues = readEmbeddableColumnValues(info, entry.getValue());
-                                statement = renderer.insertEmbeddableMapCollectionRow(definition, ownerId, key, columnValues);
+                            if (embeddableKey) {
+                                // @Embeddable key(다중 컬럼): key 인스턴스의 펼친 컬럼 값들을 읽어 함께 insert한다.
+                                List<Object> keyColumns = readEmbeddableKeyColumnValues(info, entry.getKey());
+                                if (embeddableValue) {
+                                    List<Object> columnValues = readEmbeddableColumnValues(info, entry.getValue());
+                                    statement = renderer.insertEmbeddableMapCollectionRow(
+                                            definition, ownerId, keyColumns, columnValues);
+                                } else {
+                                    Object value = info.encodeElementValue(entry.getValue());
+                                    statement = renderer.insertMapCollectionRow(definition, ownerId, keyColumns, value);
+                                }
                             } else {
-                                // Map value(기본 타입/enum/UUID 등)도 원소와 동일하게 저장 표현으로 인코딩한다.
-                                Object value = info.encodeElementValue(entry.getValue());
-                                statement = renderer.insertMapCollectionRow(definition, ownerId, key, value);
+                                Object key = encodeMapKey(info, entry.getKey());
+                                if (embeddableValue) {
+                                    List<Object> columnValues = readEmbeddableColumnValues(info, entry.getValue());
+                                    statement = renderer.insertEmbeddableMapCollectionRow(
+                                            definition, ownerId, key, columnValues);
+                                } else {
+                                    // Map value(기본 타입/enum/UUID 등)도 원소와 동일하게 저장 표현으로 인코딩한다.
+                                    Object value = info.encodeElementValue(entry.getValue());
+                                    statement = renderer.insertMapCollectionRow(definition, ownerId, key, value);
+                                }
                             }
                             return sqlExecutor.execute(statement);
                         }))
                 .then();
+    }
+
+    /**
+     * {@code @MapKeyClass @Embeddable} map key 인스턴스에서 펼친 key 컬럼 순서대로 필드 값을 읽어 리스트로 만든다.
+     * {@link ElementCollectionInfo.MapKeyInfo#embeddableKeyColumns()} 순서와 정렬된다.
+     */
+    private static List<Object> readEmbeddableKeyColumnValues(ElementCollectionInfo info, Object key) {
+        List<ElementCollectionInfo.EmbeddableColumn> keyColumns = info.mapKey().embeddableKeyColumns();
+        List<Object> values = new ArrayList<>(keyColumns.size());
+        for (ElementCollectionInfo.EmbeddableColumn column : keyColumns) {
+            try {
+                values.add(column.field().get(key));
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException(
+                        "Cannot read @MapKeyClass @Embeddable key field " + column.field().getName(), exception);
+            }
+        }
+        return values;
     }
 
     /**
@@ -2091,10 +2124,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 if (entry.getKey() == null || entry.getValue() == null) {
                     continue;
                 }
+                // @Embeddable key는 equals/hashCode에 의존하지 않고 펼친 컬럼 값 튜플을 diff 키로 써서 baseline과
+                // 값 기준으로 비교한다(@Embeddable value와 대칭).
+                Object keyRepr = info.mapKey().embeddableKey()
+                        ? readEmbeddableKeyColumnValues(info, entry.getKey())
+                        : entry.getKey();
                 Object valueKey = info.embeddable()
                         ? readEmbeddableColumnValues(info, entry.getValue())
                         : entry.getValue();
-                keys.add(List.of(entry.getKey(), valueKey));
+                keys.add(List.of(keyRepr, valueKey));
             }
             return keys;
         }
@@ -3662,7 +3700,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
         // Map value도 저장 표현 타입으로 디코딩 요청 후 도메인으로 복원한다.
         Class<?> valueColumnType = wrapPrimitive(info.valueColumnType());
-        Class<?> keyColumnType = info.mapKey().keyColumnType();
+        boolean embeddableKey = info.mapKey().embeddableKey();
+        // 단일 컬럼 key의 저장 표현 타입(@Embeddable key는 각 컬럼 타입을 개별 사용하므로 여기선 쓰지 않는다).
+        Class<?> keyColumnType = embeddableKey ? null : info.mapKey().keyColumnType();
 
         LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
         for (P parent : parents) {
@@ -3682,7 +3722,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         renderer.selectCollectionRows(definition, ownerIds),
                         row -> {
                             Object ownerKey = row.get(info.ownerForeignKeyColumn(), ownerIdType);
-                            Object mapKey = decodeMapKey(info, row.get(info.mapKey().keyColumn(), keyColumnType));
+                            // @Embeddable key는 펼친 컬럼들로 key 인스턴스를 재구성하고, 단일 컬럼 key는 저장 표현에서
+                            // 도메인 타입으로 디코딩한다(enum 이름/ordinal → 상수, UUID varchar → UUID 등).
+                            Object mapKey = embeddableKey
+                                    ? instantiateEmbeddableKey(info, row)
+                                    : decodeMapKey(info, row.get(info.mapKey().keyColumn(), keyColumnType));
                             Object element = embeddable
                                     ? instantiateEmbeddableElement(info, row)
                                     : info.decodeElementValue(row.get(info.valueColumn(), valueColumnType));
@@ -3729,6 +3773,35 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
         }
         return element;
+    }
+
+    /**
+     * {@code @MapKeyClass @Embeddable} map key 타입의 인스턴스를 collection table row에서 만든다 — no-arg 생성자로
+     * 인스턴스화한 뒤 펼친 각 key 컬럼 값을 해당 필드에 바인딩한다. {@link ElementCollectionInfo.MapKeyInfo#keyType()}이
+     * key 타입이다. {@link #instantiateEmbeddableElement}와 대칭이며 key 컬럼 목록만 다르다.
+     */
+    private static Object instantiateEmbeddableKey(ElementCollectionInfo info, RowAccessor row) {
+        ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        Object key;
+        try {
+            java.lang.reflect.Constructor<?> constructor = mapKey.keyType().getDeclaredConstructor();
+            constructor.setAccessible(true);
+            key = constructor.newInstance();
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(
+                    "@MapKeyClass @Embeddable key type " + mapKey.keyType().getName()
+                            + " must expose a no-args constructor", exception);
+        }
+        for (ElementCollectionInfo.EmbeddableColumn column : mapKey.embeddableKeyColumns()) {
+            Object value = row.get(column.columnName(), column.columnType());
+            try {
+                column.field().set(key, value);
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException(
+                        "Cannot set @MapKeyClass @Embeddable key field " + column.field().getName(), exception);
+            }
+        }
+        return key;
     }
 
     private <P, C> Mono<Void> hydrateChildSpec(List<P> parents, FetchGroup.FetchSpec<P, C> spec) {
