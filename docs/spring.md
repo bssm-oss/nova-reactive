@@ -15,7 +15,7 @@ dependencies {
 }
 ```
 
-Activated when both `ConnectionFactory` and `Dialect` beans are present in the context, the starter registers the following beans (each only when missing):
+`NovaAutoConfiguration` activates once the `ConnectionFactory` and `Dialect` classes are on the classpath (always true once a dialect module is added). It requires a `ConnectionFactory` bean in the context — if none is supplied, context startup fails with an unsatisfied-dependency error rather than the starter silently backing off. `Dialect` is auto-detected from that `ConnectionFactory`'s driver metadata (see `Nova.resolveDialect`); supply your own `Dialect` bean only to override auto-detection or to support an unmapped driver. Once wired, the starter registers the following beans (each only when missing):
 
 | Bean                          | Type                                | Notes                                                                  |
 |-------------------------------|-------------------------------------|------------------------------------------------------------------------|

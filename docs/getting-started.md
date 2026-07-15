@@ -46,7 +46,7 @@ dependencies {
 }
 ```
 
-> **Snapshots**: next-dev builds (e.g. `1.0.2-SNAPSHOT`) are available from the Central snapshots repository.
+> **Snapshots**: next-dev builds (e.g. `2.9.0-SNAPSHOT`) are available from the Central snapshots repository.
 >
 > ```kotlin
 > repositories {
