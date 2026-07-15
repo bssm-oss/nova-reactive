@@ -235,28 +235,36 @@ final class CriteriaSqlBuilder {
                     + "' cannot be used as a single column (its foreign key spans multiple columns); "
                     + "it is only supported in a join or an equality/IS NULL comparison");
         }
-        if (path.source() instanceof CriteriaTreatedRoot<?> treated) {
-            requireUnshadowedJoinedColumn(treated.metadata(), property);
-        }
+        // ownerMetadata()는 cb.treat(root, Sub).get("field")(CriteriaTreatedRoot)뿐 아니라 plain
+        // cq.from(Sub.class)/root.get("field")(concrete-subtype-root)에서도 그 서브타입 메타데이터를
+        // 돌려준다 — 두 경로 모두 같은 JOINED derived-table dedupe 함정에 노출되므로 하나의 guard로 커버한다.
+        requireUnshadowedJoinedColumn(path.ownerMetadata(), property);
         return dialect.quote(property.columnName());
     }
 
     /**
      * JOINED 다형 SELECT의 파생 테이블은 컬럼명으로 dedupe한다(루트 먼저, 그다음 서브타입을 등록 순서대로).
-     * {@code cb.treat(root, Sub).get("field")}가 가리키는 컬럼이 루트나 더 먼저 등록된 형제 서브타입의
-     * 동명 컬럼에 가려지면 그 값을 조용히 대신 읽게 된다(비매칭 행에서는 NULL) — silent wrong-column 대신
-     * 명확히 거부한다.
+     * {@code cb.treat(root, Sub).get("field")}와 concrete-subtype-root의 plain {@code root.get("field")}
+     * (예: {@code cq.from(Sub.class)})가 가리키는 컬럼이 루트나 더 먼저 등록된 형제 서브타입의 동명 컬럼에
+     * 가려지면 그 값을 조용히 대신 읽게 된다(비매칭 행에서는 NULL) — silent wrong-column 대신 명확히 거부한다.
      */
     private void requireUnshadowedJoinedColumn(EntityMetadata<?> subMeta, PersistentProperty property) {
         if (!subMeta.hasInheritance() || !subMeta.inheritance().joined() || subMeta.isInheritanceRoot()) {
             return;
         }
-        String columnName = property.columnName();
         InheritanceLayout layout = metadataFactory.inheritanceLayout(subMeta.inheritance().root());
+        // 루트(또는 @MappedSuperclass 조상)가 선언해 상속받은 필드는 애초에 root table column 자체이므로
+        // 충돌이 아니다 — 이 값은 이 서브타입의 "자기 테이블 기여분"이 아니라 root에서 오는 게 정답이다.
+        boolean inheritedFromRoot = layout.rootTableColumns().stream()
+                .anyMatch(rootProp -> rootProp.propertyName().equals(property.propertyName()));
+        if (inheritedFromRoot) {
+            return;
+        }
+        String columnName = property.columnName();
+        String ref = subMeta.entityType().getSimpleName() + ".get(\"" + property.propertyName() + "\")";
         for (PersistentProperty rootProp : layout.rootTableColumns()) {
             if (rootProp.columnName().equals(columnName)) {
-                throw new CriteriaException("cb.treat(..., " + subMeta.entityType().getSimpleName() + ").get(\""
-                        + property.propertyName() + "\") refers to column '" + columnName + "', which collides "
+                throw new CriteriaException(ref + " refers to column '" + columnName + "', which collides "
                         + "with a root column of the same name in the JOINED derived table; the derived SELECT "
                         + "exposes only the root's value for that column name. Rename the column to disambiguate.");
             }
@@ -267,8 +275,7 @@ final class CriteriaSqlBuilder {
             }
             for (PersistentProperty siblingProp : subtype.ownTableColumns()) {
                 if (!siblingProp.id() && siblingProp.columnName().equals(columnName)) {
-                    throw new CriteriaException("cb.treat(..., " + subMeta.entityType().getSimpleName()
-                            + ").get(\"" + property.propertyName() + "\") refers to column '" + columnName
+                    throw new CriteriaException(ref + " refers to column '" + columnName
                             + "', which collides with a same-named column already contributed by '"
                             + subtype.metadata().entityType().getSimpleName() + "' earlier in the JOINED derived "
                             + "table; the derived SELECT exposes only the first-registered source's value for "

@@ -695,6 +695,38 @@ class JpqlSqlBuilderTest {
         assertTrue(ex.getMessage().contains("collides"), ex.getMessage());
     }
 
+    @Test
+    void failsFastOnAmbiguousJoinedColumnShadowedViaPlainPathOnConcreteSubtypeRoot() {
+        // MAJOR: TREAT 경로뿐 아니라 plain 'alias.field'도 concrete-subtype-root(FROM ShTruck c)로 도달하면
+        // 같은 dedupe 함정(ShCar.tag가 먼저 emit되어 derived 'tag' 컬럼을 차지)에 노출된다.
+        JpqlEntityResolver r = new JpqlEntityResolver(
+                metadataFactory, List.of(ShVehicle.class, ShCar.class, ShTruck.class));
+        JpqlSqlBuilder shBuilder = new JpqlSqlBuilder(dialect, r);
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT c.tag FROM ShTruck c").parse();
+        JpqlException ex = assertThrows(JpqlException.class, () -> shBuilder.buildScalarSelect(select));
+        assertTrue(ex.getMessage().contains("collides"), ex.getMessage());
+    }
+
+    @Test
+    void allowsTreatOnRootInheritedFieldWithoutFalseShadowRejection() {
+        // MINOR: name은 JVehicle(root)이 선언한 컬럼이라, TREAT(v AS JCar).name으로 상속받아 참조해도
+        // 실제로 그 값은 root에서 오는 게 정답이다 — root-collision으로 오인해 거부하면 안 된다.
+        TranslatedSql t = joinedScalar("SELECT TREAT(v AS JCar).name FROM JVehicle v");
+        assertTrue(t.sql().startsWith("select v.\"name\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as v where v.\"kind\" = ?"), t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void allowsPlainPathOnRootInheritedFieldFromConcreteSubtypeRootWithoutFalseShadowRejection() {
+        // MINOR 대응 확인: plain 'alias.field' 경로도 root-inherited 필드는 거부하지 않아야 한다.
+        TranslatedSql t = joinedScalar("SELECT c.name FROM JCar c");
+        assertTrue(t.sql().startsWith("select c.\"name\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as c where c.\"kind\" = ?"), t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
     // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------

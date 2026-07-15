@@ -201,6 +201,19 @@ public final class JpqlEntityQueryPlanner {
         remaining.add(predicate);
     }
 
+    /**
+     * {@code TYPE(alias) = Subtype} 좁힘 대상 메타데이터를 해석한다. 3전략(SINGLE_TABLE/JOINED/TABLE_PER_CLASS)
+     * 모두 허용한다.
+     * <p>
+     * <b>알려진 한계(2-레벨까지 검증됨):</b> 실제 조회는 {@code ReactiveEntityOperations.findAll(subMeta.entityType(),
+     * ...)}가 JOINED/TABLE_PER_CLASS 다형 SELECT 결과를 {@code entityType().isInstance(row)}로 필터링해
+     * 위임한다({@code SimpleReactiveEntityOperations#findAllMultiTable} 계열). 이는 3레벨 이상의 깊은 계층에서
+     * {@code TYPE(e) = Mid}가 {@code Mid}의 자손({@code Leaf extends Mid})까지 포함한다(JPA의 exact-type
+     * 시맨틱과 다름) — Java {@code Class.isInstance}가 서브타입도 참으로 판정하기 때문이다. Nova는 현재
+     * 다단계 JOINED/TABLE_PER_CLASS {@code @Entity} 계층 자체를 지원하지 않으므로(단일 레벨만 허용,
+     * {@code EntityMetadataFactory#buildInheritanceLayout} 참고) 실무에서 아직 재현되지 않지만, 다단계 지원이
+     * 추가되면 exact-type narrowing으로 재검토가 필요하다.
+     */
     private EntityMetadata<?> resolveEntitySubtype(EntityMetadata<?> baseMeta, String subtypeName) {
         if (!baseMeta.hasInheritance()) {
             throw new JpqlException("TYPE(...) requires an @Inheritance entity; '"

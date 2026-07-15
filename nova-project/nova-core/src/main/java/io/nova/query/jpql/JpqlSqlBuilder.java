@@ -1028,7 +1028,7 @@ public final class JpqlSqlBuilder {
         List<String> segments = path.segments();
         if (segments.isEmpty()) {
             // 순수 별칭 → 그 엔티티의 대표 id property(COUNT(e) 등).
-            return new ResolvedPath(path.alias(), ownerMeta.idProperty());
+            return new ResolvedPath(path.alias(), ownerMeta, ownerMeta.idProperty());
         }
         // 다세그먼트: 묵시 조인이 필요하므로 unqualified(벌크) 컨텍스트에서는 지원하지 않는다.
         if (segments.size() > 1 && !ctx.qualify) {
@@ -1057,7 +1057,7 @@ public final class JpqlSqlBuilder {
         PersistentProperty property = finalMeta.findProperty(field)
                 .orElseThrow(() -> new JpqlException("Unknown field '" + field + "' on entity "
                         + finalMeta.entityType().getSimpleName()));
-        return new ResolvedPath(currentAlias, property);
+        return new ResolvedPath(currentAlias, finalMeta, property);
     }
 
     /** 해석된 경로를 단일 컬럼 참조로. 컬렉션/복합키 to-one은 단일 컬럼 자리에서 fail-fast한다. */
@@ -1074,6 +1074,12 @@ public final class JpqlSqlBuilder {
             throw new JpqlException("Reference to composite-key to-one association '" + property.propertyName()
                     + "' as a single column is not supported (its foreign key spans multiple columns); "
                     + "reference its @Id components explicitly instead, not as a SELECT projection");
+        }
+        EntityMetadata<?> metadata = resolved.metadata();
+        if (metadata.hasInheritance() && metadata.inheritance().joined() && !metadata.isInheritanceRoot()) {
+            // plain 'alias.field'도 concrete-subtype-root(예: FROM JCar c) 경로로 도달할 수 있다 — TREAT
+            // 경로와 동일한 dedupe 함정에 노출되므로 같은 guard를 적용한다.
+            requireUnshadowedJoinedColumn(metadata, property);
         }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? resolved.alias() + "." + col : col;
@@ -1107,17 +1113,25 @@ public final class JpqlSqlBuilder {
      * JOINED 다형 SELECT의 파생 테이블(select list)은 컬럼명으로 dedupe한다(루트 먼저, 그다음 서브타입을
      * 등록 순서대로 — {@code AbstractSqlRenderer#joinedSelectList} 참고) — 즉 같은 컬럼명이 먼저 emit된
      * 소스의 값만 노출되고, 그 뒤에 같은 이름을 쓰는 다른 소스는 그 값을 조용히 대신 읽는다(비매칭 행에서는
-     * NULL). {@code TREAT(... AS Subtype).field}가 가리키는 컬럼이 실제로 이 서브타입 자기 테이블의 기여분이
-     * 아니라 루트나 더 먼저 등록된 형제 서브타입의 동명 컬럼에 가려진 것이면, silent wrong-column 대신
-     * 명확히 거부한다.
+     * NULL). {@code TREAT(... AS Subtype).field}뿐 아니라 concrete-subtype-root의 plain {@code alias.field}
+     * (예: {@code FROM JCar c} 다음 {@code c.tag})도 같은 함정에 노출된다 — 가리키는 컬럼이 실제로 이
+     * 서브타입 자기 테이블의 기여분이 아니라 루트나 더 먼저 등록된 형제 서브타입의 동명 컬럼에 가려진 것이면,
+     * silent wrong-column(비매칭 행에서 NULL) 대신 명확히 거부한다.
      */
     private void requireUnshadowedJoinedColumn(EntityMetadata<?> subMeta, PersistentProperty property) {
         String columnName = property.columnName();
         InheritanceLayout layout = resolver.inheritanceLayout(subMeta.inheritance().root());
+        // 루트(또는 @MappedSuperclass 조상)가 선언해 상속받은 필드는 애초에 root table column 자체이므로
+        // 충돌이 아니다 — 이 값은 이 서브타입의 "자기 테이블 기여분"이 아니라 root에서 오는 게 정답이다.
+        boolean inheritedFromRoot = layout.rootTableColumns().stream()
+                .anyMatch(rootProp -> rootProp.propertyName().equals(property.propertyName()));
+        if (inheritedFromRoot) {
+            return;
+        }
+        String ref = subMeta.entityType().getSimpleName() + "." + property.propertyName();
         for (PersistentProperty rootProp : layout.rootTableColumns()) {
             if (rootProp.columnName().equals(columnName)) {
-                throw new JpqlException("TREAT(... AS " + subMeta.entityType().getSimpleName() + ")."
-                        + property.propertyName() + " refers to column '" + columnName + "', which collides "
+                throw new JpqlException("'" + ref + "' refers to column '" + columnName + "', which collides "
                         + "with a root column of the same name in the JOINED derived table; the derived SELECT "
                         + "exposes only the root's value for that column name. Rename the column to disambiguate.");
             }
@@ -1128,8 +1142,7 @@ public final class JpqlSqlBuilder {
             }
             for (PersistentProperty siblingProp : subtype.ownTableColumns()) {
                 if (!siblingProp.id() && siblingProp.columnName().equals(columnName)) {
-                    throw new JpqlException("TREAT(... AS " + subMeta.entityType().getSimpleName() + ")."
-                            + property.propertyName() + " refers to column '" + columnName + "', which collides "
+                    throw new JpqlException("'" + ref + "' refers to column '" + columnName + "', which collides "
                             + "with a same-named column already contributed by '"
                             + subtype.metadata().entityType().getSimpleName() + "' earlier in the JOINED derived "
                             + "table; the derived SELECT exposes only the first-registered source's value for "
@@ -1467,8 +1480,8 @@ public final class JpqlSqlBuilder {
     private record ColumnPair(String fkColumn, String targetColumn) {
     }
 
-    /** 경로 해석 결과: 최종 세그먼트가 위치한 별칭과 그 프로퍼티. */
-    private record ResolvedPath(String alias, PersistentProperty property) {
+    /** 경로 해석 결과: 최종 세그먼트가 위치한 별칭, 그 소유 메타데이터, 그 프로퍼티. */
+    private record ResolvedPath(String alias, EntityMetadata<?> metadata, PersistentProperty property) {
     }
 
     /** 복합키 to-one terminal 비교/IS NULL 대상: FK가 걸린 별칭과 그 관계 프로퍼티. */
