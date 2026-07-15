@@ -19,10 +19,30 @@ public record CollectionTableDefinition(
         Class<?> valueType,
         List<ElementColumn> elementColumns,
         OrderColumnInfo orderColumn,
-        MapKeyColumn mapKey
+        MapKeyColumn mapKey,
+        List<ElementColumn> mapKeyColumns
 ) {
     public CollectionTableDefinition {
         elementColumns = elementColumns == null ? List.of() : List.copyOf(elementColumns);
+        // @Embeddable(다중 컬럼) map key의 펼침 key 컬럼들. 단일 컬럼 key({@link #mapKey()})나 비-map은 빈 리스트다.
+        mapKeyColumns = mapKeyColumns == null ? List.of() : List.copyOf(mapKeyColumns);
+    }
+
+    /**
+     * 단일 컬럼 map key({@link #mapKey()})까지 받는 이전 형태의 생성자 — {@code @Embeddable} 다중 컬럼 key가 없는
+     * 경우(기본/enum/temporal/UUID key 또는 비-map)에 쓴다.
+     */
+    public CollectionTableDefinition(
+            String tableName,
+            String ownerForeignKeyColumn,
+            Class<?> ownerForeignKeyType,
+            String valueColumn,
+            Class<?> valueType,
+            List<ElementColumn> elementColumns,
+            OrderColumnInfo orderColumn,
+            MapKeyColumn mapKey) {
+        this(tableName, ownerForeignKeyColumn, ownerForeignKeyType, valueColumn, valueType,
+                elementColumns, orderColumn, mapKey, List.of());
     }
 
     /**
@@ -80,10 +100,19 @@ public record CollectionTableDefinition(
     }
 
     /**
-     * collection table이 {@code Map<K,V>}를 저장하면 {@code true} — {@link #mapKey()} key 컬럼을 둔다.
+     * collection table이 {@code Map<K,V>}를 저장하면 {@code true} — 단일 컬럼 key({@link #mapKey()}) 또는
+     * {@code @Embeddable} 다중 컬럼 key({@link #mapKeyColumns()})를 둔다.
      */
     public boolean map() {
-        return mapKey != null;
+        return mapKey != null || !mapKeyColumns.isEmpty();
+    }
+
+    /**
+     * map key가 {@code @Embeddable}(다중 컬럼)이면 {@code true} — {@link #mapKeyColumns()}에 펼친 key 컬럼들을 두고
+     * {@link #mapKey()}는 {@code null}이다. 단일 컬럼 key(기본/enum/temporal/UUID)는 {@code false}이다.
+     */
+    public boolean embeddableMapKey() {
+        return !mapKeyColumns.isEmpty();
     }
 
     /**

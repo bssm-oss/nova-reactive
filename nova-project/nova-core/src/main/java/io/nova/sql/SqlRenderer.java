@@ -358,6 +358,31 @@ public interface SqlRenderer {
     }
 
     /**
+     * {@code @ElementCollection Map<@Embeddable,V>} collection table에 (owner, keyCol1, keyCol2, ..., value) row
+     * 1건을 추가하는 구문 — {@code @MapKeyClass @Embeddable} key(다중 컬럼) + 기본 타입 value. {@code keyColumnValues}는
+     * {@link CollectionTableDefinition#mapKeyColumns()} 순서와 정렬되어야 한다.
+     */
+    default SqlStatement insertMapCollectionRow(
+            CollectionTableDefinition definition, Object ownerId,
+            java.util.List<Object> keyColumnValues, Object value) {
+        throw new UnsupportedOperationException(
+                "insertMapCollectionRow (embeddable key) is not supported by this SqlRenderer");
+    }
+
+    /**
+     * {@code @ElementCollection Map<@Embeddable,@Embeddable>} collection table에
+     * (owner, keyCol1, ..., valCol1, ...) row 1건을 추가하는 구문 — {@code @MapKeyClass @Embeddable} key(다중 컬럼)
+     * + {@code @Embeddable} value(다중 컬럼). {@code keyColumnValues}는 {@link CollectionTableDefinition#mapKeyColumns()},
+     * {@code columnValues}는 {@link CollectionTableDefinition#elementColumns()} 순서와 정렬되어야 한다.
+     */
+    default SqlStatement insertEmbeddableMapCollectionRow(
+            CollectionTableDefinition definition, Object ownerId,
+            java.util.List<Object> keyColumnValues, java.util.List<Object> columnValues) {
+        throw new UnsupportedOperationException(
+                "insertEmbeddableMapCollectionRow (embeddable key) is not supported by this SqlRenderer");
+    }
+
+    /**
      * {@code @OneToMany(mappedBy)} + {@code @OrderColumn} 정렬에서 child 행의 순서 컬럼을 {@code orderIndex}로
      * 갱신하는 {@code UPDATE child SET orderCol = ? WHERE childPk = ?} 구문. re-save 시 현재 List 위치로 재인덱싱한다.
      */

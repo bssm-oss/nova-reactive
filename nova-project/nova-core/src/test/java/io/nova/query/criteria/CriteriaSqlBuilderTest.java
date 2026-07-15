@@ -270,6 +270,71 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void terminalInOverCompositeKeyToOneExpandsToOrOfAnds() {
+        // cb.in(c.get("parent")).value(a).value(b) → 각 참조의 컴포넌트 동등(and)을 or로 잇는 OR-of-ANDs.
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent a =
+                new io.nova.support.fixtures.FixtureEntities.CompositeJoinParent();
+        a.setId(new io.nova.support.fixtures.FixtureEntities.CompositeJoinKey(5L, "x"));
+        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent b =
+                new io.nova.support.fixtures.FixtureEntities.CompositeJoinParent();
+        b.setId(new io.nova.support.fixtures.FixtureEntities.CompositeJoinKey(6L, "y"));
+        cq.multiselect(c.<Long>get("id")).where(cb.in(c.get("parent")).value(a).value(b));
+
+        CriteriaSql t = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"gc_composite_child\" \"t0\" where "
+                        + "((\"t0\".\"p_k1\" = ? and \"t0\".\"p_k2\" = ?) or (\"t0\".\"p_k1\" = ? and \"t0\".\"p_k2\" = ?))",
+                t.sql());
+        assertEquals(List.of(5L, "x", 6L, "y"), t.bindings());
+    }
+
+    @Test
+    void terminalOrderingOverCompositeKeyToOneExpandsLexicographically() {
+        // 엔티티 참조는 Comparable이 아니어서 typed cb.lessThan으로는 만들 수 없으므로 술어를 직접 구성한다.
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent ref =
+                new io.nova.support.fixtures.FixtureEntities.CompositeJoinParent();
+        ref.setId(new io.nova.support.fixtures.FixtureEntities.CompositeJoinKey(5L, "x"));
+        CriteriaColumnPath path = (CriteriaColumnPath) c.get("parent");
+        cq.multiselect(c.<Long>get("id")).where(CriteriaPredicate.comparison(path, CompareOp.LT, ref));
+
+        CriteriaSql t = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"gc_composite_child\" \"t0\" where "
+                        + "((\"t0\".\"p_k1\" < ?) or (\"t0\".\"p_k1\" = ? and \"t0\".\"p_k2\" < ?))",
+                t.sql());
+        assertEquals(List.of(5L, 5L, "x"), t.bindings());
+    }
+
+    @Test
+    void terminalBetweenOverCompositeKeyToOneExpandsToGreaterEqualAndLessEqual() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent lo =
+                new io.nova.support.fixtures.FixtureEntities.CompositeJoinParent();
+        lo.setId(new io.nova.support.fixtures.FixtureEntities.CompositeJoinKey(1L, "a"));
+        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent hi =
+                new io.nova.support.fixtures.FixtureEntities.CompositeJoinParent();
+        hi.setId(new io.nova.support.fixtures.FixtureEntities.CompositeJoinKey(9L, "z"));
+        CriteriaColumnPath path = (CriteriaColumnPath) c.get("parent");
+        cq.multiselect(c.<Long>get("id")).where(CriteriaPredicate.between(path, lo, hi));
+
+        CriteriaSql t = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"gc_composite_child\" \"t0\" where "
+                        + "(((\"t0\".\"p_k1\" > ?) or (\"t0\".\"p_k1\" = ? and \"t0\".\"p_k2\" >= ?)) and "
+                        + "((\"t0\".\"p_k1\" < ?) or (\"t0\".\"p_k1\" = ? and \"t0\".\"p_k2\" <= ?)))",
+                t.sql());
+        assertEquals(List.of(1L, 1L, "a", 9L, 9L, "z"), t.bindings());
+    }
+
+    @Test
     void rendersLeftJoin() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);

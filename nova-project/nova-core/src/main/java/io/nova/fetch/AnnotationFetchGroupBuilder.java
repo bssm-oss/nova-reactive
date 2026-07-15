@@ -69,9 +69,11 @@ public final class AnnotationFetchGroupBuilder {
      * 중첩(depth&gt;1) fetch에서 특정 레벨의 <b>선언된</b> 연관 하나만 배치 로드할 때 쓴다 — 전체 연관을 담는
      * {@link #buildFor(Class)}와 달리 정확히 그 속성만 fetch해 불필요한 쿼리를 내지 않는다.
      *
-     * <p>{@code @ManyToOne}(단일키 타겟)/{@code @OneToMany}/inverse {@code @OneToOne}만 표현 가능하다.
-     * {@code @ManyToMany}/{@code @ElementCollection}/비연관 속성/복합키 타겟 to-one은 flat spec으로 표현할 수
-     * 없어 {@link IllegalArgumentException}으로 거부한다(호출자가 종류를 미리 분기해야 한다).
+     * <p>{@code @ManyToOne}(단일키 타겟)/{@code @OneToMany}/inverse {@code @OneToOne}은 단일컬럼 FK spec으로,
+     * 복합키({@code @EmbeddedId}/{@code @IdClass}) 타겟 to-one은 다중컬럼 FK를 OR-of-ANDs로 배치 로드하는
+     * composite spec으로 표현한다({@link #buildFor(Class)}의 복합키 처리와 동일 경로 재사용). {@code @ManyToMany}/
+     * {@code @ElementCollection}/비연관 속성은 flat spec으로 표현할 수 없어 {@link IllegalArgumentException}으로
+     * 거부한다(호출자가 종류를 미리 분기해야 한다).
      */
     public <P> FetchGroup<P> buildForAttribute(Class<P> parentType, String attributeName) {
         Objects.requireNonNull(parentType, "parentType must not be null");
@@ -88,11 +90,13 @@ public final class AnnotationFetchGroupBuilder {
             addInverseOneToOneSpec(builder, parentType, property, idProperty);
         } else if (property.manyToOne()) {
             if (property.isCompositeToOne()) {
-                throw new IllegalArgumentException(
-                        parentType.getName() + "." + attributeName
-                                + " is a composite-key to-one; single-column FK batch fetch is not supported");
+                // 복합키 타겟 to-one: 단일컬럼 IN은 불가하지만, buildFor(Class)와 동일한 composite spec으로
+                // 다중컬럼 FK(OR-of-ANDs) 배치 로드가 가능하다 — 중첩 EntityGraph subgraph의 복합키 to-one leaf를
+                // 이 진입점으로 레벨당 1쿼리 hydrate한다(N+1 없음).
+                addCompositeManyToOneSpec(builder, parentType, property);
+            } else {
+                addManyToOneSpec(builder, parentType, property);
             }
-            addManyToOneSpec(builder, parentType, property);
         } else {
             throw new IllegalArgumentException(
                     parentType.getName() + "." + attributeName

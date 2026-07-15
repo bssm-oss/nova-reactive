@@ -220,7 +220,7 @@ public final class JpqlQuery<T> {
         Pageable page;
         try {
             idProjection = sqlBuilder.buildScalarSelect(rootIdProjection(select, idProperty));
-            sort = entityPlanner.translateRootOrderBy(select.orderBy(), select.rootAlias());
+            sort = entityPlanner.translateRootOrderBy(select.orderBy(), select.rootAlias(), metadata);
             page = pageWindow();
         } catch (RuntimeException e) {
             return Flux.error(e);

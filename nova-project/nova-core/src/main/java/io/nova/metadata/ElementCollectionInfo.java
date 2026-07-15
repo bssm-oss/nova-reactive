@@ -155,15 +155,26 @@ public record ElementCollectionInfo(
         for (EmbeddableColumn column : embeddableColumns) {
             elementColumns.add(new CollectionTableDefinition.ElementColumn(column.columnName(), column.columnType()));
         }
-        CollectionTableDefinition.MapKeyColumn keyColumn = mapKey == null
-                ? null
-                : new CollectionTableDefinition.MapKeyColumn(mapKey.keyColumn(), mapKey.keyColumnType());
+        // Map key 컬럼: @Embeddable key는 다중 컬럼(mapKeyColumns)으로, 그 외(기본/enum/temporal/UUID)는 단일
+        // 컬럼(keyColumn)으로 표현한다. 둘 다 mapKey==null이면 map이 아니다.
+        CollectionTableDefinition.MapKeyColumn keyColumn = null;
+        List<CollectionTableDefinition.ElementColumn> mapKeyColumns = List.of();
+        if (mapKey != null) {
+            if (mapKey.embeddableKey()) {
+                mapKeyColumns = mapKey.embeddableKeyColumns().stream()
+                        .map(column -> new CollectionTableDefinition.ElementColumn(
+                                column.columnName(), column.columnType()))
+                        .toList();
+            } else {
+                keyColumn = new CollectionTableDefinition.MapKeyColumn(mapKey.keyColumn(), mapKey.keyColumnType());
+            }
+        }
         // DDL/SQL 컬럼 타입은 도메인 타입(valueType)이 아니라 저장 표현 타입(valueColumnType)을 따라야 한다
         // (enum→varchar/integer, UUID→varchar 등). @Embeddable 원소는 valueColumnType이 valueType과 같아
         // (elementColumns가 실제 컬럼을 결정하므로) 무해하다.
         return new CollectionTableDefinition(
                 collectionTableName, ownerForeignKeyColumn, ownerForeignKeyType,
-                valueColumn, valueColumnType, elementColumns, orderColumn, keyColumn);
+                valueColumn, valueColumnType, elementColumns, orderColumn, keyColumn, mapKeyColumns);
     }
 
     /**
@@ -219,16 +230,49 @@ public record ElementCollectionInfo(
      *       타입인 순수 기본 타입과 enum key(operations가 이름/ordinal로 직접 처리)는 {@code null}이다. R2DBC 드라이버가
      *       {@code varchar}→{@code UUID} 직접 디코딩을 못 하는 read-source-type 함정을 EC value와 대칭으로 피한다.</li>
      * </ul>
-     * {@code @MapKey}(엔티티 property를 key로) 및 {@code @Embeddable} key는 v1 범위 밖이며
-     * {@link EntityMetadataFactory}가 fail-fast로 거부한다.
+     * {@code keyType}이 {@code @Embeddable}(다중 컬럼) key이면 {@link #embeddableKeyColumns()}에 펼친 key 컬럼들이
+     * 담기고 {@link #keyColumn()}/{@link #keyColumnType()}/{@link #keyEnumType()}/{@code keyConverter}는 의미가
+     * 없다(operations가 각 컬럼을 개별 처리한다). {@code @MapKey}(엔티티 property를 key로) 및 entity key 클래스는
+     * v1 범위 밖이며 {@link EntityMetadataFactory}가 fail-fast로 거부한다.
      */
     public record MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType,
-            AttributeConverter<Object, Object> keyConverter) {
+            AttributeConverter<Object, Object> keyConverter, List<EmbeddableColumn> embeddableKeyColumns) {
+        public MapKeyInfo {
+            // @Embeddable(다중 컬럼) key의 펼침 컬럼 목록. 단일 컬럼 key(기본/enum/temporal/UUID)는 빈 리스트다.
+            embeddableKeyColumns = embeddableKeyColumns == null ? List.of() : List.copyOf(embeddableKeyColumns);
+        }
+
         /**
          * enum/순수 기본 타입 key용 — 저장 표현 converter 없이({@code null}) 만든다.
          */
         public MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType) {
-            this(keyColumn, keyType, keyColumnType, keyEnumType, null);
+            this(keyColumn, keyType, keyColumnType, keyEnumType, null, List.of());
+        }
+
+        /**
+         * 저장타입 분리 단일 컬럼 key(UUID→varchar via converter, temporal 등)용 — {@code @Embeddable} 펼침 컬럼 없이
+         * 단일 컬럼 + converter로 만든다.
+         */
+        public MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType,
+                AttributeConverter<Object, Object> keyConverter) {
+            this(keyColumn, keyType, keyColumnType, keyEnumType, keyConverter, List.of());
+        }
+
+        /**
+         * {@code @MapKeyClass}가 가리키는 {@code @Embeddable} key용 — key를 다중 컬럼({@code embeddableKeyColumns})으로
+         * 펼쳐 저장한다. 단일 key 컬럼/enum/converter는 의미가 없어 각각 {@code ""}/{@code null}이며, {@code keyColumnType}은
+         * {@code @Embeddable} 타입 자신이다(실제 컬럼 타입은 {@code embeddableKeyColumns}가 결정).
+         */
+        public static MapKeyInfo embeddable(Class<?> keyType, List<EmbeddableColumn> embeddableKeyColumns) {
+            return new MapKeyInfo("", keyType, keyType, null, null, embeddableKeyColumns);
+        }
+
+        /**
+         * key가 {@code @Embeddable}(다중 컬럼)이면 {@code true} — {@link #embeddableKeyColumns()}에 펼친 key 컬럼들이
+         * 있고, operations는 각 컬럼을 개별 읽고/써서 key 인스턴스를 재구성한다.
+         */
+        public boolean embeddableKey() {
+            return !embeddableKeyColumns.isEmpty();
         }
 
         /**
@@ -272,12 +316,13 @@ public record ElementCollectionInfo(
             return java.util.Objects.equals(keyColumn, that.keyColumn)
                     && java.util.Objects.equals(keyType, that.keyType)
                     && java.util.Objects.equals(keyColumnType, that.keyColumnType)
-                    && keyEnumType == that.keyEnumType;
+                    && keyEnumType == that.keyEnumType
+                    && java.util.Objects.equals(embeddableKeyColumns, that.embeddableKeyColumns);
         }
 
         @Override
         public int hashCode() {
-            return java.util.Objects.hash(keyColumn, keyType, keyColumnType, keyEnumType);
+            return java.util.Objects.hash(keyColumn, keyType, keyColumnType, keyEnumType, embeddableKeyColumns);
         }
     }
 }

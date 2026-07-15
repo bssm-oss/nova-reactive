@@ -2932,26 +2932,45 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * 서브클래스에 선언된 {@link AssociationOverride}(반복 애너테이션, 컨테이너 {@code @AssociationOverrides})를
-     * 읽어, {@code @MappedSuperclass}에서 상속한 이름이 일치하는 owning to-one({@code @ManyToOne}/owning
-     * {@code @OneToOne}) property의 FK 컬럼명을 재지정한다. 관계 property는 상속 필드 스캔으로 이미
-     * {@code properties}에 조립돼 있으므로, {@code createManyToOneProperty} 본문을 건드리지 않고 조립된
-     * property를 {@link PersistentProperty#withColumnName(String)}로 교체하는 post-processing이다.
+     * concrete 엔티티 자신뿐 아니라 매핑에 기여하는 조상({@code @MappedSuperclass} / 상속 상위 {@code @Entity})에
+     * 선언된 {@link AssociationOverride}(반복 애너테이션, 컨테이너 {@code @AssociationOverrides})까지 계층을
+     * walk하여 수집한 뒤, {@code @MappedSuperclass}에서 상속한 이름이 일치하는 owning
+     * to-one({@code @ManyToOne}/owning {@code @OneToOne}) property의 FK 컬럼명을 재지정한다. 관계 property는
+     * 상속 필드 스캔으로 이미 {@code properties}에 조립돼 있으므로, {@code createManyToOneProperty} 본문을
+     * 건드리지 않고 조립된 property를 {@link PersistentProperty#withColumnName(String)}로 교체하는
+     * post-processing이다.
+     *
+     * <p>우선순위: 같은 {@code name}에 대해 더 파생된(서브클래스) 선언이 상위(중간 {@code @MappedSuperclass} 또는
+     * 상속 상위 {@code @Entity}) 선언을 override한다. entityType부터 위로 올라가며 most-derived-first로 수집하고
+     * {@code putIfAbsent}로 먼저 본(더 하위) 선언을 남긴다.
      *
      * <p>fail-fast: override가 존재하지 않는 property를 지목하거나 owning to-one이 아닌 property를 지목하면,
      * 또는 embedded association(dot 표기, 미지원)이나 다중/공백 join 컬럼을 지정하면 명확한 예외를 던진다.
      */
     private void applyAssociationOverrides(Class<?> entityType, List<PersistentProperty> properties) {
-        AssociationOverride[] overrides = entityType.getAnnotationsByType(AssociationOverride.class);
-        if (overrides.length == 0) {
+        // entityType 자신 + 매핑 기여 조상(@MappedSuperclass / 상속 상위 @Entity)을 most-derived-first로 walk한다.
+        // 같은 name 충돌 시 먼저 본(더 하위) 선언이 이기도록 putIfAbsent로 수집한다.
+        Map<String, AssociationOverride> collected = new LinkedHashMap<>();
+        Class<?> current = entityType;
+        while (current != null && current != Object.class
+                && (current == entityType
+                || current.isAnnotationPresent(MappedSuperclass.class)
+                || current.isAnnotationPresent(Entity.class))) {
+            for (AssociationOverride override : current.getDeclaredAnnotationsByType(AssociationOverride.class)) {
+                String name = override.name();
+                if (name == null || name.isBlank()) {
+                    throw new IllegalArgumentException(
+                            current.getName() + " declares an @AssociationOverride with a blank name");
+                }
+                collected.putIfAbsent(name, override);
+            }
+            current = current.getSuperclass();
+        }
+        if (collected.isEmpty()) {
             return;
         }
-        for (AssociationOverride override : overrides) {
+        for (AssociationOverride override : collected.values()) {
             String name = override.name();
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException(
-                        entityType.getName() + " declares an @AssociationOverride with a blank name");
-            }
             // embedded association override(예: name="address.country")는 dot 표기를 쓴다. Nova는
             // embedded 안의 association을 매핑하지 않으므로 조용히 무시하지 않고 명확히 거부한다.
             if (name.contains(".")) {
@@ -3750,6 +3769,18 @@ public final class EntityMetadataFactory {
         if (mapKey == null) {
             return;
         }
+        if (mapKey.embeddableKey()) {
+            // @Embeddable(다중 컬럼) key: 각 펼친 key 컬럼이 owner FK나 값 컬럼과 충돌하는지 개별 검증한다.
+            for (ElementCollectionInfo.EmbeddableColumn keyColumn : mapKey.embeddableKeyColumns()) {
+                String keyColumnName = keyColumn.columnName();
+                if (keyColumnName.equals(ownerForeignKeyColumn) || valueColumns.contains(keyColumnName)) {
+                    throw new IllegalArgumentException(
+                            location + " @MapKeyClass @Embeddable key column '" + keyColumnName
+                                    + "' collides with another collection table column");
+                }
+            }
+            return;
+        }
         String keyColumnName = mapKey.keyColumn();
         if (keyColumnName.equals(ownerForeignKeyColumn) || valueColumns.contains(keyColumnName)) {
             throw new IllegalArgumentException(
@@ -3824,7 +3855,9 @@ public final class EntityMetadataFactory {
      * {@code @ElementCollection Map}의 key 매핑({@link ElementCollectionInfo.MapKeyInfo})을 해석한다.
      * <ul>
      *   <li>{@code @MapKey}(엔티티 property를 key로) — v1 미지원, fail-fast 거부.</li>
-     *   <li>{@code @Embeddable} key 타입 — v1 미지원, fail-fast 거부.</li>
+     *   <li>{@code @MapKeyClass}가 가리키는 {@code @Embeddable} key 타입 — key를 다중 컬럼으로 펼쳐 저장한다
+     *       ({@link #expandEmbeddableMapKeyColumns}).</li>
+     *   <li>{@code @MapKeyClass}가 가리키는 entity key 클래스 — v1 미지원, fail-fast 거부(대상 로드 필요).</li>
      *   <li>enum key — {@code @MapKeyEnumerated}로 STRING/ORDINAL 결정(미지정 시 JPA 기본 ORDINAL).</li>
      *   <li>temporal key({@code java.util.Date}/{@code Calendar}) — {@code @MapKeyTemporal}(TemporalType)로 저장
      *       정밀도(DATE/TIME/TIMESTAMP)를 정하고 {@code TemporalAttributeConverter}로 java.time 저장 표현에 왕복.
@@ -3842,9 +3875,18 @@ public final class EntityMetadataFactory {
         }
         Class<?> keyType = resolveMapKeyType(entityType, field, location);
         if (keyType.isAnnotationPresent(Embeddable.class)) {
+            // @MapKeyClass가 @Embeddable를 가리키면 key를 다중 컬럼으로 펼쳐 저장한다. 펼침 규칙(단순 필드만,
+            // @Id/관계/중첩 @Embedded/상속 금지)은 @Embeddable value 원소 펼침과 동일하게 재사용한다.
+            List<ElementCollectionInfo.EmbeddableColumn> keyColumns =
+                    expandEmbeddableMapKeyColumns(keyType, field, location);
+            return ElementCollectionInfo.MapKeyInfo.embeddable(keyType, keyColumns);
+        }
+        if (keyType.isAnnotationPresent(Entity.class)) {
+            // entity key 클래스는 key 컬럼이 대상 엔티티의 식별자 FK이고 hydration이 대상 로드를 요구한다 —
+            // v1 범위 밖이라 명확히 거부한다(@Embeddable key를 우선 지원).
             throw new IllegalArgumentException(
-                    location + " @ElementCollection Map with an @Embeddable key type " + keyType.getName()
-                            + " is not supported; use a basic or enum map key");
+                    location + " @MapKeyClass naming an entity key class " + keyType.getName()
+                            + " is not yet supported; use an @Embeddable, basic, or enum map key");
         }
         MapKeyColumn mapKeyColumn = field.getAnnotation(MapKeyColumn.class);
         String keyColumnName = mapKeyColumn != null && !mapKeyColumn.name().isBlank()
@@ -3931,8 +3973,13 @@ public final class EntityMetadataFactory {
                             + "); inherited fields would be silently dropped from the collection table");
         }
         // 이 @ElementCollection 필드의 @AttributeOverride(name=field, column=@Column(name=...))를 모은다.
+        // "key." 접두사 override는 map key(@Embeddable key) 컬럼용이므로 value 확장에서는 skip한다(키 확장부가
+        // 처리한다) — 그러지 않으면 유효한 key override가 value 컴포넌트 필드에 안 맞아 fail-fast로 오거부된다.
         Map<String, String> columnOverrides = new java.util.HashMap<>();
         for (AttributeOverride override : collectionField.getAnnotationsByType(AttributeOverride.class)) {
+            if (override.name().startsWith("key.")) {
+                continue;
+            }
             columnOverrides.put(override.name(), override.column().name());
         }
         // 오타/존재하지 않는 필드를 가리키는 @AttributeOverride는 조용히 무시되면 의도한 컬럼명이 적용되지
@@ -4010,6 +4057,109 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     location + " @ElementCollection of @Embeddable " + elementType.getName()
                             + " has no persistent fields to map as collection columns");
+        }
+        return columns;
+    }
+
+    /**
+     * {@code @MapKeyClass}가 가리키는 {@code @Embeddable} map key 타입을 collection table의 key 컬럼들로 펼친다.
+     * 각 영속 필드 1개당 컬럼 1개를 만들며, 컬럼 이름은 {@code @AttributeOverride(name="key.<field>", column=@Column(name=...))}
+     * → {@code @Column(name=...)} → naming strategy 순으로 정한다({@code key.} 접두사는 JPA map key override 규약이라
+     * value 펼침 override와 구분된다). v1은 평평한 {@code @Embeddable}만 지원하므로 중첩 {@code @Embedded}/{@code @EmbeddedId},
+     * {@code @Id}, 관계 어노테이션, 상속 계층, entity-level 마커를 가진 key 컴포넌트는 fail-fast로 거부한다. key 컬럼
+     * 사이의 중복 이름도 거부한다(owner FK/value 컬럼과의 충돌은 {@link #rejectMapKeyCollision}이 별도 검증).
+     */
+    private List<ElementCollectionInfo.EmbeddableColumn> expandEmbeddableMapKeyColumns(
+            Class<?> keyType, Field collectionField, String location) {
+        if (hasIdAnnotatedField(keyType)) {
+            throw new IllegalArgumentException(
+                    location + " @MapKeyClass @Embeddable key " + keyType.getName()
+                            + " must not declare @Id-annotated fields");
+        }
+        Class<?> keySuperclass = keyType.getSuperclass();
+        if (keySuperclass != null && keySuperclass != Object.class) {
+            throw new IllegalArgumentException(
+                    location + " @MapKeyClass @Embeddable key " + keyType.getName()
+                            + " must not extend a superclass (" + keySuperclass.getName()
+                            + "); inherited fields would be silently dropped from the key columns");
+        }
+        // 이 컬렉션 필드의 @AttributeOverride 중 "key." 접두사를 가진 것만 map key 컬럼 override로 모은다.
+        Map<String, String> keyOverrides = new java.util.HashMap<>();
+        for (AttributeOverride override : collectionField.getAnnotationsByType(AttributeOverride.class)) {
+            if (override.name().startsWith("key.")) {
+                keyOverrides.put(override.name().substring("key.".length()), override.column().name());
+            }
+        }
+        java.util.Set<String> persistableFieldNames = new java.util.HashSet<>();
+        for (Field subField : keyType.getDeclaredFields()) {
+            if (!isNotPersistable(subField)) {
+                persistableFieldNames.add(subField.getName());
+            }
+        }
+        for (String overrideName : keyOverrides.keySet()) {
+            if (!persistableFieldNames.contains(overrideName)) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass @Embeddable key " + keyType.getName()
+                                + " has @AttributeOverride(name=\"key." + overrideName
+                                + "\") that does not match any persistent key component field");
+            }
+        }
+        List<ElementCollectionInfo.EmbeddableColumn> columns = new ArrayList<>();
+        java.util.Set<String> seenColumnNames = new java.util.HashSet<>();
+        for (Field subField : keyType.getDeclaredFields()) {
+            if (isNotPersistable(subField)) {
+                continue;
+            }
+            if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass @Embeddable key " + keyType.getName()
+                                + " component " + subField.getName()
+                                + " must be a simple field; nested @Embedded is not supported");
+            }
+            if (subField.isAnnotationPresent(Id.class)
+                    || subField.isAnnotationPresent(OneToMany.class)
+                    || subField.isAnnotationPresent(ManyToOne.class)
+                    || subField.isAnnotationPresent(OneToOne.class)
+                    || subField.isAnnotationPresent(ManyToMany.class)
+                    || subField.isAnnotationPresent(ElementCollection.class)) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass @Embeddable key " + keyType.getName()
+                                + " component " + subField.getName()
+                                + " must be a simple value field (no @Id/relationship/@ElementCollection)");
+            }
+            if (subField.isAnnotationPresent(Version.class)
+                    || subField.isAnnotationPresent(SoftDelete.class)
+                    || subField.isAnnotationPresent(CreatedAt.class)
+                    || subField.isAnnotationPresent(UpdatedAt.class)) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass @Embeddable key " + keyType.getName()
+                                + " component " + subField.getName()
+                                + " must not declare @Version/@SoftDelete/@CreatedAt/@UpdatedAt");
+            }
+            String overridden = keyOverrides.get(subField.getName());
+            Column column = subField.getAnnotation(Column.class);
+            String columnName;
+            if (overridden != null && !overridden.isBlank()) {
+                columnName = overridden;
+            } else if (column != null && !column.name().isBlank()) {
+                columnName = column.name();
+            } else {
+                columnName = namingStrategy.columnName(subField.getName());
+            }
+            if (!seenColumnNames.add(columnName)) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass @Embeddable key " + keyType.getName()
+                                + " produces duplicate key column '" + columnName
+                                + "'; use @AttributeOverride(name=\"key.<field>\") or @Column to disambiguate");
+            }
+            subField.setAccessible(true);
+            columns.add(new ElementCollectionInfo.EmbeddableColumn(
+                    subField, columnName, wrapPrimitiveType(subField.getType())));
+        }
+        if (columns.isEmpty()) {
+            throw new IllegalArgumentException(
+                    location + " @MapKeyClass @Embeddable key " + keyType.getName()
+                            + " has no persistent fields to map as key columns");
         }
         return columns;
     }

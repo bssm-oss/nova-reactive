@@ -347,6 +347,87 @@ class JpqlSqlBuilderTest {
         assertTrue(ex.getMessage().contains("composite-key"));
     }
 
+    @Test
+    void terminalLessThanCompositeKeyToOneExpandsLexicographically() {
+        // (p_k1, p_k2) < (ref) → (p_k1 < ?) or (p_k1 = ? and p_k2 < ?). 컴포넌트 순서는 canonical FK 순서.
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent < :p");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where "
+                        + "((c.\"p_k1\" < ?) or (c.\"p_k1\" = ? and c.\"p_k2\" < ?))",
+                t.sql());
+        assertEquals(3, t.bindings().size());
+        assertEquals("p_k1", assertComponent(t.bindings().get(0)).column().columnName());
+        assertEquals("p_k1", assertComponent(t.bindings().get(1)).column().columnName());
+        assertEquals("p_k2", assertComponent(t.bindings().get(2)).column().columnName());
+    }
+
+    @Test
+    void terminalLessOrEqualCompositeKeyToOneMakesLastComponentNonStrict() {
+        // <= 는 마지막 컴포넌트만 non-strict(<=)로 두어 튜플 동등 케이스를 포함한다.
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent <= :p");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where "
+                        + "((c.\"p_k1\" < ?) or (c.\"p_k1\" = ? and c.\"p_k2\" <= ?))",
+                t.sql());
+        assertEquals(3, t.bindings().size());
+    }
+
+    @Test
+    void terminalGreaterThanCompositeKeyToOneExpandsLexicographically() {
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent > :p");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where "
+                        + "((c.\"p_k1\" > ?) or (c.\"p_k1\" = ? and c.\"p_k2\" > ?))",
+                t.sql());
+    }
+
+    @Test
+    void reversedOperandOrderFlipsCompositeOrdering() {
+        // :p > c.parent 는 c.parent < :p 와 동치이므로 strict-less 전개로 렌더돼야 한다.
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE :p > c.parent");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where "
+                        + "((c.\"p_k1\" < ?) or (c.\"p_k1\" = ? and c.\"p_k2\" < ?))",
+                t.sql());
+    }
+
+    @Test
+    void terminalBetweenCompositeKeyToOneExpandsToGreaterEqualAndLessEqual() {
+        TranslatedSql t = compositeScalar(
+                "SELECT c.id FROM CompositeJoinChild c WHERE c.parent BETWEEN :lo AND :hi");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where "
+                        + "(((c.\"p_k1\" > ?) or (c.\"p_k1\" = ? and c.\"p_k2\" >= ?)) and "
+                        + "((c.\"p_k1\" < ?) or (c.\"p_k1\" = ? and c.\"p_k2\" <= ?)))",
+                t.sql());
+        assertEquals(6, t.bindings().size());
+        assertEquals(new JpqlBinding.Named("lo"), assertComponent(t.bindings().get(0)).source());
+        assertEquals(new JpqlBinding.Named("hi"), assertComponent(t.bindings().get(3)).source());
+    }
+
+    @Test
+    void terminalInListCompositeKeyToOneExpandsToOrOfAnds() {
+        TranslatedSql t = compositeScalar(
+                "SELECT c.id FROM CompositeJoinChild c WHERE c.parent IN (:a, :b)");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where "
+                        + "((c.\"p_k1\" = ? and c.\"p_k2\" = ?) or (c.\"p_k1\" = ? and c.\"p_k2\" = ?))",
+                t.sql());
+        assertEquals(4, t.bindings().size());
+        assertEquals(new JpqlBinding.Named("a"), assertComponent(t.bindings().get(0)).source());
+        assertEquals(new JpqlBinding.Named("b"), assertComponent(t.bindings().get(2)).source());
+    }
+
+    @Test
+    void terminalNotInCompositeKeyToOneNegatesOrOfAnds() {
+        TranslatedSql t = compositeScalar(
+                "SELECT c.id FROM CompositeJoinChild c WHERE c.parent NOT IN (:a)");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c where "
+                        + "not ((c.\"p_k1\" = ? and c.\"p_k2\" = ?))",
+                t.sql());
+    }
+
     // ------------------------------------------------------------------------------------
     // TYPE() / TREAT() polymorphism
     // ------------------------------------------------------------------------------------

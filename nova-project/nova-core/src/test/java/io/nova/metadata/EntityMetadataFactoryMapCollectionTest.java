@@ -1,5 +1,6 @@
 package io.nova.metadata;
 
+import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Embeddable;
@@ -100,10 +101,71 @@ class EntityMetadataFactoryMapCollectionTest {
     }
 
     @Test
-    void rejectsEmbeddableKey() {
+    void mapsEmbeddableKeyToMultipleColumns() {
+        ElementCollectionInfo info = info(EmbeddableKeyMap.class, "byLeg");
+
+        assertTrue(info.map());
+        assertTrue(info.mapKey().embeddableKey());
+        assertEquals(Leg.class, info.mapKey().keyType());
+        assertEquals(2, info.mapKey().embeddableKeyColumns().size());
+        assertEquals("origin", info.mapKey().embeddableKeyColumns().get(0).columnName());
+        assertEquals("dest", info.mapKey().embeddableKeyColumns().get(1).columnName());
+        // 단일 컬럼 key 필드는 embeddable key에서 의미가 없다.
+        assertEquals("", info.mapKey().keyColumn());
+        assertNull(info.mapKey().keyEnumType());
+        // value는 기본 타입(String) 단일 값 컬럼.
+        assertFalse(info.embeddable());
+        assertEquals("by_leg", info.valueColumn());
+        assertEquals(String.class, info.valueType());
+    }
+
+    @Test
+    void honorsAttributeOverrideOnEmbeddableKeyColumns() {
+        ElementCollectionInfo info = info(OverriddenEmbeddableKeyMap.class, "byLeg");
+
+        assertTrue(info.mapKey().embeddableKey());
+        assertEquals("from_col", info.mapKey().embeddableKeyColumns().get(0).columnName());
+        assertEquals("to_col", info.mapKey().embeddableKeyColumns().get(1).columnName());
+    }
+
+    @Test
+    void mapsEmbeddableKeyWithEmbeddableValue() {
+        ElementCollectionInfo info = info(EmbeddableKeyAndValueMap.class, "routes");
+
+        assertTrue(info.map());
+        assertTrue(info.mapKey().embeddableKey());
+        assertEquals(2, info.mapKey().embeddableKeyColumns().size());
+        assertTrue(info.embeddable());
+        assertEquals(2, info.embeddableColumns().size());
+    }
+
+    @Test
+    void overridesEmbeddableKeyColumnsWithEmbeddableValue() {
+        ElementCollectionInfo info = info(OverriddenEmbeddableKeyAndValueMap.class, "routes");
+
+        // key.* override는 key 컬럼에만 적용되고 value 확장 루프에는 걸리지 않아야 한다.
+        assertTrue(info.mapKey().embeddableKey());
+        assertEquals("from_col", info.mapKey().embeddableKeyColumns().get(0).columnName());
+        assertEquals("to_col", info.mapKey().embeddableKeyColumns().get(1).columnName());
+        // value 컬럼은 embeddable value의 기본 규약대로(override 미적용) 유지되고 key 컬럼과 충돌하지 않는다.
+        assertTrue(info.embeddable());
+        assertEquals(2, info.embeddableColumns().size());
+        assertEquals("amount", info.embeddableColumns().get(0).columnName());
+        assertEquals("currency", info.embeddableColumns().get(1).columnName());
+    }
+
+    @Test
+    void rejectsEntityKey() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(EmbeddableKeyMap.class));
-        assertTrue(error.getMessage().contains("@Embeddable key type"));
+                () -> factory.getEntityMetadata(EntityKeyMap.class));
+        assertTrue(error.getMessage().contains("naming an entity key class"));
+    }
+
+    @Test
+    void rejectsEmbeddableKeyColumnCollidingWithValueColumn() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CollidingEmbeddableKeyMap.class));
+        assertTrue(error.getMessage().contains("collides with another collection table column"));
     }
 
     @Test
@@ -273,6 +335,19 @@ class EntityMetadataFactoryMapCollectionTest {
         Map<String, Leg> legs;
     }
 
+    @Embeddable
+    static class Fare {
+        int amount;
+        String currency;
+    }
+
+    @Entity
+    @Table(name = "key_entity")
+    static class KeyEntity {
+        @Id
+        Long id;
+    }
+
     @Entity
     @Table(name = "embeddable_key_map")
     static class EmbeddableKeyMap {
@@ -280,6 +355,64 @@ class EntityMetadataFactoryMapCollectionTest {
         Long id;
 
         @ElementCollection
+        Map<Leg, String> byLeg;
+    }
+
+    @Entity
+    @Table(name = "overridden_embeddable_key_map")
+    static class OverriddenEmbeddableKeyMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @AttributeOverride(name = "key.origin", column = @Column(name = "from_col"))
+        @AttributeOverride(name = "key.dest", column = @Column(name = "to_col"))
+        Map<Leg, String> byLeg;
+    }
+
+    @Entity
+    @Table(name = "embeddable_key_and_value_map")
+    static class EmbeddableKeyAndValueMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        Map<Leg, Fare> routes;
+    }
+
+    @Entity
+    @Table(name = "overridden_embeddable_key_and_value_map")
+    static class OverriddenEmbeddableKeyAndValueMap {
+        @Id
+        Long id;
+
+        // key.* override는 @Embeddable key(Leg) 컬럼용, value(Fare)는 기본 규약을 그대로 쓴다.
+        @ElementCollection
+        @AttributeOverride(name = "key.origin", column = @Column(name = "from_col"))
+        @AttributeOverride(name = "key.dest", column = @Column(name = "to_col"))
+        Map<Leg, Fare> routes;
+    }
+
+    @Entity
+    @Table(name = "entity_key_map")
+    static class EntityKeyMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyClass(KeyEntity.class)
+        Map<KeyEntity, String> byEntity;
+    }
+
+    @Entity
+    @Table(name = "colliding_embeddable_key_map")
+    static class CollidingEmbeddableKeyMap {
+        @Id
+        Long id;
+
+        // 값 컬럼 이름이 embeddable key 컬럼(origin)과 충돌한다.
+        @ElementCollection
+        @Column(name = "origin")
         Map<Leg, String> byLeg;
     }
 

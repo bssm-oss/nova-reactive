@@ -95,6 +95,35 @@ class AssociationOverrideH2IntegrationTest {
         }).verifyComplete();
     }
 
+    @Test
+    void intermediateMappedSuperclassOverrideIsEmittedInDdlAndRoundTripsFk() {
+        // country FK 컬럼 재지정을 concrete 엔티티가 아니라 중간 @MappedSuperclass(IntermediateBase)가 선언한다.
+        // 계층 walk가 그 override를 적용해야 mid_country_id 컬럼이 DDL/DML에 일관되게 쓰인다.
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        AtomicLong countryId = new AtomicLong();
+
+        StepVerifier.create(
+                schema.create(Country.class)
+                        .then(schema.create(MidCity.class))
+                        .then(operations.save(new Country("US")))
+                        .flatMap(savedCountry -> {
+                            countryId.set(savedCountry.getId());
+                            return operations.save(new MidCity("Austin", 960000, savedCountry));
+                        })
+                        .flatMap(savedCity ->
+                                operations.queryNativeOne(
+                                        NativeQuery.of(
+                                                "select \"mid_country_id\" as \"fk\" from \"assoc_mid_city_it\""
+                                                        + " where \"id\" = " + savedCity.getId()),
+                                        row -> row.get("fk", Long.class)))
+        ).assertNext(fk -> assertEquals(countryId.get(), fk,
+                "FK 값은 중간 @MappedSuperclass의 @AssociationOverride로 재지정된 mid_country_id 컬럼에 저장되어야 한다"))
+                .verifyComplete();
+    }
+
     // --- fixtures -----------------------------------------------------------
 
     @Entity
@@ -161,6 +190,40 @@ class AssociationOverrideH2IntegrationTest {
         }
 
         public City(String label, Integer population, Country country) {
+            init(label, country);
+            this.population = population;
+        }
+
+        public Integer getPopulation() {
+            return population;
+        }
+    }
+
+    /**
+     * 중간 {@code @MappedSuperclass}가 상위 {@code @MappedSuperclass}({@link RegionBase})에서 상속한
+     * {@code country} 관계의 join 컬럼을 재지정한다. concrete 엔티티는 override를 선언하지 않는다.
+     */
+    @MappedSuperclass
+    @AssociationOverride(name = "country", joinColumns = @JoinColumn(name = "mid_country_id"))
+    public static abstract class IntermediateBase extends RegionBase {
+        @Column(name = "district")
+        private String district;
+
+        public String getDistrict() {
+            return district;
+        }
+    }
+
+    @Entity
+    @Table(name = "assoc_mid_city_it")
+    public static class MidCity extends IntermediateBase {
+        @Column(name = "population")
+        private Integer population;
+
+        public MidCity() {
+        }
+
+        public MidCity(String label, Integer population, Country country) {
             init(label, country);
             this.population = population;
         }

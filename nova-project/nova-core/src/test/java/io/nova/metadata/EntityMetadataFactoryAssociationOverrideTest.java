@@ -2,10 +2,12 @@ package io.nova.metadata;
 
 import io.nova.support.fixtures.FixtureEntities.AssocCity;
 import io.nova.support.fixtures.FixtureEntities.AssocCountry;
+import io.nova.support.fixtures.FixtureEntities.AssocMidCity;
 import io.nova.support.fixtures.FixtureEntities.AssocOverrideColumnCollision;
 import io.nova.support.fixtures.FixtureEntities.AssocOverrideEmbeddedPath;
 import io.nova.support.fixtures.FixtureEntities.AssocOverrideScalarTarget;
 import io.nova.support.fixtures.FixtureEntities.AssocOverrideUnknownName;
+import io.nova.support.fixtures.FixtureEntities.AssocSubCity;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -43,6 +45,52 @@ class EntityMetadataFactoryAssociationOverrideTest {
                 .anyMatch(p -> p.columnName().equals("region_country_id"));
         assertTrue(hasRemapped, "재지정된 컬럼명이 매핑돼야 한다");
         assertTrue(!hasOriginal, "원래 상속 FK 컬럼명은 더 이상 매핑되지 않아야 한다");
+    }
+
+    @Test
+    void associationOverrideOnIntermediateMappedSuperclassRemapsInheritedJoinColumn() {
+        // country 관계는 최상위 @MappedSuperclass(AssocRegionBase)에서 상속했고, 중간
+        // @MappedSuperclass(AssocIntermediateBase)가 그 join 컬럼을 재지정한다. concrete 엔티티는 override를
+        // 선언하지 않으므로, 계층 walk가 중간 @MappedSuperclass의 override를 적용해야 한다.
+        EntityMetadata<AssocMidCity> metadata = factory.getEntityMetadata(AssocMidCity.class);
+
+        List<PersistentProperty> relations = metadata.manyToOneProperties();
+        assertEquals(1, relations.size());
+        PersistentProperty country = relations.get(0);
+        assertEquals("country", country.propertyName());
+        assertEquals("mid_country_id", country.columnName(),
+                "중간 @MappedSuperclass의 @AssociationOverride가 상속 FK 컬럼명을 재지정해야 한다");
+        assertSame(AssocCountry.class, country.manyToOneTargetType());
+
+        boolean hasRemapped = metadata.columnMappedProperties().stream()
+                .anyMatch(p -> p.columnName().equals("mid_country_id"));
+        boolean hasOriginal = metadata.columnMappedProperties().stream()
+                .anyMatch(p -> p.columnName().equals("region_country_id"));
+        assertTrue(hasRemapped, "중간 @MappedSuperclass가 재지정한 컬럼명이 매핑돼야 한다");
+        assertTrue(!hasOriginal, "원래 상속 FK 컬럼명은 더 이상 매핑되지 않아야 한다");
+    }
+
+    @Test
+    void subclassAssociationOverrideWinsOverIntermediateMappedSuperclass() {
+        // 중간 @MappedSuperclass(AssocIntermediateBase)는 country를 mid_country_id로 재지정하지만, concrete
+        // 서브클래스(AssocSubCity)가 같은 name을 sub_country_id로 다시 재지정한다 — 더 파생된 선언이 이겨야 한다.
+        EntityMetadata<AssocSubCity> metadata = factory.getEntityMetadata(AssocSubCity.class);
+
+        List<PersistentProperty> relations = metadata.manyToOneProperties();
+        assertEquals(1, relations.size());
+        PersistentProperty country = relations.get(0);
+        assertEquals("sub_country_id", country.columnName(),
+                "서브클래스 @AssociationOverride가 중간 @MappedSuperclass 선언을 이겨야 한다");
+
+        boolean hasSub = metadata.columnMappedProperties().stream()
+                .anyMatch(p -> p.columnName().equals("sub_country_id"));
+        boolean hasMid = metadata.columnMappedProperties().stream()
+                .anyMatch(p -> p.columnName().equals("mid_country_id"));
+        boolean hasOriginal = metadata.columnMappedProperties().stream()
+                .anyMatch(p -> p.columnName().equals("region_country_id"));
+        assertTrue(hasSub, "서브클래스가 재지정한 컬럼명이 매핑돼야 한다");
+        assertTrue(!hasMid, "패배한 중간 @MappedSuperclass 컬럼명은 매핑되지 않아야 한다");
+        assertTrue(!hasOriginal, "원래 상속 FK 컬럼명은 매핑되지 않아야 한다");
     }
 
     @Test

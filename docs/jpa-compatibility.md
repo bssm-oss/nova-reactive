@@ -61,11 +61,11 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@ManyToMany` (owning + inverse, `cascade`) | ✅ | Join-table row diffing; owning + inverse delete cleanup |
 | `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK) |
 | `@ElementCollection` | ✅ | Basic / enum / `UUID` elements, `@Embeddable` elements, `Map`, `@OrderColumn`, `List` |
-| `@MapKeyColumn` / `@MapKeyEnumerated` / `@MapKeyTemporal` / `@MapKeyClass` | ✅ | `@MapKeyClass` restricted to basic/enum key classes |
+| `@MapKeyColumn` / `@MapKeyEnumerated` / `@MapKeyTemporal` / `@MapKeyClass` | ✅ | `@MapKeyClass` supports basic / enum / `@Embeddable` key classes (multi-column key, `@AttributeOverride("key.…")`); entity key classes fail-fast |
 | `@MapsId` (whole `@Id`) | ✅ | |
 | `@MapsId("component")` (one component of a composite `@Id`) | ✅ | Associated entity must have a single `@Id` |
 | `@JoinColumn` / `@JoinColumns` / `@ForeignKey` | ✅ | Composite FK, constraint-name length bounds, idempotent `ddl-auto=UPDATE` |
-| `@AssociationOverride` | ✅ | Remap the join column of an inherited to-one |
+| `@AssociationOverride` | ✅ | Remap the join column of an inherited to-one; overrides declared on an intermediate `@MappedSuperclass` are honored (most-derived declaration wins) |
 | `cascade` on to-one (`PERSIST` / `MERGE` / `REMOVE`) | ✅ | Cycle-guarded |
 
 ## Fetching
@@ -73,7 +73,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | Automatic relationship hydration (`FetchGroup`) | ✅ | Batched (one IN-query per association, no N+1) |
-| Composite-key to-one eager hydration | ✅ | Batched via OR-of-ANDs predicate |
+| Composite-key to-one eager hydration | ✅ | Batched via OR-of-ANDs predicate; hydrated as a leaf at nested `EntityGraph` subgraph depth too |
 | `@NamedEntityGraph` / `EntityGraph` + JPQL `JOIN FETCH` | ✅ | Always-eager (graph ⊇ default) |
 | Nested `@NamedSubgraph` (depth > 1) | ✅ | Recursive plan tree, per-level reactive batching; cycle fail-fast |
 | `fetch = LAZY` | ✅ | Accepted (Nova batches rather than proxies) |
@@ -87,6 +87,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | JPQL / Criteria `TREAT()` / `TYPE()` polymorphism | ✅ | `SINGLE_TABLE`; discriminator-aware. Subquery/`JOINED` positions fail-fast |
 | Criteria API (`jakarta.persistence.criteria`) | ⟳ | Joins (M2O/O2O/O2M/inverse), subqueries (`EXISTS`/`IN`/correlate) |
 | Joins over a **composite-key** to-one target | ✅ | Multi-column `ON` (`a.c1=b.c1 AND a.c2=b.c2`) |
+| Composite-key to-one in `WHERE` (`=` / `IS NULL`, ordering `< <= > >=`, `IN`, `BETWEEN`) | ✅ | Scalar JPQL + Criteria; lexicographic multi-column expansion, single canonical component order. Projection / `LIKE` / entity-returning-JPQL `WHERE` fail-fast |
 | `@NamedQuery` / `@NamedNativeQuery` | ✅ | Per-entity registry, duplicate-name fail-fast |
 | `@SqlResultSetMapping` (`@EntityResult` / `@FieldResult` / `@ConstructorResult` / `@ColumnResult`) | ✅ | Native-read-then-coerce (dialect-independent) |
 | `@StoredProcedureQuery` / `@NamedStoredProcedureQuery` | ⟳ | `IN` params + result sets. `OUT`/`INOUT`/`REF_CURSOR` fail-fast on r2dbc-h2 |
@@ -114,12 +115,14 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 
 These declare cleanly but are rejected with a message until implemented — Nova never mis-renders them:
 
-- Composite-key to-one in a **projection / ordering-comparison / `IN` / `LIKE` / `BETWEEN`** position
-  (`SELECT c.parent`, `WHERE c.parent < :x`, …). Multi-column **joins** and equality/`IS NULL` are supported.
-- A composite-key to-one **leaf inside a nested `EntityGraph`** subgraph (flat depth-1 is supported).
+- Composite-key to-one in a **projection** (`SELECT c.parent`) or **`LIKE`** position, and in an
+  **entity-returning JPQL `WHERE`** predicate (`SELECT c FROM C c WHERE c.parent < :x`). Use a scalar
+  projection (`SELECT c.id … WHERE c.parent < :x`) or the Criteria API instead. `WHERE`
+  equality/`IS NULL`/ordering/`IN`/`BETWEEN` and multi-column **joins** are supported.
+- A deeper subgraph declared **under** a composite-key to-one leaf inside a nested `EntityGraph`
+  (the composite leaf itself is now hydrated at any depth).
 - Stored-procedure `OUT` / `INOUT` / `REF_CURSOR` parameters (r2dbc-h2 driver limitation).
-- `@MapKeyClass` naming an `@Embeddable` / entity key class.
-- `@AssociationOverride` on an intermediate `@MappedSuperclass` (subclass-declared overrides work).
+- `@MapKeyClass` naming an **entity** key class (`@Embeddable` key classes are supported).
 - In-place mutation of a *loaded* referenced entity's `@Id` (JPA-forbidden) is not change-tracked.
 
 > Composite `@Id` components should be round-trip-stable types (integers, `String`, `UUID`, enums).
