@@ -141,18 +141,25 @@ public final class DerivedQueryParser {
             }
         }
 
+        // Pageable이 있는데 반환 타입이 페이징 형태로 해석되지 않으면 parse-time fail-fast. Flux<T>는
+        // FLUX, Mono<Page<T>>/Mono<Slice<T>>는 PAGE/SLICE로 이미 위에서 통과했으므로, 여기 도달한
+        // hasPageable && NONE 은 단건 Mono<T>뿐 아니라 raw Page<T>/Slice<T>/List<T> 등 non-reactive
+        // 반환까지 포함한다 — 반환 타입 shape와 무관하게 여기서 걸러 dispatch 시점까지 미루지 않는다.
+        if (hasPageable && paging == PagingResult.NONE) {
+            throw new IllegalArgumentException(
+                    "Derived query method '" + name + "' takes a Pageable parameter but its return type is not"
+                            + " pageable — a paged derived query must return Flux<T>, Mono<Page<T>>, or"
+                            + " Mono<Slice<T>>");
+        }
+
         if (subject == Subject.FIND_ALL && paging == PagingResult.NONE
                 && reactor.core.publisher.Mono.class.isAssignableFrom(method.getReturnType())) {
+            // 이 지점에서 hasPageable은 반드시 false다(위 guard가 이미 throw). 즉 순수 Mono<T> 단건 조회.
             if (limit != null) {
                 throw new IllegalArgumentException(
                         "Derived query method '" + name + "' requests top " + limit
                                 + " result(s) but declares a Mono return type — Mono can only carry a single row;"
                                 + " use findFirstBy/findTop1By or change the return type to Flux");
-            }
-            if (hasPageable) {
-                throw new IllegalArgumentException(
-                        "Derived query method '" + name + "' takes a Pageable parameter but returns a single-row"
-                                + " Mono<T> — return Flux<T>, Mono<Page<T>>, or Mono<Slice<T>> for paged results");
             }
             subject = Subject.FIND_ONE;
         }
@@ -291,7 +298,17 @@ public final class DerivedQueryParser {
         Matcher topFirstMatcher = FIND_TOP_FIRST_N.matcher(name);
         if (topFirstMatcher.lookingAt()) {
             String prefix = topFirstMatcher.group(0);
-            int n = Integer.parseInt(topFirstMatcher.group(1));
+            String digits = topFirstMatcher.group(1);
+            int n;
+            try {
+                n = Integer.parseInt(digits);
+            } catch (NumberFormatException overflow) {
+                // int 범위를 넘는 자릿수(예: findTop99999999999By)는 raw NumberFormatException 대신
+                // 다른 fail-fast 케이스와 동일한 IllegalArgumentException으로 감싼다.
+                throw new IllegalArgumentException(
+                        "Derived query method '" + name + "' requests top '" + digits
+                                + "' results, which is not a valid int row count", overflow);
+            }
             if (n == 0) {
                 throw new IllegalArgumentException(
                         "Derived query method '" + name + "' requests top 0 results, which is meaningless");

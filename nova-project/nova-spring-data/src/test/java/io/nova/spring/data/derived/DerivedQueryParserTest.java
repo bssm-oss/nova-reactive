@@ -221,6 +221,23 @@ class DerivedQueryParserTest {
                     () -> parser.tryParse(method("findTop3ByActiveTrue")));
             assertTrue(ex.getMessage().contains("Mono"), () -> "unexpected message: " + ex.getMessage());
         }
+
+        @Test
+        @DisplayName("int 범위를 넘는 findTop<N>은 raw NumberFormatException이 아닌 IllegalArgumentException")
+        void findTopHugeNWrapsNumberFormat() {
+            interface Repo {
+                Flux<Account> findTop99999999999ByActiveTrue();
+            }
+            Method m;
+            try {
+                m = Repo.class.getMethod("findTop99999999999ByActiveTrue");
+            } catch (NoSuchMethodException e) {
+                throw new AssertionError(e);
+            }
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(m));
+            assertTrue(ex.getMessage().contains("valid int"), () -> "unexpected message: " + ex.getMessage());
+        }
     }
 
     @Nested
@@ -357,11 +374,36 @@ class DerivedQueryParserTest {
         }
 
         @Test
-        @DisplayName("단건 Mono<T> + Pageable 조합은 fail-fast")
+        @DisplayName("단건 Mono<T> + Pageable 조합은 parse-time fail-fast (반환타입 non-pageable)")
         void singleMonoWithPageableRejected() {
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                     () -> parser.tryParse(method("findByEmail", String.class, Pageable.class)));
-            assertTrue(ex.getMessage().contains("single-row"), () -> "unexpected: " + ex.getMessage());
+            assertTrue(ex.getMessage().contains("not") && ex.getMessage().contains("pageable"),
+                    () -> "unexpected: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("Mono 래핑 없는 raw Page<T> 반환 + Pageable은 parse-time fail-fast (dispatch까지 미루지 않음)")
+        void nonMonoPageReturnWithPageableRejected() {
+            interface Repo {
+                Page<Account> findByActive(boolean active, Pageable pageable);
+            }
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(repoMethod(Repo.class, "findByActive", boolean.class, Pageable.class)));
+            assertTrue(ex.getMessage().contains("not") && ex.getMessage().contains("pageable"),
+                    () -> "unexpected: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("non-reactive 반환(List<T>) + Pageable도 parse-time fail-fast")
+        void nonReactiveReturnWithPageableRejected() {
+            interface Repo {
+                List<Account> findByActiveTrue(Pageable pageable);
+            }
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(repoMethod(Repo.class, "findByActiveTrue", Pageable.class)));
+            assertTrue(ex.getMessage().contains("not") && ex.getMessage().contains("pageable"),
+                    () -> "unexpected: " + ex.getMessage());
         }
 
         @Test

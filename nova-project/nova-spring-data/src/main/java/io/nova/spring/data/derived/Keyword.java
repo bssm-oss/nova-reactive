@@ -33,6 +33,10 @@ enum Keyword {
     /**
      * suffix 매칭 우선순위. 긴 suffix를 먼저 시도해 prefix 충돌을 피한다
      * (예: {@code GreaterThanEqual}이 {@code GreaterThan}보다 먼저 검사돼야 한다).
+     *
+     * <p>참고: 현재 {@link DerivedQueryParser#matchKeyword}는 잔여 suffix를 {@code equals}로 <b>정확히</b>
+     * 비교하므로 이 정렬은 사실상 cosmetic이다(정확 매칭에서는 순서가 결과를 바꾸지 않는다). 다만 향후
+     * 매칭을 prefix 기반으로 완화하면 이 우선순위가 필수가 되므로, 그 계약을 문서화하는 의미로 유지한다.
      */
     static final List<Keyword> MATCHING_ORDER = Arrays.stream(values())
             .filter(k -> !k.suffixes.isEmpty())
