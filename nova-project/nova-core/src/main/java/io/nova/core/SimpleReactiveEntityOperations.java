@@ -128,6 +128,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private static final String CASCADE_VISITED_KEY = "io.nova.cascade.to-one.visited";
 
+    /**
+     * flush가 진행 중임을 표시하는 Reactor Context 플래그 키. {@link #flush(PersistenceSession)}가 진입 시
+     * 심고, {@link #autoFlushIfSession}이 이 플래그를 만나면 재진입하지 않고 no-op한다. @OneToMany 신규 child의
+     * to-one cascade({@link #persistChildInFlush})가 flush 안에서 예외적으로 public {@link #save(Object)}를
+     * 재귀 호출하므로, 그 재귀 경로가 우연히 auto-flush를 트리거해도 무한 재귀하지 않도록 하는 방어막이다.
+     * {@link #CASCADE_VISITED_KEY}와 동일한 Reactor Context 전파 패턴을 쓴다.
+     */
+    private static final String IN_FLUSH_KEY = "io.nova.core.inFlush";
+
     public SimpleReactiveEntityOperations(
             EntityMetadataFactory metadataFactory,
             Dialect dialect,
@@ -208,10 +217,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             ? cascadeSaveManyToManyTargets(metadata, persisted).then()
                             : reconcileManyToManyLinks(metadata, persisted)
                                     .then(reconcileElementCollections(metadata, persisted));
-                    return collectionSync
-                            .then(cascadeSaveOneToManyChildren(metadata, persisted))
-                            .then(reindexOrderedOneToManyChildren(metadata, persisted))
-                            .thenReturn(persisted);
+                    // 세션 안에서는 @OneToMany child 전파(신규 insert/orphan 정리)와 @OrderColumn 재인덱싱을 save
+                    // 시점에 eager로 하지 않고 flush의 diffOneToMany로 지연한다(S1). 세션 밖은 현행 즉시 eager 그대로.
+                    Mono<Void> oneToManySync = session.isPresent()
+                            ? Mono.empty()
+                            : cascadeSaveOneToManyChildren(metadata, persisted)
+                                    .then(reindexOrderedOneToManyChildren(metadata, persisted));
+                    return collectionSync.then(oneToManySync).thenReturn(persisted);
                 });
             });
         });
@@ -1689,6 +1701,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (session.isEmpty()) {
             return Mono.empty();
         }
+        if (ctx.getOrDefault(IN_FLUSH_KEY, Boolean.FALSE)) {
+            // 중첩 flush 방어: 이미 flush가 진행 중이면(예: @OneToMany 신규 child의 to-one cascade가 flush 안에서
+            // save()를 재귀 호출하는 경로) 재진입하지 않고 no-op한다.
+            return Mono.empty();
+        }
         FlushModeType flushMode = ctx.getOrDefault(FLUSH_MODE_KEY, FlushModeType.AUTO);
         if (flushMode == FlushModeType.COMMIT) {
             return Mono.empty();
@@ -1723,9 +1740,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 return Mono.empty();
             }
             return Flux.fromIterable(new ArrayList<>(session.managedEntries()))
-                    .concatMap(this::flushEntry)
+                    .concatMap(entry -> flushEntry(session, entry))
                     .then();
-        });
+        }).contextWrite(ctx -> ctx.put(IN_FLUSH_KEY, Boolean.TRUE));
     }
 
     /**
@@ -1733,13 +1750,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@code update(entity, fields)}와 동일한 audit(@UpdatedAt)/리스너(@PreUpdate·@PostUpdate)/낙관락(@Version)
      * 코레오그래피로 부분 UPDATE를 발행하고 스냅샷을 갱신한다.
      */
-    private Mono<Void> flushEntry(PersistenceSession.ManagedEntry entry) {
+    private Mono<Void> flushEntry(PersistenceSession session, PersistenceSession.ManagedEntry entry) {
         return Mono.defer(() -> {
             Object entity = entry.entity();
             EntityMetadata<?> metadata = entry.metadata();
             if (entry.dirtyPropertyNames().isEmpty()) {
                 // 스칼라 변경이 없어도 세션에서 지연된 컬렉션(join/collection 테이블)은 flush로 동기화한다.
-                return syncCollections(entry, entity, metadata);
+                return syncCollections(session, entry, entity, metadata);
             }
             try {
                 auditApplier.applyOnUpdate(entity, metadata);
@@ -1794,7 +1811,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return withSecondary.doOnSuccess(ignored -> {
                 listenerInvoker.invokePostUpdate(entity, metadata);
                 entry.refreshSnapshot();
-            }).then(syncCollections(entry, entity, metadata));
+            }).then(syncCollections(session, entry, entity, metadata));
         });
     }
 
@@ -1846,7 +1863,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (session.isEmpty() || owner == null) {
             return;
         }
-        PersistenceSession.ManagedEntry entry = session.get().managedEntry(metadata, owner);
+        PersistenceSession activeSession = session.get();
+        PersistenceSession.ManagedEntry entry = activeSession.managedEntry(metadata, owner);
         if (entry == null) {
             return;
         }
@@ -1854,9 +1872,33 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object collection = readCollectionField(property, owner);
             // null 컬렉션은 hydration이 채우지 않은 경우 — baseline 미설정으로 남겨 full-replace를 피하고 건드리지 않는다.
             if (collection != null) {
+                if (property.oneToMany()) {
+                    // JPA 완전 파리티: 로드된 @OneToMany child를 세션 identity map에 편입해, 잔존 child의 스칼라
+                    // 변경도 자기 ManagedEntry의 dirty diff로 자동 flush되게 한다(child @Id는 로드 행이라 항상 채워짐).
+                    registerLoadedOneToManyChildren(activeSession, property, collection);
+                }
                 entry.putCollectionSnapshot(property.propertyName(), collectionRepresentation(metadata, property, owner));
             }
         }
+    }
+
+    /**
+     * findById/findAll이 hydrate한 @OneToMany 컬렉션의 각 child를 세션 identity map에 편입한다({@link #captureCollectionSnapshots}
+     * 전용 헬퍼). {@code hydrateChildSpec}은 session-agnostic으로 FetchGroup/EntityGraph 경로에서도 공유되므로 거기서
+     * 직접 등록하지 않고, 세션이 실제로 있는 이 자리(findById/findAll의 기본 eager 경로)에서만 편입한다.
+     */
+    private void registerLoadedOneToManyChildren(PersistenceSession session, PersistentProperty property, Object collection) {
+        EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+        for (Object child : (Iterable<?>) collection) {
+            if (child != null) {
+                registerChildOnLoad(session, childMetadata, child);
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private <C> void registerChildOnLoad(PersistenceSession session, EntityMetadata<C> childMetadata, Object child) {
+        session.registerOnLoad(childMetadata, (C) child);
     }
 
     /**
@@ -1865,7 +1907,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * baseline을 갱신한다. {@link #sqlExecutor}만 호출(flush 불변식).
      */
     private Mono<Void> syncCollections(
-            PersistenceSession.ManagedEntry entry, Object entity, EntityMetadata<?> metadata) {
+            PersistenceSession session, PersistenceSession.ManagedEntry entry, Object entity, EntityMetadata<?> metadata) {
         List<PersistentProperty> properties = collectionSyncProperties(metadata);
         if (properties.isEmpty()) {
             return Mono.empty();
@@ -1877,17 +1919,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.empty();
         }
         return Flux.fromIterable(properties)
-                .concatMap(property -> syncOneCollection(entry, metadata, property, entity, ownerId))
+                .concatMap(property -> syncOneCollection(session, entry, metadata, property, entity, ownerId))
                 .then();
     }
 
     private Mono<Void> syncOneCollection(
-            PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata,
+            PersistenceSession session, PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata,
             PersistentProperty property, Object owner, Object ownerId) {
         Object collection = readCollectionField(property, owner);
         if (collection == null) {
             // null 컬렉션 = 이번 세션에서 이 관계를 관리하지 않음 → 건드리지 않는다(현행 reconcile과 동일 의미).
             return Mono.empty();
+        }
+        if (property.oneToMany()) {
+            // @OneToMany는 M2M/EC의 값-기반 최소 diff(collectionRepresentation/removedKeys/addedKeys)와 의미가
+            // 달라(신규 child는 null id라 키가 없고, 잔존 child는 SQL 없이 자기 flushEntry가 처리) 별도 경로를 탄다.
+            return diffOneToMany(session, entry, metadata, property, owner, ownerId, collection);
         }
         List<Object> current = collectionRepresentation(metadata, property, owner);
         Object baseline = entry.collectionSnapshot(property.propertyName());
@@ -1995,6 +2042,142 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
+     * flush 시 세션-바운드 {@code @OneToMany}(cascade-persist 또는 orphanRemoval) 컬렉션을 baseline(child {@code @Id}
+     * 값 List) 대비 동기화한다. 신규(null id) child는 mappedBy를 parent로 바인딩한 뒤 {@link #persistChildInFlush}로
+     * INSERT하고, orphanRemoval이면 baseline에 있었으나 현재 없는 id를 {@link #removeOrphans}로 삭제하고, 아니면
+     * {@link #disownOrphans}로 FK만 null화한다. 잔존(baseline과 현재 모두에 있는) child는 SQL을 내지 않는다 — 자기
+     * {@link PersistenceSession.ManagedEntry}가 {@link #flushEntry}에서 스칼라 dirty diff를 처리한다. baseline이
+     * 없으면(detached parent를 세션에 직접 편입한 경우) 전체 current child를 persist하고(신규만 실제 INSERT),
+     * orphanRemoval이면 정리한다 — 현행 eager cascade와 동등한 의미의 flush-safe 버전이다. 복합키 child는
+     * {@link #resolveMappedByProperty}가 이미 fail-fast로 거부한다(단일 {@code @Id}만 지원). {@code @OrderColumn}
+     * 재인덱싱은 이 자리에서 하지 않는다(S2).
+     */
+    private Mono<Void> diffOneToMany(
+            PersistenceSession session, PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata,
+            PersistentProperty property, Object owner, Object ownerId, Object collection) {
+        if (property.oneToManyTargetType() == null) {
+            return Mono.error(new IllegalStateException(
+                    metadata.entityType().getName() + "." + property.propertyName()
+                            + " @OneToMany(cascade/orphanRemoval) requires targetEntity to be specified"));
+        }
+        EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+        PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
+
+        List<Object> currentChildren = new ArrayList<>();
+        for (Object child : (Iterable<?>) collection) {
+            if (child != null) {
+                currentChildren.add(child);
+            }
+        }
+        // null id = 미영속 신규 child. HashSet 기반 대조에 null을 섞으면 여러 신규 인스턴스가 한 키로 붕괴하므로
+        // (baseline에는 결코 없는) id-List와 신규 인스턴스 List를 처음부터 분리해 모은다.
+        List<Object> newChildren = new ArrayList<>();
+        List<Object> currentIds = new ArrayList<>();
+        for (Object child : currentChildren) {
+            Object childId = childMetadata.idProperty().read(child);
+            if (childId == null) {
+                newChildren.add(child);
+            } else {
+                currentIds.add(childId);
+            }
+        }
+
+        Object baseline = entry.collectionSnapshot(property.propertyName());
+        boolean haveBaseline = baseline instanceof List<?> && baseline != PersistenceSession.FORCE_FULL;
+        if (haveBaseline && newChildren.isEmpty()
+                && frequencies(currentIds).equals(frequencies((List<?>) baseline))) {
+            // Stage 1: 신규 child 없음 + id 멀티셋 불변 → 컬렉션 멤버십 SQL 없음.
+            return Mono.empty();
+        }
+
+        Mono<Void> persistNew = Flux.fromIterable(newChildren)
+                .concatMap(child -> {
+                    bindParentReference(mappedByProperty, child, owner);
+                    return persistNewChild(session, childMetadata, child);
+                })
+                .then();
+
+        // baseline이 있으면 실제로 사라진 id만 계산해, 아무 것도 안 지워졌을 때 불필요한 DELETE/UPDATE를 내지
+        // 않는다(Stage 1과 같은 최소-SQL 정신을 orphan 처리에도 적용). baseline이 없으면(detached) 무엇이
+        // 제거됐는지 알 수 없으므로 orphanRemoval=true에서만 현행 eager와 동일하게 항상 정리를 시도한다.
+        // removeOrphans는 currentChildren의 id를 동기로 읽는다 — newChildren의 id는 persistNew가 실제 구독돼
+        // INSERT가 완료돼야 채워지므로, 그 계산 자체를 Mono.defer로 감싸 subscription 시점(=persistNew 완료 후)에
+        // 평가되게 한다. 그러지 않으면 assembly 시점에 아직 null인 신규 child id를 retainedIds에서 빠뜨려 방금
+        // INSERT한 child까지 orphan으로 오인해 지워버린다(기존 cascadeOneToManyProperty의 동일 함정과 대칭).
+        List<Object> removedIds = haveBaseline ? removedKeys((List<?>) baseline, currentIds) : null;
+        Mono<Void> handleOrphans;
+        if (property.orphanRemoval()) {
+            handleOrphans = (haveBaseline && removedIds.isEmpty())
+                    ? Mono.empty()
+                    : Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, ownerId, currentChildren).then());
+        } else if (haveBaseline) {
+            handleOrphans = removedIds.isEmpty()
+                    ? Mono.empty()
+                    : disownOrphans(childMetadata, mappedByProperty, ownerId, removedIds);
+        } else {
+            // baseline 없음(detached) + orphanRemoval 없음: 현행 eager cascade와 동일하게 정리를 하지 않는다.
+            handleOrphans = Mono.empty();
+        }
+
+        return persistNew.then(handleOrphans).then(Mono.defer(() -> {
+            List<Object> updatedIds = new ArrayList<>(currentIds);
+            for (Object child : newChildren) {
+                updatedIds.add(childMetadata.idProperty().read(child));
+            }
+            entry.putCollectionSnapshot(property.propertyName(), updatedIds);
+            return Mono.<Void>empty();
+        }));
+    }
+
+    /**
+     * {@code orphanRemoval=false}인 {@code @OneToMany}에서 baseline 대비 사라진 child를 삭제하지 않고 FK만 null로
+     * 되돌린다 — child 측 mappedBy FK 컬럼이 parentId이면서 지정된 id 목록에 속하는 행을 단일 UPDATE로 갱신한다.
+     * {@link #sqlExecutor}만 호출한다(flush 불변식). {@code removedIds}가 비어 있으면 호출부가 부르지 않는다.
+     */
+    private Mono<Void> disownOrphans(
+            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId, List<Object> removedIds) {
+        LinkedHashMap<String, Object> fieldValues = new LinkedHashMap<>();
+        fieldValues.put(mappedByProperty.propertyName(), null);
+        QuerySpec spec = QuerySpec.empty().where(Criteria.and(
+                Criteria.eq(mappedByProperty.propertyName(), parentId),
+                Criteria.in(childMetadata.idProperty().propertyName(), removedIds)));
+        return sqlExecutor.execute(dialect.sqlRenderer().updateByQuery(childMetadata, fieldValues, spec)).then();
+    }
+
+    /**
+     * flush 시 {@code @OneToMany} 신규 child를 세션에 편입한다 — (a) child의 to-one 참조를 {@link #cascadeSaveToOneReferences}로
+     * 먼저 확보하고(이 호출만 예외적으로 public {@link #save(Object)}를 재귀한다 — {@link #IN_FLUSH_KEY} 가드가
+     * auto-flush 재진입을 막는다), (b) child가 신규(null id)면 {@link #insertPath}(private, sqlExecutor-only)로
+     * INSERT해 id를 확정하고, (c) {@link PersistenceSession#registerOnPersist}로 identity map에 편입한다. child
+     * 자신이 cascade-persist/orphanRemoval {@code @OneToMany}·owning {@code @ManyToMany}·{@code @ElementCollection}을
+     * 가지면(재귀 소유), 이 flush의 {@code managedEntries} 스냅샷은 이미 고정돼 새로 편입된 이 엔트리를 순회하지
+     * 않으므로, 등록 직후 그 child의 {@link #syncCollections}를 즉시 호출해 중첩 컬렉션도 이번 flush에서 반영한다.
+     */
+    @SuppressWarnings("unchecked")
+    private Mono<Object> persistNewChild(PersistenceSession session, EntityMetadata<?> childMetadata, Object child) {
+        return persistChildInFlush(session, (EntityMetadata<Object>) childMetadata, child).map(saved -> saved);
+    }
+
+    private <C> Mono<C> persistChildInFlush(PersistenceSession session, EntityMetadata<C> childMetadata, C child) {
+        return cascadeSaveToOneReferences(childMetadata, child).then(Mono.defer(() -> {
+            Object childId = childMetadata.idProperty().read(child);
+            Mono<C> persisted = childId == null ? insertPath(childMetadata, child) : Mono.just(child);
+            return persisted
+                    .doOnNext(saved -> session.registerOnPersist(childMetadata, saved))
+                    .flatMap(saved -> {
+                        if (collectionSyncProperties(childMetadata).isEmpty()) {
+                            return Mono.just(saved);
+                        }
+                        PersistenceSession.ManagedEntry childEntry = session.managedEntry(childMetadata, saved);
+                        if (childEntry == null) {
+                            return Mono.just(saved);
+                        }
+                        return syncCollections(session, childEntry, saved, childMetadata).thenReturn(saved);
+                    });
+        }));
+    }
+
+    /**
      * 컬렉션 표현 키 리스트에 중복이 있는지. 값 기반 단건 DELETE는 동일 값 행을 모두 지우므로, 중복(bag 의미)이
      * 있으면 최소 diff가 부정확하다 — 이 경우 호출부가 full-replace로 되돌린다.
      */
@@ -2081,7 +2264,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return ids;
     }
 
-    /** 세션 flush가 지연 동기화하는 컬렉션 property들 — owning {@code @ManyToMany} + {@code @ElementCollection}. */
+    /**
+     * 세션 flush가 지연 동기화하는 컬렉션 property들 — owning {@code @ManyToMany} + {@code @ElementCollection} +
+     * cascade-persist 또는 orphanRemoval이 지정된 {@code @OneToMany}. marker-only {@code @OneToMany}(cascade도
+     * orphanRemoval도 없음)는 제외한다 — 아무 것도 전파하지 않는 관계까지 baseline을 캡처/비교하면 zero-SQL 불변식이
+     * 깨진다.
+     */
     private List<PersistentProperty> collectionSyncProperties(EntityMetadata<?> metadata) {
         List<PersistentProperty> properties = new ArrayList<>();
         for (PersistentProperty property : metadata.manyToManyProperties()) {
@@ -2090,6 +2278,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
         }
         properties.addAll(metadata.elementCollectionProperties());
+        for (PersistentProperty property : metadata.oneToManyProperties()) {
+            if (property.cascadePersistChildren() || property.orphanRemoval()) {
+                properties.add(property);
+            }
+        }
         return properties;
     }
 
@@ -2116,6 +2309,21 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         Object collection = readCollectionField(property, owner);
         List<Object> keys = new ArrayList<>();
         if (collection == null) {
+            return keys;
+        }
+        if (property.oneToMany()) {
+            // load-time 전용 경로(캡처 시점 child는 항상 DB에서 막 읽은 상태라 id가 채워져 있다) — flush 시점의
+            // diff는 이 표현을 쓰지 않고 diffOneToMany가 신규(null id)/기존 child를 직접 분리해 처리한다(null이
+            // 여러 원소를 한 키로 붕괴시키는 HashSet 대조 함정을 애초에 피한다).
+            EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+            for (Object child : (Iterable<?>) collection) {
+                if (child != null) {
+                    Object childId = childMetadata.idProperty().read(child);
+                    if (childId != null) {
+                        keys.add(childId);
+                    }
+                }
+            }
             return keys;
         }
         if (property.manyToMany()) {
