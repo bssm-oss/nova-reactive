@@ -19,6 +19,18 @@ Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 
 **Invoke하지 않는 경우**: 단일 typo/rename, 1-file refactor, 사용자가 질문만 하거나 plan mode일 때.
 
+## 다중 트랙 동시 진행 (multi-track)
+
+한 cycle은 하나의 "트랙"(독립 `cycle/<topic>` 브랜치 + 자기 미니 파이프라인)이다. 서로 무관한 작업 요청이 여럿이면 **여러 트랙을 동시에** 굴릴 수 있다 — 각 트랙은 독립적으로 진행되고 **서로 기다리지 않고** 준비되는 대로 각자 main에 착지(PR)한다. 느린 트랙이 빠른 트랙을 인질로 잡지 않는다.
+
+**hub-disjoint 분할 (필수 안전 규칙):** 두 트랙이 **동시에 같은 hub 파일**을 광범위하게 건드리면 각자 main 착지 시 병합 충돌이 난다. 오케스트레이터는 트랙을 **파일/서브시스템 소유권으로 분할**한다:
+- 겹치지 않는 트랙(예: 코어 query 트랙 vs `nova-spring-data` 모듈 트랙 vs `docs/` 트랙 vs dialect 모듈 트랙) → **완전 병렬**.
+- 같은 hub(`JpqlSqlBuilder`/`EntityMetadataFactory`/`SimpleReactiveEntityOperations`/`AbstractSqlRenderer` 등)를 다투는 트랙 → **동시 금지, 순차화**(한 트랙이 착지한 뒤 다음 트랙이 rebase). 이는 트랙-내부 marker-namespace 분리(Phase 2)를 **트랙 수준으로 올린 것**이다.
+
+**동시 트랙 상한:** 조율 비용·토큰 폭증을 막기 위해 **동시 2~3 트랙 권장**. 그 이상은 사용자가 명시적으로 요청할 때만.
+
+**트랙 착지 순서:** 먼저 착지한 트랙이 main을 전진시키므로, 뒤따르는 트랙과 그 worktree는 병합 직전 새 main으로 rebase한다(disjoint면 clean). 스코프 확정(Phase 1) 시 각 트랙이 어떤 hub를 소유하는지 먼저 매핑해 충돌 트랙을 같은 시간대에 두지 않는다.
+
 ## Phase 1 — 스코프 분리 & pre-cycle 검증
 
 1. **스코프 분리**: 작업 요청을 독립 실행 가능한 단위로 분해한다. 기본 4 worktree, 단 결합도 높은 단일 서브시스템(예 collection diff-at-flush)은 병렬 부적합 → 순차 처리하거나 1-2 worktree로 축소. 각 단위가 hub를 얼마나 공유하는지 평가(Phase 4 abort 기준).
