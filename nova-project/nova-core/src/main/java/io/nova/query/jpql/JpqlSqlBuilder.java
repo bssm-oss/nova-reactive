@@ -56,17 +56,18 @@ public final class JpqlSqlBuilder {
             "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP",
             "LOCAL_DATE", "LOCAL_TIME", "LOCAL_DATETIME");
     /**
-     * 인자 없는 시간 함수의 표준·portable SQL 렌더링(H2/PostgreSQL/MySQL 공통 수용). JPA 3.1의 LOCAL DATE/TIME/
-     * DATETIME은 세 DB가 공통 수용하는 {@code current_*} 무-괄호 키워드로 매핑한다(LOCAL DATETIME은 tz 없는
-     * 로컬 타임스탬프 의미를 {@code current_timestamp}로 근사).
+     * 인자 없는 시간 함수의 표준·portable SQL 렌더링(H2/PostgreSQL/MySQL 공통 수용). JPA 3.1의 {@code LOCAL DATE}는
+     * tz 개념이 없어 {@code current_date}로 정확히 매핑된다. {@code LOCAL TIME}/{@code LOCAL DATETIME}은 tz-less
+     * 시맨틱인데 {@code current_time}/{@code current_timestamp}는 PostgreSQL에서 tz-aware이므로, 표준 SQL의
+     * tz-less 키워드 {@code localtime}/{@code localtimestamp}로 매핑한다(H2/PG/MySQL 셋 다 수용).
      */
     private static final Map<String, String> NO_ARG_SQL = Map.of(
             "CURRENT_DATE", "current_date",
             "CURRENT_TIME", "current_time",
             "CURRENT_TIMESTAMP", "current_timestamp",
             "LOCAL_DATE", "current_date",
-            "LOCAL_TIME", "current_time",
-            "LOCAL_DATETIME", "current_timestamp");
+            "LOCAL_TIME", "localtime",
+            "LOCAL_DATETIME", "localtimestamp");
     /** {@code EXTRACT(field FROM ...)}의 portable 필드 화이트리스트(H2/PG/MySQL 공통 수용). */
     private static final Set<String> EXTRACT_FIELDS = Set.of(
             "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND", "WEEK", "QUARTER");
@@ -1381,6 +1382,11 @@ public final class JpqlSqlBuilder {
             case Expression.Aggregate agg -> walkTreats(agg.argument(), sink);
             case Expression.FunctionCall fn -> fn.arguments().forEach(a -> walkTreats(a, sink));
             case Expression.Cast cast -> walkTreats(cast.value(), sink);
+            case Expression.Extract ex -> walkTreats(ex.source(), sink);
+            case Expression.Trim t -> {
+                walkTreats(t.trimChar(), sink);
+                walkTreats(t.value(), sink);
+            }
             case Expression.Case c -> {
                 for (WhenClause when : c.whens()) {
                     walkTreats(when.condition(), sink);
@@ -1389,7 +1395,8 @@ public final class JpqlSqlBuilder {
                 walkTreats(c.elseResult(), sink);
             }
             default -> {
-                // Path/Literal/파라미터/Type/EntityTypeLiteral/ScalarSubquery: TREAT를 품지 않는다.
+                // Path/Literal/파라미터/Type/EntityTypeLiteral/ScalarSubquery/QuantifiedSubquery: TREAT를 품지
+                // 않는다(QuantifiedSubquery는 서브쿼리이므로 renderSubquery가 독립적으로 재검사한다).
             }
         }
     }
@@ -1445,10 +1452,12 @@ public final class JpqlSqlBuilder {
             case Expression.Aggregate agg -> usesPolymorphic(agg.argument());
             case Expression.FunctionCall fn -> fn.arguments().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
             case Expression.Cast cast -> usesPolymorphic(cast.value());
+            case Expression.Extract ex -> usesPolymorphic(ex.source());
+            case Expression.Trim t -> usesPolymorphic(t.trimChar()) || usesPolymorphic(t.value());
             case Expression.Case c -> c.whens().stream()
                     .anyMatch(w -> usesPolymorphic(w.condition()) || usesPolymorphic(w.result()))
                     || usesPolymorphic(c.elseResult());
-            // 중첩 서브쿼리는 자체 renderSubquery 호출에서 다시 검사된다.
+            // 중첩 서브쿼리(QuantifiedSubquery 포함)는 자체 renderSubquery 호출에서 다시 검사된다.
             default -> false;
         };
     }
