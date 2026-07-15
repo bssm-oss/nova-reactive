@@ -780,7 +780,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                     statement = renderer.insertMapCollectionRow(definition, ownerId, keyColumns, value);
                                 }
                             } else {
-                                Object key = encodeMapKey(info, entry.getKey());
+                                // entity key(단일 @Id): entry.getKey()는 KeyEntity 인스턴스다 — 그 @Id 값을 읽어
+                                // 저장 표현으로 인코딩한다(단일컬럼 FK와 동일 규칙). 그 외는 기존 encodeMapKey 경로.
+                                Object key = info.mapKey().entityKey()
+                                        ? encodeEntityMapKey(info, entry.getKey())
+                                        : encodeMapKey(info, entry.getKey());
                                 if (embeddableValue) {
                                     List<Object> columnValues = readEmbeddableColumnValues(info, entry.getValue());
                                     statement = renderer.insertEmbeddableMapCollectionRow(
@@ -826,6 +830,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return mapKey.keyEnumType() == EnumType.STRING ? enumKey.name() : enumKey.ordinal();
         }
         return mapKey.encodeKey(key);
+    }
+
+    /**
+     * {@code @MapKeyClass} entity map key(단일 {@code @Id})를 저장 표현으로 인코딩한다 — key entity의 {@code @Id}
+     * 값을 읽은 뒤 단일컬럼 FK와 동일한 저장 표현 규칙({@link ElementCollectionInfo.MapKeyInfo#encodeKey(Object)})을
+     * 적용한다.
+     */
+    private Object encodeEntityMapKey(ElementCollectionInfo info, Object keyEntity) {
+        ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        EntityMetadata<?> keyMetadata = metadataFactory.getEntityMetadata(mapKey.keyType());
+        Object idValue = keyMetadata.idProperty().read(keyEntity);
+        return mapKey.encodeKey(idValue);
     }
 
     /**
@@ -2125,10 +2141,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     continue;
                 }
                 // @Embeddable key는 equals/hashCode에 의존하지 않고 펼친 컬럼 값 튜플을 diff 키로 써서 baseline과
-                // 값 기준으로 비교한다(@Embeddable value와 대칭).
-                Object keyRepr = info.mapKey().embeddableKey()
-                        ? readEmbeddableKeyColumnValues(info, entry.getKey())
-                        : entry.getKey();
+                // 값 기준으로 비교한다(@Embeddable value와 대칭). entity key도 엔티티 identity(equals/hashCode
+                // 없음)에 의존하지 않고 @Id 값으로 비교한다.
+                Object keyRepr;
+                if (info.mapKey().embeddableKey()) {
+                    keyRepr = readEmbeddableKeyColumnValues(info, entry.getKey());
+                } else if (info.mapKey().entityKey()) {
+                    keyRepr = metadataFactory.getEntityMetadata(info.mapKey().keyType()).idProperty().read(entry.getKey());
+                } else {
+                    keyRepr = entry.getKey();
+                }
                 Object valueKey = info.embeddable()
                         ? readEmbeddableColumnValues(info, entry.getValue())
                         : entry.getValue();
@@ -3695,6 +3717,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private <P> Mono<Void> hydrateOneMapCollection(
             List<P> parents, EntityMetadata<P> metadata, PersistentProperty property) {
         ElementCollectionInfo info = property.elementCollectionInfo();
+        if (info.mapKey().entityKey()) {
+            // entity key(단일 @Id)는 2-hop 배치 로드가 필요하다(1st hop: collection table, 2nd hop: key entity) —
+            // 전용 경로로 분리한다.
+            return hydrateOneEntityMapKeyCollection(parents, metadata, property);
+        }
         CollectionTableDefinition definition = collectionDefinition(metadata, info);
         PersistentProperty parentIdProperty = metadata.idProperty();
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
@@ -3746,6 +3773,102 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     }
                 })
                 .then();
+    }
+
+    /**
+     * {@code @MapKeyClass} entity key(단일 {@code @Id})를 가진 {@code @ElementCollection Map<K,V>}을 2-hop으로
+     * hydration한다. 1st hop: collection table을 owner FK IN으로 조회해 (owner FK, key id, value) 행을 모은다 —
+     * 키 컬럼은 저장 표현({@code keyColumnType})으로 디코드한 뒤 key entity의 {@code @Id} 도메인 값으로 복원한다
+     * (read-source-type 함정 회피). 2nd hop: 배치 전체에서 모은 distinct key id를 {@link #findAllInternal}
+     * ({@code Criteria.in})로 1쿼리 배치 로드해(N+1 없음) id→KeyEntity map을 만들고(distinct id당 1인스턴스라 같은
+     * key를 공유하는 여러 owner가 같은 인스턴스를 참조한다), 각 owner의 {@code LinkedHashMap<KeyEntity,V>}를
+     * 재구성한다. 대상 row가 없는 dangling FK는 entry를 드롭하지 않고 id-only stub(no-arg 생성자 + {@code @Id}만
+     * 세팅)으로 보존한다(silent 데이터 손실 회피, composite to-one hydration과 동일 철학).
+     */
+    private <P> Mono<Void> hydrateOneEntityMapKeyCollection(
+            List<P> parents, EntityMetadata<P> metadata, PersistentProperty property) {
+        ElementCollectionInfo info = property.elementCollectionInfo();
+        ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        CollectionTableDefinition definition = collectionDefinition(metadata, info);
+        PersistentProperty parentIdProperty = metadata.idProperty();
+        Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
+        Class<?> valueColumnType = wrapPrimitive(info.valueColumnType());
+        Class<?> keyColumnType = wrapPrimitive(mapKey.keyColumnType());
+        EntityMetadata<?> keyMetadata = metadataFactory.getEntityMetadata(mapKey.keyType());
+        boolean embeddable = info.embeddable();
+
+        LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
+        for (P parent : parents) {
+            Object id = parentIdProperty.read(parent);
+            if (id != null) {
+                parentsById.computeIfAbsent(id, key -> new ArrayList<>()).add(parent);
+            }
+        }
+        if (parentsById.isEmpty()) {
+            injectEmptyMaps(property, parents);
+            return Mono.empty();
+        }
+        SqlRenderer renderer = dialect.sqlRenderer();
+        List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
+        return sqlExecutor.queryMany(
+                        renderer.selectCollectionRows(definition, ownerIds),
+                        row -> {
+                            Object ownerKey = row.get(info.ownerForeignKeyColumn(), ownerIdType);
+                            Object keyId = mapKey.decodeKey(row.get(mapKey.keyColumn(), keyColumnType));
+                            Object element = embeddable
+                                    ? instantiateEmbeddableElement(info, row)
+                                    : info.decodeElementValue(row.get(info.valueColumn(), valueColumnType));
+                            return new Object[]{ownerKey, keyId, element};
+                        })
+                .collectList()
+                .flatMap(rows -> {
+                    if (rows.isEmpty()) {
+                        injectEmptyMaps(property, parents);
+                        return Mono.empty();
+                    }
+                    LinkedHashSet<Object> distinctKeyIds = new LinkedHashSet<>();
+                    for (Object[] row : rows) {
+                        distinctKeyIds.add(row[1]);
+                    }
+                    String keyIdPropertyName = keyMetadata.idProperty().propertyName();
+                    return findAllInternal(keyMetadata, QuerySpec.empty()
+                                    .where(Criteria.in(keyIdPropertyName, new ArrayList<>(distinctKeyIds))))
+                            .collectList()
+                            .doOnNext(keyEntities -> {
+                                Map<Object, Object> keyEntityById = new LinkedHashMap<>();
+                                for (Object keyEntity : keyEntities) {
+                                    keyEntityById.put(keyMetadata.idProperty().read(keyEntity), keyEntity);
+                                }
+                                LinkedHashMap<Object, LinkedHashMap<Object, Object>> mapsByOwner = new LinkedHashMap<>();
+                                for (Object[] row : rows) {
+                                    // dangling FK(대상 row 없음): entry를 드롭하지 않고 id-only stub으로 보존한다.
+                                    // 같은 id를 여러 row가 참조해도 이 map에 캐시돼 동일 인스턴스를 공유한다.
+                                    Object keyEntity = keyEntityById.computeIfAbsent(
+                                            row[1], id -> createIdOnlyEntity(keyMetadata, id));
+                                    mapsByOwner.computeIfAbsent(row[0], key -> new LinkedHashMap<>())
+                                            .put(keyEntity, row[2]);
+                                }
+                                for (Map.Entry<Object, List<P>> entry : parentsById.entrySet()) {
+                                    Map<Object, Object> entries =
+                                            mapsByOwner.getOrDefault(entry.getKey(), new LinkedHashMap<>());
+                                    for (P parent : entry.getValue()) {
+                                        injectMap(property, parent, entries);
+                                    }
+                                }
+                            })
+                            .then();
+                });
+    }
+
+    /**
+     * id 값만 채운 id-only stub 엔티티를 만든다 — no-arg 생성자로 인스턴스화한 뒤 {@code @Id} 필드에 이미 도메인
+     * 타입으로 디코딩된 id 값을 직접 쓴다(write는 raw setter라 추가 변환 없음). dangling FK(대상 row 없음)를 silent
+     * 드롭 대신 identity로 보존하는 데 쓴다({@code @ManyToOne} row-decode stub과 동일 철학).
+     */
+    private Object createIdOnlyEntity(EntityMetadata<?> keyMetadata, Object idValue) {
+        Object stub = instantiate(keyMetadata.entityType());
+        keyMetadata.idProperty().write(stub, idValue);
+        return stub;
     }
 
     /**

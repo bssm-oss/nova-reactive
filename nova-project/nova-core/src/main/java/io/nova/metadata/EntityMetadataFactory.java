@@ -46,6 +46,7 @@ import jakarta.persistence.MapKey;
 import jakarta.persistence.MapKeyClass;
 import jakarta.persistence.MapKeyColumn;
 import jakarta.persistence.MapKeyEnumerated;
+import jakarta.persistence.MapKeyJoinColumn;
 import jakarta.persistence.MapKeyTemporal;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.MappedSuperclass;
@@ -3857,7 +3858,10 @@ public final class EntityMetadataFactory {
      *   <li>{@code @MapKey}(엔티티 property를 key로) — v1 미지원, fail-fast 거부.</li>
      *   <li>{@code @MapKeyClass}가 가리키는 {@code @Embeddable} key 타입 — key를 다중 컬럼으로 펼쳐 저장한다
      *       ({@link #expandEmbeddableMapKeyColumns}).</li>
-     *   <li>{@code @MapKeyClass}가 가리키는 entity key 클래스 — v1 미지원, fail-fast 거부(대상 로드 필요).</li>
+     *   <li>{@code @MapKeyClass}가 가리키는 단일 {@code @Id} entity key 클래스 — key 컬럼은 참조 {@code @Id}와 동일한
+     *       단일컬럼 FK 저장 규칙({@link #resolveToOneForeignKeyStorage})을 재사용한다({@link #expandEmbeddableMapKeyColumns}
+     *       가 아니라 단일 컬럼). 복합 {@code @Id}(@EmbeddedId/@IdClass) entity key는 v1 미지원, fail-fast 거부.
+     *       {@code @MapKeyColumn}은 entity key에 유효하지 않다(fail-fast, {@code @MapKeyJoinColumn} 사용).</li>
      *   <li>enum key — {@code @MapKeyEnumerated}로 STRING/ORDINAL 결정(미지정 시 JPA 기본 ORDINAL).</li>
      *   <li>temporal key({@code java.util.Date}/{@code Calendar}) — {@code @MapKeyTemporal}(TemporalType)로 저장
      *       정밀도(DATE/TIME/TIMESTAMP)를 정하고 {@code TemporalAttributeConverter}로 java.time 저장 표현에 왕복.
@@ -3882,11 +3886,29 @@ public final class EntityMetadataFactory {
             return ElementCollectionInfo.MapKeyInfo.embeddable(keyType, keyColumns);
         }
         if (keyType.isAnnotationPresent(Entity.class)) {
-            // entity key 클래스는 key 컬럼이 대상 엔티티의 식별자 FK이고 hydration이 대상 로드를 요구한다 —
-            // v1 범위 밖이라 명확히 거부한다(@Embeddable key를 우선 지원).
-            throw new IllegalArgumentException(
-                    location + " @MapKeyClass naming an entity key class " + keyType.getName()
-                            + " is not yet supported; use an @Embeddable, basic, or enum map key");
+            // 단일 @Id entity key: 단일컬럼 FK와 저장 규칙이 동일하므로 to-one FK 해석을 재사용한다(reflective,
+            // 타겟 metadata를 build하지 않음 — build-order 함정 회피: mid-build 타겟에 getEntityMetadata를 호출하면
+            // 순환 참조가 깨진다). 복합 @Id(@EmbeddedId/@IdClass) 타겟은 다중컬럼 키 모델이 필요해 v1 범위 밖이다.
+            ForeignKeyStorage idStorage = resolveToOneForeignKeyStorage(keyType);
+            if (idStorage == null) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyClass naming an entity key class " + keyType.getName()
+                                + " with a composite @Id (@EmbeddedId/@IdClass) is not supported;"
+                                + " only a single-@Id entity map key is supported");
+            }
+            if (field.isAnnotationPresent(MapKeyColumn.class)) {
+                throw new IllegalArgumentException(
+                        location + " @MapKeyColumn is not valid on an entity map key; use @MapKeyJoinColumn instead");
+            }
+            MapKeyJoinColumn mapKeyJoinColumn = field.getAnnotation(MapKeyJoinColumn.class);
+            String entityKeyColumnName = mapKeyJoinColumn != null && !mapKeyJoinColumn.name().isBlank()
+                    ? mapKeyJoinColumn.name()
+                    : namingStrategy.columnName(field.getName()) + "_key";
+            Class<?> entityKeyColumnType = idStorage.converterColumnType() != null
+                    ? idStorage.converterColumnType()
+                    : idStorage.javaType();
+            return ElementCollectionInfo.MapKeyInfo.entity(
+                    entityKeyColumnName, keyType, entityKeyColumnType, idStorage.converter());
         }
         MapKeyColumn mapKeyColumn = field.getAnnotation(MapKeyColumn.class);
         String keyColumnName = mapKeyColumn != null && !mapKeyColumn.name().isBlank()
