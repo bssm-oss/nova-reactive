@@ -329,30 +329,152 @@ public final class OracleDialect implements Dialect {
 
         /**
          * Oracle has no {@code CREATE TABLE IF NOT EXISTS} syntax. Wrap the raw
-         * DDL in a PL/SQL anonymous block and swallow ORA-00955 (name already
-         * used by an existing object), re-raising any other error so column /
-         * syntax problems are not hidden. {@code EXECUTE IMMEDIATE} avoids the
-         * embedded-quote escaping required by static DDL in PL/SQL.
+         * {@code CREATE} DDL in a PL/SQL anonymous block and swallow ORA-00955
+         * (name already used by an existing object), re-raising any other error
+         * so column / syntax problems are not hidden. {@code EXECUTE IMMEDIATE}
+         * avoids the embedded-quote escaping required by static DDL in PL/SQL.
+         * <p>Every idempotent {@code CREATE} surface (entity, join, collection,
+         * secondary, generator, JOINED-inheritance) routes through this single
+         * helper so the ORA-00955 guard is applied uniformly — the base's
+         * ANSI {@code create table if not exists} would fail with ORA-00922.
          */
-        @Override
-        public String createTableIfNotExists(io.nova.metadata.EntityMetadata<?> metadata) {
-            String inner = createTable(metadata).replace("'", "''");
+        private String createIfNotExistsBlock(String createDdl) {
+            String inner = createDdl.replace("'", "''");
             return "begin execute immediate '" + inner
                     + "'; exception when others then if sqlcode != -955 then raise; end if; end;";
         }
 
         /**
-         * Oracle has no {@code DROP TABLE IF EXISTS} syntax. Mirror the
-         * {@link #createTableIfNotExists} pattern and swallow ORA-00942 (table
-         * or view does not exist). {@code purge} keeps the recycle bin clean so
-         * a follow-up {@code CREATE TABLE} of the same name does not collide
-         * with a recently dropped object.
+         * Oracle has no {@code DROP TABLE IF EXISTS} syntax. Wrap the raw
+         * {@code DROP} DDL in a PL/SQL block and swallow ORA-00942 (table or
+         * view does not exist), re-raising anything else. Every idempotent
+         * {@code DROP} surface routes through this helper — the base's ANSI
+         * {@code drop table if exists} would fail on Oracle.
+         */
+        private String dropIfExistsBlock(String dropDdl) {
+            String inner = dropDdl.replace("'", "''");
+            return "begin execute immediate '" + inner
+                    + "'; exception when others then if sqlcode != -942 then raise; end if; end;";
+        }
+
+        @Override
+        public String createTableIfNotExists(io.nova.metadata.EntityMetadata<?> metadata) {
+            return createIfNotExistsBlock(createTable(metadata));
+        }
+
+        /**
+         * {@code purge} keeps the recycle bin clean so a follow-up
+         * {@code CREATE TABLE} of the same name does not collide with a
+         * recently dropped object.
          */
         @Override
         public String dropTableIfExists(io.nova.metadata.EntityMetadata<?> metadata) {
-            String inner = ("drop table " + dialect().quote(metadata.tableName()) + " purge").replace("'", "''");
-            return "begin execute immediate '" + inner
-                    + "'; exception when others then if sqlcode != -942 then raise; end if; end;";
+            return dropIfExistsBlock("drop table " + dialect().quote(metadata.tableName()) + " purge");
+        }
+
+        // --- @ManyToMany link-table idempotent DDL --------------------------
+
+        @Override
+        public String createJoinTableIfNotExists(io.nova.metadata.JoinTableDefinition definition) {
+            return createIfNotExistsBlock(createJoinTable(definition));
+        }
+
+        @Override
+        public String dropJoinTableIfExists(String joinTableName) {
+            return dropIfExistsBlock("drop table " + dialect().quote(joinTableName) + " purge");
+        }
+
+        // --- @ElementCollection collection-table idempotent DDL -------------
+
+        @Override
+        public String createCollectionTableIfNotExists(io.nova.metadata.CollectionTableDefinition definition) {
+            return createIfNotExistsBlock(createCollectionTable(definition));
+        }
+
+        // --- @SecondaryTable idempotent DDL ---------------------------------
+
+        @Override
+        public String createSecondaryTableIfNotExists(
+                io.nova.metadata.EntityMetadata<?> metadata, io.nova.metadata.SecondaryTableInfo secondaryTable) {
+            return createIfNotExistsBlock(createSecondaryTable(metadata, secondaryTable));
+        }
+
+        @Override
+        public String dropSecondaryTableIfExists(io.nova.metadata.SecondaryTableInfo secondaryTable) {
+            return dropIfExistsBlock(dropSecondaryTable(secondaryTable) + " purge");
+        }
+
+        // --- JOINED inheritance idempotent CREATE ---------------------------
+
+        /**
+         * The base emits {@code create table if not exists} for the JOINED root
+         * table when {@code ifNotExists} is set; wrap the plain DDL in the
+         * ORA-00955 block instead. Non-idempotent creation is left to the base.
+         */
+        @Override
+        public String createJoinedRootTable(io.nova.metadata.InheritanceLayout layout, boolean ifNotExists) {
+            String ddl = super.createJoinedRootTable(layout, false);
+            return ifNotExists ? createIfNotExistsBlock(ddl) : ddl;
+        }
+
+        @Override
+        public String createJoinedSubtypeTable(
+                io.nova.metadata.InheritanceLayout layout,
+                io.nova.metadata.InheritanceLayout.ConcreteSubtype subtype,
+                boolean ifNotExists) {
+            String ddl = super.createJoinedSubtypeTable(layout, subtype, false);
+            return ifNotExists ? createIfNotExistsBlock(ddl) : ddl;
+        }
+
+        // --- @TableGenerator counter-table DDL ------------------------------
+
+        /**
+         * The base {@link AbstractSchemaGenerator#createTableGenerator} emits a
+         * {@code bigint} counter column and ANSI {@code varchar(255)} PK — Oracle
+         * has no {@code bigint} type, so the inherited DDL dies with ORA-00902
+         * (the same defect class as the FK/link/element token leaks). Re-map to
+         * Oracle-native {@code number(19)} / {@code varchar2(255)}.
+         */
+        @Override
+        public String createTableGenerator(io.nova.metadata.TableGeneratorInfo info) {
+            String pkColumn = dialect().quote(info.pkColumnName()) + " varchar2(255) not null primary key";
+            String valueColumn = dialect().quote(info.valueColumnName()) + " number(19) not null";
+            return "create table " + dialect().quote(info.table())
+                    + " (" + pkColumn + ", " + valueColumn + ")";
+        }
+
+        @Override
+        public String createTableGeneratorIfNotExists(io.nova.metadata.TableGeneratorInfo info) {
+            return createIfNotExistsBlock(createTableGenerator(info));
+        }
+
+        @Override
+        public String dropTableGeneratorIfExists(String generatorTableName) {
+            // base also leaves the identifier unquoted; quote + purge like the other Oracle drops.
+            return dropIfExistsBlock("drop table " + dialect().quote(generatorTableName) + " purge");
+        }
+
+        // --- ddl-auto=UPDATE column additions -------------------------------
+
+        /**
+         * Oracle's {@code ALTER TABLE ... ADD} takes the column list directly
+         * (optionally parenthesised) and rejects the ANSI {@code ADD COLUMN}
+         * keyword with ORA-00905. Reuse the base column rendering (which routes
+         * through the Oracle {@link #sqlType} override) and wrap it in Oracle's
+         * {@code ADD (...)} form.
+         */
+        @Override
+        public String alterTableAddColumn(
+                io.nova.metadata.EntityMetadata<?> metadata, PersistentProperty newColumn) {
+            return "alter table " + qualifiedTable(metadata) + " add (" + columnDefinition(newColumn) + ")";
+        }
+
+        @Override
+        public String addOneToManyOrderColumn(io.nova.metadata.EntityMetadata<?> childMetadata, String orderColumnName) {
+            // Same ORA-00905 fix as alterTableAddColumn; mirror the base's `integer` order-column token
+            // (valid on Oracle) but under the `ADD (...)` syntax.
+            return "alter table " + qualifiedTable(childMetadata)
+                    + " add (" + dialect().quote(orderColumnName) + " integer)";
         }
     }
 }
