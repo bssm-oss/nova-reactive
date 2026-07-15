@@ -43,4 +43,5 @@ io.github.bssm-oss:nova-spring-boot-starter
 io.github.bssm-oss:nova-spring-data
 io.github.bssm-oss:nova-metrics-micrometer
 io.github.bssm-oss:nova-metamodel                # opt-in annotation processor (compile-time only)
+io.github.bssm-oss:nova-cache                    # opt-in 2nd-level cache
 ```

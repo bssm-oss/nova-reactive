@@ -29,20 +29,28 @@ public final class RepositoryMetadata {
         Objects.requireNonNull(repositoryInterface, "repositoryInterface");
         if (!ReactiveCrudRepository.class.isAssignableFrom(repositoryInterface)) {
             throw new IllegalStateException(
-                    repositoryInterface.getName() + " does not extend " + ReactiveCrudRepository.class.getName());
+                    repositoryInterface.getName() + " does not extend " + ReactiveCrudRepository.class.getName()
+                            + "; Nova repository interfaces must extend ReactiveCrudRepository<Entity, Id> "
+                            + "(directly or via another repository interface) to be picked up by "
+                            + "@EnableNovaRepositories");
         }
         ResolvableType resolved = ResolvableType.forClass(repositoryInterface).as(ReactiveCrudRepository.class);
         ResolvableType[] generics = resolved.getGenerics();
         if (generics.length != 2) {
             throw new IllegalStateException(
-                    "Could not resolve ReactiveCrudRepository generics on " + repositoryInterface.getName());
+                    "Could not resolve the <Entity, Id> generic parameters of ReactiveCrudRepository on "
+                            + repositoryInterface.getName()
+                            + "; declare them directly, e.g. `interface FooRepository extends "
+                            + "ReactiveCrudRepository<Foo, Long>`");
         }
         Class<?> entityType = generics[0].resolve();
         Class<?> idType = generics[1].resolve();
         if (entityType == null || idType == null) {
             throw new IllegalStateException(
-                    "Unresolved generic type on " + repositoryInterface.getName()
-                            + "; entity=" + generics[0] + ", id=" + generics[1]);
+                    "Could not resolve concrete entity/id classes for ReactiveCrudRepository<"
+                            + generics[0] + ", " + generics[1] + "> on " + repositoryInterface.getName()
+                            + "; use concrete types instead of a further type variable or wildcard, e.g. "
+                            + "`interface FooRepository extends ReactiveCrudRepository<Foo, Long>`");
         }
         return new RepositoryMetadata(repositoryInterface, entityType, idType);
     }

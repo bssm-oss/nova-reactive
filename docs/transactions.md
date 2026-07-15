@@ -2,24 +2,54 @@
 
 # Transactions
 
-`ReactiveTransactionOperations` runs a callback inside a transaction boundary. Beyond the default call, it offers a `TransactionDefinition` overload carrying `Propagation` + `IsolationLevel` + `readOnly` hints.
+`ReactiveEntityOperations.inTransaction(callback)` runs a callback inside a transaction boundary.
 
 ```java
-// Default — Propagation.REQUIRED, IsolationLevel.DEFAULT, readOnly=false
+// Always Propagation.REQUIRED, IsolationLevel.DEFAULT, readOnly=false
 operations.inTransaction(tx ->
     tx.save(new Account(null, "a@example.com", true))
       .then(tx.save(new Account(null, "b@example.com", true)))
 ).subscribe();
+```
+
+`ReactiveEntityOperations` has only this single-argument form — there is no overload for
+choosing `Propagation` / `IsolationLevel` / `readOnly`; every call runs with
+`TransactionDefinition.DEFAULT`.
+
+To control those, drop to the lower-level `ReactiveTransactionOperations` /
+`ReactiveTransactionManager` (e.g. `R2dbcTransactionManager`) directly. Its
+`inTransaction(TransactionDefinition, Function<TransactionContext, Mono<T>>)` opens the
+transaction and threads the transactional connection through the Reactor `Context`; any
+`ReactiveEntityOperations` call made **inside** that callback automatically joins it, because
+`R2dbcSqlExecutor` reads the active connection from the same `Context` key.
+
+```java
+import io.nova.r2dbc.R2dbcTransactionManager;
+import io.nova.tx.TransactionDefinition;
+import io.nova.tx.IsolationLevel;
+import io.nova.query.QuerySpec;
+
+R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
 
 // REQUIRES_NEW — suspend the parent tx and run an isolated tx on a new connection
-operations.inTransaction(TransactionDefinition.requiresNew(), tx -> ...);
+txManager.inTransaction(TransactionDefinition.requiresNew(), ctx ->
+    operations.save(new Account(null, "c@example.com", true))
+).subscribe();
 
 // readOnly + SERIALIZABLE
 TransactionDefinition def = TransactionDefinition.DEFAULT
         .with(IsolationLevel.SERIALIZABLE)
         .withReadOnly(true);
-operations.inTransaction(def, tx -> ...);
+// The callback must return a Mono; collect the Flux read into one (or call a Mono-returning op).
+txManager.inTransaction(def, ctx ->
+    operations.findAll(Account.class, QuerySpec.empty()).collectList()
+).subscribe();
 ```
+
+In a Spring Boot application, the `novaTransactionManager` bean already is this
+`R2dbcTransactionManager` — inject `ReactiveTransactionManager` alongside
+`ReactiveEntityOperations` instead of constructing your own. See
+[Spring](spring.md) for the bean reference.
 
 Supported `Propagation` values: `REQUIRED`, `REQUIRES_NEW`, `NESTED` (SAVEPOINT), `MANDATORY`, `SUPPORTS`, `NOT_SUPPORTED`, `NEVER` — Spring semantics.
 

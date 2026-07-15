@@ -213,7 +213,11 @@ public final class SimpleReactiveRepository implements InvocationHandler {
             return derived.get();
         }
         return Mono.error(new UnsupportedOperationException(
-                "Unsupported repository method: " + method));
+                "Unsupported repository method: " + method
+                        + "; Nova recognizes the ReactiveCrudRepository CRUD methods, derived query methods "
+                        + "following the findBy.../countBy.../existsBy.../deleteBy.../removeBy... naming "
+                        + "convention, and methods annotated with @Query. Check the method name for a typo or "
+                        + "add @Query with an explicit query."));
     }
 
     private Object invokeObjectMethod(Object proxy, Method method, Object[] args) {

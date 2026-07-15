@@ -130,6 +130,8 @@ Nova core depends only on the R2DBC **SPI**. Add the matching R2DBC driver (`r2d
 | `nova-spring-boot-starter`   | Spring Boot auto-configuration — dialect auto-detect, `nova.*` properties     |
 | `nova-spring-data`           | Spring Data-style `ReactiveCrudRepository<T, ID>` + `@EnableNovaRepositories` |
 | `nova-metrics-micrometer`    | Micrometer adapter (`MicrometerSqlExecutionListener`)                          |
+| `nova-metamodel`             | Annotation processor — compile-time property-name constants for type-safe `Criteria` references |
+| `nova-cache`                 | 2nd-level cache — reactive read-through cache SPI + `@Cacheable`/`@Cache` wiring |
 
 Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.8.0`.
 

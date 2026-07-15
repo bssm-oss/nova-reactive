@@ -77,7 +77,9 @@ public final class OracleDialect implements Dialect {
     @Override
     public String sequenceNextValueSql(String sequenceName) {
         if (sequenceName == null || sequenceName.isBlank()) {
-            throw new IllegalArgumentException("sequenceName must not be blank");
+            throw new IllegalArgumentException(
+                    "sequenceName must not be blank; check the sequence name configured on the entity's "
+                            + "@SequenceGenerator or @GeneratedValue(generator=...)");
         }
         // Oracle은 단순 SELECT에도 FROM 절이 필수이므로 dual pseudo-table을 사용한다. 단일 컬럼은
         // driver별 라벨 차이 없이 RowAccessor가 항상 읽을 수 있도록 명시적 alias로 고정한다.
@@ -117,7 +119,9 @@ public final class OracleDialect implements Dialect {
         return switch (mode) {
             case NONE -> "";
             case FOR_UPDATE -> " for update";
-            case FOR_SHARE -> throw new UnsupportedOperationException("Oracle does not support FOR SHARE row locks");
+            case FOR_SHARE -> throw new UnsupportedOperationException(
+                    "Oracle does not support FOR SHARE row locks (no equivalent SELECT-tail syntax); "
+                            + "use LockMode.FOR_UPDATE instead");
         };
     }
 
@@ -324,7 +328,12 @@ public final class OracleDialect implements Dialect {
             if (type == java.time.LocalDateTime.class) {
                 return dialect().timestampColumnType();
             }
-            throw new IllegalArgumentException("Unsupported Oracle relation/element column type: " + type.getName());
+            throw new IllegalArgumentException(
+                    "No Oracle column mapping for id/element type " + type.getName()
+                            + " used as a @ManyToOne/@ManyToMany/@ElementCollection reference; supported types are "
+                            + "String, Long, Integer, Short, Boolean, Double, Float, BigDecimal, UUID, LocalDate, "
+                            + "LocalTime, and LocalDateTime. Use one of these as the id/element type, or add a "
+                            + "@Convert to map it to a supported storage type.");
         }
 
         /**

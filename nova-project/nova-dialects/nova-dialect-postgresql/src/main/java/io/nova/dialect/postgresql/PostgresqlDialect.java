@@ -71,7 +71,9 @@ public final class PostgresqlDialect implements Dialect {
     @Override
     public String sequenceNextValueSql(String sequenceName) {
         if (sequenceName == null || sequenceName.isBlank()) {
-            throw new IllegalArgumentException("sequenceName must not be blank");
+            throw new IllegalArgumentException(
+                    "sequenceName must not be blank; check the sequence name configured on the entity's "
+                            + "@SequenceGenerator or @GeneratedValue(generator=...)");
         }
         // SQL identifier 외 문자는 EntityMetadataFactory에서 거부하지만 dialect도 자체 방어한다.
         // 단일 행/단일 컬럼 결과의 컬럼 라벨이 driver별로 "nextval", "NEXTVAL", "nextval(...)" 등

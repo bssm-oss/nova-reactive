@@ -94,7 +94,10 @@ public final class NovaRepositoryFactoryBean
     public void afterPropertiesSet() {
         if (entityOperations == null) {
             throw new IllegalStateException(
-                    "ReactiveEntityOperations must be set before initializing " + repositoryInterface.getName());
+                    "No ReactiveEntityOperations was wired for " + repositoryInterface.getName()
+                            + "; expose a ReactiveEntityOperations bean named 'novaEntityOperations' (or set "
+                            + "@EnableNovaRepositories.entityOperationsRef to point at yours) so Nova can wire "
+                            + "this repository");
         }
         if (proxy != null) {
             return;
