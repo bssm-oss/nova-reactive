@@ -44,6 +44,24 @@ public final class DerivedQueryDispatcher {
         }
         switch (query.subject()) {
             case FIND_ALL -> {
+                if (query.hasPageable()) {
+                    // findBy<X>(…, Pageable) — 반환 타입이 결정한 페이징 컨테이너로 감싼다.
+                    Pageable pageable = requirePageable(query, safeArgs);
+                    return switch (query.pagingResult()) {
+                        // Flux<T>: LIMIT/OFFSET만 적용해 한 페이지 행을 스트리밍(총계/hasNext 없음).
+                        case FLUX -> operations.findAll((Class) entityType, spec.page(pageable));
+                        // Mono<Page<T>>: content + 별도 COUNT(*) 로 totalElements 계산.
+                        case PAGE -> operations.findAll((Class) entityType, spec, pageable);
+                        // Mono<Slice<T>>: limit+1 fetch 로 hasNext 판정(COUNT 없음).
+                        case SLICE -> operations.findSlice((Class) entityType, spec, pageable);
+                        case NONE -> throw new IllegalStateException(
+                                "Derived query has a Pageable parameter but no paging result shape");
+                    };
+                }
+                if (query.limit() != null) {
+                    // findTop<N>By / findFirst<N>By (N >= 2) — DB-side LIMIT N, no OFFSET.
+                    spec = spec.page(Pageable.of(query.limit(), 0L));
+                }
                 return operations.findAll((Class) entityType, spec);
             }
             case FIND_ONE -> {
@@ -64,6 +82,20 @@ public final class DerivedQueryDispatcher {
         }
     }
 
+    private static Pageable requirePageable(DerivedQuery query, Object[] args) {
+        Object raw = args[query.pageableArgIndex()];
+        if (raw == null) {
+            throw new IllegalArgumentException(
+                    "Derived query paging requires a non-null io.nova.query.Pageable argument");
+        }
+        if (!(raw instanceof Pageable pageable)) {
+            throw new IllegalArgumentException(
+                    "Derived query paging expected an io.nova.query.Pageable argument but received "
+                            + raw.getClass().getName());
+        }
+        return pageable;
+    }
+
     private static Predicate buildPredicate(DerivedQuery query, Object[] args) {
         if (query.orGroups().isEmpty()) {
             return null;
@@ -82,17 +114,32 @@ public final class DerivedQueryDispatcher {
 
     private static Predicate toCondition(Part part, ArgumentCursor cursor) {
         String property = part.propertyName();
+        boolean ic = part.ignoreCase();
         return switch (part.keyword()) {
-            case EQ -> Criteria.eq(property, cursor.next(part, 0));
-            case NOT -> Criteria.ne(property, cursor.next(part, 0));
+            // EQ/NOT/LIKE 대소문자-무시 버전은 core의 ILIKE Condition으로 렌더된다 — PostgreSQL은 native
+            // ILIKE, 그 외 dialect는 lower(col) like lower(?) (Criteria.ilike/notIlike javadoc 참고).
+            case EQ -> ic
+                    ? Criteria.ilike(property, cursor.next(part, 0))
+                    : Criteria.eq(property, cursor.next(part, 0));
+            case NOT -> ic
+                    ? Criteria.notIlike(property, cursor.next(part, 0))
+                    : Criteria.ne(property, cursor.next(part, 0));
             case LT -> Criteria.lt(property, cursor.next(part, 0));
             case LTE -> Criteria.lte(property, cursor.next(part, 0));
             case GT -> Criteria.gt(property, cursor.next(part, 0));
             case GTE -> Criteria.gte(property, cursor.next(part, 0));
-            case LIKE -> Criteria.like(property, cursor.next(part, 0));
-            case STARTING_WITH -> Criteria.startsWith(property, requireString(part, cursor.next(part, 0)));
-            case ENDING_WITH -> Criteria.endsWith(property, requireString(part, cursor.next(part, 0)));
-            case CONTAINING -> Criteria.contains(property, requireString(part, cursor.next(part, 0)));
+            case LIKE -> ic
+                    ? Criteria.ilike(property, cursor.next(part, 0))
+                    : Criteria.like(property, cursor.next(part, 0));
+            case STARTING_WITH -> ic
+                    ? Criteria.startsWithIgnoreCase(property, requireString(part, cursor.next(part, 0)))
+                    : Criteria.startsWith(property, requireString(part, cursor.next(part, 0)));
+            case ENDING_WITH -> ic
+                    ? Criteria.endsWithIgnoreCase(property, requireString(part, cursor.next(part, 0)))
+                    : Criteria.endsWith(property, requireString(part, cursor.next(part, 0)));
+            case CONTAINING -> ic
+                    ? Criteria.containsIgnoreCase(property, requireString(part, cursor.next(part, 0)))
+                    : Criteria.contains(property, requireString(part, cursor.next(part, 0)));
             case IN -> Criteria.in(property, requireIterable(part, cursor.next(part, 0)));
             case NOT_IN -> Criteria.notIn(property, requireIterable(part, cursor.next(part, 0)));
             case BETWEEN -> Criteria.between(property, cursor.next(part, 0), cursor.next(part, 1));

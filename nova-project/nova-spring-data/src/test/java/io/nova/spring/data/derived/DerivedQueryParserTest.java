@@ -1,5 +1,8 @@
 package io.nova.spring.data.derived;
 
+import io.nova.query.Page;
+import io.nova.query.Pageable;
+import io.nova.query.Slice;
 import io.nova.query.Sort;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -85,6 +88,37 @@ class DerivedQueryParserTest {
         Mono<Account> findOneByEmail(String email);
 
         Mono<Account> findTopByEmail(String email);
+
+        Flux<Account> findTop2ByActiveTrue();
+
+        Flux<Account> findFirst3ByActiveTrueOrderByLoginCountDesc();
+
+        Flux<Account> findTop0ByActiveTrue();
+
+        Mono<Account> findTop3ByActiveTrue();
+
+        Flux<Account> findByEmailIgnoreCase(String email);
+
+        Flux<Account> findByEmailContainingIgnoreCase(String chunk);
+
+        Flux<Account> findByEmailNotIgnoreCase(String email);
+
+        Flux<Account> findByLoginCountGreaterThanIgnoreCase(int loginCount);
+
+        // --- T2b: Pageable / Page / Slice ---
+        Flux<Account> findByActiveTrue(Pageable pageable);
+
+        Mono<Page<Account>> findByActive(boolean active, Pageable pageable);
+
+        Mono<Slice<Account>> findByEmailContaining(String chunk, Pageable pageable);
+
+        Mono<Account> findByEmail(String email, Pageable pageable);
+
+        Mono<Page<Account>> countByActive(boolean active, Pageable pageable);
+
+        Flux<Account> findByEmail(Pageable pageable, String email);
+
+        Flux<Account> findFirst2ByActiveTrue(Pageable pageable);
     }
 
     private final DerivedQueryParser parser = new DerivedQueryParser(Account.class);
@@ -154,6 +188,56 @@ class DerivedQueryParserTest {
         void findTopBy() {
             assertSame(Subject.FIND_ONE, parse("findTopByEmail", String.class).subject());
         }
+
+        @Test
+        @DisplayName("findTop<N>By(N>=2)는 FIND_ALL을 유지하고 limit에 N을 싣는다")
+        void findTopNStaysFindAllWithLimit() {
+            DerivedQuery q = parse("findTop2ByActiveTrue");
+            assertSame(Subject.FIND_ALL, q.subject());
+            assertEquals(2, q.limit());
+        }
+
+        @Test
+        @DisplayName("findFirst<N>By(N>=2)도 findTop<N>By와 동일하게 취급된다")
+        void findFirstNStaysFindAllWithLimit() {
+            DerivedQuery q = parse("findFirst3ByActiveTrueOrderByLoginCountDesc");
+            assertSame(Subject.FIND_ALL, q.subject());
+            assertEquals(3, q.limit());
+            assertEquals(1, q.orderings().size());
+        }
+
+        @Test
+        @DisplayName("findTop0By는 의미가 없으므로 즉시 fail")
+        void findTopZeroRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findTop0ByActiveTrue")));
+            assertTrue(ex.getMessage().contains("top 0"), () -> "unexpected message: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("findTop<N>By(N>=2)에 Mono 반환 타입은 모순이므로 즉시 fail")
+        void findTopNWithMonoReturnTypeRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findTop3ByActiveTrue")));
+            assertTrue(ex.getMessage().contains("Mono"), () -> "unexpected message: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("int 범위를 넘는 findTop<N>은 raw NumberFormatException이 아닌 IllegalArgumentException")
+        void findTopHugeNWrapsNumberFormat() {
+            interface Repo {
+                Flux<Account> findTop99999999999ByActiveTrue();
+            }
+            Method m;
+            try {
+                m = Repo.class.getMethod("findTop99999999999ByActiveTrue");
+            } catch (NoSuchMethodException e) {
+                throw new AssertionError(e);
+            }
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(m));
+            assertTrue(ex.getMessage().contains("valid int"), () -> "unexpected message: " + ex.getMessage());
+        }
     }
 
     @Nested
@@ -210,6 +294,150 @@ class DerivedQueryParserTest {
         void temporalAliases() {
             assertSame(Keyword.GT, parse("findByCreatedAtAfter", Instant.class).orGroups().get(0).get(0).keyword());
             assertSame(Keyword.LT, parse("findByCreatedAtBefore", Instant.class).orGroups().get(0).get(0).keyword());
+        }
+
+        @Test
+        @DisplayName("IgnoreCase는 keyword는 그대로 두고 Part.ignoreCase() 플래그만 세운다")
+        void ignoreCaseSetsFlagWithoutChangingKeyword() {
+            Part eqPart = parse("findByEmailIgnoreCase", String.class).orGroups().get(0).get(0);
+            assertSame(Keyword.EQ, eqPart.keyword());
+            assertTrue(eqPart.ignoreCase());
+
+            Part containingPart = parse("findByEmailContainingIgnoreCase", String.class).orGroups().get(0).get(0);
+            assertSame(Keyword.CONTAINING, containingPart.keyword());
+            assertTrue(containingPart.ignoreCase());
+
+            Part notPart = parse("findByEmailNotIgnoreCase", String.class).orGroups().get(0).get(0);
+            assertSame(Keyword.NOT, notPart.keyword());
+            assertTrue(notPart.ignoreCase());
+        }
+
+        @Test
+        @DisplayName("IgnoreCase가 없는 part는 ignoreCase()가 false")
+        void withoutIgnoreCaseFlagIsFalse() {
+            Part p = parse("findByEmail", String.class).orGroups().get(0).get(0);
+            assertTrue(!p.ignoreCase());
+        }
+
+        @Test
+        @DisplayName("문자열 비교가 아닌 keyword와 IgnoreCase 조합은 즉시 fail")
+        void ignoreCaseOnNonStringKeywordRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findByLoginCountGreaterThanIgnoreCase", int.class)));
+            assertTrue(ex.getMessage().contains("IgnoreCase"), () -> "unexpected message: " + ex.getMessage());
+        }
+    }
+
+    @Nested
+    @DisplayName("Pageable / Page / Slice (T2b)")
+    class Paging {
+
+        @Test
+        @DisplayName("Flux + Pageable → FLUX paging, subject는 FIND_ALL 유지, keyword 인자는 Pageable 제외")
+        void fluxWithPageable() {
+            DerivedQuery q = parse("findByActiveTrue", Pageable.class);
+            assertSame(Subject.FIND_ALL, q.subject());
+            assertSame(PagingResult.FLUX, q.pagingResult());
+            assertTrue(q.hasPageable());
+            assertEquals(0, q.pageableArgIndex());
+            assertEquals(0, q.expectedArgs(), "ActiveTrue는 인자 0개, Pageable은 keyword 인자 아님");
+        }
+
+        @Test
+        @DisplayName("Mono<Page<T>> → PAGE paging, keyword 인자만 카운트")
+        void monoPage() {
+            DerivedQuery q = parse("findByActive", boolean.class, Pageable.class);
+            assertSame(Subject.FIND_ALL, q.subject());
+            assertSame(PagingResult.PAGE, q.pagingResult());
+            assertEquals(1, q.pageableArgIndex());
+            assertEquals(1, q.expectedArgs());
+        }
+
+        @Test
+        @DisplayName("Mono<Slice<T>> → SLICE paging")
+        void monoSlice() {
+            DerivedQuery q = parse("findByEmailContaining", String.class, Pageable.class);
+            assertSame(Subject.FIND_ALL, q.subject());
+            assertSame(PagingResult.SLICE, q.pagingResult());
+            assertEquals(1, q.pageableArgIndex());
+        }
+
+        @Test
+        @DisplayName("Mono<Page<T>> 인데 Pageable 파라미터가 없으면 fail-fast")
+        void pageWithoutPageableRejected() {
+            interface Repo {
+                Mono<Page<Account>> findByActiveTrue();
+            }
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(repoMethod(Repo.class, "findByActiveTrue")));
+            assertTrue(ex.getMessage().contains("no Pageable"), () -> "unexpected: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("단건 Mono<T> + Pageable 조합은 parse-time fail-fast (반환타입 non-pageable)")
+        void singleMonoWithPageableRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findByEmail", String.class, Pageable.class)));
+            assertTrue(ex.getMessage().contains("not") && ex.getMessage().contains("pageable"),
+                    () -> "unexpected: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("Mono 래핑 없는 raw Page<T> 반환 + Pageable은 parse-time fail-fast (dispatch까지 미루지 않음)")
+        void nonMonoPageReturnWithPageableRejected() {
+            interface Repo {
+                Page<Account> findByActive(boolean active, Pageable pageable);
+            }
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(repoMethod(Repo.class, "findByActive", boolean.class, Pageable.class)));
+            assertTrue(ex.getMessage().contains("not") && ex.getMessage().contains("pageable"),
+                    () -> "unexpected: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("non-reactive 반환(List<T>) + Pageable도 parse-time fail-fast")
+        void nonReactiveReturnWithPageableRejected() {
+            interface Repo {
+                List<Account> findByActiveTrue(Pageable pageable);
+            }
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(repoMethod(Repo.class, "findByActiveTrue", Pageable.class)));
+            assertTrue(ex.getMessage().contains("not") && ex.getMessage().contains("pageable"),
+                    () -> "unexpected: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("count/exists/delete + Pageable은 fail-fast")
+        void countWithPageableRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("countByActive", boolean.class, Pageable.class)));
+            assertTrue(ex.getMessage().contains("not a plain find query"),
+                    () -> "unexpected: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("Pageable이 마지막 파라미터가 아니면 fail-fast")
+        void pageableNotLastRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findByEmail", Pageable.class, String.class)));
+            assertTrue(ex.getMessage().contains("last"), () -> "unexpected: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("findFirst<N> + Pageable 조합은 fail-fast — 개수 상한과 페이지가 충돌")
+        void topNWithPageableRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findFirst2ByActiveTrue", Pageable.class)));
+            assertTrue(ex.getMessage().contains("not a plain find query"),
+                    () -> "unexpected: " + ex.getMessage());
+        }
+
+        private Method repoMethod(Class<?> repo, String name, Class<?>... params) {
+            try {
+                return repo.getMethod(name, params);
+            } catch (NoSuchMethodException e) {
+                throw new AssertionError(e);
+            }
         }
     }
 

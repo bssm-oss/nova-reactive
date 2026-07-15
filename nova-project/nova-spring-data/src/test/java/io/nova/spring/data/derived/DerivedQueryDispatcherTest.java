@@ -9,9 +9,12 @@ import io.nova.query.Condition;
 import io.nova.query.ComparisonOperator;
 import io.nova.query.LogicalOperator;
 import io.nova.query.NativeQuery;
+import io.nova.query.Page;
+import io.nova.query.Pageable;
 import io.nova.query.Predicate;
 import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
+import io.nova.query.Slice;
 import io.nova.query.Sort;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
@@ -66,6 +69,19 @@ class DerivedQueryDispatcherTest {
         Flux<Account> findByEmailOrActiveFalse(String email);
 
         Flux<Account> findByActiveTrueOrderByLoginCountDesc();
+
+        Flux<Account> findTop2ByActiveTrue();
+
+        Flux<Account> findByEmailIgnoreCase(String email);
+
+        Flux<Account> findByEmailContainingIgnoreCase(String chunk);
+
+        // --- T2b: Pageable / Page / Slice ---
+        Flux<Account> findByActiveTrue(Pageable pageable);
+
+        Mono<Page<Account>> findByActive(boolean active, Pageable pageable);
+
+        Mono<Slice<Account>> findByEmailContaining(String chunk, Pageable pageable);
     }
 
     private final CapturingOperations operations = new CapturingOperations();
@@ -224,6 +240,106 @@ class DerivedQueryDispatcherTest {
         assertSame(Sort.Direction.DESC, order.direction());
     }
 
+    @Test
+    @DisplayName("findTop2By → FIND_ALL 유지 + LIMIT 2 pageable")
+    void findTopNAppliesLimit() {
+        operations.nextFindAll = Flux.empty();
+
+        Object result = derived.tryDispatch(method("findTop2ByActiveTrue"), new Object[0]).orElseThrow();
+        StepVerifier.create((Flux<?>) result).verifyComplete();
+
+        QuerySpec spec = (QuerySpec) operations.lastInvocation().args()[1];
+        assertNotNull(spec.pageable(), "findTop<N>By must apply a pageable");
+        assertEquals(2, spec.pageable().limit());
+        assertEquals(0L, spec.pageable().offset());
+    }
+
+    @Test
+    @DisplayName("IgnoreCase(EQ)는 ILIKE condition으로 렌더된다")
+    void ignoreCaseEqualityUsesIlike() {
+        operations.nextFindAll = Flux.empty();
+
+        derived.tryDispatch(method("findByEmailIgnoreCase", String.class),
+                new Object[]{"A@nova.io"}).orElseThrow();
+
+        QuerySpec spec = (QuerySpec) operations.lastInvocation().args()[1];
+        Condition c = assertInstanceOf(Condition.class, spec.predicate());
+        assertSame(ComparisonOperator.ILIKE, c.operator());
+        assertEquals("email", c.property());
+        assertEquals("A@nova.io", c.value());
+    }
+
+    @Test
+    @DisplayName("IgnoreCase(Containing)은 %substring% 패턴의 ILIKE condition으로 렌더된다")
+    void ignoreCaseContainingUsesIlikeWithWildcards() {
+        operations.nextFindAll = Flux.empty();
+
+        derived.tryDispatch(method("findByEmailContainingIgnoreCase", String.class),
+                new Object[]{"nova"}).orElseThrow();
+
+        QuerySpec spec = (QuerySpec) operations.lastInvocation().args()[1];
+        Condition c = assertInstanceOf(Condition.class, spec.predicate());
+        assertSame(ComparisonOperator.ILIKE, c.operator());
+        assertEquals("%nova%", c.value());
+    }
+
+    @Test
+    @DisplayName("Flux + Pageable → findAll(entity, spec.page(pageable)) 로 LIMIT/OFFSET 적용")
+    void fluxPageableAppliesPageToSpec() {
+        operations.nextFindAll = Flux.empty();
+        Pageable pageable = Pageable.of(5, 10L);
+
+        Object result = derived.tryDispatch(method("findByActiveTrue", Pageable.class),
+                new Object[]{pageable}).orElseThrow();
+        StepVerifier.create((Flux<?>) result).verifyComplete();
+
+        Invocation last = operations.lastInvocation();
+        assertEquals("findAll", last.name());
+        QuerySpec spec = (QuerySpec) last.args()[1];
+        assertNotNull(spec.pageable());
+        assertEquals(5, spec.pageable().limit());
+        assertEquals(10L, spec.pageable().offset());
+    }
+
+    @Test
+    @DisplayName("Mono<Page> → findAll(entity, spec, pageable) 로 위임(spec에는 page 미적용, pageable 별도 전달)")
+    void monoPageDelegatesToPagedFindAll() {
+        Pageable pageable = Pageable.of(3, 0L);
+
+        @SuppressWarnings("unchecked")
+        Mono<Page<Object>> result = (Mono<Page<Object>>) derived.tryDispatch(
+                method("findByActive", boolean.class, Pageable.class),
+                new Object[]{true, pageable}).orElseThrow();
+        StepVerifier.create(result).expectNextCount(1).verifyComplete();
+
+        Invocation last = operations.lastInvocation();
+        assertEquals("findAllPaged", last.name());
+        QuerySpec spec = (QuerySpec) last.args()[1];
+        assertNull(spec.pageable(), "spec은 page 미적용 — pageable은 세 번째 인자로 전달");
+        Condition c = assertInstanceOf(Condition.class, spec.predicate());
+        assertEquals("active", c.property());
+        assertSame(pageable, last.args()[2]);
+    }
+
+    @Test
+    @DisplayName("Mono<Slice> → findSlice(entity, spec, pageable) 로 위임")
+    void monoSliceDelegatesToFindSlice() {
+        Pageable pageable = Pageable.of(4, 0L);
+
+        @SuppressWarnings("unchecked")
+        Mono<Slice<Object>> result = (Mono<Slice<Object>>) derived.tryDispatch(
+                method("findByEmailContaining", String.class, Pageable.class),
+                new Object[]{"nova", pageable}).orElseThrow();
+        StepVerifier.create(result).expectNextCount(1).verifyComplete();
+
+        Invocation last = operations.lastInvocation();
+        assertEquals("findSlice", last.name());
+        assertSame(pageable, last.args()[2]);
+        Condition c = assertInstanceOf(Condition.class, ((QuerySpec) last.args()[1]).predicate());
+        assertSame(ComparisonOperator.LIKE, c.operator());
+        assertEquals("%nova%", c.value());
+    }
+
     record Invocation(String name, Object[] args) {
     }
 
@@ -250,6 +366,20 @@ class DerivedQueryDispatcherTest {
         public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
             invocations.add(new Invocation("findAll", new Object[]{entityType, querySpec}));
             return (Flux<T>) nextFindAll;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> Mono<Page<T>> findAll(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
+            invocations.add(new Invocation("findAllPaged", new Object[]{entityType, querySpec, pageable}));
+            return (Mono<Page<T>>) (Mono<?>) Mono.just(new Page<>(List.of(), 0L, pageable));
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> Mono<Slice<T>> findSlice(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
+            invocations.add(new Invocation("findSlice", new Object[]{entityType, querySpec, pageable}));
+            return (Mono<Slice<T>>) (Mono<?>) Mono.just(new Slice<>(List.of(), pageable, false));
         }
 
         @Override

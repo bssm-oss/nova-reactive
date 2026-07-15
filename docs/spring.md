@@ -123,9 +123,11 @@ public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
 }
 ```
 
-**Subjects** — `find` (Mono = LIMIT 1, Flux = all), `findFirst`/`findTop`/`findOne` (always Mono with LIMIT 1), `count` (`Mono<Long>`), `exists` (`Mono<Boolean>`), `delete`/`remove` (`Mono<Long>`).
+**Subjects** — `find` (Mono = LIMIT 1, Flux = all), `findFirst`/`findTop`/`findOne` (always Mono with LIMIT 1), `count` (`Mono<Long>`), `exists` (`Mono<Boolean>`), `delete`/`remove` (`Mono<Long>`). An explicit count prefix `findTop<N>By` / `findFirst<N>By` (N ≥ 2) returns a `Flux` capped at LIMIT N; `findTop1By`/`findFirst1By` collapse to the single-result `Mono` form.
 
 **Keywords** — default (equality), `Not`, `LessThan`/`Lt` (alias `Before`), `LessThanEqual`/`Lte`, `GreaterThan`/`Gt` (alias `After`), `GreaterThanEqual`/`Gte`, `Like`, `StartingWith`/`StartsWith`, `EndingWith`/`EndsWith`, `Containing`/`Contains`, `In`, `NotIn`, `Between` (consumes two parameters), `IsNull` / `Null`, `IsNotNull` / `NotNull`, `True` / `IsTrue`, `False` / `IsFalse`.
+
+**Case-insensitive** — an `IgnoreCase` suffix on a string comparison (`findByEmailIgnoreCase`, `findByNameStartingWithIgnoreCase`, also `Containing`/`EndingWith`/equality) matches case-insensitively. Applying it to a non-string keyword (`GreaterThanIgnoreCase`, `BetweenIgnoreCase`, `IsNullIgnoreCase`) fails fast at parse time.
 
 **Connectors** — `And` / `Or` (left-to-right; no precedence — parenthesisation matches Spring Data conventions).
 
@@ -133,6 +135,16 @@ public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
 
 **Property resolution** — greedy match against the entity's reflective top-level fields. Longer property names win to avoid prefix ambiguity. Method names use lowerCamelCase form (`findByEmailAddress` → property `emailAddress`).
 
-**Limitations** — `@Embedded` paths in method names, `IgnoreCase`, dynamic `Pageable` parameters, projections, and `@Query`-style native queries are not supported in derived names. Use `findAll(QuerySpec)` (or, with [`nova-metamodel`](metamodel.md), the generated property-name constants) for those cases.
+**Paging** — a `find…By` method may take a trailing `Pageable` parameter. The return-type shape selects the container: `Flux<T>` streams a single LIMIT/OFFSET window (no total, no `hasNext`); `Mono<Page<T>>` adds a separate `COUNT(*)` for `totalElements`; `Mono<Slice<T>>` fetches `limit + 1` to decide `hasNext` without a count query.
+
+```java
+Flux<Author>        findByActiveTrue(Pageable page);          // one window, streamed
+Mono<Page<Author>>  findByActiveTrue(Pageable page);          // window + total count
+Mono<Slice<Author>> findByActiveTrue(Pageable page);          // window + hasNext, no count
+```
+
+A `Pageable` parameter is only valid on the `find`-all subject. Pairing it with a non-paging shape or subject — `count`/`exists`/`delete`, or a single-result `Mono<T>` / `findFirst` / `findOne` / `findTop` / `findTop<N>` — fails fast at parse time with an `IllegalArgumentException`.
+
+**Limitations** — `@Embedded` paths in method names, projections, and `@Query`-style native queries are not supported in derived names. Use `findAll(QuerySpec)` (or, with [`nova-metamodel`](metamodel.md), the generated property-name constants) for those cases.
 
 Misuse — unknown property, parameter-count mismatch, unrecognized keyword suffix — fails at the first call to that method with an `IllegalArgumentException` carrying a precise diagnostic. Method names whose subject prefix does not match (`saveAndPublish`, `magicMethod`, …) fall through to the existing `UnsupportedOperationException` as before.
