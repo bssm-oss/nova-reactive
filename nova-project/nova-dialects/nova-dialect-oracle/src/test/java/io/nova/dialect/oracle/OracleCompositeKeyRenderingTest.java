@@ -153,6 +153,39 @@ class OracleCompositeKeyRenderingTest {
         }
     }
 
+    // Oracle has no CREATE/DROP ... IF [NOT] EXISTS; the base defaults emit exactly that (ORA-00922).
+    // The idempotent link/collection DDL must route through the PL/SQL ORA-00955/ORA-00942 block instead.
+    @Test
+    void idempotentJoinTableDdlUsesPlSqlBlockNotAnsiIfExists() {
+        JoinTableDefinition def = joinTable(Item.class, "labels", Label.class);
+
+        String create = dialect.schemaGenerator().createJoinTableIfNotExists(def);
+        assertTrue(create.startsWith("begin execute immediate '") && create.endsWith("end;"), create);
+        assertTrue(create.contains("sqlcode != -955"), create);
+        assertTrue(!create.contains("if not exists"), create);
+        // The wrapped CREATE still carries Oracle-native types (no bigint leak through the block).
+        assertTrue(create.contains("number(19)") && !create.contains("bigint"), create);
+
+        String drop = dialect.schemaGenerator().dropJoinTableIfExists("item_label");
+        assertEquals(
+                "begin execute immediate 'drop table \"item_label\" purge'; "
+                        + "exception when others then if sqlcode != -942 then raise; end if; end;",
+                drop);
+        assertTrue(!drop.contains("if exists"), drop);
+    }
+
+    @Test
+    void idempotentCollectionTableDdlUsesPlSqlBlockNotAnsiIfExists() {
+        io.nova.metadata.ElementCollectionInfo info = factory.getEntityMetadata(Warehouse.class)
+                .findProperty("binNumbers").orElseThrow().elementCollectionInfo();
+        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(Long.class);
+
+        String create = dialect.schemaGenerator().createCollectionTableIfNotExists(definition);
+        assertTrue(create.startsWith("begin execute immediate '") && create.endsWith("end;"), create);
+        assertTrue(!create.contains("if not exists"), create);
+        assertTrue(create.contains("number(19)") && !create.contains("bigint"), create);
+    }
+
     private String collectionTableDdl(Class<?> owner, String property) {
         io.nova.metadata.ElementCollectionInfo info = factory.getEntityMetadata(owner)
                 .findProperty(property).orElseThrow().elementCollectionInfo();

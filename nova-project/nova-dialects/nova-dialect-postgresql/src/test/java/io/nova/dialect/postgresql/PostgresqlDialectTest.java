@@ -219,6 +219,33 @@ class PostgresqlDialectTest {
     }
 
     @Test
+    void rendersCallAsSelectFromFunctionRatherThanCallStatement() {
+        // PostgreSQL의 CALL 문은 CREATE PROCEDURE 오브젝트에만 통하고, Nova의 stored-procedure 기능은
+        // IN-only + result-set 모델(OUT/INOUT/REF_CURSOR는 fail-fast)이라 PostgreSQL에서는 항상
+        // SETOF/TABLE 반환 FUNCTION을 대상으로 한다. FUNCTION은 CALL로 부를 수 없으므로 select * from 형태여야 한다.
+        assertEquals(
+                "select * from find_expensive($1, $2)",
+                dialect.renderCall("find_expensive", 2)
+        );
+    }
+
+    @Test
+    void rendersCallWithSingleNumberedMarker() {
+        assertEquals(
+                "select * from lookup($1)",
+                dialect.renderCall("lookup", 1)
+        );
+    }
+
+    @Test
+    void rendersCallWithNoParametersAsEmptyArgumentList() {
+        assertEquals(
+                "select * from refresh_view()",
+                dialect.renderCall("refresh_view", 0)
+        );
+    }
+
+    @Test
     void addForeignKeyQuotesIdentifiersWithDoubleQuotes() {
         String ddl = dialect.schemaGenerator().addForeignKey(new io.nova.metadata.ForeignKeyDefinition(
                 "fk_child", "fk_child_parent",
