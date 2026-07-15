@@ -97,6 +97,26 @@ public final class PostgresqlDialect implements Dialect {
                 + " where " + quote(pkColumn) + " = '" + pkColumnValue + "'";
     }
 
+    @Override
+    public String renderCall(String procedureName, int parameterCount) {
+        // 기본 구현의 "CALL proc(?, ?)"는 PostgreSQL의 CREATE PROCEDURE 오브젝트에만 통한다. Nova의
+        // ReactiveStoredProcedureQuery는 OUT/INOUT/REF_CURSOR를 fail-fast로 거부하는 IN-only + result-set
+        // 모델이라(ReactiveStoredProcedureQuery 문서 참조), PostgreSQL에서 결과 행을 낼 수 있는 대상은 항상
+        // SETOF/TABLE을 반환하는 FUNCTION이다 — PROCEDURE는 이 모델로 행을 낼 수 없다. FUNCTION은 CALL로 부를
+        // 수 없으므로("X is not a procedure") 대신 표준 "select * from proc(...)" 형태로 호출한다.
+        // 기본 구현의 루프는 i=0부터 marker(i)를 호출하는데, "?" 고정 marker(H2/MySQL)에서는 index가
+        // 무시돼 무해하지만 PostgreSQL의 번호 marker($n)는 1-based이므로 그대로 베끼면 "$0, $1"이 나가는
+        // off-by-one 버그가 된다. i+1로 1-based 인덱스를 명시해 다른 렌더링 경로($1부터 시작)와 정합시킨다.
+        StringBuilder sql = new StringBuilder("select * from ").append(procedureName).append('(');
+        for (int i = 0; i < parameterCount; i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append(bindMarkers().marker(i + 1));
+        }
+        return sql.append(')').toString();
+    }
+
     private static final class PostgresqlSqlRenderer extends AbstractSqlRenderer {
         private PostgresqlSqlRenderer(Dialect dialect) {
             super(dialect);
