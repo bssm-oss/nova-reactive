@@ -42,6 +42,7 @@ Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 
 - 분리한 단위 수만큼 worktree spawn(기본 4, 결합도에 따라 조정). 각 worktree는 `isolation: "worktree"` + `run_in_background: true`.
 - **설계-우선(2-agent)**: 각 worktree에서 먼저 **opus 시니어 아키텍트**가 설계(접근/변경 파일/함정/테스트 계획)를 산출한 뒤, **sonnet 구현 agent**가 그 설계대로 구현한다(architect→executor). 단순 fail-fast 제거 등 저난도 feature는 설계를 경량화하거나 단일 구현 agent로 축소.
+- **설계-단계 deep-interview 게이트 (필수)**: 아키텍트는 **사실(코드가 어떻게 동작하는지)만 코드로 확정**하고, **제품/스코프/정책 결정은 절대 자율 확정 금지 → "열린 결정(질문 + 선택지 2~4 + 추천 + 트레이드오프)"으로 surface**한다. 오케스트레이터는 그 열린 결정을 **사용자와 deep-interview(한 번에 한 결정, 근거 인용, `AskUserQuestion`)로 확정한 뒤**에야 구현 agent를 spawn한다. "불확실하면 알아서 확정하라"는 **사실검증에만** 허용; 스코프/정책 선택엔 금물. (실사례: JPQL 트랙이 "미지원 4범주"로 시작했으나 코드검증 결과 "대부분 이미 구현, 진짜 신규는 ANY/ALL/SOME뿐"으로 스코프 붕괴 — 키워드 스캔 착시를 아키텍트가 사실확정해 걷어냄.) 참조 [[feedback_pipeline_track_streaming]] §7.
 - **모델 라우팅 기본 = 난도별 분기** (opus 일색 금지): 기계적/재사용 위주 → sonnet, 신규 알고리즘·복잡 SQL·hub 광범위 → opus. 참조 [[feedback_pipeline_track_streaming]].
 - agent prompt 공통 헤더:
 
@@ -72,6 +73,16 @@ Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 git -C <worktree path> log --oneline main..HEAD
 git -C <worktree path> diff main..HEAD
 ```
+
+### 역할 분리 (필수 — 저자≠검증자, 자기승인 금지)
+
+구현 agent(저자)는 자기 코드를 스스로 승인할 수 없다. 병합 전 검증은 **저자와 다른 컨텍스트의 독립 에이전트**가 수행한다. 참조 [[feedback_pipeline_track_streaming]] §8.
+
+- **(a) 독립 테스트 저자** — 구현 agent가 자기 테스트를 쓰면 자기 가정을 인코딩해 구성상 통과하고, 놓친 케이스는 테스트도 못 짚는다(특히 JPA 파리티=저자가 정답 정의). 별도 `reactive-test-writer`를 붙여 **저자 테스트를 증거로 신뢰하지 말고** adversarial behavioral 테스트를 독립 작성·실행한다. **FAIL = 결함 후보**(기대치를 무르게 바꿔 green 만들기 금지).
+- **(b) 보안 리뷰어 전용 레인** — **SQL 생성 경로를 신규 추가·확장하는 트랙**(JPQL→SQL, 렌더러, dialect)은 `security-reviewer`를 별도 레인으로 돌려 인젝션·바인딩(리터럴=bind marker, 식별자=`dialect.quote`, 함수명/토큰=화이트리스트)만 집중 검토. 일반 code-reviewer가 과소평가하는 사각.
+- **(c) 독립 verifier** — 결함찾기(reviewer)와 **별개 역할**로, 완료 증거·테스트 적합성·수용기준 커버리지·`test.skip`/`.only`/stub/미구현 분기 같은 **가짜 완료**를 검출한다(fail-fast 가드).
+- **(d) 리뷰어에게 oracle 제공** — 리뷰어 프롬프트에 AGENTS.md 룰만이 아니라 **승인된 설계 + 사용자 deep-interview 결정**을 정답지로 넘겨 코드 correctness뿐 아니라 **설계/결정 conformance**까지 검증하게 한다.
+- **오케스트레이터가 직접 하는 건 build 외부검증(증거 수집)뿐** — 코드 판단(리뷰/승인)은 항상 제3 에이전트. sandbox 권한 불일치로 agent가 build를 못 돌렸을 수 있으므로 오케스트레이터는 밖에서 build를 재확인([[feedback_agent_sandbox_inconsistent]]).
 
 검토 포인트 매 cycle 공통:
 - 보호 contract 시그니처 변경 여부 (룰 #6), blocking call (룰 #4), ThreadLocal (룰 #5), 룰 #1 dep 무변경
