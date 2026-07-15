@@ -148,12 +148,19 @@ class CompositeToOneJoinIntegrationTest {
     }
 
     @Test
-    void jpqlSelectCompositeToOneProjectionFailsFast() {
-        // SELECT c.parent(복합 to-one을 단일 컬럼으로 투영)은 축약 불가 — 조용한 오답 대신 fail-fast.
+    void jpqlSelectCompositeToOneProjectionReturnsIdStub() {
+        // SELECT c.parent(복합 to-one)는 단일 컬럼 축약이 아니라 참조 엔티티 id-stub(@EmbeddedId만 채운 unmanaged
+        // 인스턴스)으로 투영된다 — 다중 FK 컬럼을 canonical 순서(region, code)로 읽어 조립한다.
         StepVerifier.create(
-                        jpql.createQuery("SELECT c.parent FROM WjChild c", Object.class).getResultList())
-                .expectError()
-                .verify();
+                        jpql.createQuery("SELECT c.parent FROM WjChild c WHERE c.id = 1", WjParent.class)
+                                .getResultList())
+                .assertNext(p -> {
+                    assertEquals("US", p.getId().getRegion());
+                    assertEquals(1, p.getId().getCode());
+                    // stub은 @Id 컴포넌트만 채운다 — non-id 필드(name)는 fetch 전 참조 표현이라 null.
+                    assertEquals(null, p.getName());
+                })
+                .verifyComplete();
     }
 
     // ------------------------------------------------------------------------------------

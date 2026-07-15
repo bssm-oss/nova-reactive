@@ -3,6 +3,7 @@ package io.nova.query.jpql;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.ToOneForeignKeyColumn;
 import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
 import io.nova.query.Pageable;
@@ -159,9 +160,10 @@ public final class JpqlQuery<T> {
             translated = sqlBuilder.buildScalarSelect(select);
             int columns = translated.selectionCount();
             ConstructorCall ctor = constructorProjection(select);
+            List<TranslatedSql.ResultSlot> slots = translated.slots();
             mapper = ctor != null
                     ? constructorMapper(ctor, columns)
-                    : row -> (T) mapScalarRow(row, columns);
+                    : row -> (T) mapSlots(row, slots);
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
@@ -432,15 +434,42 @@ public final class JpqlQuery<T> {
                 + target.getName());
     }
 
-    private Object mapScalarRow(RowAccessor row, int columns) {
-        if (columns == 1) {
-            return row.get(columnLabel(0), Object.class);
+    /**
+     * 논리 슬롯 목록을 기준으로 한 행을 매핑한다. 슬롯 1개면(기존 단일 scalar 동작 보존, {@code SELECT c.parent}
+     * 단독 투영 포함) 그 슬롯 값을 그대로 반환하고, 그 외에는 슬롯별 값을 담은 {@code Object[]}를 반환한다.
+     * 물리 selectionCount가 아니라 <b>논리 슬롯 개수</b>가 기준이다 — composite-only 투영은 물리 컬럼이 N>1개여도
+     * 논리 슬롯은 1개이므로 bare stub을 반환한다.
+     */
+    private Object mapSlots(RowAccessor row, List<TranslatedSql.ResultSlot> slots) {
+        if (slots.size() == 1) {
+            return readSlot(row, slots.get(0));
         }
-        Object[] values = new Object[columns];
-        for (int i = 0; i < columns; i++) {
-            values[i] = row.get(columnLabel(i), Object.class);
+        Object[] values = new Object[slots.size()];
+        for (int i = 0; i < slots.size(); i++) {
+            values[i] = readSlot(row, slots.get(i));
         }
         return values;
+    }
+
+    /**
+     * 슬롯 하나를 읽는다. 평범한 scalar 슬롯({@code compositeFk == null})은 라벨 컬럼 1개를 그대로 읽고,
+     * 복합키 to-one 슬롯은 N개 FK 컬럼을 <b>저장 타입</b>으로 읽어(도메인 @Id 타입이 아니라 — read-source-type
+     * 함정 회피, {@link ToOneForeignKeyColumn#columnType()}) 도메인 값으로 디코드한 뒤
+     * {@link io.nova.metadata.ToOneForeignKey#assembleStub(List)}로 참조 엔티티 id-stub을 조립한다
+     * (all-null이면 {@code null}).
+     */
+    private Object readSlot(RowAccessor row, TranslatedSql.ResultSlot slot) {
+        if (slot.compositeFk() == null) {
+            return row.get(columnLabel(slot.firstColumn()), Object.class);
+        }
+        List<ToOneForeignKeyColumn> fkColumns = slot.compositeFk().columns();
+        List<Object> decoded = new ArrayList<>(fkColumns.size());
+        for (int i = 0; i < fkColumns.size(); i++) {
+            ToOneForeignKeyColumn fkColumn = fkColumns.get(i);
+            Object stored = row.get(columnLabel(slot.firstColumn() + i), fkColumn.columnType());
+            decoded.add(fkColumn.toPropertyValue(stored));
+        }
+        return slot.compositeFk().assembleStub(decoded);
     }
 
     private NativeQuery toNativeQuery(TranslatedSql translated) {

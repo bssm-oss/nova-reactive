@@ -339,10 +339,69 @@ class JpqlSqlBuilderTest {
     }
 
     @Test
-    void failsFastOnTerminalSelectionOfCompositeKeyToOne() {
+    void terminalProjectionOfCompositeKeyToOneRendersAllForeignKeyColumnsAsOneLogicalSlot() {
+        // SELECT c.parent(복합 to-one)은 대표 컬럼 1개로 축약할 수 없으므로 FK 컴포넌트 전부를 canonical
+        // ToOneForeignKey 순서(p_k1, p_k2)대로 렌더하고, 논리 슬롯은 1개(물리 컬럼 2개)로 묶는다.
+        TranslatedSql t = compositeScalar("SELECT c.parent FROM CompositeJoinChild c");
+        assertEquals(
+                "select c.\"p_k1\" as \"c0\", c.\"p_k2\" as \"c1\" from \"gc_composite_child\" c",
+                t.sql());
+        assertEquals(2, t.selectionCount());
+        assertTrue(t.bindings().isEmpty());
+        assertEquals(1, t.slots().size());
+        TranslatedSql.ResultSlot slot = t.slots().get(0);
+        assertEquals(0, slot.firstColumn());
+        assertEquals(2, slot.columnCount());
+        assertEquals(List.of("p_k1", "p_k2"), slot.compositeFk().columns().stream()
+                .map(io.nova.metadata.ToOneForeignKeyColumn::columnName).toList());
+    }
+
+    @Test
+    void mixedScalarAndCompositeToOneProjectionProducesTwoSlots() {
+        // SELECT c.id, c.parent 는 scalar 슬롯 1개(물리 컬럼 0) + composite 슬롯 1개(물리 컬럼 1..2)가 된다.
+        TranslatedSql t = compositeScalar("SELECT c.id, c.parent FROM CompositeJoinChild c");
+        assertEquals(
+                "select c.\"id\" as \"c0\", c.\"p_k1\" as \"c1\", c.\"p_k2\" as \"c2\" "
+                        + "from \"gc_composite_child\" c",
+                t.sql());
+        assertEquals(3, t.selectionCount());
+        assertEquals(2, t.slots().size());
+        TranslatedSql.ResultSlot scalarSlot = t.slots().get(0);
+        assertEquals(0, scalarSlot.firstColumn());
+        assertEquals(1, scalarSlot.columnCount());
+        assertEquals(null, scalarSlot.compositeFk());
+        TranslatedSql.ResultSlot compositeSlot = t.slots().get(1);
+        assertEquals(1, compositeSlot.firstColumn());
+        assertEquals(2, compositeSlot.columnCount());
+        assertTrue(compositeSlot.compositeFk() != null);
+    }
+
+    @Test
+    void selectNewConstructorArgumentRejectsCompositeKeyToOne() {
         JpqlSqlBuilder b = compositeBuilder();
         JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
-                "SELECT c.parent FROM CompositeJoinChild c").parse();
+                "SELECT NEW com.x.Dto(c.id, c.parent) FROM CompositeJoinChild c").parse();
+        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
+        assertTrue(ex.getMessage().contains("SELECT NEW"));
+    }
+
+    @Test
+    void failsFastOnGroupByOverCompositeKeyToOne() {
+        // GROUP BY는 pathColumn -> columnOf를 그대로 타므로(단일 컬럼 자리) 여전히 fail-fast해야 한다;
+        // SELECT 투영만 id-stub 다중컬럼 경로를 새로 얻었다.
+        JpqlSqlBuilder b = compositeBuilder();
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT COUNT(c) FROM CompositeJoinChild c GROUP BY c.parent").parse();
+        JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
+        assertTrue(ex.getMessage().contains("composite-key"));
+    }
+
+    @Test
+    void failsFastOnOrderByOverCompositeKeyToOne() {
+        // ORDER BY도 renderExpression -> pathColumn -> columnOf 경로를 그대로 타므로 fail-fast를 유지한다.
+        JpqlSqlBuilder b = compositeBuilder();
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT c.id FROM CompositeJoinChild c ORDER BY c.parent").parse();
         JpqlException ex = assertThrows(JpqlException.class, () -> b.buildScalarSelect(select));
         assertTrue(ex.getMessage().contains("composite-key"));
     }

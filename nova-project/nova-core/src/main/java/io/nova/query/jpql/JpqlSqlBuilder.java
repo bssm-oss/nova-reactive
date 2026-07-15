@@ -101,7 +101,8 @@ public final class JpqlSqlBuilder {
         List<DiscriminatorConstraint> constraints = collectDiscriminatorConstraints(ctx, select);
 
         int[] columns = {0};
-        String selectSql = capture(ctx, () -> renderSelectionList(ctx, select.selectItems(), columns));
+        List<TranslatedSql.ResultSlot> slots = new ArrayList<>();
+        String selectSql = capture(ctx, () -> renderSelectionList(ctx, select.selectItems(), columns, slots));
         String whereSql = (constraints.isEmpty() && select.where() == null)
                 ? null : capture(ctx, () -> renderWhereWithConstraints(ctx, constraints, select.where()));
         String groupSql = select.groupBy().isEmpty()
@@ -129,7 +130,7 @@ public final class JpqlSqlBuilder {
         if (orderSql != null) {
             ctx.sql.append(" order by ").append(orderSql);
         }
-        return new TranslatedSql(ctx.sql.toString(), ctx.bindings, TranslatedSql.ResultKind.SCALAR, columns[0]);
+        return new TranslatedSql(ctx.sql.toString(), ctx.bindings, TranslatedSql.ResultKind.SCALAR, columns[0], slots);
     }
 
     public TranslatedSql buildUpdate(JpqlStatement.Update update) {
@@ -295,21 +296,66 @@ public final class JpqlSqlBuilder {
     // SELECT list
     // ----------------------------------------------------------------------------------------
 
-    private void renderSelectionList(Ctx ctx, List<SelectItem> items, int[] columns) {
+    private void renderSelectionList(
+            Ctx ctx, List<SelectItem> items, int[] columns, List<TranslatedSql.ResultSlot> slots) {
         for (SelectItem item : items) {
             if (item.isEntity()) {
                 throw new JpqlException("Entity selection (SELECT " + item.entityAlias()
                         + ") is not handled by the scalar builder; this is an internal routing error");
             }
             if (item.isConstructor()) {
-                // NEW 생성자 프로젝션: 각 인자를 스칼라 컬럼으로 투영한다(인스턴스화는 JpqlQuery가 담당).
+                // NEW 생성자 프로젝션: 각 인자를 스칼라 컬럼으로 투영한다(인스턴스화는 JpqlQuery가 담당). 복합키
+                // to-one은 1:1 컬럼-인자 매핑이 성립하지 않으므로 v1에서는 명확히 거부한다(조용한 축약 대신).
                 for (Expression arg : item.constructorCall().arguments()) {
+                    if (compositeToOneRef(ctx, arg) != null) {
+                        throw new JpqlException("Composite-key to-one association cannot be used as a "
+                                + "SELECT NEW constructor argument in v1 (its foreign key spans multiple columns); "
+                                + "select its @Id components explicitly instead");
+                    }
                     renderColumn(ctx, arg, columns);
                 }
             } else {
-                renderColumn(ctx, item.expression(), columns);
+                renderPlainSelectItem(ctx, item.expression(), columns, slots);
             }
         }
+    }
+
+    /**
+     * 평범한(비-{@code NEW}) SELECT 항목 1개를 렌더한다. 복합키 타겟 to-one terminal({@code SELECT c.parent})이면
+     * {@link #renderCompositeToOneProjection}으로 N개 물리 컬럼 + 논리 슬롯 1개를 만들고, 그 외에는 기존처럼 컬럼
+     * 1개 + scalar 슬롯 1개를 만든다.
+     */
+    private void renderPlainSelectItem(
+            Ctx ctx, Expression expr, int[] columns, List<TranslatedSql.ResultSlot> slots) {
+        CompositeToOneRef ref = compositeToOneRef(ctx, expr);
+        if (ref != null) {
+            renderCompositeToOneProjection(ctx, ref, columns, slots);
+            return;
+        }
+        int start = columns[0];
+        renderColumn(ctx, expr, columns);
+        slots.add(new TranslatedSql.ResultSlot(start, 1, null));
+    }
+
+    /**
+     * 복합키 타겟 to-one terminal 투영({@code SELECT c.parent}): 참조 {@code @Id} 컴포넌트 순서대로(canonical
+     * {@code ToOneForeignKey} 순서) 각 FK 컬럼을 {@code alias."fkcol" as "cK"}로 렌더하고, 그 물리 컬럼 구간을
+     * 논리 슬롯 1개로 묶는다({@code compositeFk}가 채워짐). read 경로({@link JpqlQuery})가 같은 순서로 디코드해
+     * id-stub을 조립하므로, 여기서 순서를 재정렬하면 silent corruption이 된다.
+     */
+    private void renderCompositeToOneProjection(
+            Ctx ctx, CompositeToOneRef ref, int[] columns, List<TranslatedSql.ResultSlot> slots) {
+        int start = columns[0];
+        List<ToOneForeignKeyColumn> fkColumns = ref.property().toOneForeignKey().columns();
+        for (ToOneForeignKeyColumn fkColumn : fkColumns) {
+            if (columns[0] > 0) {
+                ctx.sql.append(", ");
+            }
+            appendCompositeColumn(ctx, ref.alias(), fkColumn);
+            ctx.sql.append(" as ").append(dialect.quote(JpqlQuery.columnLabel(columns[0])));
+            columns[0]++;
+        }
+        slots.add(new TranslatedSql.ResultSlot(start, fkColumns.size(), ref.property().toOneForeignKey()));
     }
 
     private void renderColumn(Ctx ctx, Expression expr, int[] columns) {

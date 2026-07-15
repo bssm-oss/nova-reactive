@@ -87,6 +87,11 @@ class CompositeToOneQueryH2IntegrationTest {
                 .then();
     }
 
+    /** {@link #seed}에 이어 4번째 shipment(s4, id=4)를 warehouse가 {@code null}인 채로 추가한다. */
+    private reactor.core.publisher.Mono<Void> seedWithNullWarehouseShipment(Wiring w) {
+        return seed(w).then(w.operations().save(new Shipment(null))).then();
+    }
+
     @Test
     void jpqlOrderingComparisonReturnsLexicographicallyLessRows() {
         Wiring w = wire();
@@ -228,6 +233,98 @@ class CompositeToOneQueryH2IntegrationTest {
                 .verifyComplete();
     }
 
+    // ------------------------------------------------------------------------------------
+    // scalar 투영 위치의 복합키 to-one: SELECT c.warehouse -> Warehouse id-stub(@EmbeddedId만 채운 unmanaged
+    // 인스턴스). 비-id 필드(label)는 fetch 전 참조 표현이라 채워지지 않는다(stub 시맨틱).
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void jpqlScalarProjectionOfCompositeToOneReturnsIdStub() {
+        Wiring w = wire();
+        StepVerifier.create(
+                seed(w).thenMany(w.jpql()
+                        .createQuery("SELECT c.warehouse FROM Shipment c ORDER BY c.id", Warehouse.class)
+                        .getResultList()))
+                .assertNext(wh -> assertWarehouseId(wh, 10L, "AA"))
+                .assertNext(wh -> assertWarehouseId(wh, 10L, "BB"))
+                .assertNext(wh -> assertWarehouseId(wh, 20L, "AA"))
+                .verifyComplete();
+    }
+
+    @Test
+    void jpqlScalarProjectionOfCompositeToOneLeavesNonIdFieldsNull() {
+        // stub은 참조 엔티티의 @Id 컴포넌트만 채운다 — fetch 전 참조 표현과 일치시키기 위함(비-id 필드는 null).
+        Wiring w = wire();
+        StepVerifier.create(
+                seed(w).thenMany(w.jpql()
+                        .createQuery("SELECT c.warehouse FROM Shipment c ORDER BY c.id", Warehouse.class)
+                        .getResultList()))
+                .assertNext(wh -> org.junit.jupiter.api.Assertions.assertEquals(null, wh.getLabel()))
+                .expectNextCount(2)
+                .verifyComplete();
+    }
+
+    @Test
+    void jpqlMixedScalarAndCompositeToOneProjectionReturnsObjectArrayWithIdStub() {
+        Wiring w = wire();
+        StepVerifier.create(
+                seed(w).thenMany(w.jpql()
+                        .createQuery("SELECT c.id, c.warehouse FROM Shipment c ORDER BY c.id", Object[].class)
+                        .getResultList()))
+                .assertNext(row -> {
+                    org.junit.jupiter.api.Assertions.assertEquals(1L, row[0]);
+                    assertWarehouseId((Warehouse) row[1], 10L, "AA");
+                })
+                .assertNext(row -> {
+                    org.junit.jupiter.api.Assertions.assertEquals(2L, row[0]);
+                    assertWarehouseId((Warehouse) row[1], 10L, "BB");
+                })
+                .assertNext(row -> {
+                    org.junit.jupiter.api.Assertions.assertEquals(3L, row[0]);
+                    assertWarehouseId((Warehouse) row[1], 20L, "AA");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void jpqlMixedProjectionWithNullForeignKeyYieldsNullStubInsideObjectArray() {
+        // c.id, c.warehouse에서 4번째 shipment의 warehouse는 FK 전 컬럼이 null이므로 assembleStub이 null을
+        // 돌려준다. 그 null은 Object[] 원소이지 top-level 매핑값 자체가 아니므로(R2DBC의 "mapper returned null"
+        // 제약은 top-level에만 적용) 정상적으로 흐른다 — 아래 단독 테스트와 대비.
+        Wiring w = wire();
+        StepVerifier.create(
+                seedWithNullWarehouseShipment(w).thenMany(w.jpql()
+                        .createQuery("SELECT c.id, c.warehouse FROM Shipment c WHERE c.id = 4", Object[].class)
+                        .getResultList()))
+                .assertNext(row -> {
+                    org.junit.jupiter.api.Assertions.assertEquals(4L, row[0]);
+                    org.junit.jupiter.api.Assertions.assertNull(row[1]);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void jpqlBareScalarProjectionWithNullForeignKeyHitsPreExistingNullMapperLimitation() {
+        // 알려진 한계(이 F1 스코프 밖): 단독 SELECT c.warehouse(논리 슬롯 1개)에서 assembleStub이 null을 돌려주면
+        // 그 null이 top-level Flux 매핑값 자체가 된다. Nova의 queryNative는 R2dbcSqlExecutor.coreQuery에서
+        // R2DBC Result.map(mapper)로 직결되는데, reactor/R2DBC driver는 매핑 함수가 null을 반환하는 것을
+        // 금지한다("The mapper ... returned a null value."). 이 제약은 복합키 to-one 전용이 아니라 단일
+        // nullable scalar 컬럼(SELECT e.middleName 등)에도 이미 동일하게 적용되는 사전 존재 한계이며, nova-r2dbc
+        // (SqlExecutor/Result 매핑) 변경이 필요해 이 태스크(F1: nova-core 3파일)의 범위 밖이다.
+        Wiring w = wire();
+        StepVerifier.create(
+                seedWithNullWarehouseShipment(w).thenMany(w.jpql()
+                        .createQuery("SELECT c.warehouse FROM Shipment c WHERE c.id = 4", Warehouse.class)
+                        .getResultList()))
+                .verifyErrorMatches(error -> error instanceof NullPointerException
+                        && error.getMessage() != null && error.getMessage().contains("returned a null value"));
+    }
+
+    private static void assertWarehouseId(Warehouse warehouse, long whNo, String region) {
+        org.junit.jupiter.api.Assertions.assertEquals(whNo, warehouse.getId().getWhNo());
+        org.junit.jupiter.api.Assertions.assertEquals(region, warehouse.getId().getRegion());
+    }
+
     // ============================== fixtures ==============================
 
     @Embeddable
@@ -243,6 +340,14 @@ class CompositeToOneQueryH2IntegrationTest {
         public WarehouseKey(Long whNo, String region) {
             this.whNo = whNo;
             this.region = region;
+        }
+
+        public Long getWhNo() {
+            return whNo;
+        }
+
+        public String getRegion() {
+            return region;
         }
     }
 
@@ -260,6 +365,14 @@ class CompositeToOneQueryH2IntegrationTest {
         public Warehouse(WarehouseKey id, String label) {
             this.id = id;
             this.label = label;
+        }
+
+        public WarehouseKey getId() {
+            return id;
+        }
+
+        public String getLabel() {
+            return label;
         }
     }
 
