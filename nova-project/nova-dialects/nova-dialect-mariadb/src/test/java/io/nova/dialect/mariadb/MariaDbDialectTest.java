@@ -113,13 +113,21 @@ class MariaDbDialectTest {
     }
 
     @Test
-    void sequenceNextValueSqlIsUnsupported() {
-        UnsupportedOperationException exception = org.junit.jupiter.api.Assertions.assertThrows(
-                UnsupportedOperationException.class,
-                () -> dialect.sequenceNextValueSql("seq")
+    void sequenceNextValueSqlRendersNextvalWithBacktickQuoting() {
+        // MariaDB(10.3+)는 MySQL과 달리 네이티브 SEQUENCE를 지원한다 — NEXTVAL() 인자는 문자열 리터럴이 아니라
+        // 시퀀스 식별자이므로 backtick quoting을 쓴다(PostgreSQL의 nextval('name') 문자열 인자와 다른 문법).
+        assertEquals(
+                "select nextval(`account_id_seq`) as " + io.nova.sql.Dialect.SEQUENCE_VALUE_COLUMN,
+                dialect.sequenceNextValueSql("account_id_seq")
         );
+    }
 
-        org.junit.jupiter.api.Assertions.assertTrue(exception.getMessage().contains("mariadb"));
+    @Test
+    void sequenceNextValueSqlRejectsBlankName() {
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sequenceNextValueSql(" ")
+        );
     }
 
     @Test
@@ -209,5 +217,139 @@ class MariaDbDialectTest {
                         + "from `accounts` where `email_address` = ? for update",
                 statement.sql()
         );
+    }
+
+    @Test
+    void rendersTableGeneratorIncrementSqlWithBacktickIdentifiers() {
+        // MariaDbDialect는 tableGeneratorIncrementSql을 override하지 않고 Dialect 기본 구현을 그대로 쓴다 —
+        // quote()가 backtick을 반환하므로 상속된 기본 구현도 MariaDB에 맞는 식별자 quoting을 낸다는 것을 잠근다.
+        assertEquals(
+                "update `id_generators` set `gen_value` = `gen_value` + 5"
+                        + " where `gen_name` = 'account_id'",
+                dialect.tableGeneratorIncrementSql("id_generators", "gen_value", "gen_name", "account_id", 5)
+        );
+    }
+
+    @Test
+    void rendersTableGeneratorSelectSqlWithStableAlias() {
+        assertEquals(
+                "select `gen_value` as " + io.nova.sql.Dialect.TABLE_GENERATOR_VALUE_COLUMN
+                        + " from `id_generators` where `gen_name` = 'account_id'",
+                dialect.tableGeneratorSelectSql("id_generators", "gen_value", "gen_name", "account_id")
+        );
+    }
+
+    @Test
+    void rendersElementCollectionValueColumnTypesByStorageType() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        EntityMetadata<EcHolder> holder = factory.getEntityMetadata(EcHolder.class);
+
+        String stringColorsDdl = dialect.schemaGenerator().createCollectionTable(
+                holder.findProperty("stringColors").orElseThrow()
+                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                stringColorsDdl.contains("`string_colors` varchar(255)"), stringColorsDdl);
+
+        String ordinalColorsDdl = dialect.schemaGenerator().createCollectionTable(
+                holder.findProperty("ordinalColors").orElseThrow()
+                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                ordinalColorsDdl.contains("`ordinal_colors` integer"), ordinalColorsDdl);
+
+        String refsDdl = dialect.schemaGenerator().createCollectionTable(
+                holder.findProperty("refs").orElseThrow()
+                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+        org.junit.jupiter.api.Assertions.assertTrue(refsDdl.contains("`refs` varchar(255)"), refsDdl);
+    }
+
+    @Test
+    void rendersScalarUuidFloatAndShortColumnsByStorageType() {
+        EntityMetadata<ScalarHolder> holder = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(ScalarHolder.class);
+        String ddl = dialect.schemaGenerator().createTable(holder);
+        // UUID 스칼라는 저장타입 String → varchar (UuidStringConverter), Float → real, Short → smallint.
+        org.junit.jupiter.api.Assertions.assertTrue(ddl.contains("`uid` varchar(255)"), ddl);
+        org.junit.jupiter.api.Assertions.assertTrue(ddl.contains("`ratio` real"), ddl);
+        org.junit.jupiter.api.Assertions.assertTrue(ddl.contains("`level` smallint"), ddl);
+    }
+
+    @Test
+    void rendersToOneForeignKeyColumnsByReferencedIdStorageType() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        String ddl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(FkChild.class));
+        // to-one FK 컬럼은 참조 @Id 저장타입을 따른다: UUID→varchar, Integer→integer, Long→bigint.
+        org.junit.jupiter.api.Assertions.assertTrue(ddl.contains("`uuid_ref` varchar(255)"), ddl);
+        org.junit.jupiter.api.Assertions.assertTrue(ddl.contains("`int_ref` integer"), ddl);
+        org.junit.jupiter.api.Assertions.assertTrue(ddl.contains("`long_ref` bigint"), ddl);
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "fk_uuid_parent")
+    static class FkUuidParent {
+        @jakarta.persistence.Id
+        java.util.UUID id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "fk_integer_parent")
+    static class FkIntegerParent {
+        @jakarta.persistence.Id
+        Integer id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "fk_long_parent")
+    static class FkLongParent {
+        @jakarta.persistence.Id
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "fk_child")
+    static class FkChild {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.ManyToOne(targetEntity = FkUuidParent.class)
+        @jakarta.persistence.JoinColumn(name = "uuid_ref")
+        FkUuidParent uuidRef;
+
+        @jakarta.persistence.ManyToOne(targetEntity = FkIntegerParent.class)
+        @jakarta.persistence.JoinColumn(name = "int_ref")
+        FkIntegerParent intRef;
+
+        @jakarta.persistence.ManyToOne(targetEntity = FkLongParent.class)
+        @jakarta.persistence.JoinColumn(name = "long_ref")
+        FkLongParent longRef;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "scalar_holder")
+    static class ScalarHolder {
+        @jakarta.persistence.Id
+        Long id;
+        java.util.UUID uid;
+        Float ratio;
+        Short level;
+    }
+
+    enum Hue { RED, GREEN, BLUE }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "ec_holder")
+    static class EcHolder {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+        java.util.Set<Hue> stringColors;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.ORDINAL)
+        java.util.Set<Hue> ordinalColors;
+
+        @jakarta.persistence.ElementCollection
+        java.util.Set<java.util.UUID> refs;
     }
 }
