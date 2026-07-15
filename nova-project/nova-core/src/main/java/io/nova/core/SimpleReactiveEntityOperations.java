@@ -954,16 +954,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // removeOrphans가 retainedIds를 동기적으로 읽으므로 반드시 subscription 시점(=persistChildren 완료 후)에
         // 호출되도록 Mono.defer로 감싼다. 그러지 않으면 assembly 시점에 아직 save 전인 child의 id(null)를 읽어
         // retainedIds가 비고, 결국 "이 parent의 child 전부 삭제"로 붕괴해 방금 저장한 child까지 지워진다.
+        // 이 stateless 경로에는 세션-바운드 reparenting 개념이 없으므로 제외 집합은 항상 비어 있다.
         return persistChildren.then(
-                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parentId, children)).then());
+                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parentId, children, List.of())).then());
     }
 
     /**
      * orphanRemoval 삭제를 발행한다. child 측 mappedBy FK 컬럼이 parentId이면서 현재 컬렉션에 남은 child id가
-     * 아닌 row를 모두 삭제한다. 현재 컬렉션이 비었으면 이 parent에 속한 child를 전부 삭제한다.
+     * 아니고 {@code excludeIds}에도 없는 row를 모두 삭제한다. 현재 컬렉션이 비었고 {@code excludeIds}도 비었으면
+     * 이 parent에 속한 child를 전부 삭제한다. {@code excludeIds}는 세션 flush 전용 보호 집합이다 — 이 parent의
+     * baseline에는 있었으나 현재 컬렉션에서는 빠졌지만, 실은 삭제 대상(orphan)이 아니라 <em>다른 parent로 옮겨진
+     * child</em>(reparenting)라서 삭제하면 안 되는 id들을 담는다(호출부 {@link #diffOneToMany}의 movedElsewhereIds
+     * 참고). stateless 호출부(eager cascade)는 reparenting 개념이 없으므로 항상 빈 리스트를 넘긴다.
      */
     private Mono<Long> removeOrphans(
-            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId, List<Object> children) {
+            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId,
+            List<Object> children, List<Object> excludeIds) {
         List<Object> retainedIds = new ArrayList<>();
         for (Object child : children) {
             Object childId = childMetadata.idProperty().read(child);
@@ -971,6 +977,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 retainedIds.add(childId);
             }
         }
+        retainedIds.addAll(excludeIds);
         Condition fkMatches = Criteria.eq(mappedByProperty.propertyName(), parentId);
         QuerySpec spec = retainedIds.isEmpty()
                 ? QuerySpec.empty().where(fkMatches)
@@ -2076,8 +2083,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * orphanRemoval이면 정리한다 — 현행 eager cascade와 동등한 의미의 flush-safe 버전이다. 복합키 child는
      * {@link #resolveMappedByProperty}가 이미 fail-fast로 거부한다(단일 {@code @Id}만 지원). {@code @OrderColumn}이
      * 있으면 재인덱싱을 하지 않고 fail-fast한다(S2 전까지 세션 미지원, 아래 참고). 이미 관리 중인(non-null id) child가
-     * baseline에 없는 상태로 나타나면(다른 parent 컬렉션에서 옮겨온 reparenting) 조용히 orphan 처리/무시하는 대신
-     * fail-fast한다 — 실제 지원은 후속(S1은 detect-and-reject까지만).
+     * baseline에 없는 상태로 나타나면(다른 parent 컬렉션에서 옮겨온 reparenting) — child의 owning {@code @ManyToOne}이
+     * 갱신되지 않았으면(inverse-only 이동) 조용히 orphan 처리/무시하는 대신 fail-fast하고(gaining side, 실제
+     * 지원은 후속), owning-side가 정식으로 갱신됐으면(정식 reparent) 통과시킨다. 그 정식 reparent가 안전하려면
+     * losing side도 협조해야 한다: {@link #removeOrphans}/{@link #disownOrphans}로 넘기기 전에
+     * {@link #movedElsewhereIds}로 "실제로는 다른 parent에 새로 소속된 child"를 걸러내 삭제/FK-null 대상에서
+     * 뺀다 — 그러지 않으면 losing side의 정리가 child 자신의 FK repoint UPDATE보다 먼저(또는 대신) 실행돼
+     * 정식 reparent조차 데이터를 잃을 수 있다.
      */
     private Mono<Void> diffOneToMany(
             PersistenceSession session, PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata,
@@ -2193,15 +2205,31 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // 구독돼 INSERT가 완료돼야 채워지므로, 그 계산 자체를 Mono.defer로 감싸 subscription 시점(=persistNew
         // 완료 후)에 평가되게 한다. 그러지 않으면 assembly 시점에 아직 null인 신규 child id를 retainedIds에서
         // 빠뜨려 방금 INSERT한 child까지 orphan으로 오인해 지워버린다(기존 cascadeOneToManyProperty의 동일 함정과 대칭).
+        //
+        // reparent 결함 수정: removedIds 중 실제로는 orphan이 아니라 "다른 parent로 옮겨간 child"가 섞여 있을 수
+        // 있다(D2 가드가 이미 놓아준 정식 reparent — child의 owning @ManyToOne을 직접 set한 경우). 그런 child를
+        // orphan과 똑같이 지우거나 FK-null 하면, 그 child 자신의 flushEntry가 나중에 발행할 FK repoint UPDATE보다
+        // 이 losing-side 정리가 먼저 실행돼(flush가 managedEntries()를 등록 순서로 순회하므로) 이동을 덮어써버린다
+        // — DELETE는 아예 행을 없애 이후 UPDATE가 0행에 조용히 실패하고, FK-null UPDATE는 이동 UPDATE가 뒤이어
+        // 덮어써 최종적으로는 무해하지만 여전히 논리적으로 틀리다. movedElsewhereIds가 이 부분집합을 찾아
+        // removeOrphans/disownOrphans의 삭제·null화 대상에서 뺀다.
+        List<Object> movedElsewhere = (haveBaseline && !removedIds.isEmpty())
+                ? movedElsewhereIds(session, metadata, childMetadata, mappedByProperty, ownerId, removedIds)
+                : List.of();
+        List<Object> trueOrphanIds = haveBaseline
+                ? (movedElsewhere.isEmpty() ? removedIds : removedKeys(removedIds, movedElsewhere))
+                : List.of();
+
         Mono<Void> handleOrphans;
         if (property.orphanRemoval()) {
-            handleOrphans = (haveBaseline && removedIds.isEmpty())
+            handleOrphans = (haveBaseline && trueOrphanIds.isEmpty())
                     ? Mono.empty()
-                    : Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, ownerId, currentChildren).then());
+                    : Mono.defer(() -> removeOrphans(
+                            childMetadata, mappedByProperty, ownerId, currentChildren, movedElsewhere).then());
         } else if (haveBaseline) {
-            handleOrphans = removedIds.isEmpty()
+            handleOrphans = trueOrphanIds.isEmpty()
                     ? Mono.empty()
-                    : disownOrphans(childMetadata, mappedByProperty, ownerId, removedIds);
+                    : disownOrphans(childMetadata, mappedByProperty, ownerId, trueOrphanIds);
         } else {
             // baseline 없음(detached) + orphanRemoval 없음: 현행 eager cascade와 동일하게 정리를 하지 않는다.
             handleOrphans = Mono.empty();
@@ -2215,6 +2243,40 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             entry.putCollectionSnapshot(property.propertyName(), updatedIds);
             return Mono.<Void>empty();
         }));
+    }
+
+    /**
+     * {@code removedIds}(baseline에는 있었으나 이 parent의 현재 컬렉션에는 없는 child id) 중, 실제로는 orphan이
+     * 아니라 <b>다른 parent로 옮겨간(reparenting) child</b>인 id들을 찾는다. 판정: 그 id의 child가 이 세션에서
+     * managed 상태이고, 그 child의 현재 owning {@code @ManyToOne} 참조({@link PersistentProperty#readReferenceInstance}
+     * — D2 가드(:2149 근처)가 쓰는 것과 동일한 경로)가 <b>non-null이면서 이 owner가 아닌 다른 값</b>을 가리키면
+     * "옮겨간" 것으로 판정한다. owner 참조가 null이거나 여전히 이 owner를 가리키면(사용자가 owning-side를 안 세팅했거나
+     * 명시적으로 null 세팅한 경우) 진짜 orphan이므로 여기 포함하지 않는다 — 호출부가 정상적으로 삭제/FK-null 한다.
+     * managed 엔트리를 id로 직접 찾는 API가 없어 세션 전체를 선형 스캔한다({@code removedIds}가 보통 소수라 무비용).
+     */
+    private List<Object> movedElsewhereIds(
+            PersistenceSession session, EntityMetadata<?> ownerMetadata, EntityMetadata<?> childMetadata,
+            PersistentProperty mappedByProperty, Object ownerId, List<Object> removedIds) {
+        if (removedIds.isEmpty()) {
+            return List.of();
+        }
+        java.util.Set<Object> removedSet = new java.util.HashSet<>(removedIds);
+        List<Object> moved = new ArrayList<>();
+        for (PersistenceSession.ManagedEntry candidate : session.managedEntries()) {
+            if (candidate.metadata().entityType() != childMetadata.entityType()) {
+                continue;
+            }
+            Object candidateId = childMetadata.idProperty().read(candidate.entity());
+            if (candidateId == null || !removedSet.contains(candidateId)) {
+                continue;
+            }
+            Object currentOwnerRef = mappedByProperty.readReferenceInstance(candidate.entity());
+            Object currentOwnerId = currentOwnerRef == null ? null : ownerMetadata.readIdValue(currentOwnerRef);
+            if (currentOwnerId != null && !Objects.equals(currentOwnerId, ownerId)) {
+                moved.add(candidateId);
+            }
+        }
+        return moved;
     }
 
     /**

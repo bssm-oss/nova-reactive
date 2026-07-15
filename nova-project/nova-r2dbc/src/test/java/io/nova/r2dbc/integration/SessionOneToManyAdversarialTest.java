@@ -16,7 +16,6 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
@@ -30,6 +29,7 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -417,30 +417,12 @@ class SessionOneToManyAdversarialTest {
     }
 
     @Test
-    @Disabled("KNOWN DEFECT (open question, reported not fixed): flush iteration order races the losing side's"
-            + " removeOrphans DELETE against the moved child's own scalar-dirty-check FK UPDATE. Session"
-            + " registration order for this scenario is [bagA, movedMarble, bagB, fillerMarble] (parent registered"
-            + " on load, its then-current children registered right after via captureCollectionSnapshots ->"
-            + " registerLoadedOneToManyChildren, before the next findById begins). flush() iterates managedEntries()"
-            + " in that exact order, so flushEntry(bagA) — which runs diffOneToMany and, because orphanRemoval=true"
-            + " and the moved marble is no longer in bagA's current collection, calls removeOrphans (SimpleReactiveEntityOperations"
-            + " ~diffOneToMany orphan-handling, method around :2200) — executes and DELETEs the marble row *before*"
-            + " flushEntry(movedMarble) ever runs. removeOrphans is an unconditional DELETE ... WHERE bag_id = A AND"
-            + " id NOT IN (retained); it has no way to know the row is about to be re-homed by a later flushEntry in"
-            + " the same flush. By the time movedMarble's own flushEntry executes its dirty-check UPDATE (SET"
-            + " bag_id = B), the row no longer exists, so the UPDATE silently affects 0 rows. Net effect: even"
-            + " though the user followed the exact 'set the owning @ManyToOne side' procedure the D2 fail-fast"
-            + " message recommends, the marble is permanently lost when orphanRemoval=true. The FK-null variant"
-            + " (properReparentByUpdatingOwningSideMovesChildToNewParent_noOrphanRemoval, orphanRemoval=false) does"
-            + " NOT lose data because disownOrphans issues an UPDATE ... SET fk = NULL instead of a DELETE, and"
-            + " movedBook's later flushEntry UPDATE simply overwrites that NULL back to the correct owner — a"
-            + " row survives an UPDATE-then-UPDATE race but not a DELETE-then-UPDATE race. Repro: input = seed bagA"
-            + " with 1 marble + bagB with 1 marble, in one session load both, call moved.setBag(bagB) (owning-side"
-            + " update) then move it between the in-memory collections, commit; expected = 2 marble rows survive"
-            + " (filler + moved, moved pointing at bagB); actual = 1 row (moved was deleted). Left disabled per"
-            + " coordinator instruction (report, do not fix in this round).")
     void properReparentByUpdatingOwningSideMovesChildToNewParent_withOrphanRemoval() {
         // Bag: cascade=ALL + orphanRemoval=true — losing side(A)의 removeOrphans가 DELETE를 낼 수 있는 더 위험한 조합.
+        // 이전 라운드에서 실결함으로 확인됐다: bagA의 diffOneToMany가 movedMarble을 orphan으로 오인해 DELETE했다
+        // (flush가 managedEntries()를 [bagA, movedMarble, bagB, fillerMarble] 순으로 순회하므로, bagA의 정리가
+        // movedMarble 자신의 FK-repoint UPDATE보다 먼저 실행됨). movedElsewhereIds가 이 부분집합을 losing-side
+        // 삭제 대상에서 제외하도록 고친 뒤로는 통과해야 한다.
         Bag a = seedBag("a", "onlymarble");
         Bag b = seedBag("b", "filler");
         Long marbleId = support.operations().findById(Bag.class, a.getId())
@@ -475,6 +457,65 @@ class SessionOneToManyAdversarialTest {
                 .assertNext(bag -> assertEquals(Set.of("filler", "onlymarble"),
                         bag.getItems().stream().map(Marble::getColor).collect(Collectors.toSet()),
                         "bag B가 filler와 이동한 onlymarble을 담아야 한다"))
+                .verifyComplete();
+    }
+
+    // ---------------------------------------------------------------------
+    // Edge 6e/6f (over-exclude 경계 회귀 가드): owning-side를 갱신하지 않고 컬렉션에서만 뺀 child는 진짜
+    // orphan이다 — movedElsewhereIds가 "이동됐다"고 잘못 판정해 삭제/FK-null에서 보호하면 안 된다.
+    // ---------------------------------------------------------------------
+    @Test
+    void genuineOrphanWithoutOwningSideUpdateIsStillDeleted_orphanRemoval() {
+        // Bag: orphanRemoval=true. owning-side(marble.bag)는 그대로 두고 컬렉션에서만 뺀다 — 진짜 orphan.
+        Bag seeded = seedBag("b", "keep", "drop");
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(Bag.class, seeded.getId())
+                                .doOnNext(bag -> bag.getItems().removeIf(m -> "drop".equals(m.getColor())))
+                                .then()))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().count(Marble.class, QuerySpec.empty()))
+                .assertNext(count -> assertEquals(1L, count,
+                        "owning-side 미갱신 + 컬렉션 제거만 한 진짜 orphan은 movedElsewhereIds에 보호되지 않고"
+                                + " 여전히 DELETE 되어야 한다(over-exclude 금지)"))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Bag.class, seeded.getId()))
+                .assertNext(bag -> assertEquals(Set.of("keep"),
+                        bag.getItems().stream().map(Marble::getColor).collect(Collectors.toSet())))
+                .verifyComplete();
+    }
+
+    @Test
+    void genuineOrphanWithoutOwningSideUpdateIsStillDisowned_noOrphanRemoval() {
+        // Shelf: orphanRemoval=false. owning-side(book.shelf)는 그대로 두고 컬렉션에서만 뺀다 — 진짜 orphan.
+        Shelf seeded = seedShelf("s", "keep", "drop");
+        Long dropId = support.operations().findById(Shelf.class, seeded.getId())
+                .map(shelf -> shelf.getBooks().stream()
+                        .filter(book -> "drop".equals(book.getTitle())).findFirst().orElseThrow().getId())
+                .block();
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(Shelf.class, seeded.getId())
+                                .doOnNext(shelf -> shelf.getBooks().removeIf(book -> "drop".equals(book.getTitle())))
+                                .then()))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().count(Book.class, QuerySpec.empty()))
+                .assertNext(count -> assertEquals(2L, count, "orphanRemoval=false는 행을 지우지 않는다"))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Book.class, dropId))
+                .assertNext(book -> assertNull(book.getShelf(),
+                        "owning-side 미갱신 + 컬렉션 제거만 한 진짜 orphan은 movedElsewhereIds에 보호되지 않고"
+                                + " 여전히 FK-null 되어야 한다(over-exclude 금지)"))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Shelf.class, seeded.getId()))
+                .assertNext(shelf -> assertEquals(Set.of("keep"),
+                        shelf.getBooks().stream().map(Book::getTitle).collect(Collectors.toSet()),
+                        "shelf 컬렉션은 keep만 담아야 한다"))
                 .verifyComplete();
     }
 
