@@ -2,9 +2,11 @@ package io.nova.query.jpql;
 
 import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.ToOneForeignKeyColumn;
+import io.nova.query.QuerySpec;
 import io.nova.query.jpql.ast.Assignment;
 import io.nova.query.jpql.ast.ComparisonOp;
 import io.nova.query.jpql.ast.Expression;
@@ -16,6 +18,7 @@ import io.nova.query.jpql.ast.SelectItem;
 import io.nova.query.jpql.ast.Subquery;
 import io.nova.query.jpql.ast.WhenClause;
 import io.nova.sql.Dialect;
+import io.nova.sql.SqlStatement;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -246,7 +249,8 @@ public final class JpqlSqlBuilder {
     /** {@code from} 절 + 명시 조인 + 묵시 조인을 {@code ctx.sql}에 붙인다. */
     private void appendFrom(Ctx ctx, Block block) {
         EntityMetadata<?> rootMeta = resolver.resolve(block.rootEntity);
-        ctx.sql.append(" from ").append(tableRef(rootMeta)).append(' ').append(block.rootAlias);
+        ctx.sql.append(" from ");
+        rootFromClause(ctx, rootMeta, block.rootAlias);
         for (JoinClause join : block.explicitJoins) {
             EntityMetadata<?> owner = ctx.scope.resolve(join.ownerAlias());
             PersistentProperty relation = owner.findProperty(join.relation()).orElseThrow();
@@ -262,6 +266,26 @@ public final class JpqlSqlBuilder {
                     .append(" on ");
             appendJoinOn(ctx, ij.ownerAlias, ij.alias, ij.columnPairs);
         }
+    }
+
+    /**
+     * 루트 FROM 절을 렌더한다. JOINED/TABLE_PER_CLASS 상속 루트는 <b>새 FROM 형태를 만들지 않는다</b> —
+     * 이미 다형 SELECT가 JOIN/UNION을 파생 테이블(derived table)로 감싸 flat 컬럼 + discriminator 컬럼을
+     * 노출하므로(SINGLE_TABLE이 자기 물리 테이블에 갖는 것과 동일한 모양), 그 렌더러 출력을 재사용해 이 쿼리의
+     * root alias를 부여한다 — 그러면 기존 SINGLE_TABLE TYPE/TREAT/discriminator 렌더 경로가 그대로 동작한다.
+     * 그 외(SINGLE_TABLE/비상속)는 기존처럼 물리 테이블을 직접 참조한다.
+     */
+    private void rootFromClause(Ctx ctx, EntityMetadata<?> rootMeta, String alias) {
+        if (rootMeta.hasInheritance()
+                && (rootMeta.inheritance().joined() || rootMeta.inheritance().tablePerClass())) {
+            InheritanceLayout layout = resolver.inheritanceLayout(rootMeta.inheritance().root());
+            SqlStatement derived = rootMeta.inheritance().joined()
+                    ? dialect.sqlRenderer().selectJoinedPolymorphic(layout, QuerySpec.empty())
+                    : dialect.sqlRenderer().selectTablePerClassPolymorphic(layout, QuerySpec.empty());
+            ctx.sql.append('(').append(derived.sql()).append(") as ").append(alias);
+            return;
+        }
+        ctx.sql.append(tableRef(rootMeta)).append(' ').append(alias);
     }
 
     /** {@code ownerAlias.fk = targetAlias.targetId} 짝들을 {@code and}로 이어 ON 절 본문을 붙인다. */
@@ -1072,8 +1096,47 @@ public final class JpqlSqlBuilder {
                     + "' as a single column is not supported (its foreign key spans multiple columns); "
                     + "select its @Id components explicitly instead");
         }
+        if (metadata.hasInheritance() && metadata.inheritance().joined() && !metadata.isInheritanceRoot()) {
+            requireUnshadowedJoinedColumn(metadata, property);
+        }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? alias + "." + col : col;
+    }
+
+    /**
+     * JOINED 다형 SELECT의 파생 테이블(select list)은 컬럼명으로 dedupe한다(루트 먼저, 그다음 서브타입을
+     * 등록 순서대로 — {@code AbstractSqlRenderer#joinedSelectList} 참고) — 즉 같은 컬럼명이 먼저 emit된
+     * 소스의 값만 노출되고, 그 뒤에 같은 이름을 쓰는 다른 소스는 그 값을 조용히 대신 읽는다(비매칭 행에서는
+     * NULL). {@code TREAT(... AS Subtype).field}가 가리키는 컬럼이 실제로 이 서브타입 자기 테이블의 기여분이
+     * 아니라 루트나 더 먼저 등록된 형제 서브타입의 동명 컬럼에 가려진 것이면, silent wrong-column 대신
+     * 명확히 거부한다.
+     */
+    private void requireUnshadowedJoinedColumn(EntityMetadata<?> subMeta, PersistentProperty property) {
+        String columnName = property.columnName();
+        InheritanceLayout layout = resolver.inheritanceLayout(subMeta.inheritance().root());
+        for (PersistentProperty rootProp : layout.rootTableColumns()) {
+            if (rootProp.columnName().equals(columnName)) {
+                throw new JpqlException("TREAT(... AS " + subMeta.entityType().getSimpleName() + ")."
+                        + property.propertyName() + " refers to column '" + columnName + "', which collides "
+                        + "with a root column of the same name in the JOINED derived table; the derived SELECT "
+                        + "exposes only the root's value for that column name. Rename the column to disambiguate.");
+            }
+        }
+        for (InheritanceLayout.ConcreteSubtype subtype : layout.subtypes()) {
+            if (subtype.metadata().entityType() == subMeta.entityType()) {
+                return;
+            }
+            for (PersistentProperty siblingProp : subtype.ownTableColumns()) {
+                if (!siblingProp.id() && siblingProp.columnName().equals(columnName)) {
+                    throw new JpqlException("TREAT(... AS " + subMeta.entityType().getSimpleName() + ")."
+                            + property.propertyName() + " refers to column '" + columnName + "', which collides "
+                            + "with a same-named column already contributed by '"
+                            + subtype.metadata().entityType().getSimpleName() + "' earlier in the JOINED derived "
+                            + "table; the derived SELECT exposes only the first-registered source's value for "
+                            + "that column name. Rename the column to disambiguate.");
+                }
+            }
+        }
     }
 
     /** {@code (ownerAlias, relation)}에 대한 묵시 INNER JOIN을 만들거나 재사용하고 대상 별칭을 돌려준다. */
@@ -1111,10 +1174,14 @@ public final class JpqlSqlBuilder {
     // Inheritance: TYPE / TREAT / discriminator
     // ----------------------------------------------------------------------------------------
 
-    /** {@code TYPE(alias)} → 별칭 엔티티의 discriminator 컬럼 참조. SINGLE_TABLE 상속만 지원한다. */
+    /**
+     * {@code TYPE(alias)} → 별칭 엔티티의 discriminator 컬럼 참조. SINGLE_TABLE/JOINED/TABLE_PER_CLASS
+     * 모두 지원한다 — JOINED/TPC는 discriminator가 다형 SELECT 파생 테이블의 컬럼으로 노출되므로(루트에서
+     * 항상 한 번만 emit되어 컬럼명 충돌이 없다) SINGLE_TABLE과 동일하게 참조할 수 있다.
+     */
     private String discriminatorColumnRef(Ctx ctx, String alias) {
         EntityMetadata<?> meta = ctx.scope.resolve(alias);
-        requireSingleTableInheritance(meta, "TYPE(" + alias + ")");
+        requirePolymorphic(meta, "TYPE(" + alias + ")");
         String col = dialect.quote(meta.inheritance().discriminatorColumn());
         return ctx.qualify ? alias + "." + col : col;
     }
@@ -1135,9 +1202,9 @@ public final class JpqlSqlBuilder {
         return resolveColumn(ctx, treat.alias(), subMeta, treat.segments().get(0));
     }
 
-    /** downcast 대상 서브타입 메타데이터를 해석하고 같은 SINGLE_TABLE 계층인지 검증한다. */
+    /** downcast 대상 서브타입 메타데이터를 해석하고 같은 상속 계층인지 검증한다(3전략 모두 허용). */
     private EntityMetadata<?> resolveTreatSubtype(EntityMetadata<?> baseMeta, String subtypeName) {
-        requireSingleTableInheritance(baseMeta, "TREAT");
+        requirePolymorphic(baseMeta, "TREAT");
         EntityMetadata<?> subMeta = resolver.resolve(subtypeName);
         if (!subMeta.inheritance().present() || !subMeta.inheritance().sameHierarchy(baseMeta.inheritance())) {
             throw new JpqlException("TREAT target '" + subtypeName + "' is not a subtype in the same inheritance "
@@ -1146,14 +1213,10 @@ public final class JpqlSqlBuilder {
         return subMeta;
     }
 
-    private static void requireSingleTableInheritance(EntityMetadata<?> meta, String context) {
+    private static void requirePolymorphic(EntityMetadata<?> meta, String context) {
         if (!meta.hasInheritance()) {
             throw new JpqlException(context + " requires an @Inheritance entity; '"
                     + meta.entityType().getSimpleName() + "' is not polymorphic");
-        }
-        if (!meta.inheritance().singleTable()) {
-            throw new JpqlException(context + " is only supported for SINGLE_TABLE inheritance in v1; '"
-                    + meta.entityType().getSimpleName() + "' uses " + meta.inheritance().strategy());
         }
     }
 
@@ -1164,7 +1227,7 @@ public final class JpqlSqlBuilder {
     private List<DiscriminatorConstraint> collectDiscriminatorConstraints(Ctx ctx, JpqlStatement.Select select) {
         LinkedHashMap<String, DiscriminatorConstraint> byKey = new LinkedHashMap<>();
         EntityMetadata<?> rootMeta = ctx.scope.resolve(select.rootAlias());
-        if (rootMeta.hasInheritance() && rootMeta.inheritance().singleTable() && !rootMeta.isInheritanceRoot()) {
+        if (rootMeta.hasInheritance() && !rootMeta.isInheritanceRoot()) {
             byKey.putIfAbsent(constraintKey(select.rootAlias(), rootMeta.inheritance().discriminatorBindValue()),
                     new DiscriminatorConstraint(select.rootAlias(),
                             rootMeta.inheritance().discriminatorColumn(),

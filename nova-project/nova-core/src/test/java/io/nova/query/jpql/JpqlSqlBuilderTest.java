@@ -611,6 +611,91 @@ class JpqlSqlBuilderTest {
     }
 
     // ------------------------------------------------------------------------------------
+    // TYPE() / TREAT() polymorphism over JOINED / TABLE_PER_CLASS inheritance
+    // ------------------------------------------------------------------------------------
+
+    private JpqlSqlBuilder joinedBuilder() {
+        JpqlEntityResolver r = new JpqlEntityResolver(metadataFactory, List.of(JVehicle.class, JCar.class, JTruck.class));
+        return new JpqlSqlBuilder(dialect, r);
+    }
+
+    private TranslatedSql joinedScalar(String jpql) {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(jpql).parse();
+        return joinedBuilder().buildScalarSelect(select);
+    }
+
+    private JpqlSqlBuilder tpcBuilder() {
+        JpqlEntityResolver r = new JpqlEntityResolver(metadataFactory, List.of(TVehicle.class, TCar.class, TTruck.class));
+        return new JpqlSqlBuilder(dialect, r);
+    }
+
+    private TranslatedSql tpcScalar(String jpql) {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(jpql).parse();
+        return tpcBuilder().buildScalarSelect(select);
+    }
+
+    @Test
+    void rendersJoinedTypeEqualityAsDiscriminatorPredicateOverDerivedTable() {
+        TranslatedSql t = joinedScalar("SELECT v.name FROM JVehicle v WHERE TYPE(v) = JCar");
+        assertEquals(
+                "select v.\"name\" as \"c0\" from (select * from (select \"j_vehicle\".\"id\" as \"id\", "
+                        + "\"j_vehicle\".\"name\" as \"name\", \"j_car\".\"doors\" as \"doors\", "
+                        + "\"j_truck\".\"payload\" as \"payload\", \"j_vehicle\".\"kind\" as \"kind\" "
+                        + "from \"j_vehicle\" left join \"j_car\" on \"j_vehicle\".\"id\" = \"j_car\".\"id\" "
+                        + "left join \"j_truck\" on \"j_vehicle\".\"id\" = \"j_truck\".\"id\") as \"nova_joined\") "
+                        + "as v where v.\"kind\" = ?",
+                t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void rendersJoinedTreatProjectionWithAutomaticDiscriminatorOverDerivedTable() {
+        TranslatedSql t = joinedScalar("SELECT TREAT(v AS JCar).doors FROM JVehicle v");
+        assertTrue(t.sql().startsWith("select v.\"doors\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as v where v.\"kind\" = ?"), t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void rendersJoinedConcreteSubtypeRootWithAutomaticDiscriminatorOverDerivedTable() {
+        TranslatedSql t = joinedScalar("SELECT c.doors FROM JCar c");
+        assertTrue(t.sql().startsWith("select c.\"doors\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as c where c.\"kind\" = ?"), t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void rendersTablePerClassTypeEqualityAsDiscriminatorPredicateOverUnionDerivedTable() {
+        TranslatedSql t = tpcScalar("SELECT v.name FROM TVehicle v WHERE TYPE(v) = TCar");
+        assertTrue(t.sql().contains("union all"), t.sql());
+        assertTrue(t.sql().contains("'CAR' as \"kind\""), t.sql());
+        assertTrue(t.sql().contains("'TRUCK' as \"kind\""), t.sql());
+        assertTrue(t.sql().endsWith(") as \"nova_tpc\") as v where v.\"kind\" = ?"), t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void rendersTablePerClassTreatProjectionWithAutomaticDiscriminatorOverUnionDerivedTable() {
+        TranslatedSql t = tpcScalar("SELECT TREAT(v AS TCar).doors FROM TVehicle v");
+        assertTrue(t.sql().startsWith("select v.\"doors\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as v where v.\"kind\" = ?"), t.sql());
+        assertEquals(List.of(new JpqlBinding.Literal("CAR")), t.bindings());
+    }
+
+    @Test
+    void failsFastOnAmbiguousJoinedColumnShadowedByEarlierSiblingSubtype() {
+        // ShCar(discriminator "CAR")가 ShTruck(discriminator "TRUCK")보다 먼저 emit되므로, ShTruck.tag를
+        // 가리키는 파생 테이블 컬럼은 실제로 ShCar.tag의 값이다 — silent wrong-column 대신 명확히 거부한다.
+        JpqlEntityResolver r = new JpqlEntityResolver(
+                metadataFactory, List.of(ShVehicle.class, ShCar.class, ShTruck.class));
+        JpqlSqlBuilder shBuilder = new JpqlSqlBuilder(dialect, r);
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT TREAT(v AS ShTruck).tag FROM ShVehicle v").parse();
+        JpqlException ex = assertThrows(JpqlException.class, () -> shBuilder.buildScalarSelect(select));
+        assertTrue(ex.getMessage().contains("collides"), ex.getMessage());
+    }
+
+    // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------
 
@@ -638,6 +723,92 @@ class JpqlSqlBuilderTest {
     public static class Truck extends Vehicle {
         @Column(name = "payload")
         private double payload;
+    }
+
+    @Entity
+    @Table(name = "j_vehicle")
+    @Inheritance(strategy = InheritanceType.JOINED)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    public abstract static class JVehicle {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+    }
+
+    @Entity
+    @Table(name = "j_car")
+    @DiscriminatorValue("CAR")
+    public static class JCar extends JVehicle {
+        @Column(name = "doors")
+        private int doors;
+    }
+
+    @Entity
+    @Table(name = "j_truck")
+    @DiscriminatorValue("TRUCK")
+    public static class JTruck extends JVehicle {
+        @Column(name = "payload")
+        private double payload;
+    }
+
+    @Entity
+    @Table(name = "t_vehicle")
+    @Inheritance(strategy = InheritanceType.TABLE_PER_CLASS)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    public abstract static class TVehicle {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+    }
+
+    @Entity
+    @Table(name = "t_car")
+    @DiscriminatorValue("CAR")
+    public static class TCar extends TVehicle {
+        @Column(name = "doors")
+        private int doors;
+    }
+
+    @Entity
+    @Table(name = "t_truck")
+    @DiscriminatorValue("TRUCK")
+    public static class TTruck extends TVehicle {
+        @Column(name = "payload")
+        private double payload;
+    }
+
+    // 컬럼명 충돌(ambiguous derived-table column) fail-fast 전용 격리 fixture: ShCar/ShTruck가 같은
+    // 컬럼명("tag")을 서로 다른 의미로 선언한다(discriminator 알파벳 순 CAR < TRUCK이라 ShCar가 먼저 emit됨).
+    @Entity
+    @Table(name = "sh_vehicle")
+    @Inheritance(strategy = InheritanceType.JOINED)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    public abstract static class ShVehicle {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+    }
+
+    @Entity
+    @Table(name = "sh_car")
+    @DiscriminatorValue("CAR")
+    public static class ShCar extends ShVehicle {
+        @Column(name = "tag")
+        private String tag;
+    }
+
+    @Entity
+    @Table(name = "sh_truck")
+    @DiscriminatorValue("TRUCK")
+    public static class ShTruck extends ShVehicle {
+        @Column(name = "tag")
+        private String tag;
     }
 
     @Entity
@@ -684,6 +855,8 @@ class JpqlSqlBuilderTest {
 
     private static final class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
+        private final SqlRenderer renderer = new io.nova.sql.AbstractSqlRenderer(this) {
+        };
 
         @Override
         public String name() {
@@ -702,7 +875,7 @@ class JpqlSqlBuilderTest {
 
         @Override
         public SqlRenderer sqlRenderer() {
-            throw new UnsupportedOperationException("not needed for JPQL builder tests");
+            return renderer;
         }
 
         @Override

@@ -2,6 +2,7 @@ package io.nova.query.jpql;
 
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.metadata.InheritanceLayout;
 
 import java.util.HashMap;
 import java.util.Locale;
@@ -54,5 +55,13 @@ public final class JpqlEntityResolver {
     /** 클래스로 직접 메타데이터를 얻는다(엔티티 조회 결과 타입 해석 등). */
     public <T> EntityMetadata<T> resolve(Class<T> type) {
         return metadataFactory.getEntityMetadata(type);
+    }
+
+    /**
+     * JOINED/TABLE_PER_CLASS 상속 루트의 물리 테이블 배치를 해석한다(다형 SELECT 렌더링용). 코어 계약
+     * 표면이 아닌 이 패키지 내부 헬퍼다.
+     */
+    InheritanceLayout inheritanceLayout(Class<?> rootClass) {
+        return metadataFactory.inheritanceLayout(rootClass);
     }
 }

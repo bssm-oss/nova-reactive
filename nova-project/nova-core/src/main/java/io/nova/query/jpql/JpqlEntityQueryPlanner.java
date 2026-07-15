@@ -206,10 +206,6 @@ public final class JpqlEntityQueryPlanner {
             throw new JpqlException("TYPE(...) requires an @Inheritance entity; '"
                     + baseMeta.entityType().getSimpleName() + "' is not polymorphic");
         }
-        if (!baseMeta.inheritance().singleTable()) {
-            throw new JpqlException("TYPE(...) narrowing is only supported for SINGLE_TABLE inheritance in v1; '"
-                    + baseMeta.entityType().getSimpleName() + "' uses " + baseMeta.inheritance().strategy());
-        }
         EntityMetadata<?> subMeta = resolver.resolve(subtypeName);
         if (!subMeta.inheritance().present() || !subMeta.inheritance().sameHierarchy(baseMeta.inheritance())) {
             throw new JpqlException("TYPE(...) target '" + subtypeName + "' is not a subtype in the same "

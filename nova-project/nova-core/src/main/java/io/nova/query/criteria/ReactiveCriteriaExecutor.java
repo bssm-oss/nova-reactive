@@ -44,7 +44,7 @@ public final class ReactiveCriteriaExecutor {
         this.operations = Objects.requireNonNull(operations, "operations must not be null");
         Objects.requireNonNull(dialect, "dialect must not be null");
         this.metamodel = new CriteriaMetamodel(metadataFactory);
-        this.sqlBuilder = new CriteriaSqlBuilder(dialect);
+        this.sqlBuilder = new CriteriaSqlBuilder(dialect, metadataFactory);
         this.aliasedSqlBuilder = new AliasedCriteriaSqlBuilder(dialect);
     }
 
