@@ -1886,9 +1886,34 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * findById/findAll이 hydrate한 @OneToMany 컬렉션의 각 child를 세션 identity map에 편입한다({@link #captureCollectionSnapshots}
      * 전용 헬퍼). {@code hydrateChildSpec}은 session-agnostic으로 FetchGroup/EntityGraph 경로에서도 공유되므로 거기서
      * 직접 등록하지 않고, 세션이 실제로 있는 이 자리(findById/findAll의 기본 eager 경로)에서만 편입한다.
+     * <p>
+     * {@link PersistenceSession#registerOnLoad}는 child가 이미 이 세션에서 관리 중이면(예: 다른 parent를 통해
+     * 먼저 로드됨) 그 <em>canonical</em> 인스턴스를 반환하고 방금 디코딩된 중복 인스턴스는 버린다. 그 반환값을
+     * 버리면 parent 컬렉션이 non-canonical 중복을 계속 쥐게 되어, 그 중복 인스턴스에 가한 수정이 canonical
+     * {@link PersistenceSession.ManagedEntry}의 dirty diff에 안 잡히고 조용히 유실된다(silent lost update). 그래서
+     * 컬렉션이 {@code List}면 반환된 canonical로 원소를 되쓴다(rebind) — 컬렉션 자체는 D1 수정으로 이미 가변임이
+     * 보장된다. registerOnLoad(등록) → rebind → baseline 스냅샷 캡처(호출부 {@link #captureCollectionSnapshots})
+     * 순서를 지켜야 baseline이 rebind 이후의 canonical 컬렉션을 기준으로 찍힌다.
      */
     private void registerLoadedOneToManyChildren(PersistenceSession session, PersistentProperty property, Object collection) {
         EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+        if (collection instanceof List<?> rawList) {
+            @SuppressWarnings("unchecked")
+            List<Object> mutable = (List<Object>) rawList;
+            for (int i = 0; i < mutable.size(); i++) {
+                Object child = mutable.get(i);
+                if (child == null) {
+                    continue;
+                }
+                Object canonical = registerChildOnLoad(session, childMetadata, child);
+                if (canonical != child) {
+                    mutable.set(i, canonical);
+                }
+            }
+            return;
+        }
+        // List가 아닌 Collection(예: Set) @OneToMany는 index 기반 rebind가 불가하다 — 등록만 하고 canonical
+        // rebind는 건너뛴다(알려진 한계, 이 코드베이스의 @OneToMany는 현재 List만 실전 커버됨).
         for (Object child : (Iterable<?>) collection) {
             if (child != null) {
                 registerChildOnLoad(session, childMetadata, child);
@@ -1897,8 +1922,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     @SuppressWarnings("unchecked")
-    private <C> void registerChildOnLoad(PersistenceSession session, EntityMetadata<C> childMetadata, Object child) {
-        session.registerOnLoad(childMetadata, (C) child);
+    private <C> C registerChildOnLoad(PersistenceSession session, EntityMetadata<C> childMetadata, Object child) {
+        return session.registerOnLoad(childMetadata, (C) child);
     }
 
     /**
@@ -4213,6 +4238,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     /**
      * child fetch 결과를 parent id 기준으로 그룹화해 setter로 주입한다. parent id가 {@code null}이거나
      * 매칭되는 child가 없는 parent에는 빈 리스트가 주입된다.
+     * <p>
+     * 두 분기 모두 <b>항상 새로 만든 가변 {@code ArrayList}</b>를 주입한다({@code List.of()} 같은 불변 컬렉션은
+     * 절대 주입하지 않는다) — 세션 안에서 로드 직후 {@code parent.getItems().add(child)}로 신규 child를 추가하는
+     * 것이 S1의 핵심 유스케이스인데, child가 0개라 빈 컬렉션이 주입되는 흔한 경로에서 불변 리스트를 주면 그
+     * add() 호출이 {@link UnsupportedOperationException}으로 죽는다.
      */
     private <P, C> void assignChildrenToParents(
             List<P> parents,
@@ -4230,7 +4260,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         for (P parent : parents) {
             Object key = spec.parentIdExtractor().apply(parent);
-            List<C> bucket = key == null ? List.of() : grouped.getOrDefault(key, List.of());
+            List<C> bucket = key == null ? new ArrayList<>() : new ArrayList<>(grouped.getOrDefault(key, List.of()));
             spec.setter().accept(parent, bucket);
         }
     }
