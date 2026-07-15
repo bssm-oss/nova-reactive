@@ -28,7 +28,7 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 
 ## Module coordinates (Maven Central)
 
-All modules under the `io.github.bssm-oss` group are published at the same version (currently `2.7.0`).
+All modules under the `io.github.bssm-oss` group are published at the same version (currently `2.8.0`).
 
 ```
 io.github.bssm-oss:nova                          # aggregate (core + r2dbc + all dialects)

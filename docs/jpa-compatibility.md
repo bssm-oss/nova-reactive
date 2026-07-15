@@ -129,4 +129,4 @@ These declare cleanly but are rejected with a message until implemented — Nova
 > Types whose stored form does not decode back byte-for-byte (`BigDecimal` scale drift, sub-second
 > timestamp precision) are not recommended as key components.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.7.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.8.0`).
