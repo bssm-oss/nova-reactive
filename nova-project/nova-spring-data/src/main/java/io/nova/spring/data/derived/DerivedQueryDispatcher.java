@@ -44,6 +44,10 @@ public final class DerivedQueryDispatcher {
         }
         switch (query.subject()) {
             case FIND_ALL -> {
+                if (query.limit() != null) {
+                    // findTop<N>By / findFirst<N>By (N >= 2) — DB-side LIMIT N, no OFFSET.
+                    spec = spec.page(Pageable.of(query.limit(), 0L));
+                }
                 return operations.findAll((Class) entityType, spec);
             }
             case FIND_ONE -> {
@@ -82,17 +86,32 @@ public final class DerivedQueryDispatcher {
 
     private static Predicate toCondition(Part part, ArgumentCursor cursor) {
         String property = part.propertyName();
+        boolean ic = part.ignoreCase();
         return switch (part.keyword()) {
-            case EQ -> Criteria.eq(property, cursor.next(part, 0));
-            case NOT -> Criteria.ne(property, cursor.next(part, 0));
+            // EQ/NOT/LIKE 대소문자-무시 버전은 core의 ILIKE Condition으로 렌더된다 — PostgreSQL은 native
+            // ILIKE, 그 외 dialect는 lower(col) like lower(?) (Criteria.ilike/notIlike javadoc 참고).
+            case EQ -> ic
+                    ? Criteria.ilike(property, cursor.next(part, 0))
+                    : Criteria.eq(property, cursor.next(part, 0));
+            case NOT -> ic
+                    ? Criteria.notIlike(property, cursor.next(part, 0))
+                    : Criteria.ne(property, cursor.next(part, 0));
             case LT -> Criteria.lt(property, cursor.next(part, 0));
             case LTE -> Criteria.lte(property, cursor.next(part, 0));
             case GT -> Criteria.gt(property, cursor.next(part, 0));
             case GTE -> Criteria.gte(property, cursor.next(part, 0));
-            case LIKE -> Criteria.like(property, cursor.next(part, 0));
-            case STARTING_WITH -> Criteria.startsWith(property, requireString(part, cursor.next(part, 0)));
-            case ENDING_WITH -> Criteria.endsWith(property, requireString(part, cursor.next(part, 0)));
-            case CONTAINING -> Criteria.contains(property, requireString(part, cursor.next(part, 0)));
+            case LIKE -> ic
+                    ? Criteria.ilike(property, cursor.next(part, 0))
+                    : Criteria.like(property, cursor.next(part, 0));
+            case STARTING_WITH -> ic
+                    ? Criteria.startsWithIgnoreCase(property, requireString(part, cursor.next(part, 0)))
+                    : Criteria.startsWith(property, requireString(part, cursor.next(part, 0)));
+            case ENDING_WITH -> ic
+                    ? Criteria.endsWithIgnoreCase(property, requireString(part, cursor.next(part, 0)))
+                    : Criteria.endsWith(property, requireString(part, cursor.next(part, 0)));
+            case CONTAINING -> ic
+                    ? Criteria.containsIgnoreCase(property, requireString(part, cursor.next(part, 0)))
+                    : Criteria.contains(property, requireString(part, cursor.next(part, 0)));
             case IN -> Criteria.in(property, requireIterable(part, cursor.next(part, 0)));
             case NOT_IN -> Criteria.notIn(property, requireIterable(part, cursor.next(part, 0)));
             case BETWEEN -> Criteria.between(property, cursor.next(part, 0), cursor.next(part, 1));

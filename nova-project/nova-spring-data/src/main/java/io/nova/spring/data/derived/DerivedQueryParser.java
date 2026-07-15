@@ -4,10 +4,14 @@ import io.nova.query.Sort;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * method 이름을 {@link DerivedQuery}로 파싱한다. 클래스당 하나 만들어 reuse한다 — {@link EntityPropertyIndex}
@@ -16,12 +20,20 @@ import java.util.Optional;
  * <p>파싱은 4단계로 진행된다:
  * <ol>
  *   <li>method 이름에서 subject prefix를 잘라낸다 ({@code find}, {@code findAll}, {@code findFirst},
- *       {@code findTop}, {@code findOne}, {@code count}, {@code exists}, {@code delete}, {@code remove}).
- *       이어지는 {@code By}를 필수로 요구한다 — derived 경로는 항상 predicate를 가진다.</li>
+ *       {@code findFirst<N>}, {@code findTop}, {@code findTop<N>}, {@code findOne}, {@code count},
+ *       {@code exists}, {@code delete}, {@code remove}). 이어지는 {@code By}를 필수로 요구한다 —
+ *       derived 경로는 항상 predicate를 가진다. {@code findTop<N>By}/{@code findFirst<N>By}(N &gt;= 2)는
+ *       {@link Subject#FIND_ALL}을 유지하며 dispatcher가 DB-side {@code LIMIT N}을 적용하도록
+ *       {@link DerivedQuery#limit()}에 N을 싣는다 — N == 1은 기존 bare {@code findFirstBy}/
+ *       {@code findTopBy}와 동일하게 {@link Subject#FIND_ONE}로 처리된다.</li>
  *   <li>{@code OrderBy} 토큰을 기준으로 predicate part와 sort part로 분리한다.</li>
  *   <li>predicate part를 top-level {@code Or}로 1차 split, 각 conjunction을 {@code And}로 2차 split.</li>
- *   <li>각 conjunction 토큰에 대해 {@link EntityPropertyIndex}로 property를 greedy 매칭하고, 남은
- *       suffix를 {@link Keyword}로 매핑한다 — 잔여가 비어 있으면 default {@link Keyword#EQ}.</li>
+ *   <li>각 conjunction 토큰에 대해 {@link EntityPropertyIndex}로 property를 greedy 매칭한다. 남은
+ *       suffix가 {@code IgnoreCase}로 끝나면 떼어내 {@link Part#ignoreCase()} 플래그로 기록하고, 나머지를
+ *       {@link Keyword}로 매핑한다 — 잔여가 비어 있으면 default {@link Keyword#EQ}. {@code IgnoreCase}는
+ *       문자열 비교 keyword({@code EQ}/{@code NOT}/{@code LIKE}/{@code StartingWith}/{@code EndingWith}/
+ *       {@code Containing})에만 허용되며, 그 외 조합(예: {@code GreaterThanIgnoreCase})은
+ *       {@link IllegalArgumentException}으로 즉시 거부한다.</li>
  * </ol>
  *
  * <p>인식할 수 없는 이름은 {@link Optional#empty()}로 반환한다 — 호출자({@code SimpleReactiveRepository})는
@@ -38,6 +50,22 @@ public final class DerivedQueryParser {
     private static final String ORDER_BY = "OrderBy";
     private static final String AND = "And";
     private static final String OR = "Or";
+    private static final String IGNORE_CASE = "IgnoreCase";
+
+    /**
+     * {@code IgnoreCase} suffix를 받아들이는 keyword 집합. 문자열 비교와 무관한 keyword(예:
+     * {@code GreaterThan}, {@code Between}, {@code IsNull})에 {@code IgnoreCase}를 붙이는 것은
+     * 의미가 없으므로 파싱 시점에 명시적으로 거부한다.
+     */
+    private static final Set<Keyword> IGNORE_CASE_SUPPORTED = EnumSet.of(
+            Keyword.EQ, Keyword.NOT, Keyword.LIKE,
+            Keyword.STARTING_WITH, Keyword.ENDING_WITH, Keyword.CONTAINING);
+
+    /**
+     * {@code findTop<N>By} / {@code findFirst<N>By} 형태의 명시적 개수 prefix. N이 없는 {@code findTopBy}
+     * / {@code findFirstBy}는 {@link #PREFIXES}의 literal entry가 그대로 처리한다(N=1과 동일 동작).
+     */
+    private static final Pattern FIND_TOP_FIRST_N = Pattern.compile("^find(?:Top|First)(\\d+)By");
 
     private static final Map<String, Subject> PREFIXES;
 
@@ -77,7 +105,14 @@ public final class DerivedQueryParser {
             return Optional.empty();
         }
         Subject subject = subjectMatch.subject();
+        Integer limit = subjectMatch.limit();
         if (subject == Subject.FIND_ALL && reactor.core.publisher.Mono.class.isAssignableFrom(method.getReturnType())) {
+            if (limit != null) {
+                throw new IllegalArgumentException(
+                        "Derived query method '" + name + "' requests top " + limit
+                                + " result(s) but declares a Mono return type — Mono can only carry a single row;"
+                                + " use findFirstBy/findTop1By or change the return type to Flux");
+            }
             subject = Subject.FIND_ONE;
         }
         String remainder = name.substring(subjectMatch.prefix().length());
@@ -122,13 +157,34 @@ public final class DerivedQueryParser {
                             + method.getParameterCount());
         }
 
-        return Optional.of(new DerivedQuery(subject, orGroups, orderings, expectedArgs));
+        return Optional.of(new DerivedQuery(subject, orGroups, orderings, expectedArgs, limit));
     }
 
+    /**
+     * subject prefix를 찾는다. 명시적 개수를 갖는 {@code findTop<N>By}/{@code findFirst<N>By}부터 먼저
+     * 시도하고(예: {@code findTop3By}), 매칭되지 않으면 기존 literal {@link #PREFIXES}로 fall back한다.
+     *
+     * <p>{@code N == 1}은 {@code findFirstBy}/{@code findTopBy}(literal)와 동일하게 {@link Subject#FIND_ONE}
+     * (LIMIT 1, {@code Mono})로 취급한다. {@code N >= 2}는 {@link Subject#FIND_ALL}을 유지하되
+     * {@link SubjectMatch#limit()}에 N을 실어 dispatcher가 LIMIT N을 적용하도록 한다. {@code N == 0}은
+     * 의미가 없으므로 즉시 {@link IllegalArgumentException}으로 거부한다.
+     */
     private SubjectMatch matchSubject(String name) {
+        Matcher topFirstMatcher = FIND_TOP_FIRST_N.matcher(name);
+        if (topFirstMatcher.lookingAt()) {
+            String prefix = topFirstMatcher.group(0);
+            int n = Integer.parseInt(topFirstMatcher.group(1));
+            if (n == 0) {
+                throw new IllegalArgumentException(
+                        "Derived query method '" + name + "' requests top 0 results, which is meaningless");
+            }
+            return n == 1
+                    ? new SubjectMatch(prefix, Subject.FIND_ONE, null)
+                    : new SubjectMatch(prefix, Subject.FIND_ALL, n);
+        }
         for (Map.Entry<String, Subject> entry : PREFIXES.entrySet()) {
             if (name.startsWith(entry.getKey())) {
-                return new SubjectMatch(entry.getKey(), entry.getValue());
+                return new SubjectMatch(entry.getKey(), entry.getValue(), null);
             }
         }
         return null;
@@ -166,8 +222,21 @@ public final class DerivedQueryParser {
                             + token + "'. Known properties: " + propertyIndex.propertyNames());
         }
         EntityPropertyIndex.Match m = match.get();
-        Keyword keyword = matchKeyword(m.remainder(), methodName, token);
-        return new Part(m.propertyName(), keyword);
+        String remainder = m.remainder();
+        boolean ignoreCase = false;
+        if (remainder.endsWith(IGNORE_CASE)) {
+            remainder = remainder.substring(0, remainder.length() - IGNORE_CASE.length());
+            ignoreCase = true;
+        }
+        Keyword keyword = matchKeyword(remainder, methodName, token);
+        if (ignoreCase && !IGNORE_CASE_SUPPORTED.contains(keyword)) {
+            throw new IllegalArgumentException(
+                    "Derived query method '" + methodName + "' part '" + token
+                            + "' combines IgnoreCase with keyword " + keyword
+                            + ", which is not comparable case-insensitively — supported keywords are "
+                            + IGNORE_CASE_SUPPORTED);
+        }
+        return new Part(m.propertyName(), keyword, ignoreCase);
     }
 
     private static Keyword matchKeyword(String remainder, String methodName, String token) {
@@ -241,6 +310,6 @@ public final class DerivedQueryParser {
         return out;
     }
 
-    private record SubjectMatch(String prefix, Subject subject) {
+    private record SubjectMatch(String prefix, Subject subject, Integer limit) {
     }
 }

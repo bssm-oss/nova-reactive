@@ -85,6 +85,22 @@ class DerivedQueryParserTest {
         Mono<Account> findOneByEmail(String email);
 
         Mono<Account> findTopByEmail(String email);
+
+        Flux<Account> findTop2ByActiveTrue();
+
+        Flux<Account> findFirst3ByActiveTrueOrderByLoginCountDesc();
+
+        Flux<Account> findTop0ByActiveTrue();
+
+        Mono<Account> findTop3ByActiveTrue();
+
+        Flux<Account> findByEmailIgnoreCase(String email);
+
+        Flux<Account> findByEmailContainingIgnoreCase(String chunk);
+
+        Flux<Account> findByEmailNotIgnoreCase(String email);
+
+        Flux<Account> findByLoginCountGreaterThanIgnoreCase(int loginCount);
     }
 
     private final DerivedQueryParser parser = new DerivedQueryParser(Account.class);
@@ -154,6 +170,39 @@ class DerivedQueryParserTest {
         void findTopBy() {
             assertSame(Subject.FIND_ONE, parse("findTopByEmail", String.class).subject());
         }
+
+        @Test
+        @DisplayName("findTop<N>By(N>=2)는 FIND_ALL을 유지하고 limit에 N을 싣는다")
+        void findTopNStaysFindAllWithLimit() {
+            DerivedQuery q = parse("findTop2ByActiveTrue");
+            assertSame(Subject.FIND_ALL, q.subject());
+            assertEquals(2, q.limit());
+        }
+
+        @Test
+        @DisplayName("findFirst<N>By(N>=2)도 findTop<N>By와 동일하게 취급된다")
+        void findFirstNStaysFindAllWithLimit() {
+            DerivedQuery q = parse("findFirst3ByActiveTrueOrderByLoginCountDesc");
+            assertSame(Subject.FIND_ALL, q.subject());
+            assertEquals(3, q.limit());
+            assertEquals(1, q.orderings().size());
+        }
+
+        @Test
+        @DisplayName("findTop0By는 의미가 없으므로 즉시 fail")
+        void findTopZeroRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findTop0ByActiveTrue")));
+            assertTrue(ex.getMessage().contains("top 0"), () -> "unexpected message: " + ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("findTop<N>By(N>=2)에 Mono 반환 타입은 모순이므로 즉시 fail")
+        void findTopNWithMonoReturnTypeRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findTop3ByActiveTrue")));
+            assertTrue(ex.getMessage().contains("Mono"), () -> "unexpected message: " + ex.getMessage());
+        }
     }
 
     @Nested
@@ -210,6 +259,37 @@ class DerivedQueryParserTest {
         void temporalAliases() {
             assertSame(Keyword.GT, parse("findByCreatedAtAfter", Instant.class).orGroups().get(0).get(0).keyword());
             assertSame(Keyword.LT, parse("findByCreatedAtBefore", Instant.class).orGroups().get(0).get(0).keyword());
+        }
+
+        @Test
+        @DisplayName("IgnoreCase는 keyword는 그대로 두고 Part.ignoreCase() 플래그만 세운다")
+        void ignoreCaseSetsFlagWithoutChangingKeyword() {
+            Part eqPart = parse("findByEmailIgnoreCase", String.class).orGroups().get(0).get(0);
+            assertSame(Keyword.EQ, eqPart.keyword());
+            assertTrue(eqPart.ignoreCase());
+
+            Part containingPart = parse("findByEmailContainingIgnoreCase", String.class).orGroups().get(0).get(0);
+            assertSame(Keyword.CONTAINING, containingPart.keyword());
+            assertTrue(containingPart.ignoreCase());
+
+            Part notPart = parse("findByEmailNotIgnoreCase", String.class).orGroups().get(0).get(0);
+            assertSame(Keyword.NOT, notPart.keyword());
+            assertTrue(notPart.ignoreCase());
+        }
+
+        @Test
+        @DisplayName("IgnoreCase가 없는 part는 ignoreCase()가 false")
+        void withoutIgnoreCaseFlagIsFalse() {
+            Part p = parse("findByEmail", String.class).orGroups().get(0).get(0);
+            assertTrue(!p.ignoreCase());
+        }
+
+        @Test
+        @DisplayName("문자열 비교가 아닌 keyword와 IgnoreCase 조합은 즉시 fail")
+        void ignoreCaseOnNonStringKeywordRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> parser.tryParse(method("findByLoginCountGreaterThanIgnoreCase", int.class)));
+            assertTrue(ex.getMessage().contains("IgnoreCase"), () -> "unexpected message: " + ex.getMessage());
         }
     }
 

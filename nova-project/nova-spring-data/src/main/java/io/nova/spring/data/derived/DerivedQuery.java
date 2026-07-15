@@ -14,10 +14,14 @@ import java.util.List;
  * @param orderings     {@code OrderBy} 절의 정렬 항목 목록. 비어 있으면 정렬 절을 생략한다.
  * @param expectedArgs  메서드 파라미터에서 소비되어야 하는 총 인자 개수
  *                       — 모든 keyword의 parameterCount 합.
+ * @param limit         {@code findTop<N>By}/{@code findFirst<N>By}(N &gt;= 2)에서 명시된 결과 행 수
+ *                       상한. {@code null}이면 explicit limit 없음 — {@code subject}가 {@code FIND_ONE}인
+ *                       경우는 이 필드와 무관하게 dispatcher가 항상 LIMIT 1을 적용한다.
  */
 record DerivedQuery(
         Subject subject,
         List<List<Part>> orGroups,
         List<Ordering> orderings,
-        int expectedArgs) {
+        int expectedArgs,
+        Integer limit) {
 }

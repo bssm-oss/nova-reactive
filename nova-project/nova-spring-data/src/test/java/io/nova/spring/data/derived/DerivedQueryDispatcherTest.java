@@ -66,6 +66,12 @@ class DerivedQueryDispatcherTest {
         Flux<Account> findByEmailOrActiveFalse(String email);
 
         Flux<Account> findByActiveTrueOrderByLoginCountDesc();
+
+        Flux<Account> findTop2ByActiveTrue();
+
+        Flux<Account> findByEmailIgnoreCase(String email);
+
+        Flux<Account> findByEmailContainingIgnoreCase(String chunk);
     }
 
     private final CapturingOperations operations = new CapturingOperations();
@@ -222,6 +228,49 @@ class DerivedQueryDispatcherTest {
         Sort.Order order = sort.orders().get(0);
         assertEquals("loginCount", order.property());
         assertSame(Sort.Direction.DESC, order.direction());
+    }
+
+    @Test
+    @DisplayName("findTop2By → FIND_ALL 유지 + LIMIT 2 pageable")
+    void findTopNAppliesLimit() {
+        operations.nextFindAll = Flux.empty();
+
+        Object result = derived.tryDispatch(method("findTop2ByActiveTrue"), new Object[0]).orElseThrow();
+        StepVerifier.create((Flux<?>) result).verifyComplete();
+
+        QuerySpec spec = (QuerySpec) operations.lastInvocation().args()[1];
+        assertNotNull(spec.pageable(), "findTop<N>By must apply a pageable");
+        assertEquals(2, spec.pageable().limit());
+        assertEquals(0L, spec.pageable().offset());
+    }
+
+    @Test
+    @DisplayName("IgnoreCase(EQ)는 ILIKE condition으로 렌더된다")
+    void ignoreCaseEqualityUsesIlike() {
+        operations.nextFindAll = Flux.empty();
+
+        derived.tryDispatch(method("findByEmailIgnoreCase", String.class),
+                new Object[]{"A@nova.io"}).orElseThrow();
+
+        QuerySpec spec = (QuerySpec) operations.lastInvocation().args()[1];
+        Condition c = assertInstanceOf(Condition.class, spec.predicate());
+        assertSame(ComparisonOperator.ILIKE, c.operator());
+        assertEquals("email", c.property());
+        assertEquals("A@nova.io", c.value());
+    }
+
+    @Test
+    @DisplayName("IgnoreCase(Containing)은 %substring% 패턴의 ILIKE condition으로 렌더된다")
+    void ignoreCaseContainingUsesIlikeWithWildcards() {
+        operations.nextFindAll = Flux.empty();
+
+        derived.tryDispatch(method("findByEmailContainingIgnoreCase", String.class),
+                new Object[]{"nova"}).orElseThrow();
+
+        QuerySpec spec = (QuerySpec) operations.lastInvocation().args()[1];
+        Condition c = assertInstanceOf(Condition.class, spec.predicate());
+        assertSame(ComparisonOperator.ILIKE, c.operator());
+        assertEquals("%nova%", c.value());
     }
 
     record Invocation(String name, Object[] args) {
