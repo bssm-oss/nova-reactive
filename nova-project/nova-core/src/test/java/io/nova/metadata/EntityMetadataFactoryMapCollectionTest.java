@@ -155,10 +155,61 @@ class EntityMetadataFactoryMapCollectionTest {
     }
 
     @Test
-    void rejectsEntityKey() {
+    void mapsSingleIdEntityKeyToForeignKeyColumn() {
+        ElementCollectionInfo info = info(EntityKeyMap.class, "byEntity");
+
+        assertTrue(info.map());
+        assertTrue(info.mapKey().entityKey());
+        assertFalse(info.mapKey().embeddableKey());
+        assertEquals(KeyEntity.class, info.mapKey().keyType());
+        // 기본 이름: naming strategy 경유 <property>_key (@MapKeyJoinColumn 미지정).
+        assertEquals("by_entity_key", info.mapKey().keyColumn());
+        // KeyEntity.@Id는 컨버터 없는 순수 Long이므로 컬럼 타입도 Long 그대로다.
+        assertEquals(Long.class, info.mapKey().keyColumnType());
+        assertNull(info.mapKey().keyEnumType());
+        assertFalse(info.mapKey().enumKey());
+        // toCollectionTableDefinition도 단일 key 컬럼으로 반영돼야 한다(embeddable 다중 컬럼이 아님).
+        var definition = info.toCollectionTableDefinition(Long.class);
+        assertEquals("by_entity_key", definition.mapKey().columnName());
+        assertEquals(Long.class, definition.mapKey().columnType());
+        assertTrue(definition.mapKeyColumns().isEmpty());
+    }
+
+    @Test
+    void honorsMapKeyJoinColumnNameOnEntityKey() {
+        ElementCollectionInfo info = info(NamedEntityKeyMap.class, "byEntity");
+
+        assertTrue(info.mapKey().entityKey());
+        assertEquals("entity_ref", info.mapKey().keyColumn());
+    }
+
+    @Test
+    void mapsUuidIdEntityKeyToConverterColumn() {
+        ElementCollectionInfo info = info(UuidEntityKeyMap.class, "byUuidEntity");
+
+        assertTrue(info.mapKey().entityKey());
+        assertEquals(UuidKeyEntity.class, info.mapKey().keyType());
+        // UUID @Id 저장 표현은 varchar(String) via UuidStringConverter — target @Id 저장 규칙과 대칭.
+        assertEquals(String.class, info.mapKey().keyColumnType());
+        java.util.UUID id = java.util.UUID.randomUUID();
+        Object encoded = info.mapKey().encodeKey(id);
+        assertEquals(id.toString(), encoded, "UUID entity key는 varchar 저장 표현으로 인코딩돼야 한다");
+        assertEquals(id, info.mapKey().decodeKey(id.toString()),
+                "varchar 저장 표현이 도메인 UUID로 대칭 디코딩돼야 한다(read-source-type 함정 회피)");
+    }
+
+    @Test
+    void rejectsCompositeIdEntityKey() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(EntityKeyMap.class));
-        assertTrue(error.getMessage().contains("naming an entity key class"));
+                () -> factory.getEntityMetadata(CompositeIdEntityKeyMap.class));
+        assertTrue(error.getMessage().contains("composite @Id"));
+    }
+
+    @Test
+    void rejectsMapKeyColumnOnEntityKey() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(MapKeyColumnOnEntityKeyMap.class));
+        assertTrue(error.getMessage().contains("@MapKeyColumn is not valid on an entity map key"));
     }
 
     @Test
@@ -401,6 +452,72 @@ class EntityMetadataFactoryMapCollectionTest {
 
         @ElementCollection
         @MapKeyClass(KeyEntity.class)
+        Map<KeyEntity, String> byEntity;
+    }
+
+    @Entity
+    @Table(name = "named_entity_key_map")
+    static class NamedEntityKeyMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyClass(KeyEntity.class)
+        @jakarta.persistence.MapKeyJoinColumn(name = "entity_ref")
+        Map<KeyEntity, String> byEntity;
+    }
+
+    @Entity
+    @Table(name = "uuid_key_entity")
+    static class UuidKeyEntity {
+        @Id
+        java.util.UUID id;
+    }
+
+    @Entity
+    @Table(name = "uuid_entity_key_map")
+    static class UuidEntityKeyMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyClass(UuidKeyEntity.class)
+        Map<UuidKeyEntity, String> byUuidEntity;
+    }
+
+    @Embeddable
+    static class CompositeKeyEntityId {
+        Long region;
+        Long slot;
+    }
+
+    @Entity
+    @Table(name = "composite_id_key_entity")
+    static class CompositeIdKeyEntity {
+        @jakarta.persistence.EmbeddedId
+        CompositeKeyEntityId id;
+    }
+
+    @Entity
+    @Table(name = "composite_id_entity_key_map")
+    static class CompositeIdEntityKeyMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyClass(CompositeIdKeyEntity.class)
+        Map<CompositeIdKeyEntity, String> byEntity;
+    }
+
+    @Entity
+    @Table(name = "map_key_column_on_entity_key_map")
+    static class MapKeyColumnOnEntityKeyMap {
+        @Id
+        Long id;
+
+        @ElementCollection
+        @MapKeyClass(KeyEntity.class)
+        @MapKeyColumn(name = "entity_ref")
         Map<KeyEntity, String> byEntity;
     }
 

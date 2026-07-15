@@ -330,7 +330,7 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
             throw new CriteriaException("cb.treat(...) requires a Root created by this CriteriaBuilder");
         }
         EntityMetadata<T> subtypeMetadata = metamodel.resolve(type);
-        requireSingleTableSubtype(criteriaRoot.ownerMetadata(), subtypeMetadata, type);
+        requirePolymorphicSubtype(criteriaRoot.ownerMetadata(), subtypeMetadata, type);
         return new CriteriaTreatedRoot<>(type, subtypeMetadata, criteriaRoot.context());
     }
 
@@ -341,19 +341,16 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         }
         EntityMetadata<?> baseMetadata = typeExpr.source().metadata();
         EntityMetadata<?> subtypeMetadata = metamodel.resolve(subtype);
-        requireSingleTableSubtype(baseMetadata, subtypeMetadata, subtype);
+        requirePolymorphicSubtype(baseMetadata, subtypeMetadata, subtype);
         return new DiscriminatorPredicate(baseMetadata, subtypeMetadata);
     }
 
-    private static void requireSingleTableSubtype(
+    /** {@code cb.treat}/{@code cb.equal(root.type(), ...)} 대상 검증. 3전략(SINGLE_TABLE/JOINED/TPC) 모두 허용한다. */
+    private static void requirePolymorphicSubtype(
             EntityMetadata<?> baseMetadata, EntityMetadata<?> subtypeMetadata, Class<?> subtype) {
         if (!baseMetadata.hasInheritance()) {
             throw new CriteriaException("cb.treat/type requires an @Inheritance entity; '"
                     + baseMetadata.entityType().getSimpleName() + "' is not polymorphic");
-        }
-        if (!baseMetadata.inheritance().singleTable()) {
-            throw new CriteriaException("cb.treat/type is only supported for SINGLE_TABLE inheritance in v1; '"
-                    + baseMetadata.entityType().getSimpleName() + "' uses " + baseMetadata.inheritance().strategy());
         }
         if (!subtypeMetadata.inheritance().present()
                 || !subtypeMetadata.inheritance().sameHierarchy(baseMetadata.inheritance())) {

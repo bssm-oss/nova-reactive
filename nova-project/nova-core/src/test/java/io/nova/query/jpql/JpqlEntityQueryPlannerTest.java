@@ -4,11 +4,20 @@ import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.jpql.ast.JpqlStatement;
 import io.nova.support.fixtures.FixtureEntities;
+import jakarta.persistence.DiscriminatorColumn;
+import jakarta.persistence.DiscriminatorType;
+import jakarta.persistence.DiscriminatorValue;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Inheritance;
+import jakarta.persistence.InheritanceType;
+import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -74,5 +83,87 @@ class JpqlEntityQueryPlannerTest {
         // 비-복합 basic 컬럼 술어/정렬은 기존대로 통과해야 한다(guard가 과잉 거부하지 않음).
         assertDoesNotThrow(() ->
                 plan("SELECT c FROM CompositeJoinChild c WHERE c.label = 'x' ORDER BY c.id"));
+    }
+
+    // ------------------------------------------------------------------------------------
+    // WHERE TYPE(e) = Subtype narrowing over JOINED / TABLE_PER_CLASS inheritance
+    // ------------------------------------------------------------------------------------
+
+    private final JpqlEntityQueryPlanner joinedPlanner = new JpqlEntityQueryPlanner(
+            new JpqlEntityResolver(metadataFactory, List.of(JVehicle.class, JCar.class, JTruck.class)));
+    private final JpqlEntityQueryPlanner tpcPlanner = new JpqlEntityQueryPlanner(
+            new JpqlEntityResolver(metadataFactory, List.of(TVehicle.class, TCar.class, TTruck.class)));
+
+    @Test
+    void narrowsToJoinedConcreteSubtypeOnTypeEquals() {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT v FROM JVehicle v WHERE TYPE(v) = JCar").parse();
+        JpqlEntityQueryPlanner.EntityPlan plan = joinedPlanner.plan(select, new JpqlParameters());
+        assertEquals(JCar.class, plan.metadata().entityType());
+    }
+
+    @Test
+    void narrowsToTablePerClassConcreteSubtypeOnTypeEquals() {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT v FROM TVehicle v WHERE TYPE(v) = TCar").parse();
+        JpqlEntityQueryPlanner.EntityPlan plan = tpcPlanner.plan(select, new JpqlParameters());
+        assertEquals(TCar.class, plan.metadata().entityType());
+    }
+
+    @Test
+    void rejectsMultipleTypeNarrowingRestrictionsOverJoinedInheritance() {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT v FROM JVehicle v WHERE TYPE(v) = JCar AND TYPE(v) = JTruck").parse();
+        assertThrows(JpqlException.class, () -> joinedPlanner.plan(select, new JpqlParameters()));
+    }
+
+    // --- fixtures ------------------------------------------------------------------------
+
+    @Entity
+    @Table(name = "j_vehicle")
+    @Inheritance(strategy = InheritanceType.JOINED)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    public abstract static class JVehicle {
+        @Id
+        private Long id;
+        private String name;
+    }
+
+    @Entity
+    @Table(name = "j_car")
+    @DiscriminatorValue("CAR")
+    public static class JCar extends JVehicle {
+        private int doors;
+    }
+
+    @Entity
+    @Table(name = "j_truck")
+    @DiscriminatorValue("TRUCK")
+    public static class JTruck extends JVehicle {
+        private double payload;
+    }
+
+    @Entity
+    @Table(name = "t_vehicle")
+    @Inheritance(strategy = InheritanceType.TABLE_PER_CLASS)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    public abstract static class TVehicle {
+        @Id
+        private Long id;
+        private String name;
+    }
+
+    @Entity
+    @Table(name = "t_car")
+    @DiscriminatorValue("CAR")
+    public static class TCar extends TVehicle {
+        private int doors;
+    }
+
+    @Entity
+    @Table(name = "t_truck")
+    @DiscriminatorValue("TRUCK")
+    public static class TTruck extends TVehicle {
+        private double payload;
     }
 }

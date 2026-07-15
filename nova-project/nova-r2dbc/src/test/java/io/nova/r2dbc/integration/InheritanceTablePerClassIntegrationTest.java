@@ -11,7 +11,12 @@ import jakarta.persistence.Inheritance;
 import jakarta.persistence.InheritanceType;
 import jakarta.persistence.Table;
 import jakarta.persistence.TableGenerator;
+import jakarta.persistence.criteria.CriteriaBuilder;
+import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Root;
 import io.nova.query.QuerySpec;
+import io.nova.query.criteria.ReactiveCriteriaExecutor;
+import io.nova.query.jpql.JpqlExecutor;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +29,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code @Inheritance(TABLE_PER_CLASS)}가 H2 in-memory R2DBC driver와 end-to-end로 동작하는지 검증한다.
@@ -32,6 +38,8 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
  */
 class InheritanceTablePerClassIntegrationTest {
     private H2IntegrationTestSupport support;
+    private JpqlExecutor jpql;
+    private ReactiveCriteriaExecutor criteria;
 
     @BeforeEach
     void setUp() {
@@ -39,6 +47,9 @@ class InheritanceTablePerClassIntegrationTest {
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
         schema.create(TVehicle.class, TCar.class, TTruck.class).block();
+        jpql = new JpqlExecutor(support.operations(), support.dialect(), support.metadataFactory(),
+                TVehicle.class, TCar.class, TTruck.class);
+        criteria = new ReactiveCriteriaExecutor(support.operations(), support.dialect(), support.metadataFactory());
     }
 
     @Test
@@ -146,6 +157,74 @@ class InheritanceTablePerClassIntegrationTest {
                 .verifyComplete();
 
         StepVerifier.create(support.operations().findById(TVehicle.class, saved.getId()))
+                .verifyComplete();
+    }
+
+    // --- TYPE() / TREAT() over the TABLE_PER_CLASS double-nested UNION ALL derived table ---
+
+    @Test
+    void jpqlEntitySelectWithTypeEqualsReturnsOnlyTablePerClassConcreteSubtype() {
+        support.operations().save(new TCar("ada", 4))
+                .then(support.operations().save(new TTruck("ben", 12.5)))
+                .then(support.operations().save(new TCar("cyd", 2)))
+                .block();
+
+        List<TVehicle> result = new ArrayList<>();
+        StepVerifier.create(
+                        jpql.createQuery("SELECT e FROM TVehicle e WHERE TYPE(e) = TCar ORDER BY e.name", TVehicle.class)
+                                .getResultList())
+                .recordWith(() -> result)
+                .expectNextCount(2)
+                .verifyComplete();
+        assertTrue(result.stream().allMatch(v -> v instanceof TCar), "TYPE(e) = TCar는 TCar row만 반환해야 한다");
+        assertEquals(List.of("ada", "cyd"), result.stream().map(TVehicle::getName).toList());
+    }
+
+    @Test
+    void jpqlScalarTreatProjectsTablePerClassSubtypeAttributeExcludingNonMatchingRows() {
+        support.operations().save(new TCar("ada", 4))
+                .then(support.operations().save(new TTruck("ben", 12.5)))
+                .then(support.operations().save(new TCar("cyd", 2)))
+                .block();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT TREAT(e AS TCar).doors FROM TVehicle e ORDER BY e.name", Object.class)
+                                .getResultList())
+                .assertNext(v -> assertEquals(4, ((Number) v).intValue()))
+                .assertNext(v -> assertEquals(2, ((Number) v).intValue()))
+                .verifyComplete();
+    }
+
+    @Test
+    void criteriaEntitySelectWithTypeEqualsReturnsOnlyTablePerClassConcreteSubtype() {
+        support.operations().save(new TCar("ada", 4))
+                .then(support.operations().save(new TTruck("ben", 12.5)))
+                .block();
+
+        CriteriaBuilder cb = criteria.getCriteriaBuilder();
+        CriteriaQuery<TVehicle> cq = cb.createQuery(TVehicle.class);
+        Root<TVehicle> e = cq.from(TVehicle.class);
+        cq.select(e).where(cb.equal(e.type(), TCar.class)).orderBy(cb.asc(e.<String>get("name")));
+
+        StepVerifier.create(criteria.createQuery(cq).getResultList())
+                .assertNext(v -> assertEquals("ada", assertInstanceOf(TCar.class, v).getName()))
+                .verifyComplete();
+    }
+
+    @Test
+    void criteriaScalarTreatProjectsTablePerClassSubtypeAttribute() {
+        support.operations().save(new TCar("ada", 4))
+                .then(support.operations().save(new TTruck("ben", 12.5)))
+                .block();
+
+        CriteriaBuilder cb = criteria.getCriteriaBuilder();
+        CriteriaQuery<Integer> cq = cb.createQuery(Integer.class);
+        Root<TVehicle> e = cq.from(TVehicle.class);
+        Root<TCar> car = cb.treat(e, TCar.class);
+        cq.select(car.<Integer>get("doors")).orderBy(cb.asc(e.<String>get("name")));
+
+        StepVerifier.create(criteria.createQuery(cq).getResultList())
+                .assertNext(v -> assertEquals(4, ((Number) v).intValue()))
                 .verifyComplete();
     }
 

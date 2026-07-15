@@ -165,7 +165,15 @@ public final class ReactiveCriteriaQuery<T> {
 
     /**
      * 최상위(또는 AND로 결합된) {@link DiscriminatorPredicate}를 뽑아 조회 대상 타입을 좁히고 나머지 술어를
-     * 반환한다. discriminator 제한이 OR/NOT 등 좁힘 불가 위치에 있으면 fail-fast한다.
+     * 반환한다. discriminator 제한이 OR/NOT 등 좁힘 불가 위치에 있으면 fail-fast한다. 3전략
+     * (SINGLE_TABLE/JOINED/TABLE_PER_CLASS) 모두 허용한다.
+     * <p>
+     * <b>알려진 한계(2-레벨까지 검증됨):</b> {@link #executeEntity}가 좁혀진 타입으로
+     * {@code operations.findAll(entityType, spec)}에 위임하며, JOINED/TABLE_PER_CLASS는 그 아래에서
+     * {@code entityType().isInstance(row)} 필터링을 쓴다 — 3레벨 이상 깊은 계층에서는 {@code cb.equal(root.type(),
+     * Mid.class)}가 {@code Mid}의 자손까지 포함할 수 있다(JPA exact-type 시맨틱과 다름). Nova는 현재 단일 레벨
+     * JOINED/TABLE_PER_CLASS 서브타입만 지원하므로 실무에서 아직 재현되지 않는다({@code JpqlEntityQueryPlanner
+     * #resolveEntitySubtype}의 동일 노트 참고).
      */
     private static DiscriminatorNarrowing narrowByDiscriminator(CriteriaPredicate where, EntityMetadata<?> base) {
         if (where == null) {

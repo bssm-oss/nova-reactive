@@ -2,9 +2,11 @@ package io.nova.query.jpql;
 
 import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.InheritanceLayout;
 import io.nova.metadata.ManyToManyInfo;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.ToOneForeignKeyColumn;
+import io.nova.query.QuerySpec;
 import io.nova.query.jpql.ast.Assignment;
 import io.nova.query.jpql.ast.ComparisonOp;
 import io.nova.query.jpql.ast.Expression;
@@ -16,6 +18,7 @@ import io.nova.query.jpql.ast.SelectItem;
 import io.nova.query.jpql.ast.Subquery;
 import io.nova.query.jpql.ast.WhenClause;
 import io.nova.sql.Dialect;
+import io.nova.sql.SqlStatement;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -101,7 +104,8 @@ public final class JpqlSqlBuilder {
         List<DiscriminatorConstraint> constraints = collectDiscriminatorConstraints(ctx, select);
 
         int[] columns = {0};
-        String selectSql = capture(ctx, () -> renderSelectionList(ctx, select.selectItems(), columns));
+        List<TranslatedSql.ResultSlot> slots = new ArrayList<>();
+        String selectSql = capture(ctx, () -> renderSelectionList(ctx, select.selectItems(), columns, slots));
         String whereSql = (constraints.isEmpty() && select.where() == null)
                 ? null : capture(ctx, () -> renderWhereWithConstraints(ctx, constraints, select.where()));
         String groupSql = select.groupBy().isEmpty()
@@ -129,7 +133,7 @@ public final class JpqlSqlBuilder {
         if (orderSql != null) {
             ctx.sql.append(" order by ").append(orderSql);
         }
-        return new TranslatedSql(ctx.sql.toString(), ctx.bindings, TranslatedSql.ResultKind.SCALAR, columns[0]);
+        return new TranslatedSql(ctx.sql.toString(), ctx.bindings, TranslatedSql.ResultKind.SCALAR, columns[0], slots);
     }
 
     public TranslatedSql buildUpdate(JpqlStatement.Update update) {
@@ -245,7 +249,8 @@ public final class JpqlSqlBuilder {
     /** {@code from} 절 + 명시 조인 + 묵시 조인을 {@code ctx.sql}에 붙인다. */
     private void appendFrom(Ctx ctx, Block block) {
         EntityMetadata<?> rootMeta = resolver.resolve(block.rootEntity);
-        ctx.sql.append(" from ").append(tableRef(rootMeta)).append(' ').append(block.rootAlias);
+        ctx.sql.append(" from ");
+        rootFromClause(ctx, rootMeta, block.rootAlias);
         for (JoinClause join : block.explicitJoins) {
             EntityMetadata<?> owner = ctx.scope.resolve(join.ownerAlias());
             PersistentProperty relation = owner.findProperty(join.relation()).orElseThrow();
@@ -261,6 +266,26 @@ public final class JpqlSqlBuilder {
                     .append(" on ");
             appendJoinOn(ctx, ij.ownerAlias, ij.alias, ij.columnPairs);
         }
+    }
+
+    /**
+     * 루트 FROM 절을 렌더한다. JOINED/TABLE_PER_CLASS 상속 루트는 <b>새 FROM 형태를 만들지 않는다</b> —
+     * 이미 다형 SELECT가 JOIN/UNION을 파생 테이블(derived table)로 감싸 flat 컬럼 + discriminator 컬럼을
+     * 노출하므로(SINGLE_TABLE이 자기 물리 테이블에 갖는 것과 동일한 모양), 그 렌더러 출력을 재사용해 이 쿼리의
+     * root alias를 부여한다 — 그러면 기존 SINGLE_TABLE TYPE/TREAT/discriminator 렌더 경로가 그대로 동작한다.
+     * 그 외(SINGLE_TABLE/비상속)는 기존처럼 물리 테이블을 직접 참조한다.
+     */
+    private void rootFromClause(Ctx ctx, EntityMetadata<?> rootMeta, String alias) {
+        if (rootMeta.hasInheritance()
+                && (rootMeta.inheritance().joined() || rootMeta.inheritance().tablePerClass())) {
+            InheritanceLayout layout = resolver.inheritanceLayout(rootMeta.inheritance().root());
+            SqlStatement derived = rootMeta.inheritance().joined()
+                    ? dialect.sqlRenderer().selectJoinedPolymorphic(layout, QuerySpec.empty())
+                    : dialect.sqlRenderer().selectTablePerClassPolymorphic(layout, QuerySpec.empty());
+            ctx.sql.append('(').append(derived.sql()).append(") as ").append(alias);
+            return;
+        }
+        ctx.sql.append(tableRef(rootMeta)).append(' ').append(alias);
     }
 
     /** {@code ownerAlias.fk = targetAlias.targetId} 짝들을 {@code and}로 이어 ON 절 본문을 붙인다. */
@@ -295,21 +320,66 @@ public final class JpqlSqlBuilder {
     // SELECT list
     // ----------------------------------------------------------------------------------------
 
-    private void renderSelectionList(Ctx ctx, List<SelectItem> items, int[] columns) {
+    private void renderSelectionList(
+            Ctx ctx, List<SelectItem> items, int[] columns, List<TranslatedSql.ResultSlot> slots) {
         for (SelectItem item : items) {
             if (item.isEntity()) {
                 throw new JpqlException("Entity selection (SELECT " + item.entityAlias()
                         + ") is not handled by the scalar builder; this is an internal routing error");
             }
             if (item.isConstructor()) {
-                // NEW 생성자 프로젝션: 각 인자를 스칼라 컬럼으로 투영한다(인스턴스화는 JpqlQuery가 담당).
+                // NEW 생성자 프로젝션: 각 인자를 스칼라 컬럼으로 투영한다(인스턴스화는 JpqlQuery가 담당). 복합키
+                // to-one은 1:1 컬럼-인자 매핑이 성립하지 않으므로 v1에서는 명확히 거부한다(조용한 축약 대신).
                 for (Expression arg : item.constructorCall().arguments()) {
+                    if (compositeToOneRef(ctx, arg) != null) {
+                        throw new JpqlException("Composite-key to-one association cannot be used as a "
+                                + "SELECT NEW constructor argument in v1 (its foreign key spans multiple columns); "
+                                + "select its @Id components explicitly instead");
+                    }
                     renderColumn(ctx, arg, columns);
                 }
             } else {
-                renderColumn(ctx, item.expression(), columns);
+                renderPlainSelectItem(ctx, item.expression(), columns, slots);
             }
         }
+    }
+
+    /**
+     * 평범한(비-{@code NEW}) SELECT 항목 1개를 렌더한다. 복합키 타겟 to-one terminal({@code SELECT c.parent})이면
+     * {@link #renderCompositeToOneProjection}으로 N개 물리 컬럼 + 논리 슬롯 1개를 만들고, 그 외에는 기존처럼 컬럼
+     * 1개 + scalar 슬롯 1개를 만든다.
+     */
+    private void renderPlainSelectItem(
+            Ctx ctx, Expression expr, int[] columns, List<TranslatedSql.ResultSlot> slots) {
+        CompositeToOneRef ref = compositeToOneRef(ctx, expr);
+        if (ref != null) {
+            renderCompositeToOneProjection(ctx, ref, columns, slots);
+            return;
+        }
+        int start = columns[0];
+        renderColumn(ctx, expr, columns);
+        slots.add(new TranslatedSql.ResultSlot(start, 1, null));
+    }
+
+    /**
+     * 복합키 타겟 to-one terminal 투영({@code SELECT c.parent}): 참조 {@code @Id} 컴포넌트 순서대로(canonical
+     * {@code ToOneForeignKey} 순서) 각 FK 컬럼을 {@code alias."fkcol" as "cK"}로 렌더하고, 그 물리 컬럼 구간을
+     * 논리 슬롯 1개로 묶는다({@code compositeFk}가 채워짐). read 경로({@link JpqlQuery})가 같은 순서로 디코드해
+     * id-stub을 조립하므로, 여기서 순서를 재정렬하면 silent corruption이 된다.
+     */
+    private void renderCompositeToOneProjection(
+            Ctx ctx, CompositeToOneRef ref, int[] columns, List<TranslatedSql.ResultSlot> slots) {
+        int start = columns[0];
+        List<ToOneForeignKeyColumn> fkColumns = ref.property().toOneForeignKey().columns();
+        for (ToOneForeignKeyColumn fkColumn : fkColumns) {
+            if (columns[0] > 0) {
+                ctx.sql.append(", ");
+            }
+            appendCompositeColumn(ctx, ref.alias(), fkColumn);
+            ctx.sql.append(" as ").append(dialect.quote(JpqlQuery.columnLabel(columns[0])));
+            columns[0]++;
+        }
+        slots.add(new TranslatedSql.ResultSlot(start, fkColumns.size(), ref.property().toOneForeignKey()));
     }
 
     private void renderColumn(Ctx ctx, Expression expr, int[] columns) {
@@ -323,22 +393,62 @@ public final class JpqlSqlBuilder {
         columns[0]++;
     }
 
+    /**
+     * GROUP BY 절 본문. 각 경로가 복합키 타겟 to-one terminal이면 {@link #compositeToOneRef}로 감지해
+     * canonical FK 컬럼 순서({@code toOneForeignKey().columns()})대로 N개 컬럼으로 전개하고, 아니면 기존
+     * 단일 컬럼 해석({@link #pathColumn})을 쓴다. 복합 item 1개가 N개 컬럼으로 늘어날 수 있어 콤마는
+     * item 인덱스가 아니라 실제 emit되는 컬럼 스트림 기준 단일 플래그로 관리한다.
+     */
     private void renderGroupByBody(Ctx ctx, List<Expression.Path> groupBy) {
-        for (int i = 0; i < groupBy.size(); i++) {
-            if (i > 0) {
-                ctx.sql.append(", ");
+        boolean first = true;
+        for (Expression.Path p : groupBy) {
+            CompositeToOneRef ref = compositeToOneRef(ctx, p);
+            if (ref != null) {
+                for (ToOneForeignKeyColumn column : ref.property().toOneForeignKey().columns()) {
+                    if (!first) {
+                        ctx.sql.append(", ");
+                    }
+                    first = false;
+                    appendCompositeColumn(ctx, ref.alias(), column);
+                }
+            } else {
+                if (!first) {
+                    ctx.sql.append(", ");
+                }
+                first = false;
+                ctx.sql.append(pathColumn(ctx, p));
             }
-            ctx.sql.append(pathColumn(ctx, groupBy.get(i)));
         }
     }
 
+    /**
+     * ORDER BY 절 본문. 복합키 타겟 to-one terminal이면 canonical FK 컬럼 순서로 전개하며, 모든 컴포넌트에
+     * 항목의 동일 방향({@code asc}/{@code desc})을 붙인다. 최종 소유 별칭은 다중세그먼트 path의 owner alias인
+     * {@link CompositeToOneRef#alias()}를 쓴다({@code OrderItem.expression().alias()}가 아니다). 그 외는
+     * 기존 {@link #renderExpression} + 방향 렌더를 쓴다. 콤마는 GROUP BY와 동일하게 컬럼 스트림 기준 플래그로 관리한다.
+     */
     private void renderOrderByBody(Ctx ctx, List<OrderItem> orderBy) {
-        for (int i = 0; i < orderBy.size(); i++) {
-            if (i > 0) {
-                ctx.sql.append(", ");
+        boolean first = true;
+        for (OrderItem item : orderBy) {
+            String dir = item.ascending() ? " asc" : " desc";
+            CompositeToOneRef ref = compositeToOneRef(ctx, item.expression());
+            if (ref != null) {
+                for (ToOneForeignKeyColumn column : ref.property().toOneForeignKey().columns()) {
+                    if (!first) {
+                        ctx.sql.append(", ");
+                    }
+                    first = false;
+                    appendCompositeColumn(ctx, ref.alias(), column);
+                    ctx.sql.append(dir);
+                }
+            } else {
+                if (!first) {
+                    ctx.sql.append(", ");
+                }
+                first = false;
+                renderExpression(ctx, item.expression());
+                ctx.sql.append(dir);
             }
-            renderExpression(ctx, orderBy.get(i).expression());
-            ctx.sql.append(orderBy.get(i).ascending() ? " asc" : " desc");
         }
     }
 
@@ -918,7 +1028,7 @@ public final class JpqlSqlBuilder {
         List<String> segments = path.segments();
         if (segments.isEmpty()) {
             // 순수 별칭 → 그 엔티티의 대표 id property(COUNT(e) 등).
-            return new ResolvedPath(path.alias(), ownerMeta.idProperty());
+            return new ResolvedPath(path.alias(), ownerMeta, ownerMeta.idProperty());
         }
         // 다세그먼트: 묵시 조인이 필요하므로 unqualified(벌크) 컨텍스트에서는 지원하지 않는다.
         if (segments.size() > 1 && !ctx.qualify) {
@@ -947,7 +1057,7 @@ public final class JpqlSqlBuilder {
         PersistentProperty property = finalMeta.findProperty(field)
                 .orElseThrow(() -> new JpqlException("Unknown field '" + field + "' on entity "
                         + finalMeta.entityType().getSimpleName()));
-        return new ResolvedPath(currentAlias, property);
+        return new ResolvedPath(currentAlias, finalMeta, property);
     }
 
     /** 해석된 경로를 단일 컬럼 참조로. 컬렉션/복합키 to-one은 단일 컬럼 자리에서 fail-fast한다. */
@@ -958,12 +1068,18 @@ public final class JpqlSqlBuilder {
                     + "' is not supported; use an explicit JOIN or SIZE(...)");
         }
         if (property.manyToOne() && property.isCompositeToOne()) {
-            // 단일 컬럼 자리(SELECT 투영/GROUP BY/ORDER BY/산술)에서 복합키 to-one은 대표 컬럼 하나로 축약할 수
-            // 없다 — 조용한 오답 대신 거부한다. 비교(= <> < <= > >=)/BETWEEN/IN/IS NULL은 WHERE 술어 렌더가 컴포넌트로 전개한다.
+            // 단일 컬럼 자리(SELECT 투영/산술/함수 인자 등)에서 복합키 to-one은 대표 컬럼 하나로 축약할 수 없다
+            // — 조용한 오답 대신 거부한다. 비교(= <> < <= > >=)/BETWEEN/IN/IS NULL/GROUP BY/ORDER BY는 각 렌더가
+            // 컴포넌트로 전개한다(renderComparison/renderNull/renderBetween/renderInList/renderGroupByBody/renderOrderByBody).
             throw new JpqlException("Reference to composite-key to-one association '" + property.propertyName()
                     + "' as a single column is not supported (its foreign key spans multiple columns); "
-                    + "it is only usable in a WHERE predicate (= <> < <= > >= BETWEEN IN IS NULL) or a JOIN, "
-                    + "not as a SELECT/GROUP BY/ORDER BY projection; reference its @Id components explicitly instead");
+                    + "reference its @Id components explicitly instead, not as a SELECT projection");
+        }
+        EntityMetadata<?> metadata = resolved.metadata();
+        if (metadata.hasInheritance() && metadata.inheritance().joined() && !metadata.isInheritanceRoot()) {
+            // plain 'alias.field'도 concrete-subtype-root(예: FROM JCar c) 경로로 도달할 수 있다 — TREAT
+            // 경로와 동일한 dedupe 함정에 노출되므로 같은 guard를 적용한다.
+            requireUnshadowedJoinedColumn(metadata, property);
         }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? resolved.alias() + "." + col : col;
@@ -986,8 +1102,54 @@ public final class JpqlSqlBuilder {
                     + "' as a single column is not supported (its foreign key spans multiple columns); "
                     + "select its @Id components explicitly instead");
         }
+        if (metadata.hasInheritance() && metadata.inheritance().joined() && !metadata.isInheritanceRoot()) {
+            requireUnshadowedJoinedColumn(metadata, property);
+        }
         String col = dialect.quote(property.columnName());
         return ctx.qualify ? alias + "." + col : col;
+    }
+
+    /**
+     * JOINED 다형 SELECT의 파생 테이블(select list)은 컬럼명으로 dedupe한다(루트 먼저, 그다음 서브타입을
+     * 등록 순서대로 — {@code AbstractSqlRenderer#joinedSelectList} 참고) — 즉 같은 컬럼명이 먼저 emit된
+     * 소스의 값만 노출되고, 그 뒤에 같은 이름을 쓰는 다른 소스는 그 값을 조용히 대신 읽는다(비매칭 행에서는
+     * NULL). {@code TREAT(... AS Subtype).field}뿐 아니라 concrete-subtype-root의 plain {@code alias.field}
+     * (예: {@code FROM JCar c} 다음 {@code c.tag})도 같은 함정에 노출된다 — 가리키는 컬럼이 실제로 이
+     * 서브타입 자기 테이블의 기여분이 아니라 루트나 더 먼저 등록된 형제 서브타입의 동명 컬럼에 가려진 것이면,
+     * silent wrong-column(비매칭 행에서 NULL) 대신 명확히 거부한다.
+     */
+    private void requireUnshadowedJoinedColumn(EntityMetadata<?> subMeta, PersistentProperty property) {
+        String columnName = property.columnName();
+        InheritanceLayout layout = resolver.inheritanceLayout(subMeta.inheritance().root());
+        // 루트(또는 @MappedSuperclass 조상)가 선언해 상속받은 필드는 애초에 root table column 자체이므로
+        // 충돌이 아니다 — 이 값은 이 서브타입의 "자기 테이블 기여분"이 아니라 root에서 오는 게 정답이다.
+        boolean inheritedFromRoot = layout.rootTableColumns().stream()
+                .anyMatch(rootProp -> rootProp.propertyName().equals(property.propertyName()));
+        if (inheritedFromRoot) {
+            return;
+        }
+        String ref = subMeta.entityType().getSimpleName() + "." + property.propertyName();
+        for (PersistentProperty rootProp : layout.rootTableColumns()) {
+            if (rootProp.columnName().equals(columnName)) {
+                throw new JpqlException("'" + ref + "' refers to column '" + columnName + "', which collides "
+                        + "with a root column of the same name in the JOINED derived table; the derived SELECT "
+                        + "exposes only the root's value for that column name. Rename the column to disambiguate.");
+            }
+        }
+        for (InheritanceLayout.ConcreteSubtype subtype : layout.subtypes()) {
+            if (subtype.metadata().entityType() == subMeta.entityType()) {
+                return;
+            }
+            for (PersistentProperty siblingProp : subtype.ownTableColumns()) {
+                if (!siblingProp.id() && siblingProp.columnName().equals(columnName)) {
+                    throw new JpqlException("'" + ref + "' refers to column '" + columnName + "', which collides "
+                            + "with a same-named column already contributed by '"
+                            + subtype.metadata().entityType().getSimpleName() + "' earlier in the JOINED derived "
+                            + "table; the derived SELECT exposes only the first-registered source's value for "
+                            + "that column name. Rename the column to disambiguate.");
+                }
+            }
+        }
     }
 
     /** {@code (ownerAlias, relation)}에 대한 묵시 INNER JOIN을 만들거나 재사용하고 대상 별칭을 돌려준다. */
@@ -1025,10 +1187,14 @@ public final class JpqlSqlBuilder {
     // Inheritance: TYPE / TREAT / discriminator
     // ----------------------------------------------------------------------------------------
 
-    /** {@code TYPE(alias)} → 별칭 엔티티의 discriminator 컬럼 참조. SINGLE_TABLE 상속만 지원한다. */
+    /**
+     * {@code TYPE(alias)} → 별칭 엔티티의 discriminator 컬럼 참조. SINGLE_TABLE/JOINED/TABLE_PER_CLASS
+     * 모두 지원한다 — JOINED/TPC는 discriminator가 다형 SELECT 파생 테이블의 컬럼으로 노출되므로(루트에서
+     * 항상 한 번만 emit되어 컬럼명 충돌이 없다) SINGLE_TABLE과 동일하게 참조할 수 있다.
+     */
     private String discriminatorColumnRef(Ctx ctx, String alias) {
         EntityMetadata<?> meta = ctx.scope.resolve(alias);
-        requireSingleTableInheritance(meta, "TYPE(" + alias + ")");
+        requirePolymorphic(meta, "TYPE(" + alias + ")");
         String col = dialect.quote(meta.inheritance().discriminatorColumn());
         return ctx.qualify ? alias + "." + col : col;
     }
@@ -1049,9 +1215,9 @@ public final class JpqlSqlBuilder {
         return resolveColumn(ctx, treat.alias(), subMeta, treat.segments().get(0));
     }
 
-    /** downcast 대상 서브타입 메타데이터를 해석하고 같은 SINGLE_TABLE 계층인지 검증한다. */
+    /** downcast 대상 서브타입 메타데이터를 해석하고 같은 상속 계층인지 검증한다(3전략 모두 허용). */
     private EntityMetadata<?> resolveTreatSubtype(EntityMetadata<?> baseMeta, String subtypeName) {
-        requireSingleTableInheritance(baseMeta, "TREAT");
+        requirePolymorphic(baseMeta, "TREAT");
         EntityMetadata<?> subMeta = resolver.resolve(subtypeName);
         if (!subMeta.inheritance().present() || !subMeta.inheritance().sameHierarchy(baseMeta.inheritance())) {
             throw new JpqlException("TREAT target '" + subtypeName + "' is not a subtype in the same inheritance "
@@ -1060,14 +1226,10 @@ public final class JpqlSqlBuilder {
         return subMeta;
     }
 
-    private static void requireSingleTableInheritance(EntityMetadata<?> meta, String context) {
+    private static void requirePolymorphic(EntityMetadata<?> meta, String context) {
         if (!meta.hasInheritance()) {
             throw new JpqlException(context + " requires an @Inheritance entity; '"
                     + meta.entityType().getSimpleName() + "' is not polymorphic");
-        }
-        if (!meta.inheritance().singleTable()) {
-            throw new JpqlException(context + " is only supported for SINGLE_TABLE inheritance in v1; '"
-                    + meta.entityType().getSimpleName() + "' uses " + meta.inheritance().strategy());
         }
     }
 
@@ -1078,7 +1240,7 @@ public final class JpqlSqlBuilder {
     private List<DiscriminatorConstraint> collectDiscriminatorConstraints(Ctx ctx, JpqlStatement.Select select) {
         LinkedHashMap<String, DiscriminatorConstraint> byKey = new LinkedHashMap<>();
         EntityMetadata<?> rootMeta = ctx.scope.resolve(select.rootAlias());
-        if (rootMeta.hasInheritance() && rootMeta.inheritance().singleTable() && !rootMeta.isInheritanceRoot()) {
+        if (rootMeta.hasInheritance() && !rootMeta.isInheritanceRoot()) {
             byKey.putIfAbsent(constraintKey(select.rootAlias(), rootMeta.inheritance().discriminatorBindValue()),
                     new DiscriminatorConstraint(select.rootAlias(),
                             rootMeta.inheritance().discriminatorColumn(),
@@ -1318,8 +1480,8 @@ public final class JpqlSqlBuilder {
     private record ColumnPair(String fkColumn, String targetColumn) {
     }
 
-    /** 경로 해석 결과: 최종 세그먼트가 위치한 별칭과 그 프로퍼티. */
-    private record ResolvedPath(String alias, PersistentProperty property) {
+    /** 경로 해석 결과: 최종 세그먼트가 위치한 별칭, 그 소유 메타데이터, 그 프로퍼티. */
+    private record ResolvedPath(String alias, EntityMetadata<?> metadata, PersistentProperty property) {
     }
 
     /** 복합키 to-one terminal 비교/IS NULL 대상: FK가 걸린 별칭과 그 관계 프로퍼티. */

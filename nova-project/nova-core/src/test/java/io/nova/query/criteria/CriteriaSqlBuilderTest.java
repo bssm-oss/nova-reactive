@@ -37,7 +37,7 @@ class CriteriaSqlBuilderTest {
     private final Dialect dialect = new TestDialect();
     private final EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
     private final CriteriaMetamodel metamodel = new CriteriaMetamodel(metadataFactory);
-    private final CriteriaSqlBuilder builder = new CriteriaSqlBuilder(dialect);
+    private final CriteriaSqlBuilder builder = new CriteriaSqlBuilder(dialect, metadataFactory);
     private final AliasedCriteriaSqlBuilder aliasedBuilder = new AliasedCriteriaSqlBuilder(dialect);
     private final CriteriaBuilder cb = new SimpleCriteriaBuilder(metamodel);
 
@@ -526,6 +526,132 @@ class CriteriaSqlBuilderTest {
     }
 
     // ------------------------------------------------------------------------------------
+    // TYPE() / TREAT() polymorphism over JOINED / TABLE_PER_CLASS inheritance
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void rendersJoinedTypeEqualityAsUnqualifiedDiscriminatorPredicateOverDerivedTable() {
+        metamodel.resolve(JCar.class);
+        metamodel.resolve(JTruck.class);
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<JVehicle> v = cq.from(JVehicle.class);
+        cq.multiselect(v.<String>get("name")).where(cb.equal(v.type(), JCar.class));
+
+        CriteriaSql t = scalar(cq);
+        assertTrue(t.sql().contains("left join \"j_car\""), t.sql());
+        assertTrue(t.sql().contains("left join \"j_truck\""), t.sql());
+        assertTrue(t.sql().endsWith(") as nova_criteria_root where \"kind\" = ?"), t.sql());
+        assertEquals(List.of("CAR"), t.bindings());
+    }
+
+    @Test
+    void rendersJoinedTreatProjectionWithUnqualifiedDiscriminatorFilter() {
+        metamodel.resolve(JCar.class);
+        metamodel.resolve(JTruck.class);
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<JVehicle> v = cq.from(JVehicle.class);
+        Root<JCar> car = cb.treat(v, JCar.class);
+        cq.multiselect(car.<Integer>get("doors"));
+
+        CriteriaSql t = scalar(cq);
+        assertTrue(t.sql().startsWith("select \"doors\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as nova_criteria_root where \"kind\" = ?"), t.sql());
+        assertEquals(List.of("CAR"), t.bindings());
+    }
+
+    @Test
+    void rendersTablePerClassTypeEqualityAsUnqualifiedDiscriminatorPredicateOverUnion() {
+        metamodel.resolve(TCar.class);
+        metamodel.resolve(TTruck.class);
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<TVehicle> v = cq.from(TVehicle.class);
+        cq.multiselect(v.<String>get("name")).where(cb.equal(v.type(), TCar.class));
+
+        CriteriaSql t = scalar(cq);
+        assertTrue(t.sql().contains("union all"), t.sql());
+        assertTrue(t.sql().contains("'CAR' as \"kind\""), t.sql());
+        assertTrue(t.sql().contains("'TRUCK' as \"kind\""), t.sql());
+        assertTrue(t.sql().endsWith(") as nova_criteria_root where \"kind\" = ?"), t.sql());
+        assertEquals(List.of("CAR"), t.bindings());
+    }
+
+    @Test
+    void rendersTablePerClassTreatProjectionWithUnqualifiedDiscriminatorFilter() {
+        metamodel.resolve(TCar.class);
+        metamodel.resolve(TTruck.class);
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<TVehicle> v = cq.from(TVehicle.class);
+        Root<TCar> car = cb.treat(v, TCar.class);
+        cq.multiselect(car.<Integer>get("doors"));
+
+        CriteriaSql t = scalar(cq);
+        assertTrue(t.sql().startsWith("select \"doors\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as nova_criteria_root where \"kind\" = ?"), t.sql());
+        assertEquals(List.of("CAR"), t.bindings());
+    }
+
+    @Test
+    void failsFastOnAmbiguousJoinedColumnShadowedByEarlierSiblingSubtypeViaTreat() {
+        // ShCar(discriminator "CAR")가 ShTruck(discriminator "TRUCK")보다 먼저 emit되므로,
+        // cb.treat(v, ShTruck).get("tag")가 가리키는 derived-table 컬럼은 실제로 ShCar.tag의 값이다.
+        metamodel.resolve(ShCar.class);
+        metamodel.resolve(ShTruck.class);
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<ShVehicle> v = cq.from(ShVehicle.class);
+        Root<ShTruck> truck = cb.treat(v, ShTruck.class);
+        cq.multiselect(truck.<String>get("tag"));
+
+        CriteriaException ex = assertThrows(CriteriaException.class, () -> scalar(cq));
+        assertTrue(ex.getMessage().contains("collides"), ex.getMessage());
+    }
+
+    @Test
+    void failsFastOnAmbiguousJoinedColumnShadowedViaPlainPathOnConcreteSubtypeRoot() {
+        // MAJOR: cb.treat 경로뿐 아니라 plain cq.from(Sub.class).get("field")도 concrete-subtype-root로
+        // 도달하면 같은 dedupe 함정에 노출된다 — 이전에는 여기서 guard가 걸리지 않아 조용히 NULL을 반환했다.
+        metamodel.resolve(ShCar.class);
+        metamodel.resolve(ShTruck.class);
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<ShTruck> c = cq.from(ShTruck.class);
+        cq.multiselect(c.<String>get("tag"));
+
+        CriteriaException ex = assertThrows(CriteriaException.class, () -> scalar(cq));
+        assertTrue(ex.getMessage().contains("collides"), ex.getMessage());
+    }
+
+    @Test
+    void allowsTreatOnRootInheritedFieldWithoutFalseShadowRejection() {
+        // MINOR: name은 JVehicle(root)이 선언한 컬럼이라, cb.treat(v, JCar).get("name")으로 상속받아
+        // 참조해도 실제로 그 값은 root에서 오는 게 정답이다 — root-collision으로 오인해 거부하면 안 된다.
+        metamodel.resolve(JCar.class);
+        metamodel.resolve(JTruck.class);
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<JVehicle> v = cq.from(JVehicle.class);
+        Root<JCar> car = cb.treat(v, JCar.class);
+        cq.multiselect(car.<String>get("name"));
+
+        CriteriaSql t = scalar(cq);
+        assertTrue(t.sql().startsWith("select \"name\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as nova_criteria_root where \"kind\" = ?"), t.sql());
+        assertEquals(List.of("CAR"), t.bindings());
+    }
+
+    @Test
+    void allowsPlainPathOnRootInheritedFieldFromConcreteSubtypeRootWithoutFalseShadowRejection() {
+        // MINOR 대응 확인: plain root.get("field") 경로도 root-inherited 필드는 거부하지 않아야 한다.
+        metamodel.resolve(JCar.class);
+        metamodel.resolve(JTruck.class);
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<JCar> c = cq.from(JCar.class);
+        cq.multiselect(c.<String>get("name"));
+
+        CriteriaSql t = scalar(cq);
+        assertTrue(t.sql().startsWith("select \"name\" as \"c0\" from ("), t.sql());
+        assertTrue(t.sql().endsWith(") as nova_criteria_root where \"kind\" = ?"), t.sql());
+        assertEquals(List.of("CAR"), t.bindings());
+    }
+
+    // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------
 
@@ -547,6 +673,95 @@ class CriteriaSqlBuilderTest {
     public static class Car extends Vehicle {
         @Column(name = "doors")
         private int doors;
+    }
+
+    @Entity
+    @Table(name = "j_vehicle")
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    @jakarta.persistence.DiscriminatorColumn(
+            name = "kind", discriminatorType = jakarta.persistence.DiscriminatorType.STRING)
+    public abstract static class JVehicle {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+    }
+
+    @Entity
+    @Table(name = "j_car")
+    @jakarta.persistence.DiscriminatorValue("CAR")
+    public static class JCar extends JVehicle {
+        @Column(name = "doors")
+        private int doors;
+    }
+
+    @Entity
+    @Table(name = "j_truck")
+    @jakarta.persistence.DiscriminatorValue("TRUCK")
+    public static class JTruck extends JVehicle {
+        @Column(name = "payload")
+        private double payload;
+    }
+
+    @Entity
+    @Table(name = "t_vehicle")
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.TABLE_PER_CLASS)
+    @jakarta.persistence.DiscriminatorColumn(
+            name = "kind", discriminatorType = jakarta.persistence.DiscriminatorType.STRING)
+    public abstract static class TVehicle {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+    }
+
+    @Entity
+    @Table(name = "t_car")
+    @jakarta.persistence.DiscriminatorValue("CAR")
+    public static class TCar extends TVehicle {
+        @Column(name = "doors")
+        private int doors;
+    }
+
+    @Entity
+    @Table(name = "t_truck")
+    @jakarta.persistence.DiscriminatorValue("TRUCK")
+    public static class TTruck extends TVehicle {
+        @Column(name = "payload")
+        private double payload;
+    }
+
+    // 컬럼명 충돌(ambiguous derived-table column) fail-fast 전용 격리 fixture: ShCar/ShTruck가 같은
+    // 컬럼명("tag")을 서로 다른 의미로 선언한다(discriminator 알파벳 순 CAR < TRUCK이라 ShCar가 먼저 emit됨).
+    @Entity
+    @Table(name = "sh_vehicle")
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    @jakarta.persistence.DiscriminatorColumn(
+            name = "kind", discriminatorType = jakarta.persistence.DiscriminatorType.STRING)
+    public abstract static class ShVehicle {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Column(name = "name")
+        private String name;
+    }
+
+    @Entity
+    @Table(name = "sh_car")
+    @jakarta.persistence.DiscriminatorValue("CAR")
+    public static class ShCar extends ShVehicle {
+        @Column(name = "tag")
+        private String tag;
+    }
+
+    @Entity
+    @Table(name = "sh_truck")
+    @jakarta.persistence.DiscriminatorValue("TRUCK")
+    public static class ShTruck extends ShVehicle {
+        @Column(name = "tag")
+        private String tag;
     }
 
     @Entity
@@ -606,6 +821,8 @@ class CriteriaSqlBuilderTest {
 
     private static final class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
+        private final SqlRenderer renderer = new io.nova.sql.AbstractSqlRenderer(this) {
+        };
 
         @Override
         public String name() {
@@ -624,7 +841,7 @@ class CriteriaSqlBuilderTest {
 
         @Override
         public SqlRenderer sqlRenderer() {
-            throw new UnsupportedOperationException("not needed for Criteria builder tests");
+            return renderer;
         }
 
         @Override

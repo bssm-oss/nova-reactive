@@ -232,13 +232,16 @@ public record ElementCollectionInfo(
      * </ul>
      * {@code keyType}이 {@code @Embeddable}(다중 컬럼) key이면 {@link #embeddableKeyColumns()}에 펼친 key 컬럼들이
      * 담기고 {@link #keyColumn()}/{@link #keyColumnType()}/{@link #keyEnumType()}/{@code keyConverter}는 의미가
-     * 없다(operations가 각 컬럼을 개별 처리한다). {@code @MapKey}(엔티티 property를 key로) 및 entity key 클래스는
-     * v1 범위 밖이며 {@link EntityMetadataFactory}가 fail-fast로 거부한다.
+     * 없다(operations가 각 컬럼을 개별 처리한다). {@code keyType}이 단일 {@code @Id} {@code @Entity} key이면
+     * {@link #entityKey()}가 {@code true}이며, key 컬럼은 참조 {@code @Id}와 동일한 단일 FK 저장 규칙(단일컬럼 to-one
+     * FK와 동일)을 따른다. {@code @MapKey}(엔티티 property를 key로) 및 복합 {@code @Id} entity key 클래스는 v1 범위
+     * 밖이며 {@link EntityMetadataFactory}가 fail-fast로 거부한다.
      */
     public record MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType,
-            AttributeConverter<Object, Object> keyConverter, List<EmbeddableColumn> embeddableKeyColumns) {
+            AttributeConverter<Object, Object> keyConverter, List<EmbeddableColumn> embeddableKeyColumns,
+            boolean entityKey) {
         public MapKeyInfo {
-            // @Embeddable(다중 컬럼) key의 펼침 컬럼 목록. 단일 컬럼 key(기본/enum/temporal/UUID)는 빈 리스트다.
+            // @Embeddable(다중 컬럼) key의 펼침 컬럼 목록. 단일 컬럼 key(기본/enum/temporal/UUID/entity)는 빈 리스트다.
             embeddableKeyColumns = embeddableKeyColumns == null ? List.of() : List.copyOf(embeddableKeyColumns);
         }
 
@@ -246,7 +249,7 @@ public record ElementCollectionInfo(
          * enum/순수 기본 타입 key용 — 저장 표현 converter 없이({@code null}) 만든다.
          */
         public MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType) {
-            this(keyColumn, keyType, keyColumnType, keyEnumType, null, List.of());
+            this(keyColumn, keyType, keyColumnType, keyEnumType, null, List.of(), false);
         }
 
         /**
@@ -255,7 +258,7 @@ public record ElementCollectionInfo(
          */
         public MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType,
                 AttributeConverter<Object, Object> keyConverter) {
-            this(keyColumn, keyType, keyColumnType, keyEnumType, keyConverter, List.of());
+            this(keyColumn, keyType, keyColumnType, keyEnumType, keyConverter, List.of(), false);
         }
 
         /**
@@ -264,7 +267,17 @@ public record ElementCollectionInfo(
          * {@code @Embeddable} 타입 자신이다(실제 컬럼 타입은 {@code embeddableKeyColumns}가 결정).
          */
         public static MapKeyInfo embeddable(Class<?> keyType, List<EmbeddableColumn> embeddableKeyColumns) {
-            return new MapKeyInfo("", keyType, keyType, null, null, embeddableKeyColumns);
+            return new MapKeyInfo("", keyType, keyType, null, null, embeddableKeyColumns, false);
+        }
+
+        /**
+         * {@code @MapKeyClass}가 가리키는 단일 {@code @Id} {@code @Entity} key용 — key 컬럼은 참조 {@code @Id}의
+         * 단일컬럼 FK 저장 표현(단일 to-one FK와 동일 규칙)을 그대로 쓴다. {@code keyColumnType}/{@code keyConverter}는
+         * 참조 {@code @Id}의 저장타입/converter이고, {@code keyEnumType}은 의미가 없어 {@code null}이다.
+         */
+        public static MapKeyInfo entity(String keyColumn, Class<?> keyType, Class<?> keyColumnType,
+                AttributeConverter<Object, Object> keyConverter) {
+            return new MapKeyInfo(keyColumn, keyType, keyColumnType, null, keyConverter, List.of(), true);
         }
 
         /**
@@ -317,12 +330,14 @@ public record ElementCollectionInfo(
                     && java.util.Objects.equals(keyType, that.keyType)
                     && java.util.Objects.equals(keyColumnType, that.keyColumnType)
                     && keyEnumType == that.keyEnumType
-                    && java.util.Objects.equals(embeddableKeyColumns, that.embeddableKeyColumns);
+                    && java.util.Objects.equals(embeddableKeyColumns, that.embeddableKeyColumns)
+                    && entityKey == that.entityKey;
         }
 
         @Override
         public int hashCode() {
-            return java.util.Objects.hash(keyColumn, keyType, keyColumnType, keyEnumType, embeddableKeyColumns);
+            return java.util.Objects.hash(
+                    keyColumn, keyType, keyColumnType, keyEnumType, embeddableKeyColumns, entityKey);
         }
     }
 }

@@ -10,7 +10,12 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Inheritance;
 import jakarta.persistence.InheritanceType;
 import jakarta.persistence.Table;
+import jakarta.persistence.criteria.CriteriaBuilder;
+import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Root;
 import io.nova.query.QuerySpec;
+import io.nova.query.criteria.ReactiveCriteriaExecutor;
+import io.nova.query.jpql.JpqlExecutor;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +28,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code @Inheritance(JOINED)}가 H2 in-memory R2DBC driver와 end-to-end로 동작하는지 검증한다.
@@ -31,6 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
  */
 class InheritanceJoinedIntegrationTest {
     private H2IntegrationTestSupport support;
+    private JpqlExecutor jpql;
+    private ReactiveCriteriaExecutor criteria;
 
     @BeforeEach
     void setUp() {
@@ -38,6 +46,9 @@ class InheritanceJoinedIntegrationTest {
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
         schema.create(JVehicle.class, JCar.class, JTruck.class).block();
+        jpql = new JpqlExecutor(support.operations(), support.dialect(), support.metadataFactory(),
+                JVehicle.class, JCar.class, JTruck.class);
+        criteria = new ReactiveCriteriaExecutor(support.operations(), support.dialect(), support.metadataFactory());
     }
 
     @Test
@@ -139,6 +150,76 @@ class InheritanceJoinedIntegrationTest {
                 .verifyComplete();
 
         StepVerifier.create(support.operations().findById(JVehicle.class, saved.getId()))
+                .verifyComplete();
+    }
+
+    // --- TYPE() / TREAT() over the JOINED double-nested derived table ------
+
+    @Test
+    void jpqlEntitySelectWithTypeEqualsReturnsOnlyJoinedConcreteSubtype() {
+        support.operations().save(new JCar("ada", 4))
+                .then(support.operations().save(new JTruck("ben", 12.5)))
+                .then(support.operations().save(new JCar("cyd", 2)))
+                .block();
+
+        List<JVehicle> result = new ArrayList<>();
+        StepVerifier.create(
+                        jpql.createQuery("SELECT e FROM JVehicle e WHERE TYPE(e) = JCar ORDER BY e.name", JVehicle.class)
+                                .getResultList())
+                .recordWith(() -> result)
+                .expectNextCount(2)
+                .verifyComplete();
+        assertTrue(result.stream().allMatch(v -> v instanceof JCar), "TYPE(e) = JCar는 JCar row만 반환해야 한다");
+        assertEquals(List.of("ada", "cyd"), result.stream().map(JVehicle::getName).toList());
+    }
+
+    @Test
+    void jpqlScalarTreatProjectsJoinedSubtypeAttributeExcludingNonMatchingRows() {
+        // TREAT(e AS JCar).doors는 JOINED 파생 테이블의 discriminator=CAR 제약에 의존한다 — 이 제약이 없으면
+        // JTruck 행에서 doors는 (매칭되지 않는 j_car LEFT JOIN이라) NULL이라 조용히 null-row가 섞일 수 있다.
+        support.operations().save(new JCar("ada", 4))
+                .then(support.operations().save(new JTruck("ben", 12.5)))
+                .then(support.operations().save(new JCar("cyd", 2)))
+                .block();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT TREAT(e AS JCar).doors FROM JVehicle e ORDER BY e.name", Object.class)
+                                .getResultList())
+                .assertNext(v -> assertEquals(4, ((Number) v).intValue()))
+                .assertNext(v -> assertEquals(2, ((Number) v).intValue()))
+                .verifyComplete();
+    }
+
+    @Test
+    void criteriaEntitySelectWithTypeEqualsReturnsOnlyJoinedConcreteSubtype() {
+        support.operations().save(new JCar("ada", 4))
+                .then(support.operations().save(new JTruck("ben", 12.5)))
+                .block();
+
+        CriteriaBuilder cb = criteria.getCriteriaBuilder();
+        CriteriaQuery<JVehicle> cq = cb.createQuery(JVehicle.class);
+        Root<JVehicle> e = cq.from(JVehicle.class);
+        cq.select(e).where(cb.equal(e.type(), JCar.class)).orderBy(cb.asc(e.<String>get("name")));
+
+        StepVerifier.create(criteria.createQuery(cq).getResultList())
+                .assertNext(v -> assertEquals("ada", assertInstanceOf(JCar.class, v).getName()))
+                .verifyComplete();
+    }
+
+    @Test
+    void criteriaScalarTreatProjectsJoinedSubtypeAttribute() {
+        support.operations().save(new JCar("ada", 4))
+                .then(support.operations().save(new JTruck("ben", 12.5)))
+                .block();
+
+        CriteriaBuilder cb = criteria.getCriteriaBuilder();
+        CriteriaQuery<Integer> cq = cb.createQuery(Integer.class);
+        Root<JVehicle> e = cq.from(JVehicle.class);
+        Root<JCar> car = cb.treat(e, JCar.class);
+        cq.select(car.<Integer>get("doors")).orderBy(cb.asc(e.<String>get("name")));
+
+        StepVerifier.create(criteria.createQuery(cq).getResultList())
+                .assertNext(v -> assertEquals(4, ((Number) v).intValue()))
                 .verifyComplete();
     }
 
