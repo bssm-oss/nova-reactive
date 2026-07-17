@@ -81,7 +81,11 @@ exclude-labels:
   - question
 
 change-template: "- $TITLE (#$NUMBER) — @$AUTHOR"
-change-title-escapes: '\<*_&'
+# '@' 는 필수다. PR 제목에는 JPA 애노테이션이 그대로 들어가는데(`@OneToMany`, `@Id`, `@Entity` …),
+# escape하지 않으면 GitHub이 이를 실존 계정으로 멘션 링크한다 — @Id/@Entity는 실제 개인,
+# @OneToMany/@ManyToOne/@Convert/@Embeddable는 실제 조직이라 무관한 사람에게 알림이 나간다.
+# $AUTHOR는 change-template에서 별도로 붙으므로 저자 크레딧은 영향받지 않는다.
+change-title-escapes: '\<*_&@'
 
 template: |
   ## What's changed in $RESOLVED_VERSION

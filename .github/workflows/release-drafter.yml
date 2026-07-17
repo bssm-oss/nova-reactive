@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Keeps a draft GitHub Release up to date with the next version's changelog.
-# Each merged PR refreshes the draft; tagging the release manually publishes it.
+# Each merged PR refreshes the draft; the tag-push workflow (release.yml) then
+# publishes that draft as the version's GitHub Release once Maven Central succeeds.
 #
 # Runs only on push to main. release-drafter requires its config to live on
 # the default branch, so a pull_request trigger would fail on the very PR
