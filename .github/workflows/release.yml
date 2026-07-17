@@ -81,3 +81,26 @@ jobs:
           curl --fail-with-body -X POST \
             -H "Authorization: Bearer $(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)" \
             "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/io.github.bssm-oss?publishing_type=automatic"
+
+  github-release:
+    # Maven Central 발행이 성공한 뒤에만 GitHub Release를 낸다(실패한 발행을 공지하지 않기 위해).
+    # release-drafter가 main push마다 쌓아 온 draft를 이 태그의 정식 Release로 publish한다.
+    #
+    # 이 잡이 없던 동안 v2.1.0~v2.9.0 태그는 Central에만 올라가고 GitHub Releases에는 하나도
+    # 남지 않았다(마지막 Release가 v2.0.0). draft는 아무도 publish하지 않아 방치됐다.
+    # SNAPSHOT은 정식 릴리즈가 아니므로 skip.
+    needs: publish
+    if: ${{ github.event_name == 'push' && !endsWith(github.ref_name, 'SNAPSHOT') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish drafted GitHub Release
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          publish: true
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
