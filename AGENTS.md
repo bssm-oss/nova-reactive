@@ -102,6 +102,14 @@ source-less grouping projects. Keep the root `build.gradle.kts` guard:
   `refactor:`, `docs:`, and `chore:`.
 - Keep each PR focused on one change.
 - Do not add an AI agent as `Co-Authored-By`.
+- Never write a bare `@Name` in a commit or PR title. JPA annotation names
+  (`@Id`, `@Entity`, `@OneToMany`, `@ManyToOne`, `@Convert`, `@Embeddable`, ...)
+  resolve to real GitHub accounts and organizations, so a bare `@` notifies
+  unrelated people and can pull them into the contributor view. Write the
+  annotation without the `@` (e.g. `OneToMany`, `IdClass`) or wrap it in
+  backticks (`` `@OneToMany` ``). Release notes escape this automatically via
+  release-drafter's `change-title-escapes`, but commit/PR titles themselves are
+  not escaped by GitHub.
 
 ## Default work pattern
 
