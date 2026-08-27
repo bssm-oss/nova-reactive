@@ -94,6 +94,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.lang.reflect.TypeVariable;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -161,6 +162,7 @@ public final class EntityMetadataFactory {
     private final Map<Class<?>, EntityMetadata<?>> cache = new ConcurrentHashMap<>();
     private final Map<Class<?>, AttributeConverter<?, ?>> converters = new ConcurrentHashMap<>();
     private final Map<Class<?>, List<JpaConverterDescriptor>> jpaConverters = new ConcurrentHashMap<>();
+    private volatile boolean metadataBuildStarted;
     /**
      * SINGLE_TABLE 상속 계층 레지스트리. root 클래스 → (discriminator 값 → 구체 서브타입 클래스).
      * 각 구체 멤버의 메타데이터가 빌드될 때 자기 자신을 등록한다 — JPA persistence-unit이 모든 엔티티를
@@ -212,7 +214,12 @@ public final class EntityMetadataFactory {
     }
 
     /** Registers a managed Jakarta converter class for explicit and auto-apply conversion. */
-    public void registerJpaConverter(Class<?> converterClass) {
+    public synchronized void registerJpaConverter(Class<?> converterClass) {
+        ensureConverterRegistrationOpen();
+        registerJpaConverterInternal(converterClass);
+    }
+
+    private void registerJpaConverterInternal(Class<?> converterClass) {
         Objects.requireNonNull(converterClass, "converterClass must not be null");
         jakarta.persistence.Converter annotation = converterClass.getAnnotation(jakarta.persistence.Converter.class);
         if (annotation == null) {
@@ -232,12 +239,20 @@ public final class EntityMetadataFactory {
     }
 
     /** Registers any converter classes present in an already-discovered managed-class set. */
-    public void registerManagedClasses(Iterable<Class<?>> managedClasses) {
+    public synchronized void registerManagedClasses(Iterable<Class<?>> managedClasses) {
+        ensureConverterRegistrationOpen();
         Objects.requireNonNull(managedClasses, "managedClasses must not be null");
         for (Class<?> managedClass : managedClasses) {
             if (managedClass.isAnnotationPresent(jakarta.persistence.Converter.class)) {
-                registerJpaConverter(managedClass);
+                registerJpaConverterInternal(managedClass);
             }
+        }
+    }
+
+    private void ensureConverterRegistrationOpen() {
+        if (metadataBuildStarted) {
+            throw new IllegalStateException(
+                    "JPA converters must be registered before the first entity metadata is requested");
         }
     }
 
@@ -246,6 +261,9 @@ public final class EntityMetadataFactory {
      */
     @SuppressWarnings("unchecked")
     public <T> EntityMetadata<T> getEntityMetadata(Class<T> entityType) {
+        synchronized (this) {
+            metadataBuildStarted = true;
+        }
         EntityMetadata<?> cached = cache.get(entityType);
         if (cached != null) {
             return (EntityMetadata<T>) cached;
@@ -716,7 +734,7 @@ public final class EntityMetadataFactory {
             }
             if (field.isAnnotationPresent(Embedded.class)) {
                 List<PersistentProperty> expanded = createEmbeddedProperties(
-                        entityType, field, List.of(), "", new LinkedHashSet<>());
+                        entityType, field, List.of(), "", new LinkedHashSet<>(), Map.of());
                 properties.addAll(expanded);
                 continue;
             }
@@ -1451,7 +1469,7 @@ public final class EntityMetadataFactory {
             }
             // columnPrefix=""로 호출해 host 필드 이름 prefix 없이 컴포넌트 컬럼 이름을 그대로 쓴다.
             PersistentProperty component = createProperty(
-                    embeddableType, subField, hostPath, "", columnOverrides.get(subField.getName()));
+                    embeddableType, subField, hostPath, "", columnOverrides.get(subField.getName()), true, null);
             if (component.generated()) {
                 throw new IllegalArgumentException(
                         entityType.getName() + "." + idField.getName()
@@ -1521,7 +1539,8 @@ public final class EntityMetadataFactory {
             Field hostField,
             List<Field> parentHostPath,
             String parentColumnPrefix,
-            LinkedHashSet<Class<?>> embeddableStack
+            LinkedHashSet<Class<?>> embeddableStack,
+            Map<String, Convert> inheritedConversionOverrides
     ) {
         Class<?> embeddableType = hostField.getType();
         if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
@@ -1552,6 +1571,18 @@ public final class EntityMetadataFactory {
         for (AttributeOverride override : hostField.getAnnotationsByType(AttributeOverride.class)) {
             columnOverrides.put(override.name(), override.column());
         }
+        Map<String, Convert> conversionOverrides = new LinkedHashMap<>(inheritedConversionOverrides);
+        for (Convert convert : hostField.getAnnotationsByType(Convert.class)) {
+            if (convert.attributeName().isBlank()) {
+                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
+                        + " @Convert on an @Embedded attribute must specify attributeName");
+            }
+            Convert duplicate = conversionOverrides.putIfAbsent(convert.attributeName(), convert);
+            if (duplicate != null) {
+                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
+                        + " declares duplicate @Convert path '" + convert.attributeName() + "'");
+            }
+        }
         List<PersistentProperty> result = new ArrayList<>();
         embeddableStack.add(embeddableType);
         try {
@@ -1561,16 +1592,36 @@ public final class EntityMetadataFactory {
                 }
                 rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
                 if (subField.isAnnotationPresent(Embedded.class)) {
+                    String nestedPrefix = subField.getName() + ".";
+                    Map<String, Convert> nestedConversions = new LinkedHashMap<>();
+                    conversionOverrides.entrySet().removeIf(entry -> {
+                        if (!entry.getKey().startsWith(nestedPrefix)) {
+                            return false;
+                        }
+                        String nestedPath = entry.getKey().substring(nestedPrefix.length());
+                        Convert previous = nestedConversions.putIfAbsent(nestedPath, entry.getValue());
+                        if (previous != null) {
+                            throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
+                                    + " declares duplicate @Convert path '" + entry.getKey() + "'");
+                        }
+                        return true;
+                    });
                     // nested @Embedded는 재귀적으로 펼친다. host path와 column prefix는 이 단계에서 한 번 확장된 값을 넘긴다.
                     List<PersistentProperty> nested = createEmbeddedProperties(
-                            entityType, subField, immutableHostPath, columnPrefix, embeddableStack);
+                            entityType, subField, immutableHostPath, columnPrefix, embeddableStack, nestedConversions);
                     result.addAll(nested);
                     continue;
                 }
+                Convert conversionOverride = conversionOverrides.remove(subField.getName());
                 PersistentProperty property = createProperty(
                         embeddableType, subField, immutableHostPath, columnPrefix,
-                        columnOverrides.get(subField.getName()));
+                        columnOverrides.get(subField.getName()), false, conversionOverride);
                 result.add(property);
+            }
+            if (!conversionOverrides.isEmpty()) {
+                String unknown = conversionOverrides.keySet().iterator().next();
+                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
+                        + " @Convert attributeName '" + unknown + "' does not match an embedded leaf property");
             }
         } finally {
             embeddableStack.remove(embeddableType);
@@ -1807,7 +1858,8 @@ public final class EntityMetadataFactory {
             List<Field> hostPath,
             String columnPrefix
     ) {
-        return createProperty(declaringType, field, hostPath, columnPrefix, null);
+        return createProperty(declaringType, field, hostPath, columnPrefix, null,
+                field.isAnnotationPresent(Id.class), null);
     }
 
     /**
@@ -1821,9 +1873,22 @@ public final class EntityMetadataFactory {
             String columnPrefix,
             Column columnOverride
     ) {
+        return createProperty(declaringType, field, hostPath, columnPrefix, columnOverride,
+                field.isAnnotationPresent(Id.class), null);
+    }
+
+    private PersistentProperty createProperty(
+            Class<?> declaringType,
+            Field field,
+            List<Field> hostPath,
+            String columnPrefix,
+            Column columnOverride,
+            boolean effectiveId,
+            Convert conversionOverride
+    ) {
         Column column = columnOverride != null ? columnOverride : field.getAnnotation(Column.class);
         GeneratedValue generatedValue = field.getAnnotation(GeneratedValue.class);
-        boolean isId = field.isAnnotationPresent(Id.class);
+        boolean isId = effectiveId || field.isAnnotationPresent(Id.class);
         boolean isSoftDelete = field.isAnnotationPresent(SoftDelete.class);
         if (isSoftDelete) {
             if (isId) {
@@ -1933,7 +1998,7 @@ public final class EntityMetadataFactory {
         Class<?> converterColumnType = null;
         String mappingLocation = declaringType.getName() + "." + field.getName();
         JpaConverterDescriptor explicitConverter = explicitJpaConverter(
-                field, field.getType(), null, mappingLocation);
+                field, field.getType(), null, mappingLocation, conversionOverride);
         if (enumerated != null) {
             if (isJson) {
                 throw new IllegalStateException(
@@ -1972,8 +2037,10 @@ public final class EntityMetadataFactory {
 
         // @Convert(converter=X.class): JPA 표준 AttributeConverter를 어댑터로 감싸 일반 converter 경로에 태운다.
         // 저장 표현 타입(Y)을 columnType()/schema 컬럼 타입의 근거로 보관한다.
-        Convert convert = Arrays.stream(field.getAnnotationsByType(Convert.class))
-                .filter(candidate -> candidate.attributeName().isBlank()).findFirst().orElse(null);
+        Convert convert = conversionOverride != null
+                ? conversionOverride
+                : Arrays.stream(field.getAnnotationsByType(Convert.class))
+                        .filter(candidate -> candidate.attributeName().isBlank()).findFirst().orElse(null);
         if (explicitConverter != null) {
             if (isEnumerated || isJson) {
                 throw new IllegalStateException(
@@ -2051,7 +2118,7 @@ public final class EntityMetadataFactory {
 
         // Jakarta auto-apply never reaches ids, versions, explicit enum/temporal mappings, or disabled attributes.
         if (converter == null && !isId && !isVersion && enumerated == null && temporal == null && !isJson
-                && !conversionDisabled(field, null)) {
+                && !conversionDisabled(field, null, conversionOverride)) {
             JpaConverterDescriptor automatic = uniqueJpaConverter(field.getType(), true, mappingLocation);
             if (automatic != null) {
                 converter = automatic.instantiate();
@@ -2364,21 +2431,64 @@ public final class EntityMetadataFactory {
     }
 
     private static Class<?>[] resolveJpaConverterTypeArguments(Class<?> converterClass) {
-        for (Type supertype : genericSupertypes(converterClass)) {
-            if (supertype instanceof ParameterizedType parameterized
-                    && parameterized.getRawType() == jakarta.persistence.AttributeConverter.class) {
-                Type[] arguments = parameterized.getActualTypeArguments();
-                Class<?> attributeType = rawClass(arguments[0]);
-                Class<?> columnType = rawClass(arguments[1]);
-                if (attributeType == null || columnType == null) {
-                    break;
-                }
-                return new Class<?>[]{attributeType, columnType};
-            }
+        Class<?>[] resolved = resolveJpaConverterTypeArguments(converterClass, Map.of(), new LinkedHashSet<>());
+        if (resolved != null) {
+            return resolved;
         }
         throw new IllegalArgumentException(
                 "JPA converter " + converterClass.getName()
                         + " must implement jakarta.persistence.AttributeConverter with concrete type arguments");
+    }
+
+    private static Class<?>[] resolveJpaConverterTypeArguments(
+            Type current, Map<TypeVariable<?>, Type> inheritedBindings, Set<Type> visited) {
+        if (!visited.add(current)) {
+            return null;
+        }
+        Class<?> raw;
+        Map<TypeVariable<?>, Type> bindings = new LinkedHashMap<>(inheritedBindings);
+        if (current instanceof ParameterizedType parameterized) {
+            if (!(parameterized.getRawType() instanceof Class<?> parameterizedRaw)) {
+                return null;
+            }
+            raw = parameterizedRaw;
+            TypeVariable<?>[] variables = raw.getTypeParameters();
+            Type[] arguments = parameterized.getActualTypeArguments();
+            for (int index = 0; index < variables.length; index++) {
+                bindings.put(variables[index], substituteType(arguments[index], inheritedBindings));
+            }
+        } else if (current instanceof Class<?> currentClass) {
+            raw = currentClass;
+        } else {
+            return null;
+        }
+        if (raw == jakarta.persistence.AttributeConverter.class) {
+            TypeVariable<?>[] variables = raw.getTypeParameters();
+            Class<?> attributeType = rawClass(substituteType(bindings.get(variables[0]), bindings));
+            Class<?> columnType = rawClass(substituteType(bindings.get(variables[1]), bindings));
+            return attributeType == null || columnType == null ? null : new Class<?>[]{attributeType, columnType};
+        }
+        for (Type interfaceType : raw.getGenericInterfaces()) {
+            Class<?>[] resolved = resolveJpaConverterTypeArguments(interfaceType, bindings, visited);
+            if (resolved != null) {
+                return resolved;
+            }
+        }
+        Type superclass = raw.getGenericSuperclass();
+        return superclass == null ? null : resolveJpaConverterTypeArguments(superclass, bindings, visited);
+    }
+
+    private static Type substituteType(Type type, Map<TypeVariable<?>, Type> bindings) {
+        Type current = type;
+        Set<Type> seen = new LinkedHashSet<>();
+        while (current instanceof TypeVariable<?> variable && seen.add(current)) {
+            Type replacement = bindings.get(variable);
+            if (replacement == null) {
+                return current;
+            }
+            current = replacement;
+        }
+        return current;
     }
 
     private record JpaConverterDescriptor(
@@ -2390,11 +2500,18 @@ public final class EntityMetadataFactory {
 
     private JpaConverterDescriptor explicitJpaConverter(
             Field field, Class<?> attributeType, String selector, String location) {
+        return explicitJpaConverter(field, attributeType, selector, location, null);
+    }
+
+    private JpaConverterDescriptor explicitJpaConverter(
+            Field field, Class<?> attributeType, String selector, String location, Convert override) {
         Convert selected = null;
-        for (Convert candidate : field.getAnnotationsByType(Convert.class)) {
+        Convert[] candidates = override == null ? field.getAnnotationsByType(Convert.class) : new Convert[]{override};
+        for (Convert candidate : candidates) {
             String name = candidate.attributeName();
-            boolean matches = selector == null ? name.isBlank() : name.equals(selector)
-                    || (selector.equals("value") && name.isBlank());
+            boolean matches = override != null || (selector == null
+                    ? name.isBlank()
+                    : name.equals(selector) || (selector.equals("value") && name.isBlank()));
             if (!matches) {
                 continue;
             }
@@ -2420,10 +2537,16 @@ public final class EntityMetadataFactory {
     }
 
     private boolean conversionDisabled(Field field, String selector) {
-        for (Convert convert : field.getAnnotationsByType(Convert.class)) {
+        return conversionDisabled(field, selector, null);
+    }
+
+    private boolean conversionDisabled(Field field, String selector, Convert override) {
+        Convert[] candidates = override == null ? field.getAnnotationsByType(Convert.class) : new Convert[]{override};
+        for (Convert convert : candidates) {
             String name = convert.attributeName();
-            boolean matches = selector == null ? name.isBlank() : name.equals(selector)
-                    || (selector.equals("value") && name.isBlank());
+            boolean matches = override != null || (selector == null
+                    ? name.isBlank()
+                    : name.equals(selector) || (selector.equals("value") && name.isBlank()));
             if (matches && convert.disableConversion()) {
                 return true;
             }
@@ -2442,24 +2565,6 @@ public final class EntityMetadataFactory {
                     + attributeType.getName() + "; use @Convert(converter=...) to select one");
         }
         return candidates.isEmpty() ? null : candidates.get(0);
-    }
-
-    /**
-     * 클래스의 제네릭 상위 타입(구현 인터페이스 + 슈퍼클래스)을 재귀적으로 평탄화해 반환한다.
-     * {@code AttributeConverter}를 중간 추상 베이스를 통해 구현한 경우까지 탐색한다.
-     */
-    private static List<Type> genericSupertypes(Class<?> type) {
-        List<Type> result = new ArrayList<>();
-        Class<?> current = type;
-        while (current != null && current != Object.class) {
-            result.addAll(Arrays.asList(current.getGenericInterfaces()));
-            Type genericSuperclass = current.getGenericSuperclass();
-            if (genericSuperclass != null) {
-                result.add(genericSuperclass);
-            }
-            current = current.getSuperclass();
-        }
-        return result;
     }
 
     private static Class<?> rawClass(Type type) {
@@ -4131,6 +4236,7 @@ public final class EntityMetadataFactory {
                 ? mapKeyColumn.name()
                 : namingStrategy.columnName(field.getName()) + "_key";
         MapKeyEnumerated mapKeyEnumerated = field.getAnnotation(MapKeyEnumerated.class);
+        MapKeyTemporal mapKeyTemporal = field.getAnnotation(MapKeyTemporal.class);
         JpaConverterDescriptor explicitKeyConverter = explicitJpaConverter(field, keyType, "key", location);
         if (keyType.isEnum()) {
             EnumType enumType = mapKeyEnumerated != null ? mapKeyEnumerated.value() : EnumType.ORDINAL;
@@ -4159,6 +4265,10 @@ public final class EntityMetadataFactory {
                     keyColumnName, keyType, keyColumnType, enumType, mapping.converter());
         }
         if (explicitKeyConverter != null) {
+            if (mapKeyTemporal != null) {
+                throw new IllegalStateException(location
+                        + " cannot combine @Convert(attributeName=\"key\") with @MapKeyTemporal");
+            }
             return new ElementCollectionInfo.MapKeyInfo(keyColumnName, keyType,
                     explicitKeyConverter.columnType(), null, explicitKeyConverter.instantiate());
         }
@@ -4171,7 +4281,6 @@ public final class EntityMetadataFactory {
         // 결정하고, 스칼라/EC 원소와 동일한 TemporalAttributeConverter 경로를 재사용해 java.time 저장 표현
         // (LocalDate/LocalTime/LocalDateTime)으로 왕복한다. @MapKeyTemporal 없이 Date/Calendar key를 쓰면
         // 매핑이 모호하므로(조용한 기본값 금지) fail-fast로 거부한다.
-        MapKeyTemporal mapKeyTemporal = field.getAnnotation(MapKeyTemporal.class);
         boolean isUtilDate = keyType == java.util.Date.class;
         boolean isCalendar = java.util.Calendar.class.isAssignableFrom(keyType);
         if (mapKeyTemporal != null) {

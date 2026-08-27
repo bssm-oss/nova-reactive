@@ -6,15 +6,19 @@ import jakarta.persistence.Converter;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.EnumeratedValue;
 import jakarta.persistence.Id;
+import jakarta.persistence.MapKeyTemporal;
+import jakarta.persistence.TemporalType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Date;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -110,6 +114,74 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         assertEquals("open-code", id.toColumnValue(TextStatus.OPEN));
     }
 
+    @Test
+    void excludesEmbeddedIdLeavesFromAutoApplyButKeepsEnumValueMapping() {
+        EntityMetadataFactory factory = factory(CodeConverter.class, TextStatusConverter.class);
+        EntityMetadata<CompositeIdEntity> metadata = factory.getEntityMetadata(CompositeIdEntity.class);
+
+        PersistentProperty code = metadata.findProperty("id.code").orElseThrow();
+        PersistentProperty status = metadata.findProperty("id.status").orElseThrow();
+        assertTrue(code.id());
+        assertEquals(Code.class, code.columnType());
+        assertEquals(new Code("raw"), code.toColumnValue(new Code("raw")));
+        assertEquals(String.class, status.columnType());
+        assertEquals("closed-code", status.toColumnValue(TextStatus.CLOSED));
+    }
+
+    @Test
+    void hostConvertOverridesFlatAndNestedEmbeddedLeavesAndCanDisableAutoApply() {
+        EntityMetadataFactory factory = factory(CodeConverter.class, UpperCodeConverter.class);
+        EntityMetadata<EmbeddedOverrideEntity> metadata = factory.getEntityMetadata(EmbeddedOverrideEntity.class);
+
+        assertEquals("ABC", metadata.findProperty("flat.code").orElseThrow()
+                .toColumnValue(new Code("abc")));
+        assertEquals("XYZ", metadata.findProperty("nested.address.code").orElseThrow()
+                .toColumnValue(new Code("xyz")));
+        PersistentProperty disabled = metadata.findProperty("disabled.code").orElseThrow();
+        assertEquals(Code.class, disabled.columnType());
+    }
+
+    @Test
+    void rejectsUnknownAndDuplicateEmbeddedConvertPaths() {
+        EntityMetadataFactory factory = factory(CodeConverter.class, UpperCodeConverter.class);
+        IllegalArgumentException unknown = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(UnknownEmbeddedPathEntity.class));
+        assertTrue(unknown.getMessage().contains("does not match an embedded leaf"));
+
+        EntityMetadataFactory duplicateFactory = factory(CodeConverter.class, UpperCodeConverter.class);
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
+                () -> duplicateFactory.getEntityMetadata(DuplicateEmbeddedPathEntity.class));
+        assertTrue(duplicate.getMessage().contains("duplicate @Convert path"));
+    }
+
+    @Test
+    void rejectsConverterRegistrationAfterMetadataBuildStarts() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        factory.getEntityMetadata(EnumEntity.class);
+        IllegalStateException direct = assertThrows(
+                IllegalStateException.class, () -> factory.registerJpaConverter(CodeConverter.class));
+        assertTrue(direct.getMessage().contains("before the first entity metadata"));
+        assertThrows(IllegalStateException.class,
+                () -> factory.registerManagedClasses(List.of(CodeConverter.class)));
+    }
+
+    @Test
+    void resolvesConverterTypesAcrossGenericSuperclassHops() {
+        EntityMetadataFactory factory = factory(ConcreteCodeConverter.class);
+        PersistentProperty property = factory.getEntityMetadata(ValueEntity.class)
+                .findProperty("code").orElseThrow();
+        assertEquals(String.class, property.columnType());
+        assertEquals("generic", property.toColumnValue(new Code("generic")));
+    }
+
+    @Test
+    void rejectsMapKeyConvertCombinedWithMapKeyTemporal() {
+        EntityMetadataFactory factory = factory(DateStringConverter.class);
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> factory.getEntityMetadata(InvalidTemporalMapEntity.class));
+        assertTrue(error.getMessage().contains("@MapKeyTemporal"));
+    }
+
     private static EntityMetadata<?> metadataFor(Class<?> type) {
         return new EntityMetadataFactory(new DefaultNamingStrategy()).getEntityMetadata(type);
     }
@@ -151,9 +223,40 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         public TextStatus convertToEntityAttribute(Integer value) { return value == null ? null : TextStatus.values()[value]; }
     }
 
+    abstract static class GenericBaseConverter<T>
+            implements jakarta.persistence.AttributeConverter<T, String> {
+        public String convertToDatabaseColumn(T value) { return value == null ? null : ((Code) value).value(); }
+        @SuppressWarnings("unchecked")
+        public T convertToEntityAttribute(String value) { return value == null ? null : (T) new Code(value); }
+    }
+
+    abstract static class IntermediateCodeConverter<T> extends GenericBaseConverter<T> {
+    }
+
+    @Converter(autoApply = true)
+    public static class ConcreteCodeConverter extends IntermediateCodeConverter<Code> {
+    }
+
+    @Converter
+    public static class DateStringConverter implements jakarta.persistence.AttributeConverter<Date, String> {
+        public String convertToDatabaseColumn(Date value) { return value == null ? null : Long.toString(value.getTime()); }
+        public Date convertToEntityAttribute(String value) { return value == null ? null : new Date(Long.parseLong(value)); }
+    }
+
     @Embeddable
     static class Address {
         Code code;
+    }
+
+    @Embeddable
+    static class NestedAddress {
+        @Embedded Address address;
+    }
+
+    @Embeddable
+    static class CompositeId {
+        Code code;
+        TextStatus status;
     }
 
     @Entity
@@ -211,4 +314,33 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
     @Entity static class BadDuplicateEntity { @Id Long id; BadDuplicate status; }
     @Entity static class ConvertedEnumEntity { @Id Long id; TextStatus status; }
     @Entity static class EnumIdEntity { @Id TextStatus id; }
+    @Entity static class CompositeIdEntity { @EmbeddedId CompositeId id; }
+
+    @Entity static class EmbeddedOverrideEntity {
+        @Id Long id;
+        @Embedded @Convert(attributeName = "code", converter = UpperCodeConverter.class) Address flat;
+        @Embedded @Convert(attributeName = "address.code", converter = UpperCodeConverter.class) NestedAddress nested;
+        @Embedded @Convert(attributeName = "code", disableConversion = true) Address disabled;
+    }
+
+    @Entity static class UnknownEmbeddedPathEntity {
+        @Id Long id;
+        @Embedded @Convert(attributeName = "missing", converter = UpperCodeConverter.class) Address address;
+    }
+
+    @Entity static class DuplicateEmbeddedPathEntity {
+        @Id Long id;
+        @Embedded
+        @Convert(attributeName = "code", converter = UpperCodeConverter.class)
+        @Convert(attributeName = "code", disableConversion = true)
+        Address address;
+    }
+
+    @Entity static class InvalidTemporalMapEntity {
+        @Id Long id;
+        @ElementCollection
+        @MapKeyTemporal(TemporalType.TIMESTAMP)
+        @Convert(attributeName = "key", converter = DateStringConverter.class)
+        Map<Date, String> values;
+    }
 }

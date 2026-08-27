@@ -171,7 +171,8 @@ public class NovaAutoConfiguration {
     public SchemaBootstrapRunner novaSchemaBootstrapRunnerCreate(
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
-            BeanFactory beanFactory) {
+            BeanFactory beanFactory,
+            NovaEntityPreloadRunner converterAndEntityPreload) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 
@@ -181,7 +182,8 @@ public class NovaAutoConfiguration {
     public SchemaBootstrapRunner novaSchemaBootstrapRunnerCreateDrop(
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
-            BeanFactory beanFactory) {
+            BeanFactory beanFactory,
+            NovaEntityPreloadRunner converterAndEntityPreload) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 
@@ -191,7 +193,8 @@ public class NovaAutoConfiguration {
     public SchemaBootstrapRunner novaSchemaBootstrapRunnerUpdate(
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
-            BeanFactory beanFactory) {
+            BeanFactory beanFactory,
+            NovaEntityPreloadRunner converterAndEntityPreload) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 
@@ -201,7 +204,8 @@ public class NovaAutoConfiguration {
     public SchemaBootstrapRunner novaSchemaBootstrapRunnerValidate(
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
-            BeanFactory beanFactory) {
+            BeanFactory beanFactory,
+            NovaEntityPreloadRunner converterAndEntityPreload) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 }

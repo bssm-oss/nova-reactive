@@ -2,6 +2,8 @@ package io.nova.boot;
 
 import io.nova.Nova;
 import io.nova.boot.ddlauto.DdlAutoBootstrapEntity;
+import io.nova.boot.ddlauto.DdlAutoCode;
+import io.nova.boot.ddlauto.DdlAutoConvertedEntity;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.query.QuerySpec;
@@ -51,6 +53,26 @@ class SchemaBootstrapRunnerEffectTest {
                             .then(operations.count(DdlAutoBootstrapEntity.class, QuerySpec.empty()))
                             .block();
                     assertEquals(1L, count);
+                });
+    }
+
+    @Test
+    void createModeRegistersManagedConvertersBeforeSchemaBootstrapAndRoundTrips() {
+        ConnectionFactory cf = freshConnectionFactory();
+        runner.withUserConfiguration(testInfrastructure(cf))
+                .withPropertyValues(
+                        "nova.ddl-auto=create",
+                        "nova.entity-packages=io.nova.boot.ddlauto")
+                .run(context -> {
+                    assertEquals(null, context.getStartupFailure());
+                    ReactiveEntityOperations operations = context.getBean(ReactiveEntityOperations.class);
+                    DdlAutoConvertedEntity entity = new DdlAutoConvertedEntity(new DdlAutoCode("managed"));
+                    DdlAutoConvertedEntity loaded = operations.save(entity)
+                            .flatMap(saved -> operations.findById(
+                                    DdlAutoConvertedEntity.class, saved.getId()))
+                            .block();
+                    assertNotNull(loaded);
+                    assertEquals(new DdlAutoCode("managed"), loaded.getCode());
                 });
     }
 
