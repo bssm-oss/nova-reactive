@@ -1450,6 +1450,8 @@ public final class EntityMetadataFactory {
                             + " is annotated with @EmbeddedId but its type " + embeddableType.getName()
                             + " is not annotated with @Embeddable");
         }
+        validateRecordComponentsMapped(embeddableType,
+                entityType.getName() + "." + idField.getName() + " @EmbeddedId");
         List<Field> hostPath = List.of(idField);
         // @EmbeddedId host 필드의 @AttributeOverride(name=..., column=@Column(name=...))로 컴포넌트 컬럼명을 재정의한다.
         Map<String, Column> columnOverrides = new java.util.HashMap<>();
@@ -1549,6 +1551,8 @@ public final class EntityMetadataFactory {
                             + " is annotated with @Embedded but its type " + embeddableType.getName()
                             + " is not annotated with @Embeddable");
         }
+        validateRecordComponentsMapped(embeddableType,
+                entityType.getName() + "." + hostField.getName() + " @Embedded");
         if (embeddableStack.contains(embeddableType)) {
             throw new IllegalArgumentException(
                     "circular @Embedded detected on " + entityType.getName()
@@ -1648,6 +1652,24 @@ public final class EntityMetadataFactory {
             }
         }
         return false;
+    }
+
+    private static void validateRecordComponentsMapped(Class<?> type, String location) {
+        if (!type.isRecord()) {
+            return;
+        }
+        for (java.lang.reflect.RecordComponent component : type.getRecordComponents()) {
+            try {
+                Field field = type.getDeclaredField(component.getName());
+                if (isNotPersistable(field)) {
+                    throw new IllegalArgumentException(location + " record component '" + component.getName()
+                            + "' is not persistent; every record component must participate in canonical construction");
+                }
+            } catch (NoSuchFieldException exception) {
+                throw new IllegalStateException(location + " record component '" + component.getName()
+                        + "' has no matching field metadata", exception);
+            }
+        }
     }
 
     private static void rejectIllegalSubFieldAnnotations(
@@ -4351,6 +4373,7 @@ public final class EntityMetadataFactory {
      */
     private List<ElementCollectionInfo.EmbeddableColumn> expandEmbeddableElementColumns(
             Class<?> elementType, Field collectionField, String location, String ownerForeignKeyColumn) {
+        validateRecordComponentsMapped(elementType, location + " @ElementCollection");
         if (hasIdAnnotatedField(elementType)) {
             throw new IllegalArgumentException(
                     "@Embeddable type " + elementType.getName()
@@ -4445,8 +4468,8 @@ public final class EntityMetadataFactory {
                                 + "'; use @AttributeOverride or @Column to disambiguate");
             }
             subField.setAccessible(true);
-            columns.add(new ElementCollectionInfo.EmbeddableColumn(
-                    subField, columnName, wrapPrimitiveType(subField.getType())));
+            columns.add(resolveEmbeddableCollectionColumn(
+                    elementType, subField, columnName, location + " component " + subField.getName()));
         }
         if (columns.isEmpty()) {
             throw new IllegalArgumentException(
@@ -4466,6 +4489,7 @@ public final class EntityMetadataFactory {
      */
     private List<ElementCollectionInfo.EmbeddableColumn> expandEmbeddableMapKeyColumns(
             Class<?> keyType, Field collectionField, String location) {
+        validateRecordComponentsMapped(keyType, location + " @MapKeyClass");
         if (hasIdAnnotatedField(keyType)) {
             throw new IllegalArgumentException(
                     location + " @MapKeyClass @Embeddable key " + keyType.getName()
@@ -4549,8 +4573,8 @@ public final class EntityMetadataFactory {
                                 + "'; use @AttributeOverride(name=\"key.<field>\") or @Column to disambiguate");
             }
             subField.setAccessible(true);
-            columns.add(new ElementCollectionInfo.EmbeddableColumn(
-                    subField, columnName, wrapPrimitiveType(subField.getType())));
+            columns.add(resolveEmbeddableCollectionColumn(
+                    keyType, subField, columnName, location + " key component " + subField.getName()));
         }
         if (columns.isEmpty()) {
             throw new IllegalArgumentException(
@@ -4558,6 +4582,27 @@ public final class EntityMetadataFactory {
                             + " has no persistent fields to map as key columns");
         }
         return columns;
+    }
+
+    private ElementCollectionInfo.EmbeddableColumn resolveEmbeddableCollectionColumn(
+            Class<?> embeddableType, Field field, String columnName, String location) {
+        if (field.isAnnotationPresent(Json.class)) {
+            if (field.isAnnotationPresent(Enumerated.class) || field.isAnnotationPresent(Temporal.class)) {
+                throw new IllegalStateException(location + " cannot combine @Json with @Enumerated/@Temporal");
+            }
+            JpaConverterDescriptor explicit = explicitJpaConverter(
+                    field, wrapPrimitiveType(field.getType()), null, location);
+            if (explicit != null || converters.containsKey(field.getType())) {
+                throw new IllegalStateException(location + " cannot combine @Json with an AttributeConverter");
+            }
+            return new ElementCollectionInfo.EmbeddableColumn(
+                    field, columnName, String.class,
+                    castConverter(new JsonAttributeConverter(jsonCodec, field.getType())), true);
+        }
+        ElementValueMapping mapping = resolveBasicElementValueMapping(
+                embeddableType, field, field.getType(), location, null);
+        return new ElementCollectionInfo.EmbeddableColumn(
+                field, columnName, mapping.columnType(), mapping.converter(), false);
     }
 
     private static Class<?> resolveElementCollectionElementType(Class<?> entityType, Field field) {

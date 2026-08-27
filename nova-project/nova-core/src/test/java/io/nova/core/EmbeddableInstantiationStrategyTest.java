@@ -12,6 +12,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MapsId;
+import jakarta.persistence.Transient;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -84,6 +85,13 @@ class EmbeddableInstantiationStrategyTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(DerivedRecordIdEntity.class));
         assertTrue(error.getMessage().contains("immutable record identifiers"));
+    }
+
+    @Test
+    void rejectsUnmappedRecordComponentAtMetadataBuild() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(TransientRecordEntity.class));
+        assertTrue(error.getMessage().contains("record component 'ignored' is not persistent"));
     }
 
     private static void hydrate(Object entity, EntityMetadata<?> metadata, Object... namesAndValues) {
@@ -164,5 +172,15 @@ class EmbeddableInstantiationStrategyTest {
     static class DerivedRecordIdEntity {
         @jakarta.persistence.EmbeddedId DerivedId id;
         @ManyToOne @MapsId("parentId") DerivedParent parent;
+    }
+
+    @Embeddable
+    record TransientValue(String stored, @Transient String ignored) {
+    }
+
+    @Entity
+    static class TransientRecordEntity {
+        @Id Long id;
+        @Embedded TransientValue value;
     }
 }

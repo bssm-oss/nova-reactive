@@ -748,7 +748,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private static List<Object> readEmbeddableColumnValues(ElementCollectionInfo info, Object element) {
         List<Object> values = new ArrayList<>(info.embeddableColumns().size());
         for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-            values.add(EmbeddableInstantiationStrategy.readCollectionValue(element, column));
+            values.add(column.encode(EmbeddableInstantiationStrategy.readCollectionValue(element, column)));
         }
         return values;
     }
@@ -815,7 +815,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         List<ElementCollectionInfo.EmbeddableColumn> keyColumns = info.mapKey().embeddableKeyColumns();
         List<Object> values = new ArrayList<>(keyColumns.size());
         for (ElementCollectionInfo.EmbeddableColumn column : keyColumns) {
-            values.add(EmbeddableInstantiationStrategy.readCollectionValue(key, column));
+            values.add(column.encode(EmbeddableInstantiationStrategy.readCollectionValue(key, column)));
         }
         return values;
     }
@@ -4253,7 +4253,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (info.valueType().isRecord()) {
             List<Object> values = new ArrayList<>(info.embeddableColumns().size());
             for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-                values.add(row.get(column.columnName(), column.columnType()));
+                values.add(column.decode(row.get(column.columnName(), column.columnType())));
             }
             return EmbeddableInstantiationStrategy.instantiateCollectionRecord(
                     info.valueType(), info.embeddableColumns(), values);
@@ -4269,7 +4269,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + " must expose a no-args constructor", exception);
         }
         for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-            Object value = row.get(column.columnName(), column.columnType());
+            Object value = column.decode(row.get(column.columnName(), column.columnType()));
             try {
                 column.field().set(element, value);
             } catch (IllegalAccessException exception) {
@@ -4290,7 +4290,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (mapKey.keyType().isRecord()) {
             List<Object> values = new ArrayList<>(mapKey.embeddableKeyColumns().size());
             for (ElementCollectionInfo.EmbeddableColumn column : mapKey.embeddableKeyColumns()) {
-                values.add(row.get(column.columnName(), column.columnType()));
+                values.add(column.decode(row.get(column.columnName(), column.columnType())));
             }
             return EmbeddableInstantiationStrategy.instantiateCollectionRecord(
                     mapKey.keyType(), mapKey.embeddableKeyColumns(), values);
@@ -4306,7 +4306,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + " must expose a no-args constructor", exception);
         }
         for (ElementCollectionInfo.EmbeddableColumn column : mapKey.embeddableKeyColumns()) {
-            Object value = row.get(column.columnName(), column.columnType());
+            Object value = column.decode(row.get(column.columnName(), column.columnType()));
             try {
                 column.field().set(key, value);
             } catch (IllegalAccessException exception) {

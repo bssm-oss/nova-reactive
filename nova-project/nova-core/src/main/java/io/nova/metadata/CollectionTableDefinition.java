@@ -118,7 +118,10 @@ public record CollectionTableDefinition(
     /**
      * {@code @Embeddable} 원소를 펼친 collection table 컬럼 하나의 물리 정의(컬럼 이름 + 저장 Java 타입).
      */
-    public record ElementColumn(String columnName, Class<?> columnType) {
+    public record ElementColumn(String columnName, Class<?> columnType, boolean json) {
+        public ElementColumn(String columnName, Class<?> columnType) {
+            this(columnName, columnType, false);
+        }
     }
 
     /**

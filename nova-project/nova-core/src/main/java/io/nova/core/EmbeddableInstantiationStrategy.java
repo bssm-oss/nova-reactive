@@ -106,15 +106,17 @@ final class EmbeddableInstantiationStrategy {
         Object[] arguments = new Object[components.length];
         for (int i = 0; i < components.length; i++) {
             RecordComponent component = components[i];
+            if (!values.containsKey(component.getName())) {
+                throw new IllegalStateException(location + " component '" + component.getName()
+                        + "' has no persistent metadata; record embeddables cannot contain unmapped components");
+            }
             Object value = values.get(component.getName());
-            boolean persistentValuePresent = values.containsKey(component.getName());
-            if (value == null && component.getType().isPrimitive() && persistentValuePresent) {
+            if (value == null && component.getType().isPrimitive()) {
                 throw new IllegalStateException(location + " component '" + component.getName()
                         + "' is primitive " + component.getType().getName()
                         + " but the database value is NULL");
             }
-            arguments[i] = value == null && component.getType().isPrimitive()
-                    ? primitiveDefault(component.getType()) : value;
+            arguments[i] = value;
         }
         try {
             return canonicalConstructor(type).newInstance(arguments);
@@ -122,18 +124,6 @@ final class EmbeddableInstantiationStrategy {
             throw new IllegalStateException("Cannot instantiate " + location + " through its canonical constructor",
                     exception);
         }
-    }
-
-    private static Object primitiveDefault(Class<?> type) {
-        if (type == boolean.class) return false;
-        if (type == char.class) return '\0';
-        if (type == byte.class) return (byte) 0;
-        if (type == short.class) return (short) 0;
-        if (type == int.class) return 0;
-        if (type == long.class) return 0L;
-        if (type == float.class) return 0F;
-        if (type == double.class) return 0D;
-        throw new IllegalArgumentException("Unsupported primitive component type " + type.getName());
     }
 
     private static Constructor<?> canonicalConstructor(Class<?> type) {

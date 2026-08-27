@@ -88,7 +88,8 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             // 각 key 컬럼은 not null(JPA map key는 null을 허용하지 않는다).
             for (CollectionTableDefinition.ElementColumn keyColumn : definition.mapKeyColumns()) {
                 columns.add(dialect.quote(keyColumn.columnName())
-                        + " " + elementColumnType(keyColumn.columnType()) + " not null");
+                        + " " + (keyColumn.json() ? dialect.jsonColumnType()
+                        : elementColumnType(keyColumn.columnType())) + " not null");
             }
         } else if (definition.map()) {
             // Map<K,V>: owner FK 다음에 key 컬럼을 둔다(owner FK, key, value[s]). key는 not null.
@@ -98,7 +99,8 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (definition.embeddable()) {
             // @Embeddable 원소: 펼친 필드마다 컬럼 1개를 emit한다(owner FK, field1, field2, ...).
             for (CollectionTableDefinition.ElementColumn column : definition.elementColumns()) {
-                columns.add(dialect.quote(column.columnName()) + " " + elementColumnType(column.columnType()));
+                columns.add(dialect.quote(column.columnName()) + " "
+                        + (column.json() ? dialect.jsonColumnType() : elementColumnType(column.columnType())));
             }
         } else {
             columns.add(dialect.quote(definition.valueColumn()) + " " + elementColumnType(definition.valueType()));
