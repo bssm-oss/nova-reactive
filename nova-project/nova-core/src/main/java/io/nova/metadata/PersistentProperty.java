@@ -648,11 +648,11 @@ public final class PersistentProperty {
         if (json) {
             return String.class;
         }
-        if (enumerated) {
-            return enumType == EnumType.STRING ? String.class : Integer.class;
-        }
         if (converterColumnType != null) {
             return converterColumnType;
+        }
+        if (enumerated) {
+            return enumType == EnumType.STRING ? String.class : Integer.class;
         }
         return javaType;
     }

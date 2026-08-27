@@ -837,6 +837,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private static Object encodeMapKey(ElementCollectionInfo info, Object key) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        if (mapKey.convertedKey()) {
+            return mapKey.encodeKey(key);
+        }
         if (mapKey.enumKey()) {
             Enum<?> enumKey = (Enum<?>) key;
             return mapKey.keyEnumType() == EnumType.STRING ? enumKey.name() : enumKey.ordinal();
@@ -864,6 +867,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static Object decodeMapKey(ElementCollectionInfo info, Object stored) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        if (mapKey.convertedKey()) {
+            return mapKey.decodeKey(stored);
+        }
         if (!mapKey.enumKey()) {
             return mapKey.decodeKey(stored);
         }

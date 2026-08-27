@@ -217,13 +217,13 @@ public final class OracleDialect implements Dialect {
             if (property.json()) {
                 return dialect().jsonColumnType();
             }
-            if (property.enumerated()) {
+            if (property.enumerated() && property.converterColumnType() == null) {
                 return property.enumType() == EnumType.STRING ? "varchar2(255)" : "number(10)";
             }
             if (property.lob()) {
                 return dialect().lobType(property.javaType() == byte[].class);
             }
-            Class<?> type = property.javaType();
+            Class<?> type = property.columnType();
             if (type == String.class) {
                 return "varchar2(" + property.length() + ")";
             }
@@ -233,11 +233,17 @@ public final class OracleDialect implements Dialect {
             if (type == Integer.class || type == int.class) {
                 return "number(10)";
             }
+            if (type == Short.class || type == short.class) {
+                return "number(5)";
+            }
             if (type == Boolean.class || type == boolean.class) {
                 return "number(1)";
             }
             if (type == Double.class || type == double.class) {
                 return "binary_double";
+            }
+            if (type == Float.class || type == float.class) {
+                return "binary_float";
             }
             if (type == java.math.BigDecimal.class) {
                 // Oracle은 임의 정밀도 수치를 number(p, s)로 표현한다. precision 미지정(0)이면 통화류 기본값

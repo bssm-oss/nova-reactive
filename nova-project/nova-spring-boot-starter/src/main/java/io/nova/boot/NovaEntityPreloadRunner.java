@@ -1,6 +1,7 @@
 package io.nova.boot;
 
 import jakarta.persistence.Entity;
+import jakarta.persistence.Converter;
 import io.nova.metadata.EntityMetadataFactory;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -11,6 +12,7 @@ import org.springframework.context.annotation.ClassPathScanningCandidateComponen
 import org.springframework.core.type.filter.AnnotationTypeFilter;
 
 import java.util.List;
+import java.util.ArrayList;
 
 /**
  * Eagerly builds {@link io.nova.metadata.EntityMetadata} for every {@code @Entity} discovered in the
@@ -52,17 +54,24 @@ public class NovaEntityPreloadRunner implements InitializingBean {
         ClassPathScanningCandidateComponentProvider scanner =
                 new ClassPathScanningCandidateComponentProvider(false);
         scanner.addIncludeFilter(new AnnotationTypeFilter(Entity.class));
-        int count = 0;
+        scanner.addIncludeFilter(new AnnotationTypeFilter(Converter.class));
+        List<Class<?>> discovered = new ArrayList<>();
         for (String basePackage : packages) {
             for (var definition : scanner.findCandidateComponents(basePackage)) {
-                Class<?> entityType;
                 try {
-                    entityType = Class.forName(definition.getBeanClassName());
+                    discovered.add(Class.forName(definition.getBeanClassName()));
                 } catch (ClassNotFoundException unreachable) {
                     throw new IllegalStateException(
-                            "Failed to resolve @Entity candidate: " + definition.getBeanClassName(),
+                            "Failed to resolve Nova managed-class candidate: " + definition.getBeanClassName(),
                             unreachable);
                 }
+            }
+        }
+        // Converter registration must precede every entity metadata build so auto-apply is deterministic.
+        metadataFactory.registerManagedClasses(discovered);
+        int count = 0;
+        for (Class<?> entityType : discovered) {
+            if (entityType.isAnnotationPresent(Entity.class)) {
                 // Build (and cache + register hierarchy membership) every entity's metadata up front.
                 metadataFactory.getEntityMetadata(entityType);
                 count++;

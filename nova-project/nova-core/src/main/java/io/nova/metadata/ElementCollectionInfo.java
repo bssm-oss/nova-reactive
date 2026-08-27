@@ -295,6 +295,10 @@ public record ElementCollectionInfo(
             return keyEnumType != null;
         }
 
+        public boolean convertedKey() {
+            return keyConverter != null;
+        }
+
         /**
          * 도메인 map key를 collection table 바인딩용 저장 표현으로 인코딩한다({@code UUID}→문자열 등). converter가
          * 없으면(순수 기본 타입) 값을 그대로 통과시킨다. enum key는 operations가 이름/ordinal로 별도 처리하므로

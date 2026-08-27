@@ -30,6 +30,7 @@ import jakarta.persistence.ExcludeDefaultListeners;
 import jakarta.persistence.ExcludeSuperclassListeners;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.EnumeratedValue;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -80,6 +81,7 @@ import jakarta.persistence.Version;
 import io.nova.convert.AttributeConverter;
 import io.nova.convert.EnumOrdinalConverter;
 import io.nova.convert.EnumStringConverter;
+import io.nova.convert.EnumeratedValueConverter;
 import io.nova.convert.JpaAttributeConverterAdapter;
 import io.nova.convert.JsonAttributeConverter;
 import io.nova.convert.TemporalAttributeConverter;
@@ -158,6 +160,7 @@ public final class EntityMetadataFactory {
     private final JsonCodec jsonCodec;
     private final Map<Class<?>, EntityMetadata<?>> cache = new ConcurrentHashMap<>();
     private final Map<Class<?>, AttributeConverter<?, ?>> converters = new ConcurrentHashMap<>();
+    private final Map<Class<?>, List<JpaConverterDescriptor>> jpaConverters = new ConcurrentHashMap<>();
     /**
      * SINGLE_TABLE 상속 계층 레지스트리. root 클래스 → (discriminator 값 → 구체 서브타입 클래스).
      * 각 구체 멤버의 메타데이터가 빌드될 때 자기 자신을 등록한다 — JPA persistence-unit이 모든 엔티티를
@@ -206,6 +209,36 @@ public final class EntityMetadataFactory {
      */
     public <X, Y> void registerConverter(Class<X> propertyType, AttributeConverter<X, Y> converter) {
         converters.put(propertyType, converter);
+    }
+
+    /** Registers a managed Jakarta converter class for explicit and auto-apply conversion. */
+    public void registerJpaConverter(Class<?> converterClass) {
+        Objects.requireNonNull(converterClass, "converterClass must not be null");
+        jakarta.persistence.Converter annotation = converterClass.getAnnotation(jakarta.persistence.Converter.class);
+        if (annotation == null) {
+            throw new IllegalArgumentException("JPA converter " + converterClass.getName()
+                    + " must be annotated with @Converter");
+        }
+        Class<?>[] types = resolveJpaConverterTypeArguments(converterClass);
+        JpaConverterDescriptor descriptor = new JpaConverterDescriptor(
+                converterClass, wrapPrimitiveType(types[0]), wrapPrimitiveType(types[1]), annotation.autoApply());
+        jpaConverters.compute(descriptor.attributeType(), (ignored, existing) -> {
+            List<JpaConverterDescriptor> result = new ArrayList<>(existing == null ? List.of() : existing);
+            if (result.stream().noneMatch(item -> item.converterClass() == converterClass)) {
+                result.add(descriptor);
+            }
+            return List.copyOf(result);
+        });
+    }
+
+    /** Registers any converter classes present in an already-discovered managed-class set. */
+    public void registerManagedClasses(Iterable<Class<?>> managedClasses) {
+        Objects.requireNonNull(managedClasses, "managedClasses must not be null");
+        for (Class<?> managedClass : managedClasses) {
+            if (managedClass.isAnnotationPresent(jakarta.persistence.Converter.class)) {
+                registerJpaConverter(managedClass);
+            }
+        }
     }
 
     /**
@@ -1897,6 +1930,10 @@ public final class EntityMetadataFactory {
         boolean isEnumerated = false;
         EnumType enumType = null;
         AttributeConverter<?, ?> converter = userConverter;
+        Class<?> converterColumnType = null;
+        String mappingLocation = declaringType.getName() + "." + field.getName();
+        JpaConverterDescriptor explicitConverter = explicitJpaConverter(
+                field, field.getType(), null, mappingLocation);
         if (enumerated != null) {
             if (isJson) {
                 throw new IllegalStateException(
@@ -1917,7 +1954,9 @@ public final class EntityMetadataFactory {
             }
             isEnumerated = true;
             enumType = enumerated.value();
-            converter = createEnumConverter(field.getType(), enumType);
+            EnumMapping enumMapping = resolveEnumMapping(field.getType(), enumType);
+            converter = enumMapping.converter();
+            converterColumnType = enumMapping.customColumnType();
         }
         if (isJson) {
             if (userConverter != null) {
@@ -1933,9 +1972,9 @@ public final class EntityMetadataFactory {
 
         // @Convert(converter=X.class): JPA 표준 AttributeConverter를 어댑터로 감싸 일반 converter 경로에 태운다.
         // 저장 표현 타입(Y)을 columnType()/schema 컬럼 타입의 근거로 보관한다.
-        Class<?> converterColumnType = null;
-        Convert convert = field.getAnnotation(Convert.class);
-        if (convert != null && !convert.disableConversion()) {
+        Convert convert = Arrays.stream(field.getAnnotationsByType(Convert.class))
+                .filter(candidate -> candidate.attributeName().isBlank()).findFirst().orElse(null);
+        if (explicitConverter != null) {
             if (isEnumerated || isJson) {
                 throw new IllegalStateException(
                         declaringType.getName() + "." + field.getName()
@@ -1947,24 +1986,8 @@ public final class EntityMetadataFactory {
                                 + " cannot combine @Convert with a registered AttributeConverter for "
                                 + field.getType().getName());
             }
-            Class<?> converterClass = convert.converter();
-            if (converterClass == void.class || converterClass == Void.class) {
-                throw new IllegalArgumentException(
-                        declaringType.getName() + "." + field.getName()
-                                + " @Convert requires a converter class");
-            }
-            Class<?>[] attributeAndColumn = resolveJpaConverterTypeArguments(declaringType, field, converterClass);
-            Class<?> attributeType = attributeAndColumn[0];
-            Class<?> fieldType = wrapPrimitiveType(field.getType());
-            if (!attributeType.isAssignableFrom(fieldType) && !fieldType.isAssignableFrom(attributeType)) {
-                throw new IllegalArgumentException(
-                        declaringType.getName() + "." + field.getName()
-                                + " @Convert converter " + converterClass.getName()
-                                + " expects attribute type " + attributeType.getName()
-                                + " but the field is " + field.getType().getName());
-            }
-            converter = new JpaAttributeConverterAdapter<>(instantiateJpaConverter(converterClass));
-            converterColumnType = attributeAndColumn[1];
+            converter = explicitConverter.instantiate();
+            converterColumnType = explicitConverter.columnType();
         }
 
         // @Temporal: 레거시 java.util.Date/Calendar 필드를 java.time 저장 표현으로 매핑한다. Nova는 java.time
@@ -2024,6 +2047,25 @@ public final class EntityMetadataFactory {
                             + " maps " + field.getType().getName()
                             + " but is missing @Temporal(TemporalType.DATE|TIME|TIMESTAMP);"
                             + " java.util.Date/Calendar mapping is ambiguous without it");
+        }
+
+        // Jakarta auto-apply never reaches ids, versions, explicit enum/temporal mappings, or disabled attributes.
+        if (converter == null && !isId && !isVersion && enumerated == null && temporal == null && !isJson
+                && !conversionDisabled(field, null)) {
+            JpaConverterDescriptor automatic = uniqueJpaConverter(field.getType(), true, mappingLocation);
+            if (automatic != null) {
+                converter = automatic.instantiate();
+                converterColumnType = automatic.columnType();
+            }
+        }
+        // An unannotated enum is still an enumerated basic attribute. A unique applied converter wins and makes
+        // @EnumeratedValue irrelevant; otherwise Jakarta 3.2 infers STRING from a String marker and ORDINAL otherwise.
+        if (converter == null && field.getType().isEnum()) {
+            isEnumerated = true;
+            enumType = inferredEnumType(field.getType());
+            EnumMapping enumMapping = resolveEnumMapping(field.getType(), enumType);
+            converter = enumMapping.converter();
+            converterColumnType = enumMapping.customColumnType();
         }
 
         // @Enumerated/@Json/@Convert/@Temporal/등록 converter가 없는 순수 스칼라 타입의 저장타입 분리를 EC 원소와
@@ -2310,6 +2352,18 @@ public final class EntityMetadataFactory {
      */
     private static Class<?>[] resolveJpaConverterTypeArguments(
             Class<?> declaringType, Field field, Class<?> converterClass) {
+        try {
+            return resolveJpaConverterTypeArguments(converterClass);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException(
+                    declaringType.getName() + "." + field.getName() + " @Convert converter "
+                            + converterClass.getName()
+                            + " must implement jakarta.persistence.AttributeConverter with concrete type arguments",
+                    exception);
+        }
+    }
+
+    private static Class<?>[] resolveJpaConverterTypeArguments(Class<?> converterClass) {
         for (Type supertype : genericSupertypes(converterClass)) {
             if (supertype instanceof ParameterizedType parameterized
                     && parameterized.getRawType() == jakarta.persistence.AttributeConverter.class) {
@@ -2323,9 +2377,71 @@ public final class EntityMetadataFactory {
             }
         }
         throw new IllegalArgumentException(
-                declaringType.getName() + "." + field.getName() + " @Convert converter "
-                        + converterClass.getName()
+                "JPA converter " + converterClass.getName()
                         + " must implement jakarta.persistence.AttributeConverter with concrete type arguments");
+    }
+
+    private record JpaConverterDescriptor(
+            Class<?> converterClass, Class<?> attributeType, Class<?> columnType, boolean autoApply) {
+        AttributeConverter<Object, Object> instantiate() {
+            return castConverter(new JpaAttributeConverterAdapter<>(instantiateJpaConverter(converterClass)));
+        }
+    }
+
+    private JpaConverterDescriptor explicitJpaConverter(
+            Field field, Class<?> attributeType, String selector, String location) {
+        Convert selected = null;
+        for (Convert candidate : field.getAnnotationsByType(Convert.class)) {
+            String name = candidate.attributeName();
+            boolean matches = selector == null ? name.isBlank() : name.equals(selector)
+                    || (selector.equals("value") && name.isBlank());
+            if (!matches) {
+                continue;
+            }
+            if (selected != null) {
+                throw new IllegalArgumentException(location + " declares multiple @Convert mappings for "
+                        + (selector == null ? "the attribute" : "map " + selector));
+            }
+            selected = candidate;
+        }
+        if (selected == null || selected.disableConversion()) {
+            return null;
+        }
+        if (selected.converter() != jakarta.persistence.AttributeConverter.class) {
+            Class<?>[] types = resolveJpaConverterTypeArguments(field.getDeclaringClass(), field, selected.converter());
+            Class<?> target = wrapPrimitiveType(types[0]);
+            if (target != wrapPrimitiveType(attributeType)) {
+                throw new IllegalArgumentException(location + " @Convert converter " + selected.converter().getName()
+                        + " targets " + target.getName() + " but the mapped type is " + attributeType.getName());
+            }
+            return new JpaConverterDescriptor(selected.converter(), target, wrapPrimitiveType(types[1]), false);
+        }
+        return uniqueJpaConverter(attributeType, false, location);
+    }
+
+    private boolean conversionDisabled(Field field, String selector) {
+        for (Convert convert : field.getAnnotationsByType(Convert.class)) {
+            String name = convert.attributeName();
+            boolean matches = selector == null ? name.isBlank() : name.equals(selector)
+                    || (selector.equals("value") && name.isBlank());
+            if (matches && convert.disableConversion()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private JpaConverterDescriptor uniqueJpaConverter(
+            Class<?> attributeType, boolean autoOnly, String location) {
+        List<JpaConverterDescriptor> candidates = jpaConverters
+                .getOrDefault(wrapPrimitiveType(attributeType), List.of()).stream()
+                .filter(candidate -> !autoOnly || candidate.autoApply())
+                .toList();
+        if (candidates.size() > 1) {
+            throw new IllegalArgumentException(location + " has multiple applicable JPA converters for "
+                    + attributeType.getName() + "; use @Convert(converter=...) to select one");
+        }
+        return candidates.isEmpty() ? null : candidates.get(0);
     }
 
     /**
@@ -2822,11 +2938,12 @@ public final class EntityMetadataFactory {
             return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1], length);
         }
         Enumerated enumerated = idField.getAnnotation(Enumerated.class);
-        if (enumerated != null) {
-            EnumType enumType = enumerated.value();
-            Class<?> converterColumnType = enumType == EnumType.STRING ? String.class : Integer.class;
-            return new ForeignKeyStorage(domainType,
-                    castConverter(createEnumConverter(idField.getType(), enumType)), converterColumnType, length);
+        if (enumerated != null || idField.getType().isEnum()) {
+            EnumType enumType = enumerated != null ? enumerated.value() : inferredEnumType(idField.getType());
+            EnumMapping mapping = resolveEnumMapping(idField.getType(), enumType);
+            Class<?> converterColumnType = mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ForeignKeyStorage(domainType, mapping.converter(), converterColumnType, length);
         }
         ElementValueMapping basic = resolveBasicStorageMapping(domainType);
         return new ForeignKeyStorage(domainType, basic.converter(),
@@ -3743,7 +3860,8 @@ public final class EntityMetadataFactory {
             rejectMapKeyCollision(mapKey, ownerForeignKeyColumn, List.of(valueColumn), location);
             // 기본 타입 원소(List/Set 원소 또는 Map value)의 저장타입/컨버터를 스칼라 프로퍼티와 동일한 규칙으로
             // 해석한다 — enum(@Enumerated)/UUID/@Convert/@Temporal은 저장 표현으로, 순수 기본 타입은 그대로.
-            ElementValueMapping valueMapping = resolveBasicElementValueMapping(entityType, field, elementType, location);
+            ElementValueMapping valueMapping = resolveBasicElementValueMapping(
+                    entityType, field, elementType, location, isMap ? "value" : null);
             info = new ElementCollectionInfo(
                     tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet,
                     List.of(), orderColumn, mapKey, valueMapping.columnType(), valueMapping.converter());
@@ -4013,10 +4131,36 @@ public final class EntityMetadataFactory {
                 ? mapKeyColumn.name()
                 : namingStrategy.columnName(field.getName()) + "_key";
         MapKeyEnumerated mapKeyEnumerated = field.getAnnotation(MapKeyEnumerated.class);
+        JpaConverterDescriptor explicitKeyConverter = explicitJpaConverter(field, keyType, "key", location);
         if (keyType.isEnum()) {
             EnumType enumType = mapKeyEnumerated != null ? mapKeyEnumerated.value() : EnumType.ORDINAL;
-            Class<?> keyColumnType = enumType == EnumType.STRING ? String.class : Integer.class;
-            return new ElementCollectionInfo.MapKeyInfo(keyColumnName, keyType, keyColumnType, enumType);
+            if (explicitKeyConverter != null) {
+                if (mapKeyEnumerated != null) {
+                    throw new IllegalStateException(location
+                            + " cannot combine @Convert(attributeName=\"key\") with @MapKeyEnumerated");
+                }
+                return new ElementCollectionInfo.MapKeyInfo(keyColumnName, keyType,
+                        explicitKeyConverter.columnType(), null, explicitKeyConverter.instantiate());
+            }
+            if (mapKeyEnumerated == null && !conversionDisabled(field, "key")) {
+                JpaConverterDescriptor automatic = uniqueJpaConverter(keyType, true, location);
+                if (automatic != null) {
+                    return new ElementCollectionInfo.MapKeyInfo(
+                            keyColumnName, keyType, automatic.columnType(), null, automatic.instantiate());
+                }
+            }
+            if (mapKeyEnumerated == null) {
+                enumType = inferredEnumType(keyType);
+            }
+            EnumMapping mapping = resolveEnumMapping(keyType, enumType);
+            Class<?> keyColumnType = mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ElementCollectionInfo.MapKeyInfo(
+                    keyColumnName, keyType, keyColumnType, enumType, mapping.converter());
+        }
+        if (explicitKeyConverter != null) {
+            return new ElementCollectionInfo.MapKeyInfo(keyColumnName, keyType,
+                    explicitKeyConverter.columnType(), null, explicitKeyConverter.instantiate());
         }
         if (mapKeyEnumerated != null) {
             throw new IllegalArgumentException(
@@ -4052,6 +4196,13 @@ public final class EntityMetadataFactory {
                             + " @MapKeyTemporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
         }
         Class<?> wrapped = wrapPrimitiveType(keyType);
+        if (!conversionDisabled(field, "key")) {
+            JpaConverterDescriptor automatic = uniqueJpaConverter(wrapped, true, location);
+            if (automatic != null) {
+                return new ElementCollectionInfo.MapKeyInfo(
+                        keyColumnName, wrapped, automatic.columnType(), null, automatic.instantiate());
+            }
+        }
         if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapped)) {
             throw new IllegalArgumentException(
                     location + " @ElementCollection Map key type " + keyType.getName()
@@ -4310,12 +4461,12 @@ public final class EntityMetadataFactory {
      * fail-fast에 맡긴다.
      */
     private ElementValueMapping resolveBasicElementValueMapping(
-            Class<?> entityType, Field field, Class<?> elementType, String location) {
+            Class<?> entityType, Field field, Class<?> elementType, String location, String selector) {
         Class<?> wrapped = wrapPrimitiveType(elementType);
         Enumerated enumerated = field.getAnnotation(Enumerated.class);
-        Convert convert = field.getAnnotation(Convert.class);
         Temporal temporal = field.getAnnotation(Temporal.class);
-        boolean hasConvert = convert != null && !convert.disableConversion();
+        JpaConverterDescriptor explicit = explicitJpaConverter(field, wrapped, selector, location);
+        boolean hasConvert = explicit != null;
 
         if (enumerated != null) {
             if (!elementType.isEnum()) {
@@ -4328,28 +4479,17 @@ public final class EntityMetadataFactory {
                         + " cannot combine @Enumerated with @Convert/@Temporal on an @ElementCollection element");
             }
             EnumType enumType = enumerated.value();
-            Class<?> columnType = enumType == EnumType.STRING ? String.class : Integer.class;
-            return new ElementValueMapping(columnType, castConverter(createEnumConverter(elementType, enumType)));
+            EnumMapping mapping = resolveEnumMapping(elementType, enumType);
+            Class<?> columnType = mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ElementValueMapping(columnType, mapping.converter());
         }
         if (hasConvert) {
             if (temporal != null) {
                 throw new IllegalStateException(location
                         + " cannot combine @Convert with @Temporal on an @ElementCollection element");
             }
-            Class<?> converterClass = convert.converter();
-            if (converterClass == void.class || converterClass == Void.class) {
-                throw new IllegalArgumentException(location + " @Convert requires a converter class");
-            }
-            Class<?>[] attributeAndColumn = resolveJpaConverterTypeArguments(entityType, field, converterClass);
-            Class<?> attributeType = attributeAndColumn[0];
-            if (!attributeType.isAssignableFrom(wrapped) && !wrapped.isAssignableFrom(attributeType)) {
-                throw new IllegalArgumentException(location + " @Convert converter " + converterClass.getName()
-                        + " expects attribute type " + attributeType.getName()
-                        + " but the @ElementCollection element is " + elementType.getName());
-            }
-            AttributeConverter<Object, Object> converter =
-                    castConverter(new JpaAttributeConverterAdapter<>(instantiateJpaConverter(converterClass)));
-            return new ElementValueMapping(attributeAndColumn[1], converter);
+            return new ElementValueMapping(explicit.columnType(), explicit.instantiate());
         }
         boolean isUtilDate = elementType == java.util.Date.class;
         boolean isCalendar = java.util.Calendar.class.isAssignableFrom(elementType);
@@ -4372,6 +4512,19 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(location
                     + " maps a java.util.Date/Calendar @ElementCollection element but is missing"
                     + " @Temporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
+        }
+        if (!conversionDisabled(field, selector)) {
+            JpaConverterDescriptor automatic = uniqueJpaConverter(wrapped, true, location);
+            if (automatic != null) {
+                return new ElementValueMapping(automatic.columnType(), automatic.instantiate());
+            }
+        }
+        if (elementType.isEnum()) {
+            EnumType enumType = inferredEnumType(elementType);
+            EnumMapping mapping = resolveEnumMapping(elementType, enumType);
+            Class<?> columnType = mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ElementValueMapping(columnType, mapping.converter());
         }
         // @Enumerated/@Convert/@Temporal이 없는 순수 기본 타입(UUID 포함)은 스칼라 프로퍼티/ map key와 동일한
         // 저장타입 분리 규칙을 공유한다(중복 구현 금지).
@@ -4409,6 +4562,38 @@ public final class EntityMetadataFactory {
      * {@code null}이면 순수 기본 타입으로 값을 그대로 저장/복원한다.
      */
     private record ElementValueMapping(Class<?> columnType, AttributeConverter<Object, Object> converter) {
+    }
+
+    private record EnumMapping(AttributeConverter<Object, Object> converter, Class<?> customColumnType) {
+    }
+
+    private static EnumType inferredEnumType(Class<?> enumClass) {
+        Field marker = enumeratedValueField(enumClass);
+        return marker != null && marker.getType() == String.class ? EnumType.STRING : EnumType.ORDINAL;
+    }
+
+    private static EnumMapping resolveEnumMapping(Class<?> enumClass, EnumType enumType) {
+        if (enumeratedValueField(enumClass) != null) {
+            @SuppressWarnings({"rawtypes", "unchecked"})
+            EnumeratedValueConverter<?> converter = new EnumeratedValueConverter(enumClass, enumType);
+            return new EnumMapping(castConverter(converter), converter.columnType());
+        }
+        Class<?> columnType = enumType == EnumType.STRING ? String.class : Integer.class;
+        return new EnumMapping(castConverter(createEnumConverter(enumClass, enumType)), null);
+    }
+
+    private static Field enumeratedValueField(Class<?> enumClass) {
+        Field marker = null;
+        for (Field field : enumClass.getDeclaredFields()) {
+            if (field.isAnnotationPresent(EnumeratedValue.class)) {
+                if (marker != null) {
+                    throw new IllegalArgumentException("Enum " + enumClass.getName()
+                            + " declares more than one @EnumeratedValue field");
+                }
+                marker = field;
+            }
+        }
+        return marker;
     }
 
     private static AttributeConverter<?, ?> createEnumConverter(Class<?> enumClass, EnumType enumType) {

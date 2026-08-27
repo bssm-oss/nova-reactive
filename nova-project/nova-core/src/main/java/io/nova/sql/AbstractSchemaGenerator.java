@@ -630,7 +630,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             // (기본 json, PostgreSQL jsonb). 컬럼 이름/nullability는 일반 컬럼과 동일하게 결정된다.
             return dialect.jsonColumnType();
         }
-        if (property.enumerated()) {
+        if (property.enumerated() && property.converterColumnType() == null) {
             return property.enumType() == EnumType.STRING ? "varchar(255)" : "integer";
         }
         if (property.lob()) {
