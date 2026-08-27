@@ -482,51 +482,50 @@ public final class JpqlSqlBuilder {
     // ----------------------------------------------------------------------------------------
 
     private void renderPredicate(Ctx ctx, Predicate predicate) {
-        switch (predicate) {
-            case Predicate.And and -> {
-                ctx.sql.append('(');
-                renderPredicate(ctx, and.left());
-                ctx.sql.append(" and ");
-                renderPredicate(ctx, and.right());
-                ctx.sql.append(')');
+        if (predicate instanceof Predicate.And and) {
+            ctx.sql.append('(');
+            renderPredicate(ctx, and.left());
+            ctx.sql.append(" and ");
+            renderPredicate(ctx, and.right());
+            ctx.sql.append(')');
+        } else if (predicate instanceof Predicate.Or or) {
+            ctx.sql.append('(');
+            renderPredicate(ctx, or.left());
+            ctx.sql.append(" or ");
+            renderPredicate(ctx, or.right());
+            ctx.sql.append(')');
+        } else if (predicate instanceof Predicate.Not not) {
+            ctx.sql.append("not (");
+            renderPredicate(ctx, not.inner());
+            ctx.sql.append(')');
+        } else if (predicate instanceof Predicate.Comparison c) {
+            renderComparison(ctx, c);
+        } else if (predicate instanceof Predicate.Like like) {
+            renderExpression(ctx, like.value());
+            ctx.sql.append(like.negated() ? " not like " : " like ");
+            renderExpression(ctx, like.pattern());
+            if (like.escape() != null) {
+                ctx.sql.append(" escape ");
+                ctx.bind(new JpqlBinding.Literal(String.valueOf(like.escape().charValue())));
+                ctx.sql.append(marker(ctx));
             }
-            case Predicate.Or or -> {
-                ctx.sql.append('(');
-                renderPredicate(ctx, or.left());
-                ctx.sql.append(" or ");
-                renderPredicate(ctx, or.right());
-                ctx.sql.append(')');
-            }
-            case Predicate.Not not -> {
-                ctx.sql.append("not (");
-                renderPredicate(ctx, not.inner());
-                ctx.sql.append(')');
-            }
-            case Predicate.Comparison c -> renderComparison(ctx, c);
-            case Predicate.Like like -> {
-                renderExpression(ctx, like.value());
-                ctx.sql.append(like.negated() ? " not like " : " like ");
-                renderExpression(ctx, like.pattern());
-                if (like.escape() != null) {
-                    ctx.sql.append(" escape ");
-                    ctx.bind(new JpqlBinding.Literal(String.valueOf(like.escape().charValue())));
-                    ctx.sql.append(marker(ctx));
-                }
-            }
-            case Predicate.Between b -> renderBetween(ctx, b);
-            case Predicate.Null n -> renderNull(ctx, n);
-            case Predicate.InList in -> renderInList(ctx, in);
-            case Predicate.InSubquery in -> {
-                renderExpression(ctx, in.value());
-                ctx.sql.append(in.negated() ? " not in (" : " in (");
-                renderSubquery(ctx, in.subquery());
-                ctx.sql.append(')');
-            }
-            case Predicate.Exists ex -> {
-                ctx.sql.append(ex.negated() ? "not exists (" : "exists (");
-                renderSubquery(ctx, ex.subquery());
-                ctx.sql.append(')');
-            }
+        } else if (predicate instanceof Predicate.Between b) {
+            renderBetween(ctx, b);
+        } else if (predicate instanceof Predicate.Null n) {
+            renderNull(ctx, n);
+        } else if (predicate instanceof Predicate.InList in) {
+            renderInList(ctx, in);
+        } else if (predicate instanceof Predicate.InSubquery in) {
+            renderExpression(ctx, in.value());
+            ctx.sql.append(in.negated() ? " not in (" : " in (");
+            renderSubquery(ctx, in.subquery());
+            ctx.sql.append(')');
+        } else if (predicate instanceof Predicate.Exists ex) {
+            ctx.sql.append(ex.negated() ? "not exists (" : "exists (");
+            renderSubquery(ctx, ex.subquery());
+            ctx.sql.append(')');
+        } else {
+            throw new IllegalStateException("Unknown JPQL predicate: " + predicate.getClass().getName());
         }
     }
 
@@ -729,14 +728,18 @@ public final class JpqlSqlBuilder {
 
     /** 복합키 to-one 비교의 우변(참조 엔티티) 바인딩 소스. 파라미터/리터럴만 허용한다. */
     private static JpqlBinding compositeComparisonSource(Expression other, CompositeToOneRef ref) {
-        return switch (other) {
-            case Expression.NamedParameter p -> new JpqlBinding.Named(p.name());
-            case Expression.PositionalParameter p -> new JpqlBinding.Positional(p.position());
-            case Expression.Literal l -> new JpqlBinding.Literal(l.value());
-            default -> throw new JpqlException("Composite-key to-one '" + ref.property().propertyName()
-                    + "' can only be compared to a bound parameter or entity reference literal, not "
-                    + other.getClass().getSimpleName());
-        };
+        if (other instanceof Expression.NamedParameter p) {
+            return new JpqlBinding.Named(p.name());
+        }
+        if (other instanceof Expression.PositionalParameter p) {
+            return new JpqlBinding.Positional(p.position());
+        }
+        if (other instanceof Expression.Literal l) {
+            return new JpqlBinding.Literal(l.value());
+        }
+        throw new JpqlException("Composite-key to-one '" + ref.property().propertyName()
+                + "' can only be compared to a bound parameter or entity reference literal, not "
+                + other.getClass().getSimpleName());
     }
 
     private void appendCompositeColumn(Ctx ctx, String alias, ToOneForeignKeyColumn column) {
@@ -749,54 +752,57 @@ public final class JpqlSqlBuilder {
     // ----------------------------------------------------------------------------------------
 
     private void renderExpression(Ctx ctx, Expression expression) {
-        switch (expression) {
-            case Expression.Literal lit -> {
-                ctx.bind(new JpqlBinding.Literal(lit.value()));
-                ctx.sql.append(marker(ctx));
+        if (expression instanceof Expression.Literal lit) {
+            ctx.bind(new JpqlBinding.Literal(lit.value()));
+            ctx.sql.append(marker(ctx));
+        } else if (expression instanceof Expression.NamedParameter p) {
+            ctx.bind(new JpqlBinding.Named(p.name()));
+            ctx.sql.append(marker(ctx));
+        } else if (expression instanceof Expression.PositionalParameter p) {
+            ctx.bind(new JpqlBinding.Positional(p.position()));
+            ctx.sql.append(marker(ctx));
+        } else if (expression instanceof Expression.Path path) {
+            ctx.sql.append(pathColumn(ctx, path));
+        } else if (expression instanceof Expression.Arithmetic a) {
+            ctx.sql.append('(');
+            renderExpression(ctx, a.left());
+            ctx.sql.append(' ').append(a.op().symbol()).append(' ');
+            renderExpression(ctx, a.right());
+            ctx.sql.append(')');
+        } else if (expression instanceof Expression.Aggregate agg) {
+            renderAggregate(ctx, agg);
+        } else if (expression instanceof Expression.FunctionCall fn) {
+            renderFunction(ctx, fn);
+        } else if (expression instanceof Expression.Cast cast) {
+            renderCast(ctx, cast);
+        } else if (expression instanceof Expression.Case c) {
+            renderCase(ctx, c);
+        } else if (expression instanceof Expression.ScalarSubquery s) {
+            ctx.sql.append('(');
+            renderSubquery(ctx, s.subquery());
+            ctx.sql.append(')');
+        } else if (expression instanceof Expression.Type t) {
+            ctx.sql.append(discriminatorColumnRef(ctx, t.alias()));
+        } else if (expression instanceof Expression.EntityTypeLiteral lit) {
+            EntityMetadata<?> meta = resolver.resolve(lit.entityName());
+            if (!meta.hasInheritance()) {
+                throw new JpqlException("TYPE(...) comparison against '" + lit.entityName()
+                        + "' requires an @Inheritance entity; it has no discriminator");
             }
-            case Expression.NamedParameter p -> {
-                ctx.bind(new JpqlBinding.Named(p.name()));
-                ctx.sql.append(marker(ctx));
-            }
-            case Expression.PositionalParameter p -> {
-                ctx.bind(new JpqlBinding.Positional(p.position()));
-                ctx.sql.append(marker(ctx));
-            }
-            case Expression.Path path -> ctx.sql.append(pathColumn(ctx, path));
-            case Expression.Arithmetic a -> {
-                ctx.sql.append('(');
-                renderExpression(ctx, a.left());
-                ctx.sql.append(' ').append(a.op().symbol()).append(' ');
-                renderExpression(ctx, a.right());
-                ctx.sql.append(')');
-            }
-            case Expression.Aggregate agg -> renderAggregate(ctx, agg);
-            case Expression.FunctionCall fn -> renderFunction(ctx, fn);
-            case Expression.Cast cast -> renderCast(ctx, cast);
-            case Expression.Case c -> renderCase(ctx, c);
-            case Expression.ScalarSubquery s -> {
-                ctx.sql.append('(');
-                renderSubquery(ctx, s.subquery());
-                ctx.sql.append(')');
-            }
-            case Expression.Type t -> ctx.sql.append(discriminatorColumnRef(ctx, t.alias()));
-            case Expression.EntityTypeLiteral lit -> {
-                EntityMetadata<?> meta = resolver.resolve(lit.entityName());
-                if (!meta.hasInheritance()) {
-                    throw new JpqlException("TYPE(...) comparison against '" + lit.entityName()
-                            + "' requires an @Inheritance entity; it has no discriminator");
-                }
-                ctx.bind(new JpqlBinding.Literal(meta.inheritance().discriminatorBindValue()));
-                ctx.sql.append(marker(ctx));
-            }
-            case Expression.Treat tr -> ctx.sql.append(treatColumn(ctx, tr));
-            case Expression.QuantifiedSubquery q -> {
-                ctx.sql.append(q.quantifier() == Expression.Quantifier.ANY ? "any (" : "all (");
-                renderSubquery(ctx, q.subquery());
-                ctx.sql.append(')');
-            }
-            case Expression.Extract extract -> renderExtract(ctx, extract);
-            case Expression.Trim trim -> renderTrim(ctx, trim);
+            ctx.bind(new JpqlBinding.Literal(meta.inheritance().discriminatorBindValue()));
+            ctx.sql.append(marker(ctx));
+        } else if (expression instanceof Expression.Treat tr) {
+            ctx.sql.append(treatColumn(ctx, tr));
+        } else if (expression instanceof Expression.QuantifiedSubquery q) {
+            ctx.sql.append(q.quantifier() == Expression.Quantifier.ANY ? "any (" : "all (");
+            renderSubquery(ctx, q.subquery());
+            ctx.sql.append(')');
+        } else if (expression instanceof Expression.Extract extract) {
+            renderExtract(ctx, extract);
+        } else if (expression instanceof Expression.Trim trim) {
+            renderTrim(ctx, trim);
+        } else {
+            throw new IllegalStateException("Unknown JPQL expression: " + expression.getClass().getName());
         }
     }
 
@@ -1373,31 +1379,31 @@ public final class JpqlSqlBuilder {
         if (expression == null) {
             return;
         }
-        switch (expression) {
-            case Expression.Treat tr -> sink.accept(tr.alias(), tr.subtype());
-            case Expression.Arithmetic a -> {
-                walkTreats(a.left(), sink);
-                walkTreats(a.right(), sink);
+        if (expression instanceof Expression.Treat tr) {
+            sink.accept(tr.alias(), tr.subtype());
+        } else if (expression instanceof Expression.Arithmetic a) {
+            walkTreats(a.left(), sink);
+            walkTreats(a.right(), sink);
+        } else if (expression instanceof Expression.Aggregate agg) {
+            walkTreats(agg.argument(), sink);
+        } else if (expression instanceof Expression.FunctionCall fn) {
+            fn.arguments().forEach(a -> walkTreats(a, sink));
+        } else if (expression instanceof Expression.Cast cast) {
+            walkTreats(cast.value(), sink);
+        } else if (expression instanceof Expression.Extract ex) {
+            walkTreats(ex.source(), sink);
+        } else if (expression instanceof Expression.Trim t) {
+            walkTreats(t.trimChar(), sink);
+            walkTreats(t.value(), sink);
+        } else if (expression instanceof Expression.Case c) {
+            for (WhenClause when : c.whens()) {
+                walkTreats(when.condition(), sink);
+                walkTreats(when.result(), sink);
             }
-            case Expression.Aggregate agg -> walkTreats(agg.argument(), sink);
-            case Expression.FunctionCall fn -> fn.arguments().forEach(a -> walkTreats(a, sink));
-            case Expression.Cast cast -> walkTreats(cast.value(), sink);
-            case Expression.Extract ex -> walkTreats(ex.source(), sink);
-            case Expression.Trim t -> {
-                walkTreats(t.trimChar(), sink);
-                walkTreats(t.value(), sink);
-            }
-            case Expression.Case c -> {
-                for (WhenClause when : c.whens()) {
-                    walkTreats(when.condition(), sink);
-                    walkTreats(when.result(), sink);
-                }
-                walkTreats(c.elseResult(), sink);
-            }
-            default -> {
-                // Path/Literal/파라미터/Type/EntityTypeLiteral/ScalarSubquery/QuantifiedSubquery: TREAT를 품지
-                // 않는다(QuantifiedSubquery는 서브쿼리이므로 renderSubquery가 독립적으로 재검사한다).
-            }
+            walkTreats(c.elseResult(), sink);
+        } else {
+            // Path/Literal/파라미터/Type/EntityTypeLiteral/ScalarSubquery/QuantifiedSubquery: TREAT를 품지
+            // 않는다(QuantifiedSubquery는 서브쿼리이므로 renderSubquery가 독립적으로 재검사한다).
         }
     }
 
@@ -1405,38 +1411,33 @@ public final class JpqlSqlBuilder {
         if (predicate == null) {
             return;
         }
-        switch (predicate) {
-            case Predicate.And and -> {
-                walkTreats(and.left(), sink);
-                walkTreats(and.right(), sink);
-            }
-            case Predicate.Or or -> {
-                walkTreats(or.left(), sink);
-                walkTreats(or.right(), sink);
-            }
-            case Predicate.Not not -> walkTreats(not.inner(), sink);
-            case Predicate.Comparison c -> {
-                walkTreats(c.left(), sink);
-                walkTreats(c.right(), sink);
-            }
-            case Predicate.Like like -> {
-                walkTreats(like.value(), sink);
-                walkTreats(like.pattern(), sink);
-            }
-            case Predicate.Between b -> {
-                walkTreats(b.value(), sink);
-                walkTreats(b.low(), sink);
-                walkTreats(b.high(), sink);
-            }
-            case Predicate.Null n -> walkTreats(n.value(), sink);
-            case Predicate.InList in -> {
-                walkTreats(in.value(), sink);
-                in.items().forEach(i -> walkTreats(i, sink));
-            }
-            case Predicate.InSubquery in -> walkTreats(in.value(), sink);
-            case Predicate.Exists ignored -> {
-                // 서브쿼리 내부의 TREAT는 v1 수집 범위 밖(rare); 서브쿼리 렌더가 필요 시 fail-fast한다.
-            }
+        if (predicate instanceof Predicate.And and) {
+            walkTreats(and.left(), sink);
+            walkTreats(and.right(), sink);
+        } else if (predicate instanceof Predicate.Or or) {
+            walkTreats(or.left(), sink);
+            walkTreats(or.right(), sink);
+        } else if (predicate instanceof Predicate.Not not) {
+            walkTreats(not.inner(), sink);
+        } else if (predicate instanceof Predicate.Comparison c) {
+            walkTreats(c.left(), sink);
+            walkTreats(c.right(), sink);
+        } else if (predicate instanceof Predicate.Like like) {
+            walkTreats(like.value(), sink);
+            walkTreats(like.pattern(), sink);
+        } else if (predicate instanceof Predicate.Between b) {
+            walkTreats(b.value(), sink);
+            walkTreats(b.low(), sink);
+            walkTreats(b.high(), sink);
+        } else if (predicate instanceof Predicate.Null n) {
+            walkTreats(n.value(), sink);
+        } else if (predicate instanceof Predicate.InList in) {
+            walkTreats(in.value(), sink);
+            in.items().forEach(i -> walkTreats(i, sink));
+        } else if (predicate instanceof Predicate.InSubquery in) {
+            walkTreats(in.value(), sink);
+        } else if (predicate instanceof Predicate.Exists) {
+            // 서브쿼리 내부의 TREAT는 v1 수집 범위 밖(rare); 서브쿼리 렌더가 필요 시 fail-fast한다.
         }
     }
 
@@ -1445,41 +1446,69 @@ public final class JpqlSqlBuilder {
         if (expression == null) {
             return false;
         }
-        return switch (expression) {
-            case Expression.Type ignored -> true;
-            case Expression.Treat ignored -> true;
-            case Expression.Arithmetic a -> usesPolymorphic(a.left()) || usesPolymorphic(a.right());
-            case Expression.Aggregate agg -> usesPolymorphic(agg.argument());
-            case Expression.FunctionCall fn -> fn.arguments().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
-            case Expression.Cast cast -> usesPolymorphic(cast.value());
-            case Expression.Extract ex -> usesPolymorphic(ex.source());
-            case Expression.Trim t -> usesPolymorphic(t.trimChar()) || usesPolymorphic(t.value());
-            case Expression.Case c -> c.whens().stream()
+        if (expression instanceof Expression.Type || expression instanceof Expression.Treat) {
+            return true;
+        }
+        if (expression instanceof Expression.Arithmetic a) {
+            return usesPolymorphic(a.left()) || usesPolymorphic(a.right());
+        }
+        if (expression instanceof Expression.Aggregate agg) {
+            return usesPolymorphic(agg.argument());
+        }
+        if (expression instanceof Expression.FunctionCall fn) {
+            return fn.arguments().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
+        }
+        if (expression instanceof Expression.Cast cast) {
+            return usesPolymorphic(cast.value());
+        }
+        if (expression instanceof Expression.Extract ex) {
+            return usesPolymorphic(ex.source());
+        }
+        if (expression instanceof Expression.Trim t) {
+            return usesPolymorphic(t.trimChar()) || usesPolymorphic(t.value());
+        }
+        if (expression instanceof Expression.Case c) {
+            return c.whens().stream()
                     .anyMatch(w -> usesPolymorphic(w.condition()) || usesPolymorphic(w.result()))
                     || usesPolymorphic(c.elseResult());
-            // 중첩 서브쿼리(QuantifiedSubquery 포함)는 자체 renderSubquery 호출에서 다시 검사된다.
-            default -> false;
-        };
+        }
+        // 중첩 서브쿼리(QuantifiedSubquery 포함)는 자체 renderSubquery 호출에서 다시 검사된다.
+        return false;
     }
 
     private static boolean usesPolymorphic(Predicate predicate) {
         if (predicate == null) {
             return false;
         }
-        return switch (predicate) {
-            case Predicate.And and -> usesPolymorphic(and.left()) || usesPolymorphic(and.right());
-            case Predicate.Or or -> usesPolymorphic(or.left()) || usesPolymorphic(or.right());
-            case Predicate.Not not -> usesPolymorphic(not.inner());
-            case Predicate.Comparison c -> usesPolymorphic(c.left()) || usesPolymorphic(c.right());
-            case Predicate.Like like -> usesPolymorphic(like.value()) || usesPolymorphic(like.pattern());
-            case Predicate.Between b ->
-                    usesPolymorphic(b.value()) || usesPolymorphic(b.low()) || usesPolymorphic(b.high());
-            case Predicate.Null n -> usesPolymorphic(n.value());
-            case Predicate.InList in ->
-                    usesPolymorphic(in.value()) || in.items().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
-            case Predicate.InSubquery in -> usesPolymorphic(in.value());
-            case Predicate.Exists ignored -> false;
-        };
+        if (predicate instanceof Predicate.And and) {
+            return usesPolymorphic(and.left()) || usesPolymorphic(and.right());
+        }
+        if (predicate instanceof Predicate.Or or) {
+            return usesPolymorphic(or.left()) || usesPolymorphic(or.right());
+        }
+        if (predicate instanceof Predicate.Not not) {
+            return usesPolymorphic(not.inner());
+        }
+        if (predicate instanceof Predicate.Comparison c) {
+            return usesPolymorphic(c.left()) || usesPolymorphic(c.right());
+        }
+        if (predicate instanceof Predicate.Like like) {
+            return usesPolymorphic(like.value()) || usesPolymorphic(like.pattern());
+        }
+        if (predicate instanceof Predicate.Between b) {
+            return usesPolymorphic(b.value()) || usesPolymorphic(b.low()) || usesPolymorphic(b.high());
+        }
+        if (predicate instanceof Predicate.Null n) {
+            return usesPolymorphic(n.value());
+        }
+        if (predicate instanceof Predicate.InList in) {
+            return usesPolymorphic(in.value())
+                    || in.items().stream().anyMatch(JpqlSqlBuilder::usesPolymorphic);
+        }
+        if (predicate instanceof Predicate.InSubquery in) {
+            return usesPolymorphic(in.value());
+        }
+        return false;
     }
 
     /** 구체 서브타입/TREAT downcast가 유도하는 {@code discriminator = value} 제한. */

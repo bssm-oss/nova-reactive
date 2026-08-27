@@ -21,17 +21,22 @@ public final class JpqlParameters {
 
     /** {@link JpqlBinding}을 실제 바인딩 값으로 해석한다(리터럴은 그대로, 파라미터는 조회). */
     public Object resolve(JpqlBinding binding) {
-        return switch (binding) {
-            case JpqlBinding.Literal l -> l.value();
-            case JpqlBinding.Named n -> resolveNamed(n.name());
-            case JpqlBinding.Positional p -> resolvePositional(p.position());
-            case JpqlBinding.Component c -> {
-                // 참조 엔티티에서 이 FK 컴포넌트의 @Id 도메인 값을 꺼내 저장 표현으로 인코딩한다.
-                Object reference = resolve(c.source());
-                Object domain = reference == null ? null : c.column().readReferencedValue(reference);
-                yield c.column().toColumnValue(domain);
-            }
-        };
+        if (binding instanceof JpqlBinding.Literal literal) {
+            return literal.value();
+        }
+        if (binding instanceof JpqlBinding.Named namedBinding) {
+            return resolveNamed(namedBinding.name());
+        }
+        if (binding instanceof JpqlBinding.Positional positionalBinding) {
+            return resolvePositional(positionalBinding.position());
+        }
+        if (binding instanceof JpqlBinding.Component component) {
+            // 참조 엔티티에서 이 FK 컴포넌트의 @Id 도메인 값을 꺼내 저장 표현으로 인코딩한다.
+            Object reference = resolve(component.source());
+            Object domain = reference == null ? null : component.column().readReferencedValue(reference);
+            return component.column().toColumnValue(domain);
+        }
+        throw new IllegalStateException("Unknown JPQL binding: " + binding.getClass().getName());
     }
 
     public Object resolveNamed(String name) {

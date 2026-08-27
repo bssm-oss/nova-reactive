@@ -125,7 +125,7 @@ class AbstractSchemaGeneratorTest {
         String child = dialect.schemaGenerator().createJoinedSubtypeTable(layout,
                 layout.subtypes().stream().filter(s -> s.metadata().entityType() == JoinedDdlChild.class).findFirst().orElseThrow(), false);
         String secondary = dialect.schemaGenerator().createSecondaryTable(factory.getEntityMetadata(SecondaryDdlEntity.class),
-                factory.getEntityMetadata(SecondaryDdlEntity.class).secondaryTables().getFirst());
+                factory.getEntityMetadata(SecondaryDdlEntity.class).secondaryTables().get(0));
 
         assertTrue(root.contains("check (root_value >= 0)"));
         assertTrue(child.contains("check (child_value >= 0)"));
