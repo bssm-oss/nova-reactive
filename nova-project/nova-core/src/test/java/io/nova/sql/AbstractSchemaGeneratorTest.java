@@ -104,6 +104,35 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void rendersColumnDdlForIdentityColumns() {
+        String ddl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(IdentityDdl32Entity.class));
+        assertTrue(ddl.contains("id bigint primary key constraint chk_identity check (id > 0) identity_option"));
+    }
+
+    @Test
+    void rejectsInvalidJpa32CheckAndColumnDefinitionOptionsCombinations() {
+        assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(BlankCheckEntity.class));
+        assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DefinitionAndOptionsEntity.class));
+    }
+
+    @Test
+    void rendersChecksForJoinedAndSecondaryPhysicalTables() {
+        factory.getEntityMetadata(JoinedDdlChild.class);
+        var layout = factory.inheritanceLayout(JoinedDdlRoot.class);
+        String root = dialect.schemaGenerator().createJoinedRootTable(layout, false);
+        String child = dialect.schemaGenerator().createJoinedSubtypeTable(layout,
+                layout.subtypes().stream().filter(s -> s.metadata().entityType() == JoinedDdlChild.class).findFirst().orElseThrow(), false);
+        String secondary = dialect.schemaGenerator().createSecondaryTable(factory.getEntityMetadata(SecondaryDdlEntity.class),
+                factory.getEntityMetadata(SecondaryDdlEntity.class).secondaryTables().getFirst());
+
+        assertTrue(root.contains("check (root_value >= 0)"));
+        assertTrue(child.contains("check (child_value >= 0)"));
+        assertTrue(secondary.contains("check (secondary_value >= 0)"));
+    }
+
+    @Test
     void createTableSkipsOneToManyInverseSideAndIncludesManyToOneFkColumn() {
         // OneToMany inverse 필드(List<Book> books)는 부모 테이블에 컬럼을 만들지 않아야 한다.
         // raw properties()를 사용하던 시절에는 List 타입을 sqlType에 넘겨 IllegalArgumentException이 났다.
@@ -622,6 +651,50 @@ class AbstractSchemaGeneratorTest {
         @jakarta.persistence.AttributeOverride(name = "occurredAt", column = @jakarta.persistence.Column(
                 name = "overridden_at", secondPrecision = 4, comment = "override comment"))
         AuditStamp audit;
+    }
+
+    @jakarta.persistence.Entity
+    static class IdentityDdl32Entity {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.IDENTITY)
+        @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(
+                name = "chk_identity", constraint = "id > 0"), options = "identity_option")
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class BlankCheckEntity {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(constraint = " ")) String value;
+    }
+
+    @jakarta.persistence.Entity
+    static class DefinitionAndOptionsEntity {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(columnDefinition = "varchar(12)", options = "option") String value;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    @jakarta.persistence.Table(check = @jakarta.persistence.CheckConstraint(constraint = "root_value >= 0"))
+    static class JoinedDdlRoot {
+        @jakarta.persistence.Id Long id;
+        Integer rootValue;
+    }
+
+    @jakarta.persistence.Entity
+    static class JoinedDdlChild extends JoinedDdlRoot {
+        @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(constraint = "child_value >= 0"))
+        Integer childValue;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.SecondaryTable(name = "secondary_ddl")
+    static class SecondaryDdlEntity {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(table = "secondary_ddl", check = @jakarta.persistence.CheckConstraint(
+                constraint = "secondary_value >= 0"), comment = "secondary")
+        Integer secondaryValue;
     }
 
     /**

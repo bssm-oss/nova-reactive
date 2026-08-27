@@ -45,6 +45,11 @@ public final class MariaDbDialect implements Dialect {
     }
 
     @Override
+    public int maxSecondPrecision() {
+        return 6;
+    }
+
+    @Override
     public String quote(String identifier) {
         return "`" + identifier + "`";
     }
@@ -92,12 +97,12 @@ public final class MariaDbDialect implements Dialect {
         public List<String> createComments(EntityMetadata<?> metadata) {
             List<String> statements = new ArrayList<>();
             if (!metadata.tableDdlDefinition().comment().isEmpty()) {
-                statements.add("alter table " + dialect().quote(metadata.tableName()) + " comment = "
+                statements.add("alter table " + qualifiedTable(metadata) + " comment = "
                         + sqlString(metadata.tableDdlDefinition().comment()));
             }
             for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
                 if (!property.columnDdlDefinition().comment().isEmpty()) {
-                    statements.add("alter table " + dialect().quote(metadata.tableName()) + " modify "
+                    statements.add("alter table " + qualifiedTable(metadata) + " modify "
                             + columnDefinition(property) + " comment " + sqlString(property.columnDdlDefinition().comment()));
                 }
             }
@@ -105,7 +110,7 @@ public final class MariaDbDialect implements Dialect {
         }
 
         private static String sqlString(String value) {
-            return "'" + value.replace("'", "''") + "'";
+            return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'";
         }
 
         @Override

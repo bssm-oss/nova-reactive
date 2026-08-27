@@ -232,7 +232,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         // @EmbeddedId 복합키는 컬럼별 inline PRIMARY KEY 대신 테이블 레벨 제약(primary key (c1, c2))으로 emit한다.
         boolean compositePk = metadata.hasCompositeId();
         List<String> columns = new ArrayList<>();
-        for (PersistentProperty property : metadata.columnMappedProperties()) {
+        for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
             if (property.isCompositeToOne()) {
                 // 복합키 타겟 to-one은 참조 @Id 컴포넌트마다 FK 컬럼 1개를 emit한다(read/write/FK와 동일 순서).
                 for (ToOneForeignKeyColumn fkColumn : property.toOneForeignKey().columns()) {
@@ -254,7 +254,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (metadata.hasInheritance() && metadata.inheritance().singleTable()) {
             columns.add(discriminatorColumnDefinition(metadata));
         }
-        appendTableChecks(metadata, columns);
+        appendTableChecks(metadata.tableDdlDefinition().checks(), metadata.primaryColumnMappedProperties(), columns);
         return "create table " + (ifNotExists ? "if not exists " : "")
                 + qualifiedTable(metadata)
                 + " (" + String.join(", ", columns) + ")" + options(metadata.tableDdlDefinition().options());
@@ -282,9 +282,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             columns.add(columnDefinition(property, false));
         }
         columns.add(discriminatorColumnDefinition(layout.rootMetadata()));
+        appendTableChecks(layout.rootMetadata().tableDdlDefinition().checks(), layout.rootTableColumns(), columns);
         return "create table " + (ifNotExists ? "if not exists " : "")
                 + dialect.quote(info.rootTableName())
-                + " (" + String.join(", ", columns) + ")";
+                + " (" + String.join(", ", columns) + ")" + options(layout.rootMetadata().tableDdlDefinition().options());
     }
 
     @Override
@@ -301,9 +302,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                 columns.add(columnDefinition(property, false));
             }
         }
+        appendTableChecks(metadata.tableDdlDefinition().checks(), subtype.ownTableColumns(), columns);
         return "create table " + (ifNotExists ? "if not exists " : "")
                 + qualifiedTable(metadata)
-                + " (" + String.join(", ", columns) + ")";
+                + " (" + String.join(", ", columns) + ")" + options(metadata.tableDdlDefinition().options());
     }
 
     @Override
@@ -319,6 +321,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         // SchemaInitializer가 primary → secondary 순서로 생성한다(삭제는 역순).
         columns.add("foreign key (" + dialect.quote(secondaryTable.pkJoinColumn()) + ") references "
                 + qualifiedTable(metadata) + " (" + dialect.quote(secondaryTable.primaryKeyColumn()) + ")");
+        appendTableChecks(List.of(), metadata.secondaryColumnMappedProperties(secondaryTable), columns);
         return "create table " + qualifiedSecondaryTable(secondaryTable)
                 + " (" + String.join(", ", columns) + ")";
     }
@@ -336,7 +339,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
     /**
      * 스키마 한정 보조 테이블 참조를 만든다.
      */
-    private String qualifiedSecondaryTable(SecondaryTableInfo secondaryTable) {
+    protected String qualifiedSecondaryTable(SecondaryTableInfo secondaryTable) {
         String quoted = dialect.quote(secondaryTable.tableName());
         return secondaryTable.schema().isBlank()
                 ? quoted
@@ -371,6 +374,18 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             if (!property.columnDdlDefinition().comment().isEmpty()) {
                 statements.add("comment on column " + qualifiedTable(metadata) + "." + dialect.quote(property.columnName())
                         + " is " + sqlString(property.columnDdlDefinition().comment()));
+            }
+        }
+        return statements;
+    }
+
+    @Override
+    public List<String> createSecondaryComments(EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable) {
+        List<String> statements = new ArrayList<>();
+        for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondaryTable)) {
+            if (!property.columnDdlDefinition().comment().isEmpty()) {
+                statements.add("comment on column " + qualifiedSecondaryTable(secondaryTable) + "."
+                        + dialect.quote(property.columnName()) + " is " + sqlString(property.columnDdlDefinition().comment()));
             }
         }
         return statements;
@@ -503,7 +518,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      */
     protected String columnDefinition(PersistentProperty property, boolean suppressInlinePrimaryKey) {
         if (property.generated() && property.generationType() == GenerationType.IDENTITY) {
-            return identityColumn(property);
+            return appendColumnDdl(identityColumn(property), property);
         }
         // @Column(columnDefinition=...)이 지정되면 dialect가 유도한 타입 대신 raw DDL 조각을 그대로 쓴다.
         String type = property.columnDefinition().isBlank() ? sqlType(property) : property.columnDefinition();
@@ -520,11 +535,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (property.unique() && !property.id()) {
             builder.append(" unique");
         }
-        for (CheckConstraintDefinition check : property.columnDdlDefinition().checks()) {
-            builder.append(' ').append(renderCheck(check));
-        }
-        builder.append(options(property.columnDdlDefinition().options()));
-        return builder.toString();
+        return appendColumnDdl(builder.toString(), property);
     }
 
     /**
@@ -532,6 +543,14 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      */
     protected String identityColumn(PersistentProperty property) {
         return dialect.quote(property.columnName()) + " " + sqlType(property) + " primary key";
+    }
+
+    private String appendColumnDdl(String definition, PersistentProperty property) {
+        StringBuilder builder = new StringBuilder(definition);
+        for (CheckConstraintDefinition check : property.columnDdlDefinition().checks()) {
+            builder.append(' ').append(renderCheck(check));
+        }
+        return builder.append(options(property.columnDdlDefinition().options())).toString();
     }
 
     /**
@@ -649,10 +668,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             return dialect.dateColumnType();
         }
         if (type == java.time.LocalTime.class) {
-            return dialect.timeColumnType(property.columnDdlDefinition().secondPrecision());
+            return dialect.timeColumnType(checkedSecondPrecision(property));
         }
         if (type == java.time.LocalDateTime.class) {
-            return dialect.timestampColumnType(property.columnDdlDefinition().secondPrecision());
+            return dialect.timestampColumnType(checkedSecondPrecision(property));
         }
         // UUID 스칼라 컬럼은 여기 도달하지 않는다 — EntityMetadataFactory가 UUID property에 UuidStringConverter를
         // 달아 columnType()을 String으로 분리하므로 위 varchar 분기로 처리된다(EC 원소와 대칭, 드라이버가
@@ -661,12 +680,22 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         throw new IllegalArgumentException("Unsupported column type: " + type.getName());
     }
 
-    private void appendTableChecks(EntityMetadata<?> metadata, List<String> definitions) {
+    private int checkedSecondPrecision(PersistentProperty property) {
+        int precision = property.columnDdlDefinition().secondPrecision();
+        if (precision > dialect.maxSecondPrecision()) {
+            throw new IllegalArgumentException("@Column.secondPrecision=" + precision + " on "
+                    + property.propertyName() + " exceeds " + dialect.name() + " maximum " + dialect.maxSecondPrecision());
+        }
+        return precision;
+    }
+
+    private void appendTableChecks(
+            List<CheckConstraintDefinition> tableChecks, List<PersistentProperty> properties, List<String> definitions) {
         java.util.Set<String> names = new java.util.HashSet<>();
-        for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
+        for (PersistentProperty property : properties) {
             validateCheckNames(property.columnDdlDefinition().checks(), names);
         }
-        appendChecks(definitions, metadata.tableDdlDefinition().checks(), names);
+        appendChecks(definitions, tableChecks, names);
     }
 
     private void validateCheckNames(List<CheckConstraintDefinition> checks, java.util.Set<String> names) {

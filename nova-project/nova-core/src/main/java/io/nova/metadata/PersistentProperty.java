@@ -145,6 +145,29 @@ public final class PersistentProperty {
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
+            Field field, String propertyName, String columnName, Class<?> javaType, boolean id, boolean version,
+            boolean nullable, int length, int precision, int scale, GenerationType generationType, String generator,
+            AttributeConverter<?, ?> converter, boolean createdAt, boolean updatedAt, boolean softDelete,
+            boolean embedded, List<Field> embeddedHostPath, boolean enumerated, EnumType enumType, boolean json,
+            boolean manyToOne, Class<?> manyToOneTargetType, boolean manyToOneNullable, boolean oneToMany,
+            Class<?> oneToManyTargetType, String oneToManyMappedBy, boolean insertable, boolean updatable,
+            boolean unique, String columnDefinition, boolean lob, Class<?> converterColumnType, boolean inverseToOne,
+            ManyToManyInfo manyToManyInfo, ElementCollectionInfo elementCollectionInfo, OneToManyInfo oneToManyInfo,
+            TableGeneratorInfo tableGeneratorInfo, boolean mapsId, String mapsIdValue, boolean propertyAccess,
+            Method propertyAccessGetter, Method propertyAccessSetter, ToOneCascadeInfo toOneCascadeInfo,
+            String secondaryTableName, ToOneForeignKey toOneForeignKey
+    ) {
+        this(field, propertyName, columnName, javaType, id, version, nullable, length, precision, scale,
+                generationType, generator, converter, createdAt, updatedAt, softDelete, embedded, embeddedHostPath,
+                enumerated, enumType, json, manyToOne, manyToOneTargetType, manyToOneNullable, oneToMany,
+                oneToManyTargetType, oneToManyMappedBy, insertable, updatable, unique, columnDefinition, lob,
+                converterColumnType, inverseToOne, manyToManyInfo, elementCollectionInfo, oneToManyInfo,
+                tableGeneratorInfo, mapsId, mapsIdValue, propertyAccess, propertyAccessGetter, propertyAccessSetter,
+                toOneCascadeInfo, secondaryTableName, toOneForeignKey, ColumnDdlDefinition.EMPTY);
+    }
+
+    @SuppressWarnings("unchecked")
+    public PersistentProperty(
             Field field,
             String propertyName,
             String columnName,

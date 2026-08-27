@@ -10,6 +10,7 @@ import io.nova.sql.SqlStatement;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MySqlDialectTest {
@@ -36,6 +37,27 @@ class MySqlDialectTest {
         // DATE/TIME 토큰은 MySQL에 존재하므로 ANSI 기본값 그대로 유효하다.
         assertEquals("date", dialect.dateColumnType());
         assertEquals("time", dialect.timeColumnType());
+    }
+
+    @Test
+    void boundsSecondPrecisionAndEscapesSchemaQualifiedComments() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(MySqlTooPrecise.class)));
+        assertEquals(java.util.List.of("alter table `audit`.`commented` comment = 'it\\\\\\'s'"),
+                dialect.schemaGenerator().createComments(factory.getEntityMetadata(MySqlCommented.class)));
+    }
+
+    @jakarta.persistence.Entity
+    static class MySqlTooPrecise {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(secondPrecision = 7) java.time.LocalDateTime time;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "commented", schema = "audit", comment = "it\\'s")
+    static class MySqlCommented {
+        @jakarta.persistence.Id Long id;
     }
 
     @Test

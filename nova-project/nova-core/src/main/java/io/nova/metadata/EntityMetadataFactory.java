@@ -2145,6 +2145,10 @@ public final class EntityMetadataFactory {
         String comment = column.comment();
         String options = fragment(column.options(), "@Column.options on " + field.getDeclaringClass().getName()
                 + "." + field.getName());
+        if (!column.columnDefinition().isBlank() && !options.isEmpty()) {
+            throw new IllegalArgumentException("@Column.columnDefinition and @Column.options cannot both be non-blank on "
+                    + field.getDeclaringClass().getName() + "." + field.getName());
+        }
         validateNoNul(comment, "@Column.comment on " + field.getDeclaringClass().getName() + "." + field.getName());
         return new ColumnDdlDefinition(checks, comment, options, secondPrecision);
     }
@@ -2163,10 +2167,7 @@ public final class EntityMetadataFactory {
         String trimmedName = fragment(name, location + " name");
         String trimmedOptions = fragment(options, location + " options");
         if (trimmedConstraint.isEmpty()) {
-            if (!trimmedName.isEmpty() || !trimmedOptions.isEmpty()) {
-                throw new IllegalArgumentException(location + " declares a name or options without a constraint");
-            }
-            return null;
+            throw new IllegalArgumentException(location + " must declare a non-blank constraint");
         }
         return new CheckConstraintDefinition(trimmedName, trimmedConstraint, trimmedOptions);
     }

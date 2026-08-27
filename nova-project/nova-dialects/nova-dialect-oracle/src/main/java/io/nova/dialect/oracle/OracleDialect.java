@@ -60,6 +60,11 @@ public final class OracleDialect implements Dialect {
     }
 
     @Override
+    public int maxSecondPrecision() {
+        return 9;
+    }
+
+    @Override
     public BindMarkerStrategy bindMarkers() {
         return bindMarkers;
     }

@@ -120,6 +120,10 @@ public interface SchemaGenerator {
         return List.of();
     }
 
+    default List<String> createSecondaryComments(EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable) {
+        return List.of();
+    }
+
     /**
      * Returns an idempotent {@code CREATE TABLE} statement that no-ops if the
      * table already exists. The default implementation rewrites the prefix of
