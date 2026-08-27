@@ -366,11 +366,16 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
 
     @Override
     public List<String> createComments(EntityMetadata<?> metadata) {
+        return createComments(metadata, metadata.primaryColumnMappedProperties());
+    }
+
+    @Override
+    public List<String> createComments(EntityMetadata<?> metadata, List<PersistentProperty> physicalColumns) {
         List<String> statements = new ArrayList<>();
         if (!metadata.tableDdlDefinition().comment().isEmpty()) {
             statements.add("comment on table " + qualifiedTable(metadata) + " is " + sqlString(metadata.tableDdlDefinition().comment()));
         }
-        for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
+        for (PersistentProperty property : physicalColumns) {
             if (!property.columnDdlDefinition().comment().isEmpty()) {
                 statements.add("comment on column " + qualifiedTable(metadata) + "." + dialect.quote(property.columnName())
                         + " is " + sqlString(property.columnDdlDefinition().comment()));

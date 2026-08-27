@@ -302,7 +302,11 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     }
 
     private Mono<Void> emitComments(SchemaGenerator generator, EntityMetadata<?> metadata) {
-        return Flux.fromIterable(generator.createComments(metadata))
+        return emitComments(generator.createComments(metadata));
+    }
+
+    private Mono<Void> emitComments(List<String> comments) {
+        return Flux.fromIterable(comments)
                 .concatMap(ddl -> operations.executeNative(NativeQuery.of(ddl)))
                 .then();
     }
@@ -333,10 +337,10 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         io.nova.metadata.InheritanceLayout layout = metadataFactory.inheritanceLayout(schemaRootClass(entityType));
         SchemaGenerator generator = dialect.schemaGenerator();
         String rootDdl = generator.createJoinedRootTable(layout, options.ifNotExists());
-        Mono<Void> create = createPhysicalTable(layout.rootMetadata(), rootDdl, generator, options);
+        Mono<Void> create = createPhysicalTable(layout.rootMetadata(), layout.rootTableColumns(), rootDdl, generator, options);
         return create.thenMany(Flux.fromIterable(layout.subtypes())
                         .filter(subtype -> subtype.metadata().entityType() != layout.info().root())
-                        .concatMap(subtype -> createPhysicalTable(subtype.metadata(),
+                        .concatMap(subtype -> createPhysicalTable(subtype.metadata(), subtype.ownTableColumns(),
                                 generator.createJoinedSubtypeTable(layout, subtype, options.ifNotExists()), generator, options)))
                 .then();
     }
@@ -353,14 +357,20 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                     String ddl = options.ifNotExists()
                             ? generator.createTableIfNotExists(metadata)
                             : generator.createTable(metadata);
-                    return createPhysicalTable(metadata, ddl, generator, options);
+                    return createPhysicalTable(metadata, metadata.primaryColumnMappedProperties(), ddl, generator, options);
                 })
                 .then();
     }
 
     private Mono<Void> createPhysicalTable(
             EntityMetadata<?> metadata, String ddl, SchemaGenerator generator, SchemaOptions options) {
-        List<String> comments = generator.createComments(metadata);
+        return createPhysicalTable(metadata, metadata.primaryColumnMappedProperties(), ddl, generator, options);
+    }
+
+    private Mono<Void> createPhysicalTable(
+            EntityMetadata<?> metadata, List<PersistentProperty> physicalColumns,
+            String ddl, SchemaGenerator generator, SchemaOptions options) {
+        List<String> comments = generator.createComments(metadata, physicalColumns);
         Mono<Boolean> createdNow = options.ifNotExists() && !comments.isEmpty()
                 ? operations.queryNative(NativeQuery.of(dialect.listTablesSql()),
                                 row -> row.get(Dialect.TABLE_NAME_COLUMN, String.class))
@@ -368,7 +378,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                         .map(exists -> !exists)
                 : Mono.just(!options.ifNotExists());
         return createdNow.flatMap(created -> operations.executeNative(NativeQuery.of(ddl))
-                .then(created ? emitComments(generator, metadata) : Mono.empty()));
+                .then(created ? emitComments(comments) : Mono.empty()));
     }
 
     /**

@@ -7,6 +7,7 @@ import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.SecondaryTableInfo;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -109,8 +110,25 @@ public final class MariaDbDialect implements Dialect {
             return statements;
         }
 
+        @Override
+        public List<String> createSecondaryComments(EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable) {
+            List<String> statements = new ArrayList<>();
+            for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondaryTable)) {
+                if (!property.columnDdlDefinition().comment().isEmpty()) {
+                    statements.add("alter table " + qualifiedSecondaryTable(secondaryTable) + " modify "
+                            + columnDefinition(property) + " comment " + sqlString(property.columnDdlDefinition().comment()));
+                }
+            }
+            return statements;
+        }
+
         private static String sqlString(String value) {
-            return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'";
+            byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            StringBuilder hex = new StringBuilder("convert(0x");
+            for (byte valueByte : bytes) {
+                hex.append(String.format("%02x", valueByte));
+            }
+            return hex.append(" using utf8mb4)").toString();
         }
 
         @Override

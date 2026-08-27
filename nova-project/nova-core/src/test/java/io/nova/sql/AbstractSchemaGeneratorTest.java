@@ -130,6 +130,10 @@ class AbstractSchemaGeneratorTest {
         assertTrue(root.contains("check (root_value >= 0)"));
         assertTrue(child.contains("check (child_value >= 0)"));
         assertTrue(secondary.contains("check (secondary_value >= 0)"));
+        assertEquals(List.of("comment on column joined_ddl_child.child_value is 'child'"),
+                dialect.schemaGenerator().createComments(factory.getEntityMetadata(JoinedDdlChild.class),
+                        layout.subtypes().stream().filter(s -> s.metadata().entityType() == JoinedDdlChild.class)
+                                .findFirst().orElseThrow().ownTableColumns()));
     }
 
     @Test
@@ -679,12 +683,12 @@ class AbstractSchemaGeneratorTest {
     @jakarta.persistence.Table(check = @jakarta.persistence.CheckConstraint(constraint = "root_value >= 0"))
     static class JoinedDdlRoot {
         @jakarta.persistence.Id Long id;
-        Integer rootValue;
+        @jakarta.persistence.Column(comment = "root") Integer rootValue;
     }
 
     @jakarta.persistence.Entity
     static class JoinedDdlChild extends JoinedDdlRoot {
-        @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(constraint = "child_value >= 0"))
+        @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(constraint = "child_value >= 0"), comment = "child")
         Integer childValue;
     }
 

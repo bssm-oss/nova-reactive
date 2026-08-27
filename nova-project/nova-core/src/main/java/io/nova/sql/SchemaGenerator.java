@@ -120,6 +120,11 @@ public interface SchemaGenerator {
         return List.of();
     }
 
+    /** Additive variant for a physical table that contains only {@code physicalColumns}. */
+    default List<String> createComments(EntityMetadata<?> metadata, List<PersistentProperty> physicalColumns) {
+        return createComments(metadata);
+    }
+
     default List<String> createSecondaryComments(EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable) {
         return List.of();
     }

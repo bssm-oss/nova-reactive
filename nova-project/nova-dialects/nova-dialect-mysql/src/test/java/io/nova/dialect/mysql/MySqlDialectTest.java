@@ -44,8 +44,11 @@ class MySqlDialectTest {
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
         assertThrows(IllegalArgumentException.class,
                 () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(MySqlTooPrecise.class)));
-        assertEquals(java.util.List.of("alter table `audit`.`commented` comment = 'it\\\\\\'s'"),
+        assertEquals(java.util.List.of("alter table `audit`.`commented` comment = convert(0x69745c2773 using utf8mb4)"),
                 dialect.schemaGenerator().createComments(factory.getEntityMetadata(MySqlCommented.class)));
+        EntityMetadata<MySqlSecondaryCommented> secondary = factory.getEntityMetadata(MySqlSecondaryCommented.class);
+        assertEquals(java.util.List.of("alter table `audit`.`commented_secondary` modify `note` varchar(255) comment convert(0x69745c2773 using utf8mb4)"),
+                dialect.schemaGenerator().createSecondaryComments(secondary, secondary.secondaryTables().getFirst()));
     }
 
     @jakarta.persistence.Entity
@@ -58,6 +61,14 @@ class MySqlDialectTest {
     @jakarta.persistence.Table(name = "commented", schema = "audit", comment = "it\\'s")
     static class MySqlCommented {
         @jakarta.persistence.Id Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(schema = "audit")
+    @jakarta.persistence.SecondaryTable(name = "commented_secondary", schema = "audit")
+    static class MySqlSecondaryCommented {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(table = "commented_secondary", comment = "it\\'s") String note;
     }
 
     @Test
