@@ -6,6 +6,7 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.QuerySpec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityNotFoundException;
@@ -26,6 +27,7 @@ import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -194,6 +196,45 @@ class SimpleReactiveEntityManagerTest {
         StepVerifier.create(manager.refresh(new Widget(null, "x")))
                 .expectError(IllegalArgumentException.class)
                 .verify();
+    }
+
+    @Test
+    void refreshReconstructsRecordEmbeddedStateInPlace() {
+        RecordEmbeddedWidget managed = new RecordEmbeddedWidget(13L, new RecordAddress("stale", 1));
+        operations.findByIdResult = new RecordEmbeddedWidget(13L, new RecordAddress("db-value", 2));
+
+        StepVerifier.create(manager.refresh(managed))
+                .assertNext(refreshed -> {
+                    assertSame(managed, refreshed);
+                    assertEquals(new RecordAddress("db-value", 2), refreshed.address);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void refreshReconstructsRecordEmbeddedIdInPlace() {
+        RecordWidgetKey originalId = new RecordWidgetKey("tenant", 1);
+        RecordIdWidget managed = new RecordIdWidget(originalId, "stale");
+        operations.findByIdResult = new RecordIdWidget(new RecordWidgetKey("tenant", 1), "db-value");
+
+        StepVerifier.create(manager.refresh(managed))
+                .assertNext(refreshed -> {
+                    assertSame(managed, refreshed);
+                    assertEquals(new RecordWidgetKey("tenant", 1), refreshed.id);
+                    assertNotSame(originalId, refreshed.id);
+                    assertEquals("db-value", refreshed.name);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void refreshKeepsMutableEmbeddedHydrationWorking() {
+        MutableEmbeddedWidget managed = new MutableEmbeddedWidget(14L, new MutableAddress("stale"));
+        operations.findByIdResult = new MutableEmbeddedWidget(14L, new MutableAddress("db-value"));
+
+        StepVerifier.create(manager.refresh(managed))
+                .assertNext(refreshed -> assertEquals("db-value", refreshed.address.city))
+                .verifyComplete();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -498,6 +539,68 @@ class SimpleReactiveEntityManagerTest {
 
         CompositeWidgetKey getId() {
             return id;
+        }
+    }
+
+    @Embeddable
+    record RecordAddress(String city, Integer zone) {
+    }
+
+    @Entity
+    static class RecordEmbeddedWidget {
+        @Id Long id;
+        @Embedded RecordAddress address;
+
+        RecordEmbeddedWidget() {
+        }
+
+        RecordEmbeddedWidget(Long id, RecordAddress address) {
+            this.id = id;
+            this.address = address;
+        }
+    }
+
+    @Embeddable
+    static class MutableAddress {
+        String city;
+
+        MutableAddress() {
+        }
+
+        MutableAddress(String city) {
+            this.city = city;
+        }
+    }
+
+    @Entity
+    static class MutableEmbeddedWidget {
+        @Id Long id;
+        @Embedded MutableAddress address;
+
+        MutableEmbeddedWidget() {
+        }
+
+        MutableEmbeddedWidget(Long id, MutableAddress address) {
+            this.id = id;
+            this.address = address;
+        }
+    }
+
+    @Embeddable
+    record RecordWidgetKey(String tenant, Integer sequence) {
+    }
+
+    @Entity
+    static class RecordIdWidget {
+        @EmbeddedId RecordWidgetKey id;
+        String name;
+
+        RecordIdWidget() {
+        }
+
+        RecordIdWidget(RecordWidgetKey id, String name) {
+            this.id = id;
+            this.name = name;
         }
     }
 

@@ -153,7 +153,8 @@ public record ElementCollectionInfo(
     public CollectionTableDefinition toCollectionTableDefinition(Class<?> ownerForeignKeyType) {
         List<CollectionTableDefinition.ElementColumn> elementColumns = new ArrayList<>();
         for (EmbeddableColumn column : embeddableColumns) {
-            elementColumns.add(new CollectionTableDefinition.ElementColumn(column.columnName(), column.columnType()));
+            elementColumns.add(new CollectionTableDefinition.ElementColumn(
+                    column.columnName(), column.columnType(), column.json()));
         }
         // Map key 컬럼: @Embeddable key는 다중 컬럼(mapKeyColumns)으로, 그 외(기본/enum/temporal/UUID)는 단일
         // 컬럼(keyColumn)으로 표현한다. 둘 다 mapKey==null이면 map이 아니다.
@@ -163,7 +164,7 @@ public record ElementCollectionInfo(
             if (mapKey.embeddableKey()) {
                 mapKeyColumns = mapKey.embeddableKeyColumns().stream()
                         .map(column -> new CollectionTableDefinition.ElementColumn(
-                                column.columnName(), column.columnType()))
+                                column.columnName(), column.columnType(), column.json()))
                         .toList();
             } else {
                 keyColumn = new CollectionTableDefinition.MapKeyColumn(mapKey.keyColumn(), mapKey.keyColumnType());
@@ -213,7 +214,41 @@ public record ElementCollectionInfo(
      * 인스턴스에서 값을 읽고/쓰기 위한 reflective handle이고, {@code columnName}은 (선택적 {@code @AttributeOverride}
      * 반영된) 물리 컬럼 이름, {@code columnType}은 저장 표현의 Java 타입(primitive는 wrapper로 정규화됨)이다.
      */
-    public record EmbeddableColumn(Field field, String columnName, Class<?> columnType) {
+    public record EmbeddableColumn(
+            Field field,
+            String columnName,
+            Class<?> columnType,
+            AttributeConverter<Object, Object> converter,
+            boolean json) {
+
+        public EmbeddableColumn(Field field, String columnName, Class<?> columnType) {
+            this(field, columnName, columnType, null, false);
+        }
+
+        public Object encode(Object value) {
+            return value == null || converter == null ? value : converter.write(value);
+        }
+
+        public Object decode(Object value) {
+            return value == null || converter == null ? value : converter.read(value);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            return other instanceof EmbeddableColumn that
+                    && java.util.Objects.equals(field, that.field)
+                    && java.util.Objects.equals(columnName, that.columnName)
+                    && java.util.Objects.equals(columnType, that.columnType)
+                    && json == that.json;
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(field, columnName, columnType, json);
+        }
     }
 
     /**
@@ -293,6 +328,10 @@ public record ElementCollectionInfo(
          */
         public boolean enumKey() {
             return keyEnumType != null;
+        }
+
+        public boolean convertedKey() {
+            return keyConverter != null;
         }
 
         /**

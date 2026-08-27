@@ -172,7 +172,7 @@ public class NovaAutoConfiguration {
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
             BeanFactory beanFactory) {
-        return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
+        return schemaBootstrapRunnerAfterPreload(schemaInitializer, properties, beanFactory);
     }
 
     @Bean(name = "novaSchemaBootstrapRunner")
@@ -182,7 +182,7 @@ public class NovaAutoConfiguration {
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
             BeanFactory beanFactory) {
-        return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
+        return schemaBootstrapRunnerAfterPreload(schemaInitializer, properties, beanFactory);
     }
 
     @Bean(name = "novaSchemaBootstrapRunner")
@@ -192,7 +192,7 @@ public class NovaAutoConfiguration {
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
             BeanFactory beanFactory) {
-        return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
+        return schemaBootstrapRunnerAfterPreload(schemaInitializer, properties, beanFactory);
     }
 
     @Bean(name = "novaSchemaBootstrapRunner")
@@ -202,6 +202,16 @@ public class NovaAutoConfiguration {
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
             BeanFactory beanFactory) {
+        return schemaBootstrapRunnerAfterPreload(schemaInitializer, properties, beanFactory);
+    }
+
+    private SchemaBootstrapRunner schemaBootstrapRunnerAfterPreload(
+            SchemaInitializer schemaInitializer,
+            NovaProperties properties,
+            BeanFactory beanFactory) {
+        beanFactory.getBeanProvider(NovaEntityPreloadRunner.class).orderedStream().forEach(ignored -> {
+            // Resolving the provider element initializes the runner before schema lifecycle startup.
+        });
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 }

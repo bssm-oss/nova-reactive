@@ -5,7 +5,9 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SlowQueryLoggingListener;
 import io.nova.core.SqlExecutor;
 import io.nova.dialect.postgresql.PostgresqlDialect;
+import io.nova.metadata.EntityMetadataFactory;
 import io.nova.r2dbc.PoolConfig;
+import io.nova.schema.SchemaInitializer;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
@@ -19,12 +21,16 @@ import org.junit.jupiter.api.Test;
 import org.reactivestreams.Publisher;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -36,6 +42,32 @@ class NovaAutoConfigurationTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(NovaAutoConfiguration.class))
             .withUserConfiguration(BaseInfrastructureConfig.class);
+
+    @Test
+    void preservesSchemaBootstrapBeanFactoryMethodSignatures() {
+        for (String methodName : new String[]{
+                "novaSchemaBootstrapRunnerCreate",
+                "novaSchemaBootstrapRunnerCreateDrop",
+                "novaSchemaBootstrapRunnerUpdate",
+                "novaSchemaBootstrapRunnerValidate"}) {
+            assertDoesNotThrow(() -> NovaAutoConfiguration.class.getMethod(
+                    methodName, SchemaInitializer.class, NovaProperties.class, BeanFactory.class));
+        }
+    }
+
+    @Test
+    void initializesCustomNamedPreloaderBeforeSchemaBootstrap() {
+        CustomNamedPreloaderConfig.CREATED.set(false);
+        runner.withUserConfiguration(CustomNamedPreloaderConfig.class)
+                .withPropertyValues("nova.ddl-auto=create")
+                .run(context -> {
+                    assertNull(context.getStartupFailure());
+                    assertTrue(CustomNamedPreloaderConfig.CREATED.get());
+                    assertTrue(context.containsBean("customNamedPreloader"));
+                    assertFalse(context.containsBean("novaEntityPreloadRunner"));
+                    assertNotNull(context.getBean(SchemaBootstrapRunner.class));
+                });
+    }
 
     @Test
     void autoConfiguresCoreBeansWhenConnectionFactoryAndDialectPresent() {
@@ -323,6 +355,21 @@ class NovaAutoConfigurationTest {
         @Bean
         SqlExecutor sqlExecutor() {
             return USER_EXECUTOR;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomNamedPreloaderConfig {
+        static final AtomicBoolean CREATED = new AtomicBoolean();
+
+        @Bean("customNamedPreloader")
+        @Lazy
+        NovaEntityPreloadRunner customNamedPreloader(
+                EntityMetadataFactory metadataFactory,
+                NovaProperties properties,
+                BeanFactory beanFactory) {
+            CREATED.set(true);
+            return new NovaEntityPreloadRunner(metadataFactory, properties, beanFactory);
         }
     }
 

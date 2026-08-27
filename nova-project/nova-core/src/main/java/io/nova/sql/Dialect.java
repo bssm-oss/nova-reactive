@@ -258,12 +258,24 @@ public interface Dialect {
         return "time";
     }
 
+    default String timeColumnType(int secondPrecision) {
+        return secondPrecision < 0 ? timeColumnType() : timeColumnType() + "(" + secondPrecision + ")";
+    }
+
+    default int maxSecondPrecision() {
+        return 9;
+    }
+
     /**
      * {@code @Temporal(TemporalType.TIMESTAMP)} 컬럼(날짜+시각)에 사용할 SQL 타입을 반환한다. 기본값은 ANSI
      * {@code timestamp}이며, MySQL의 {@code datetime}처럼 다른 토큰을 쓰는 dialect는 override 한다.
      */
     default String timestampColumnType() {
         return "timestamp";
+    }
+
+    default String timestampColumnType(int secondPrecision) {
+        return secondPrecision < 0 ? timestampColumnType() : timestampColumnType() + "(" + secondPrecision + ")";
     }
 
     /**

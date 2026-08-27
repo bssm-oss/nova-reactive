@@ -80,6 +80,7 @@ public final class EntityMetadata<T> {
      * INSERT/UPDATE/SELECT/DELETE 멀티테이블 경로가 이 목록으로 보조 테이블별 SQL을 만든다.
      */
     private final List<SecondaryTableInfo> secondaryTables;
+    private final TableDdlDefinition tableDdlDefinition;
 
     public EntityMetadata(
             Class<T> entityType,
@@ -152,7 +153,7 @@ public final class EntityMetadata<T> {
         this(entityType, entityName, tableName, schema, properties, idProperty,
                 prePersistCallbacks, postPersistCallbacks, preUpdateCallbacks, postUpdateCallbacks,
                 postLoadCallbacks, preRemoveCallbacks, postRemoveCallbacks, indexes, uniqueConstraints,
-                inheritance, listenerCallbacks, excludeDefaultListeners, List.of());
+                inheritance, listenerCallbacks, excludeDefaultListeners, List.of(), TableDdlDefinition.EMPTY);
     }
 
     public EntityMetadata(
@@ -175,6 +176,35 @@ public final class EntityMetadata<T> {
             EntityListenerCallbacks listenerCallbacks,
             boolean excludeDefaultListeners,
             List<SecondaryTableInfo> secondaryTables
+    ) {
+        this(entityType, entityName, tableName, schema, properties, idProperty,
+                prePersistCallbacks, postPersistCallbacks, preUpdateCallbacks, postUpdateCallbacks,
+                postLoadCallbacks, preRemoveCallbacks, postRemoveCallbacks, indexes, uniqueConstraints,
+                inheritance, listenerCallbacks, excludeDefaultListeners, secondaryTables, TableDdlDefinition.EMPTY);
+    }
+
+    /** Additive constructor for physical JPA 3.2 table DDL metadata. */
+    public EntityMetadata(
+            Class<T> entityType,
+            String entityName,
+            String tableName,
+            String schema,
+            List<PersistentProperty> properties,
+            PersistentProperty idProperty,
+            List<Method> prePersistCallbacks,
+            List<Method> postPersistCallbacks,
+            List<Method> preUpdateCallbacks,
+            List<Method> postUpdateCallbacks,
+            List<Method> postLoadCallbacks,
+            List<Method> preRemoveCallbacks,
+            List<Method> postRemoveCallbacks,
+            List<IndexDefinition> indexes,
+            List<UniqueConstraintDefinition> uniqueConstraints,
+            InheritanceInfo inheritance,
+            EntityListenerCallbacks listenerCallbacks,
+            boolean excludeDefaultListeners,
+            List<SecondaryTableInfo> secondaryTables,
+            TableDdlDefinition tableDdlDefinition
     ) {
         this.entityType = entityType;
         this.entityName = entityName;
@@ -243,6 +273,7 @@ public final class EntityMetadata<T> {
         this.listenerCallbacks = listenerCallbacks == null ? EntityListenerCallbacks.EMPTY : listenerCallbacks;
         this.excludeDefaultListeners = excludeDefaultListeners;
         this.secondaryTables = secondaryTables == null ? List.of() : List.copyOf(secondaryTables);
+        this.tableDdlDefinition = tableDdlDefinition == null ? TableDdlDefinition.EMPTY : tableDdlDefinition;
     }
 
     /**
@@ -630,6 +661,11 @@ public final class EntityMetadata<T> {
      */
     public boolean hasSecondaryTables() {
         return !secondaryTables.isEmpty();
+    }
+
+    /** DDL-only members declared by {@code @Table}. */
+    public TableDdlDefinition tableDdlDefinition() {
+        return tableDdlDefinition;
     }
 
     /**

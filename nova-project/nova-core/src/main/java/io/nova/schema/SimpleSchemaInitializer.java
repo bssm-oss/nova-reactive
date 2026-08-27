@@ -274,13 +274,19 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         String createDdl = options.ifNotExists()
                 ? generator.createTableIfNotExists(metadata)
                 : generator.createTable(metadata);
-        Mono<Void> create = operations.executeNative(NativeQuery.of(createDdl)).then();
+        boolean commentsDeclared = !generator.createComments(metadata).isEmpty();
+        Mono<Boolean> createdNow = options.ifNotExists() && commentsDeclared
+                ? operations.queryNative(NativeQuery.of(dialect.listTablesSql()),
+                                row -> row.get(Dialect.TABLE_NAME_COLUMN, String.class))
+                        .any(table -> table.equalsIgnoreCase(metadata.tableName()))
+                        .map(exists -> !exists)
+                : Mono.just(!options.ifNotExists());
+        Mono<Void> create = createdNow.flatMap(created -> operations.executeNative(NativeQuery.of(createDdl))
+                .then(created ? emitComments(generator, metadata) : Mono.empty()));
         if (metadata.hasSecondaryTables()) {
             // 보조 테이블은 primary 테이블 생성 이후에 만든다(보조 테이블 PK 조인 컬럼이 primary PK를 FK로 참조).
             create = create.then(Flux.fromIterable(metadata.secondaryTables())
-                    .concatMap(secondary -> operations.executeNative(NativeQuery.of(options.ifNotExists()
-                            ? generator.createSecondaryTableIfNotExists(metadata, secondary)
-                            : generator.createSecondaryTable(metadata, secondary))))
+                    .concatMap(secondary -> createSecondaryTable(metadata, secondary, generator, options))
                     .then());
         }
         if (!options.includeIndexes()) {
@@ -295,6 +301,34 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .then();
     }
 
+    private Mono<Void> emitComments(SchemaGenerator generator, EntityMetadata<?> metadata) {
+        return emitComments(generator.createComments(metadata));
+    }
+
+    private Mono<Void> emitComments(List<String> comments) {
+        return Flux.fromIterable(comments)
+                .concatMap(ddl -> operations.executeNative(NativeQuery.of(ddl)))
+                .then();
+    }
+
+    private Mono<Void> createSecondaryTable(
+            EntityMetadata<?> metadata, io.nova.metadata.SecondaryTableInfo secondary,
+            SchemaGenerator generator, SchemaOptions options) {
+        List<String> comments = generator.createSecondaryComments(metadata, secondary);
+        Mono<Boolean> createdNow = options.ifNotExists() && !comments.isEmpty()
+                ? operations.queryNative(NativeQuery.of(dialect.listTablesSql()),
+                                row -> row.get(Dialect.TABLE_NAME_COLUMN, String.class))
+                        .any(table -> table.equalsIgnoreCase(secondary.tableName()))
+                        .map(exists -> !exists)
+                : Mono.just(!options.ifNotExists());
+        String ddl = options.ifNotExists()
+                ? generator.createSecondaryTableIfNotExists(metadata, secondary)
+                : generator.createSecondaryTable(metadata, secondary);
+        return createdNow.flatMap(created -> operations.executeNative(NativeQuery.of(ddl))
+                .then(created ? Flux.fromIterable(comments)
+                        .concatMap(comment -> operations.executeNative(NativeQuery.of(comment))).then() : Mono.empty()));
+    }
+
     /**
      * JOINED 계층: 루트 테이블을 먼저 만들고(공통 컬럼 + discriminator) 각 서브타입 테이블을 만든다
      * (루트 PK를 FK PK로 공유). FK 의존성상 루트가 서브타입보다 먼저 존재해야 한다.
@@ -303,11 +337,11 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         io.nova.metadata.InheritanceLayout layout = metadataFactory.inheritanceLayout(schemaRootClass(entityType));
         SchemaGenerator generator = dialect.schemaGenerator();
         String rootDdl = generator.createJoinedRootTable(layout, options.ifNotExists());
-        Mono<Void> create = operations.executeNative(NativeQuery.of(rootDdl)).then();
+        Mono<Void> create = createPhysicalTable(layout.rootMetadata(), layout.rootTableColumns(), rootDdl, generator, options);
         return create.thenMany(Flux.fromIterable(layout.subtypes())
                         .filter(subtype -> subtype.metadata().entityType() != layout.info().root())
-                        .concatMap(subtype -> operations.executeNative(NativeQuery.of(
-                                generator.createJoinedSubtypeTable(layout, subtype, options.ifNotExists())))))
+                        .concatMap(subtype -> createPhysicalTable(subtype.metadata(), subtype.ownTableColumns(),
+                                generator.createJoinedSubtypeTable(layout, subtype, options.ifNotExists()), generator, options)))
                 .then();
     }
 
@@ -323,9 +357,28 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                     String ddl = options.ifNotExists()
                             ? generator.createTableIfNotExists(metadata)
                             : generator.createTable(metadata);
-                    return operations.executeNative(NativeQuery.of(ddl));
+                    return createPhysicalTable(metadata, metadata.primaryColumnMappedProperties(), ddl, generator, options);
                 })
                 .then();
+    }
+
+    private Mono<Void> createPhysicalTable(
+            EntityMetadata<?> metadata, String ddl, SchemaGenerator generator, SchemaOptions options) {
+        return createPhysicalTable(metadata, metadata.primaryColumnMappedProperties(), ddl, generator, options);
+    }
+
+    private Mono<Void> createPhysicalTable(
+            EntityMetadata<?> metadata, List<PersistentProperty> physicalColumns,
+            String ddl, SchemaGenerator generator, SchemaOptions options) {
+        List<String> comments = generator.createComments(metadata, physicalColumns);
+        Mono<Boolean> createdNow = options.ifNotExists() && !comments.isEmpty()
+                ? operations.queryNative(NativeQuery.of(dialect.listTablesSql()),
+                                row -> row.get(Dialect.TABLE_NAME_COLUMN, String.class))
+                        .any(table -> table.equalsIgnoreCase(metadata.tableName()))
+                        .map(exists -> !exists)
+                : Mono.just(!options.ifNotExists());
+        return createdNow.flatMap(created -> operations.executeNative(NativeQuery.of(ddl))
+                .then(created ? emitComments(comments) : Mono.empty()));
     }
 
     /**

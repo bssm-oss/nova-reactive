@@ -2,6 +2,8 @@ package io.nova.boot;
 
 import io.nova.Nova;
 import io.nova.boot.ddlauto.DdlAutoBootstrapEntity;
+import io.nova.boot.ddlauto.DdlAutoCode;
+import io.nova.boot.ddlauto.DdlAutoConvertedEntity;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.query.QuerySpec;
@@ -12,6 +14,7 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import reactor.test.StepVerifier;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -51,6 +54,25 @@ class SchemaBootstrapRunnerEffectTest {
                             .then(operations.count(DdlAutoBootstrapEntity.class, QuerySpec.empty()))
                             .block();
                     assertEquals(1L, count);
+                });
+    }
+
+    @Test
+    void createModeRegistersManagedConvertersBeforeSchemaBootstrapAndRoundTrips() {
+        ConnectionFactory cf = freshConnectionFactory();
+        runner.withUserConfiguration(testInfrastructure(cf))
+                .withPropertyValues(
+                        "nova.ddl-auto=create",
+                        "nova.entity-packages=io.nova.boot.ddlauto")
+                .run(context -> {
+                    assertEquals(null, context.getStartupFailure());
+                    ReactiveEntityOperations operations = context.getBean(ReactiveEntityOperations.class);
+                    DdlAutoConvertedEntity entity = new DdlAutoConvertedEntity(new DdlAutoCode("managed"));
+                    StepVerifier.create(operations.save(entity)
+                            .flatMap(saved -> operations.findById(
+                                    DdlAutoConvertedEntity.class, saved.getId())))
+                            .assertNext(loaded -> assertEquals(new DdlAutoCode("managed"), loaded.getCode()))
+                            .verifyComplete();
                 });
     }
 

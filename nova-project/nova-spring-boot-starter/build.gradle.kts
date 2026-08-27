@@ -18,4 +18,5 @@ dependencies {
     // 컴파일 classpath에 AssertJ 클래스가 필요하다. 테스트는 AssertJ assertion을 직접 사용하지 않는다.
     testImplementation("org.assertj:assertj-core:3.26.3")
     testImplementation("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
+    testImplementation("io.projectreactor:reactor-test:3.7.3")
 }

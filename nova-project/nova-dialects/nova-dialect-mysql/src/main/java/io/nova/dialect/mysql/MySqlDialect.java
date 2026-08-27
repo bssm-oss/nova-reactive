@@ -5,6 +5,12 @@ import io.nova.sql.AbstractSqlRenderer;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.PersistentProperty;
+import io.nova.metadata.SecondaryTableInfo;
+
+import java.util.ArrayList;
+import java.util.List;
 import io.nova.sql.SqlRenderer;
 
 /**
@@ -31,6 +37,11 @@ public final class MySqlDialect implements Dialect {
         // DEFAULT/ON UPDATE CURRENT_TIMESTAMP가 붙어 @Temporal(TIMESTAMP) 값이 조용히 손상될 수 있다.
         // datetime은 범위가 넓고 TZ 무변환이라 java.util.Date 매핑에 충실하다(Hibernate와 동일 선택).
         return "datetime";
+    }
+
+    @Override
+    public int maxSecondPrecision() {
+        return 6;
     }
 
     @Override
@@ -80,6 +91,48 @@ public final class MySqlDialect implements Dialect {
     private static final class MySqlSchemaGenerator extends AbstractSchemaGenerator {
         private MySqlSchemaGenerator(Dialect dialect) {
             super(dialect);
+        }
+
+        @Override
+        public List<String> createComments(EntityMetadata<?> metadata) {
+            return createComments(metadata, metadata.primaryColumnMappedProperties());
+        }
+
+        @Override
+        public List<String> createComments(EntityMetadata<?> metadata, List<PersistentProperty> physicalColumns) {
+            List<String> statements = new ArrayList<>();
+            if (!metadata.tableDdlDefinition().comment().isEmpty()) {
+                statements.add("alter table " + qualifiedTable(metadata) + " comment = "
+                        + sqlString(metadata.tableDdlDefinition().comment()));
+            }
+            for (PersistentProperty property : physicalColumns) {
+                if (!property.columnDdlDefinition().comment().isEmpty()) {
+                    statements.add("alter table " + qualifiedTable(metadata) + " modify "
+                            + columnDefinition(property) + " comment " + sqlString(property.columnDdlDefinition().comment()));
+                }
+            }
+            return statements;
+        }
+
+        @Override
+        public List<String> createSecondaryComments(EntityMetadata<?> metadata, SecondaryTableInfo secondaryTable) {
+            List<String> statements = new ArrayList<>();
+            for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondaryTable)) {
+                if (!property.columnDdlDefinition().comment().isEmpty()) {
+                    statements.add("alter table " + qualifiedSecondaryTable(secondaryTable) + " modify "
+                            + columnDefinition(property) + " comment " + sqlString(property.columnDdlDefinition().comment()));
+                }
+            }
+            return statements;
+        }
+
+        private static String sqlString(String value) {
+            byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            StringBuilder hex = new StringBuilder("0x");
+            for (byte valueByte : bytes) {
+                hex.append(String.format("%02x", valueByte));
+            }
+            return hex.toString();
         }
 
         @Override

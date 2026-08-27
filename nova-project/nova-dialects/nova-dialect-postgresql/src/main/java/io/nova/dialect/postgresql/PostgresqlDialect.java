@@ -49,6 +49,11 @@ public final class PostgresqlDialect implements Dialect {
     }
 
     @Override
+    public int maxSecondPrecision() {
+        return 6;
+    }
+
+    @Override
     public String jsonColumnType() {
         // PostgreSQL은 binary JSON 저장 타입인 jsonb를 지원한다 — 인덱싱과 연산자 지원이 우수하므로
         // 기본 json 대신 jsonb로 컬럼을 생성한다.

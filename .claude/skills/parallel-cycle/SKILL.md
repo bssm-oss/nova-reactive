@@ -7,7 +7,7 @@ description: Nova의 표준 multi-feature 작업 패턴. 사용자가 한 번에
 
 Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 
-**스코프 분리 → 설계-우선 병렬 개발(opus 설계→sonnet 구현) → (위험도 차등 병렬 리뷰 ↔ 보완)\* → 수렴-즉시 스트리밍 병합 → (E2E 전용 opus agent ↔ 보완)\* → PR 생성·머지 → 다음 cycle confirm**
+**스코프 분리 → 설계-우선 병렬 개발(opus 설계→sonnet 구현) → (위험도 차등 병렬 리뷰 ↔ 보완)\* → 수렴-즉시 스트리밍 병합 → (E2E 전용 opus agent ↔ 보완)\* → PR 생성·머지 → 버전 태그·배포 확인 → 다음 cycle confirm**
 
 (↔)\*는 **문제(critical/major) 0이 될 때까지 반복하는 수렴 루프**다 — 보완 후 반드시 재리뷰/재E2E해서 새 결함이 없음을 확인해야 다음 단계로 간다. 리뷰는 **병합 전** worktree 브랜치에서 하고, 수렴 후 통합 브랜치로 병합한다. 통합 브랜치에서 E2E를 돌리고, 보완한 뒤 origin에 PR을 올려 squash-merge 한다. (현행처럼 로컬 main 직접 커밋이 아니라 PR 기반.)
 
@@ -144,9 +144,20 @@ E2E에서 드러난 결함을 통합 브랜치에서 직접 fix-commit + 회귀 
 3. CI 있으면 통과 확인. repo는 **squash-only** → `gh pr merge --squash --admin`(브랜치 보호 우회). merge commit/rebase 금지.
 4. 로컬 main 동기화: `git switch main && git pull --ff-only`.
 
+## Phase 8.5 — 버전 태그 및 배포 확인
+
+PR이 main에 머지된 뒤에만 배포한다. 배포 버전은 임의로 추측하지 말고 사용자 또는 저장소 release 정책으로 확정한다.
+
+1. 현재 태그와 `build.gradle.kts`의 `nova.version`을 확인하고 다음 SemVer 태그(예: `v2.11.0`)를 확정한다.
+2. main에서 버전 태그를 생성·push한다: `git tag v<version> && git push origin v<version>`.
+3. `.github/workflows/release.yml`의 tag workflow가 Java 21 build, Maven Central publish, GitHub Release를 모두 완료하는지 `gh run watch`/`gh run view`로 확인한다.
+4. Central Portal deployment와 GitHub Release가 실제 공개 상태인지 확인한다. credentials/권한/CI 실패로 확인할 수 없으면 배포 완료로 표시하지 말고 blocker로 보고한다.
+5. 배포 확인 전에는 cycle을 완료로 선언하거나 worktree/브랜치를 삭제하지 않는다.
+
 ## Phase 9 — Cleanup & 다음 cycle confirm
 
 - `git worktree remove <path> -f -f`, `git branch -D worktree-agent-<id>` 모두, 머지된 `cycle/<topic>` 로컬 브랜치 삭제. `git worktree list`에 main만.
+- PR 머지와 배포 확인이 끝난 뒤에만 cleanup한다. 외부 push 권한이나 release secret이 없으면 cleanup을 보류하고 정확한 blocker를 사용자에게 보고한다.
 - `AskUserQuestion`으로 다음 cycle scope 결정(자율 진행 금지). 옵션 3개 + "멈춤" + "다른 방향".
 
 ## Memory 참조

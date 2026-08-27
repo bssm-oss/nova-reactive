@@ -79,6 +79,64 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void rendersJpa32ChecksOptionsCommentsAndSecondPrecision() {
+        EntityMetadata<Ddl32Entity> metadata = factory.getEntityMetadata(Ddl32Entity.class);
+        String ddl = dialect.schemaGenerator().createTable(metadata);
+
+        assertTrue(ddl.contains("occurred_at timestamp(3) constraint chk_occurred check (occurred_at is not null) column_option"));
+        assertTrue(ddl.contains("constraint chk_amount check (amount >= 0)"));
+        assertTrue(ddl.endsWith(" table_option"));
+        assertEquals(List.of(
+                        "comment on table ddl32 is 'table''s comment'",
+                        "comment on column ddl32.occurred_at is 'event''s time'"),
+                dialect.schemaGenerator().createComments(metadata));
+    }
+
+    @Test
+    void attributeOverrideSuppliesEffectiveJpa32ColumnDdl() {
+        EntityMetadata<OverriddenDdl32Entity> metadata = factory.getEntityMetadata(OverriddenDdl32Entity.class);
+        PersistentProperty property = metadata.findProperty("audit.occurredAt").orElseThrow();
+
+        assertEquals("overridden_at", property.columnName());
+        assertEquals(4, property.columnDdlDefinition().secondPrecision());
+        assertEquals("override comment", property.columnDdlDefinition().comment());
+        assertTrue(dialect.schemaGenerator().createTable(metadata).contains("overridden_at timestamp(4)"));
+    }
+
+    @Test
+    void rendersColumnDdlForIdentityColumns() {
+        String ddl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(IdentityDdl32Entity.class));
+        assertTrue(ddl.contains("id bigint primary key constraint chk_identity check (id > 0) identity_option"));
+    }
+
+    @Test
+    void rejectsInvalidJpa32CheckAndColumnDefinitionOptionsCombinations() {
+        assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(BlankCheckEntity.class));
+        assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DefinitionAndOptionsEntity.class));
+    }
+
+    @Test
+    void rendersChecksForJoinedAndSecondaryPhysicalTables() {
+        factory.getEntityMetadata(JoinedDdlChild.class);
+        var layout = factory.inheritanceLayout(JoinedDdlRoot.class);
+        String root = dialect.schemaGenerator().createJoinedRootTable(layout, false);
+        String child = dialect.schemaGenerator().createJoinedSubtypeTable(layout,
+                layout.subtypes().stream().filter(s -> s.metadata().entityType() == JoinedDdlChild.class).findFirst().orElseThrow(), false);
+        String secondary = dialect.schemaGenerator().createSecondaryTable(factory.getEntityMetadata(SecondaryDdlEntity.class),
+                factory.getEntityMetadata(SecondaryDdlEntity.class).secondaryTables().getFirst());
+
+        assertTrue(root.contains("check (root_value >= 0)"));
+        assertTrue(child.contains("check (child_value >= 0)"));
+        assertTrue(secondary.contains("check (secondary_value >= 0)"));
+        assertEquals(List.of("comment on column joined_ddl_child.child_value is 'child'"),
+                dialect.schemaGenerator().createComments(factory.getEntityMetadata(JoinedDdlChild.class),
+                        layout.subtypes().stream().filter(s -> s.metadata().entityType() == JoinedDdlChild.class)
+                                .findFirst().orElseThrow().ownTableColumns()));
+    }
+
+    @Test
     void createTableSkipsOneToManyInverseSideAndIncludesManyToOneFkColumn() {
         // OneToMany inverse 필드(List<Book> books)는 부모 테이블에 컬럼을 만들지 않아야 한다.
         // raw properties()를 사용하던 시절에는 List 타입을 sqlType에 넘겨 IllegalArgumentException이 났다.
@@ -563,6 +621,84 @@ class AbstractSchemaGeneratorTest {
         public SchemaGenerator schemaGenerator() {
             return schemaGenerator;
         }
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(
+            name = "ddl32",
+            check = @jakarta.persistence.CheckConstraint(name = "chk_amount", constraint = " amount >= 0 "),
+            comment = "table's comment",
+            options = "table_option")
+    static class Ddl32Entity {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.Column(
+                secondPrecision = 3,
+                check = @jakarta.persistence.CheckConstraint(name = "chk_occurred", constraint = " occurred_at is not null "),
+                comment = "event's time",
+                options = "column_option")
+        java.time.LocalDateTime occurredAt;
+    }
+
+    @jakarta.persistence.Embeddable
+    static class AuditStamp {
+        java.time.LocalDateTime occurredAt;
+    }
+
+    @jakarta.persistence.Entity
+    static class OverriddenDdl32Entity {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.Embedded
+        @jakarta.persistence.AttributeOverride(name = "occurredAt", column = @jakarta.persistence.Column(
+                name = "overridden_at", secondPrecision = 4, comment = "override comment"))
+        AuditStamp audit;
+    }
+
+    @jakarta.persistence.Entity
+    static class IdentityDdl32Entity {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.IDENTITY)
+        @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(
+                name = "chk_identity", constraint = "id > 0"), options = "identity_option")
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class BlankCheckEntity {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(constraint = " ")) String value;
+    }
+
+    @jakarta.persistence.Entity
+    static class DefinitionAndOptionsEntity {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(columnDefinition = "varchar(12)", options = "option") String value;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    @jakarta.persistence.Table(check = @jakarta.persistence.CheckConstraint(constraint = "root_value >= 0"))
+    static class JoinedDdlRoot {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(comment = "root") Integer rootValue;
+    }
+
+    @jakarta.persistence.Entity
+    static class JoinedDdlChild extends JoinedDdlRoot {
+        @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(constraint = "child_value >= 0"), comment = "child")
+        Integer childValue;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.SecondaryTable(name = "secondary_ddl")
+    static class SecondaryDdlEntity {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(table = "secondary_ddl", check = @jakarta.persistence.CheckConstraint(
+                constraint = "secondary_value >= 0"), comment = "secondary")
+        Integer secondaryValue;
     }
 
     /**

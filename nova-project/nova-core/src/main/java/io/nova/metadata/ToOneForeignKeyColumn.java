@@ -3,6 +3,8 @@ package io.nova.metadata;
 import io.nova.convert.AttributeConverter;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -27,6 +29,7 @@ public final class ToOneForeignKeyColumn {
      * {@code [holder 필드, embeddable leaf 필드]} 2개다.
      */
     private final List<Field> referencedPath;
+    private final List<Method> referencedAccessors;
 
     public ToOneForeignKeyColumn(
             String columnName,
@@ -43,9 +46,23 @@ public final class ToOneForeignKeyColumn {
         this.nullable = nullable;
         this.converter = converter;
         this.referencedPath = List.copyOf(referencedPath);
+        List<Method> accessors = new ArrayList<>(referencedPath.size());
         for (Field field : this.referencedPath) {
             field.setAccessible(true);
+            if (field.getDeclaringClass().isRecord()) {
+                try {
+                    Method accessor = field.getDeclaringClass().getDeclaredMethod(field.getName());
+                    accessor.setAccessible(true);
+                    accessors.add(accessor);
+                } catch (NoSuchMethodException exception) {
+                    throw new IllegalArgumentException("Record component " + field.getDeclaringClass().getName()
+                            + "." + field.getName() + " has no component accessor", exception);
+                }
+            } else {
+                accessors.add(null);
+            }
         }
+        this.referencedAccessors = java.util.Collections.unmodifiableList(accessors);
     }
 
     public String columnName() {
@@ -71,6 +88,10 @@ public final class ToOneForeignKeyColumn {
 
     public boolean nullable() {
         return nullable;
+    }
+
+    List<Field> referencedPath() {
+        return referencedPath;
     }
 
     /**
@@ -100,14 +121,15 @@ public final class ToOneForeignKeyColumn {
     public Object readReferencedValue(Object referenced) {
         try {
             Object current = referenced;
-            for (Field field : referencedPath) {
-                current = field.get(current);
+            for (int i = 0; i < referencedPath.size(); i++) {
+                Method accessor = referencedAccessors.get(i);
+                current = accessor == null ? referencedPath.get(i).get(current) : accessor.invoke(current);
                 if (current == null) {
                     return null;
                 }
             }
             return current;
-        } catch (IllegalAccessException exception) {
+        } catch (ReflectiveOperationException exception) {
             throw new IllegalStateException(
                     "Cannot read composite foreign-key component for column " + columnName, exception);
         }

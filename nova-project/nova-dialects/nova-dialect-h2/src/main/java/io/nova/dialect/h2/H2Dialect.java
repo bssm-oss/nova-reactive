@@ -52,4 +52,9 @@ public final class H2Dialect implements Dialect {
         // 안전하게 디코딩할 수 있다.
         return String.class;
     }
+
+    @Override
+    public int maxSecondPrecision() {
+        return 9;
+    }
 }

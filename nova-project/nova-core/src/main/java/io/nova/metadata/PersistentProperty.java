@@ -140,6 +140,31 @@ public final class PersistentProperty {
      * N개 컬럼을 emit/바인딩하고, row 디코딩은 N개 컬럼을 읽어 복합 id를 가진 stub을 조립한다.
      */
     private final ToOneForeignKey toOneForeignKey;
+    /** DDL-only members of the effective {@code @Column} declaration. */
+    private final ColumnDdlDefinition columnDdlDefinition;
+
+    @SuppressWarnings("unchecked")
+    public PersistentProperty(
+            Field field, String propertyName, String columnName, Class<?> javaType, boolean id, boolean version,
+            boolean nullable, int length, int precision, int scale, GenerationType generationType, String generator,
+            AttributeConverter<?, ?> converter, boolean createdAt, boolean updatedAt, boolean softDelete,
+            boolean embedded, List<Field> embeddedHostPath, boolean enumerated, EnumType enumType, boolean json,
+            boolean manyToOne, Class<?> manyToOneTargetType, boolean manyToOneNullable, boolean oneToMany,
+            Class<?> oneToManyTargetType, String oneToManyMappedBy, boolean insertable, boolean updatable,
+            boolean unique, String columnDefinition, boolean lob, Class<?> converterColumnType, boolean inverseToOne,
+            ManyToManyInfo manyToManyInfo, ElementCollectionInfo elementCollectionInfo, OneToManyInfo oneToManyInfo,
+            TableGeneratorInfo tableGeneratorInfo, boolean mapsId, String mapsIdValue, boolean propertyAccess,
+            Method propertyAccessGetter, Method propertyAccessSetter, ToOneCascadeInfo toOneCascadeInfo,
+            String secondaryTableName, ToOneForeignKey toOneForeignKey
+    ) {
+        this(field, propertyName, columnName, javaType, id, version, nullable, length, precision, scale,
+                generationType, generator, converter, createdAt, updatedAt, softDelete, embedded, embeddedHostPath,
+                enumerated, enumType, json, manyToOne, manyToOneTargetType, manyToOneNullable, oneToMany,
+                oneToManyTargetType, oneToManyMappedBy, insertable, updatable, unique, columnDefinition, lob,
+                converterColumnType, inverseToOne, manyToManyInfo, elementCollectionInfo, oneToManyInfo,
+                tableGeneratorInfo, mapsId, mapsIdValue, propertyAccess, propertyAccessGetter, propertyAccessSetter,
+                toOneCascadeInfo, secondaryTableName, toOneForeignKey, ColumnDdlDefinition.EMPTY);
+    }
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -188,7 +213,8 @@ public final class PersistentProperty {
             Method propertyAccessSetter,
             ToOneCascadeInfo toOneCascadeInfo,
             String secondaryTableName,
-            ToOneForeignKey toOneForeignKey
+            ToOneForeignKey toOneForeignKey,
+            ColumnDdlDefinition columnDdlDefinition
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -239,17 +265,21 @@ public final class PersistentProperty {
         this.propertyAccessGetter = propertyAccessGetter;
         this.propertyAccessSetter = propertyAccessSetter;
         if (propertyAccess) {
-            if (propertyAccessGetter == null || propertyAccessSetter == null) {
+            boolean immutableRecordComponent = field.getDeclaringClass().isRecord();
+            if (propertyAccessGetter == null || (propertyAccessSetter == null && !immutableRecordComponent)) {
                 throw new IllegalStateException(
                         "PROPERTY access property " + propertyName
-                                + " requires both a getter and a setter");
+                                + " requires a getter and a setter; record components require only their accessor");
             }
             propertyAccessGetter.setAccessible(true);
-            propertyAccessSetter.setAccessible(true);
+            if (propertyAccessSetter != null) {
+                propertyAccessSetter.setAccessible(true);
+            }
         }
         this.toOneCascadeInfo = toOneCascadeInfo;
         this.secondaryTableName = secondaryTableName == null ? "" : secondaryTableName;
         this.toOneForeignKey = toOneForeignKey;
+        this.columnDdlDefinition = columnDdlDefinition == null ? ColumnDdlDefinition.EMPTY : columnDdlDefinition;
     }
 
     /**
@@ -307,7 +337,8 @@ public final class PersistentProperty {
                 propertyAccessSetter,
                 toOneCascadeInfo,
                 secondaryTableName,
-                toOneForeignKey
+                toOneForeignKey,
+                columnDdlDefinition
         );
     }
 
@@ -367,7 +398,8 @@ public final class PersistentProperty {
                 propertyAccessSetter,
                 toOneCascadeInfo,
                 secondaryTableName,
-                toOneForeignKey
+                toOneForeignKey,
+                columnDdlDefinition
         );
     }
 
@@ -427,7 +459,8 @@ public final class PersistentProperty {
                 propertyAccessSetter,
                 toOneCascadeInfo,
                 secondaryTableName,
-                toOneForeignKey
+                toOneForeignKey,
+                columnDdlDefinition
         );
     }
 
@@ -465,6 +498,11 @@ public final class PersistentProperty {
      */
     public String columnDefinition() {
         return columnDefinition;
+    }
+
+    /** DDL-only members of the effective {@code @Column} declaration. */
+    public ColumnDdlDefinition columnDdlDefinition() {
+        return columnDdlDefinition;
     }
 
     public Field field() {
@@ -613,11 +651,11 @@ public final class PersistentProperty {
         if (json) {
             return String.class;
         }
-        if (enumerated) {
-            return enumType == EnumType.STRING ? String.class : Integer.class;
-        }
         if (converterColumnType != null) {
             return converterColumnType;
+        }
+        if (enumerated) {
+            return enumType == EnumType.STRING ? String.class : Integer.class;
         }
         return javaType;
     }

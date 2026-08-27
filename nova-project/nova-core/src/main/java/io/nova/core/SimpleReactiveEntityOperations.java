@@ -748,12 +748,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private static List<Object> readEmbeddableColumnValues(ElementCollectionInfo info, Object element) {
         List<Object> values = new ArrayList<>(info.embeddableColumns().size());
         for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-            try {
-                values.add(column.field().get(element));
-            } catch (IllegalAccessException exception) {
-                throw new IllegalStateException(
-                        "Cannot read @Embeddable @ElementCollection field " + column.field().getName(), exception);
-            }
+            values.add(column.encode(EmbeddableInstantiationStrategy.readCollectionValue(element, column)));
         }
         return values;
     }
@@ -820,12 +815,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         List<ElementCollectionInfo.EmbeddableColumn> keyColumns = info.mapKey().embeddableKeyColumns();
         List<Object> values = new ArrayList<>(keyColumns.size());
         for (ElementCollectionInfo.EmbeddableColumn column : keyColumns) {
-            try {
-                values.add(column.field().get(key));
-            } catch (IllegalAccessException exception) {
-                throw new IllegalStateException(
-                        "Cannot read @MapKeyClass @Embeddable key field " + column.field().getName(), exception);
-            }
+            values.add(column.encode(EmbeddableInstantiationStrategy.readCollectionValue(key, column)));
         }
         return values;
     }
@@ -837,6 +827,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private static Object encodeMapKey(ElementCollectionInfo info, Object key) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        if (mapKey.convertedKey()) {
+            return mapKey.encodeKey(key);
+        }
         if (mapKey.enumKey()) {
             Enum<?> enumKey = (Enum<?>) key;
             return mapKey.keyEnumType() == EnumType.STRING ? enumKey.name() : enumKey.ordinal();
@@ -864,6 +857,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static Object decodeMapKey(ElementCollectionInfo info, Object stored) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        if (mapKey.convertedKey()) {
+            return mapKey.decodeKey(stored);
+        }
         if (!mapKey.enumKey()) {
             return mapKey.decodeKey(stored);
         }
@@ -4254,6 +4250,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 펼친 각 컬럼 값을 해당 필드에 바인딩한다. {@link ElementCollectionInfo#valueType()}이 원소 타입이다.
      */
     private static Object instantiateEmbeddableElement(ElementCollectionInfo info, RowAccessor row) {
+        if (info.valueType().isRecord()) {
+            List<Object> values = new ArrayList<>(info.embeddableColumns().size());
+            for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
+                values.add(column.decode(row.get(column.columnName(), column.columnType())));
+            }
+            return EmbeddableInstantiationStrategy.instantiateCollectionRecord(
+                    info.valueType(), info.embeddableColumns(), values);
+        }
         Object element;
         try {
             java.lang.reflect.Constructor<?> constructor = info.valueType().getDeclaredConstructor();
@@ -4265,7 +4269,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + " must expose a no-args constructor", exception);
         }
         for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-            Object value = row.get(column.columnName(), column.columnType());
+            Object value = column.decode(row.get(column.columnName(), column.columnType()));
             try {
                 column.field().set(element, value);
             } catch (IllegalAccessException exception) {
@@ -4283,6 +4287,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private static Object instantiateEmbeddableKey(ElementCollectionInfo info, RowAccessor row) {
         ElementCollectionInfo.MapKeyInfo mapKey = info.mapKey();
+        if (mapKey.keyType().isRecord()) {
+            List<Object> values = new ArrayList<>(mapKey.embeddableKeyColumns().size());
+            for (ElementCollectionInfo.EmbeddableColumn column : mapKey.embeddableKeyColumns()) {
+                values.add(column.decode(row.get(column.columnName(), column.columnType())));
+            }
+            return EmbeddableInstantiationStrategy.instantiateCollectionRecord(
+                    mapKey.keyType(), mapKey.embeddableKeyColumns(), values);
+        }
         Object key;
         try {
             java.lang.reflect.Constructor<?> constructor = mapKey.keyType().getDeclaredConstructor();
@@ -4294,7 +4306,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + " must expose a no-args constructor", exception);
         }
         for (ElementCollectionInfo.EmbeddableColumn column : mapKey.embeddableKeyColumns()) {
-            Object value = row.get(column.columnName(), column.columnType());
+            Object value = column.decode(row.get(column.columnName(), column.columnType()));
             try {
                 column.field().set(key, value);
             } catch (IllegalAccessException exception) {
@@ -4630,7 +4642,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // top-level(non-embedded) property는 즉시 entity에 주입한다. embedded property는 buffer에 모아
         // 호스트 path별로 all-null 여부를 판정한 뒤 entity에 반영한다. nested @Embedded에서도
         // outer host 전체가 all-null이면 outer까지 null로 설정해 빈 인스턴스가 남지 않도록 한다.
-        List<EmbeddedValue> embeddedValues = new ArrayList<>();
+        List<EmbeddableInstantiationStrategy.DecodedLeaf> embeddedValues = new ArrayList<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
             if (property.isCompositeToOne()) {
                 // 복합키 타겟 to-one: N개 FK 컬럼을 각 컴포넌트 저장타입(columnType)으로 디코드한 뒤 복합 id를 가진
@@ -4652,7 +4664,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object raw = row.get(property.columnName(), wrapPrimitive(property.columnType()));
             Object value = property.toPropertyValue(raw);
             if (property.embedded()) {
-                embeddedValues.add(new EmbeddedValue(property, value));
+                embeddedValues.add(new EmbeddableInstantiationStrategy.DecodedLeaf(property, value));
                 continue;
             }
             property.write(instance, value);
@@ -4668,72 +4680,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 그 레벨의 호스트를 null로 두고 더 깊은 레벨의 leaf는 무시한다. 그렇지 않은 path만 실제로 write가 일어나며,
      * 중간 호스트 인스턴스는 {@link PersistentProperty#write} 내부에서 lazy하게 생성된다.
      */
-    private void hydrateEmbeddedValues(Object instance, List<EmbeddedValue> values) {
+    private void hydrateEmbeddedValues(Object instance, List<EmbeddableInstantiationStrategy.DecodedLeaf> values) {
         if (values.isEmpty()) {
             return;
         }
-        // path-prefix별로 모든 직간접 leaf 값이 null인지 미리 계산해 둔다. 키는 host path 자체이며,
-        // 길이 0(empty)에 대한 항목은 만들지 않는다(top-level entity는 null로 둘 수 없으므로).
-        LinkedHashMap<List<java.lang.reflect.Field>, boolean[]> allNullByPrefix = new LinkedHashMap<>();
-        for (EmbeddedValue ev : values) {
-            List<java.lang.reflect.Field> path = ev.property().embeddedHostPath();
-            for (int depth = 1; depth <= path.size(); depth++) {
-                List<java.lang.reflect.Field> prefix = path.subList(0, depth);
-                boolean[] flag = allNullByPrefix.computeIfAbsent(prefix, ignored -> new boolean[]{true});
-                if (ev.value() != null) {
-                    flag[0] = false;
-                }
-            }
-        }
-        // 가장 짧은 prefix부터 검사해서 outer가 모두 null이면 그 레벨을 null로 두고 더 깊은 부분은 skip한다.
-        // 호스트 인스턴스는 PersistentProperty#write가 필요 시 새로 만들어 두므로, all-null이 아닌 leaf만
-        // write하면 된다. all-null인 outermost prefix를 만나면 그 prefix의 마지막 호스트 필드를 명시적으로
-        // null로 설정해 둔다 — 사용자가 entity 생성자에서 미리 채워둔 빈 embeddable 인스턴스가 남지 않도록.
-        for (EmbeddedValue ev : values) {
-            List<java.lang.reflect.Field> path = ev.property().embeddedHostPath();
-            // outer → inner 순으로 all-null prefix를 찾아 가장 외곽 레벨을 null로 만들고 leaf write는 skip.
-            int allNullDepth = -1;
-            for (int depth = 1; depth <= path.size(); depth++) {
-                boolean[] flag = allNullByPrefix.get(path.subList(0, depth));
-                if (flag != null && flag[0]) {
-                    allNullDepth = depth;
-                    break;
-                }
-            }
-            if (allNullDepth > 0) {
-                nullifyHostAtDepth(instance, path, allNullDepth);
-                continue;
-            }
-            ev.property().write(instance, ev.value());
-        }
-    }
-
-    /**
-     * {@code path}의 outer → inner 순서를 따라 {@code depth - 1}번째까지 진입한 뒤(중간 호스트가 null이면 그대로 둔다),
-     * 마지막 호스트 필드를 null로 만든다. 사용자가 명시적으로 생성자에서 빈 embeddable을 채워뒀더라도
-     * 해당 hierarchy의 모든 leaf가 NULL이면 null로 정리해 round-trip을 안전하게 만든다.
-     */
-    private void nullifyHostAtDepth(Object instance, List<java.lang.reflect.Field> path, int depth) {
-        try {
-            Object current = instance;
-            for (int i = 0; i < depth - 1; i++) {
-                java.lang.reflect.Field hostField = path.get(i);
-                hostField.setAccessible(true);
-                current = hostField.get(current);
-                if (current == null) {
-                    return;
-                }
-            }
-            java.lang.reflect.Field targetHost = path.get(depth - 1);
-            targetHost.setAccessible(true);
-            targetHost.set(current, null);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot null out embedded host field " + path.get(depth - 1).getName(), exception);
-        }
-    }
-
-    private record EmbeddedValue(PersistentProperty property, Object value) {
+        EmbeddableInstantiationStrategy.hydrateSingleValued(instance, values);
     }
 
     /**

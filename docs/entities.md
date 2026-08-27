@@ -13,13 +13,13 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | Annotation        | Purpose                                                                                  |
 |-------------------|------------------------------------------------------------------------------------------|
 | `@Entity`         | Marks a class as persistent. Without `name`, the class-name-based default naming applies. |
-| `@Table`          | Explicit table name (+ optional `schema`; `catalog` is ignored). When omitted, the `NamingStrategy` decides. |
+| `@Table`          | Explicit table name (+ optional `schema`; `catalog` is ignored). JPA 3.2 `check`, `comment`, and `options` are emitted when creating a table. When omitted, the `NamingStrategy` decides. |
 | `@Id`             | Single identifier field. Exactly one `@Id` **or** one `@EmbeddedId` is required per entity. |
 | `@EmbeddedId`     | Composite primary key. The field's type is an `@Embeddable` whose fields become the key columns (no host-field prefix; `@AttributeOverride` renames them). The key is application-assigned — `save()` resolves insert vs. update with an existence check. `@GeneratedValue` on a component is rejected. |
 | `@IdClass`        | Composite primary key declared as several top-level `@Id` fields plus a mirror id class. The id class must declare a matching field (name + type) for each `@Id` and a no-arg constructor. Same application-assigned semantics as `@EmbeddedId`; cannot be combined with it. |
 | `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. |
 | `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). |
-| `@Column`         | Column name, `nullable`, `length` / `precision` / `scale`, `insertable` / `updatable` / `unique` / `columnDefinition`. |
+| `@Column`         | Column name, `nullable`, `length` / `precision` / `scale` / JPA 3.2 `secondPrecision`, `insertable` / `updatable` / `unique` / `columnDefinition`, plus JPA 3.2 `check`, `comment`, and `options`. |
 | `@Lob`            | Maps the column to the dialect LOB type — character LOB (`clob` / `text` / `longtext`) for `String`, binary LOB (`blob` / `bytea` / `longblob`) for `byte[]`. |
 | `@CreatedAt`      | Auto-populates the field with the current time on insert (`Instant` / `LocalDateTime` / `OffsetDateTime`). Preserves a value the user pre-sets. |
 | `@UpdatedAt`      | Overwritten with the current time on insert, update, partial update, and Updater paths.   |
@@ -33,8 +33,8 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@PreRemove`      | Invoked just before delete (soft or hard).                                                |
 | `@PostRemove`     | Invoked right after a successful delete (soft or hard).                                    |
 | `@EntityListeners` | TYPE-level marker registering external listener classes whose methods carry the same lifecycle annotations. Listener callbacks take the entity as a single argument and fire **before** the entity's own callbacks. See [Entity listeners](#entity-listeners). |
-| `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; columns flatten into the host entity's table. |
-| `@Embedded`       | FIELD-level marker indicating that an entity field is an `@Embeddable` flattened into host columns. |
+| `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; columns flatten into the host entity's table. Mutable classes and Java records are supported; records hydrate through their canonical constructor. |
+| `@Embedded`       | FIELD-level marker indicating that an entity field is an `@Embeddable` flattened into host columns. Nested ordinary record values are supported; nested `@EmbeddedId` remains fail-fast. |
 | `@MappedSuperclass` | TYPE-level marker on a non-entity base class. Its fields (e.g. an inherited id / audit columns) are mapped into every entity that extends it. |
 | `@Inheritance`    | TYPE-level marker on a hierarchy root. Only `strategy = SINGLE_TABLE` is supported (the JPA default); `JOINED` / `TABLE_PER_CLASS` are rejected fail-fast. Optional — an `@Entity` extending another `@Entity` defaults to SINGLE_TABLE. |
 | `@DiscriminatorColumn` | On the hierarchy root, names the discriminator column (default `dtype`) and its type (`STRING` default, `CHAR`, `INTEGER`). |
@@ -46,11 +46,12 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
 | `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. `fetch = LAZY` is accepted and treated as eager (no lazy proxy); `cascade` (`PERSIST` / `MERGE` / `REMOVE`) propagates to the referenced entity on `save` / `delete`. |
 | `@ManyToMany` / `@JoinTable` | Many-to-many via a link table. **Owning** side (`@JoinTable`, no `mappedBy`) defines the table + join columns; **inverse** side (`@ManyToMany(mappedBy = "...")`) reuses it. Both `List` and `Set` are supported. The link table is auto-created by the schema initializer. `save(owner)` reconciles the link rows (full-replace); both sides hydrate eagerly via a 2-hop IN-query. Owning-side `cascade` (`PERSIST` / `MERGE`) propagates to the target entities on `save`; inverse-side `cascade` is rejected fail-fast. Single-keyed owner/target only (v1). |
-| `@ElementCollection` / `@CollectionTable` | A collection of **basic-typed** values (`List`/`Set` of `String`, `Integer`, …) stored in a separate `(owner_fk, value)` table, auto-created by the schema initializer. `@CollectionTable` / `@JoinColumn` / `@Column` override the table, owner-FK, and value column names. `save(owner)` reconciles the rows (full-replace); `findById` / `findAll` hydrate via one IN-query. `@Embeddable` element types are not supported yet (v1). |
+| `@ElementCollection` / `@CollectionTable` | Basic values and flat mutable/record `@Embeddable` values (`List`/`Set`/`Map`) are stored in a separate collection table, auto-created by the schema initializer. `@CollectionTable` / `@JoinColumn` / `@Column` override table, owner-FK, and value column names. `save(owner)` reconciles rows (full-replace); `findById` / `findAll` hydrate via one IN-query. Nested `@EmbeddedId` collection values remain unsupported. |
 | `@OrderBy`        | On `@OneToMany`, orders hydrated children. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY` to the child query; an empty `@OrderBy` sorts by the child's `@Id` ascending. |
 | `@AttributeOverride` | On an `@Embedded` field, overrides a sub-property's column name with an absolute name (e.g. `@AttributeOverride(name = "city", column = @Column(name = "ship_city"))`). |
 | `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
 | `@Enumerated`     | Enum column mapping. `EnumType.ORDINAL` (default) or `EnumType.STRING`.                    |
+| `@EnumeratedValue` | JPA 3.2 enum mapping. Annotate one `String` or numeric enum field; that field's value is stored instead of the ordinal/name. |
 | `@Convert`        | Applies a `jakarta.persistence.AttributeConverter<X, Y>` to a field. The column is created with the **converter's storage type `Y`** (e.g. an `AttributeConverter<Rgb, Integer>` field gets an `integer` column). `disableConversion = true` turns it off. |
 | `@Json`           | JSON column mapping. Requires a `JsonCodec` SPI. Maps to `jsonb` on PostgreSQL, `clob` on Oracle, and `text` elsewhere. |
 
@@ -58,7 +59,7 @@ Entity metadata is parsed once and cached by `EntityMetadataFactory`. The factor
 
 - `@Entity` is required.
 - Exactly one `@Id` field — or one `@EmbeddedId` composite key — must be present.
-- A no-arg constructor is required (also on the `@Embeddable` key type for `@EmbeddedId`).
+- A no-arg constructor is required for mutable entities and embeddables; record embeddables use their canonical constructor instead.
 - Unsupported types are rejected explicitly and can be extended via `AttributeConverter`.
 - Duplicate `@CreatedAt` / `@UpdatedAt` / `@SoftDelete` / `@Version`, or those markers on unsupported types, fail-fast at metadata build time.
 - A `property name → PersistentProperty` index is built once so every lookup is O(1).
@@ -303,7 +304,7 @@ class Person {
 
 - **Collection table** — auto-created as `(owner_fk, value)`. Defaults follow JPA (`owner_table_attribute`, `entity_id`, `attribute`); override with `@CollectionTable(name=…, joinColumns=@JoinColumn(name=…))` and `@Column(name=…)` for the value column. `List` and `Set` are supported. No composite PK is emitted, so duplicate values in a `List` are allowed.
 - **Write / read** — like `@ManyToMany`, `save(owner)` reconciles the rows by full-replace (delete + re-insert the current values, eagerly within the transaction); `findById` / `findAll` hydrate with a single IN-query (the values are inline — no second hop).
-- v1 supports **basic element types** (`String`, `Integer`, `Long`, `Boolean`, `Double`, …). `@Embeddable` element collections are rejected fail-fast and deferred.
+- Basic element types (`String`, `Integer`, `Long`, `Boolean`, `Double`, …), enum values, and flat mutable/record embeddable values are supported. Record map keys and values use the same canonical-constructor hydration. Nested `@EmbeddedId` collection values are rejected fail-fast.
 
 ---
 
