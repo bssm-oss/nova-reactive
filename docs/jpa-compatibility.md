@@ -25,15 +25,16 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 
 | Feature | Status | Notes |
 |---|---|---|
-| `@Entity` / `@Table` / `@Column` | ✅ | `name` / `length` / `precision` / `scale` / `insertable` / `updatable` / `nullable` |
+| `@Entity` / `@Table` / `@Column` | ✅ | `name` / `length` / `precision` / `scale` / `secondPrecision` / `insertable` / `updatable` / `nullable`; JPA 3.2 `check`, `comment`, and `options` are rendered for newly-created tables/columns |
 | `@Id` + `@GeneratedValue` | ✅ | `IDENTITY`, `SEQUENCE`, `TABLE` (`@TableGenerator`), `AUTO` (maps to `IDENTITY`), `UUID` |
 | `@Basic` | ✅ | `optional = false` enforced as `NOT NULL` (combines with `@Column(nullable)`); `fetch` is accepted but inert |
 | `@EmbeddedId` / `@IdClass` composite keys | ✅ | `findById` / `deleteById` / soft-delete / batch-delete / optimistic + pessimistic lock |
-| `@Embeddable` / `@Embedded` / `@AttributeOverride` | ✅ | Nested value types flattened into the owner table |
+| `@Embeddable` / `@Embedded` / `@AttributeOverride` | ✅ | Mutable and Java record value types are flattened into the owner table; records use their canonical constructor during hydration |
 | `@Enumerated` (`STRING` / `ORDINAL`) | ✅ | |
+| `@EnumeratedValue` (JPA 3.2) | ✅ | Enum constant field values are used as the stored representation; requires a supported `String`/numeric value type |
 | `@Temporal` (`java.util.Date` / `Calendar`) | ✅ | `DATE` / `TIME` / `TIMESTAMP`; `java.time.*` supported natively |
 | `@Lob` | ✅ | |
-| `@Convert` + `jakarta.persistence.AttributeConverter` | ✅ | Storage-type driven read/write |
+| `@Convert` + `jakarta.persistence.AttributeConverter` | ✅ | Storage-type driven read/write; managed converter classes support `autoApply`, explicit override, and disable semantics |
 | Scalar types | ✅ | `UUID`, `Float`, `Short`, `BigDecimal`, `BigInteger`(driver-permitting), … — driver-verified |
 | `@Version` optimistic locking | ✅ | `Long` / `Integer` / `Short` / `LocalDateTime`; surfaces `OptimisticLockingFailureException` |
 | `@Access(FIELD)` | ✅ | Default |
@@ -60,7 +61,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@OneToMany` (`cascade`, `orphanRemoval`, `@OrderColumn`, `@OrderBy`) | ✅ | |
 | `@ManyToMany` (owning + inverse, `cascade`) | ✅ | Join-table row diffing; owning + inverse delete cleanup |
 | `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK) |
-| `@ElementCollection` | ✅ | Basic / enum / `UUID` elements, `@Embeddable` elements, `Map`, `@OrderColumn`, `List` |
+| `@ElementCollection` | ✅ | Basic / enum / `UUID` elements, mutable and record `@Embeddable` values, `Map` keys/values (including records), `@OrderColumn`, `List` |
 | `@MapKeyColumn` / `@MapKeyEnumerated` / `@MapKeyTemporal` / `@MapKeyClass` | ✅ | `@MapKeyClass` supports basic / enum / `@Embeddable` / single-`@Id` **entity** key classes (entity key stored as its `@Id` FK column, batch-hydrated); composite-`@Id` entity key classes fail-fast |
 | `@MapsId` (whole `@Id`) | ✅ | |
 | `@MapsId("component")` (one component of a composite `@Id`) | ✅ | Associated entity must have a single `@Id` |
@@ -135,6 +136,8 @@ These declare cleanly but are rejected with a message until implemented — Nova
 - Under a session, `@OneToMany(mappedBy = ...)` combined with `@OrderColumn` — the session's diff-at-flush
   collection sync does not reindex order yet. Use it outside a session (stateless save), where reindexing
   already works.
+- Nested `@EmbeddedId` values and `@MapsId` targeting a record `@EmbeddedId` are rejected explicitly; flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported.
+- JPA 3.2 physical DDL members outside the supported `@Table`/`@Column` set (for example provider-specific schema-generation controls) remain unsupported and are rejected where Nova can detect them.
 
 > Composite `@Id` components should be round-trip-stable types (integers, `String`, `UUID`, enums).
 > Types whose stored form does not decode back byte-for-byte (`BigDecimal` scale drift, sub-second

@@ -186,6 +186,9 @@ Reactive equivalents of the standard `jakarta.persistence` surface — see the f
 [JPA compatibility matrix](docs/jpa-compatibility.md).
 
 - [x] Standard `jakarta.persistence` annotations (breaking `2.0.0`), `@Convert` / `AttributeConverter`
+- [x] JPA 3.2 value mapping — managed-class `AttributeConverter` discovery (`autoApply`), `@EnumeratedValue`, and explicit conversion overrides
+- [x] JPA 3.2 record embeddables — canonical-constructor hydration for `@Embedded`, `@EmbeddedId`, and flat `@ElementCollection` / Map values
+- [x] JPA 3.2 schema metadata — `@Table` / `@Column` checks, comments, options, and `Column.secondPrecision` in dialect-aware DDL
 - [x] Composite keys (`@EmbeddedId` / `@IdClass`) — ids, soft/batch delete, locking, **and as relation targets** (multi-column FK)
 - [x] Inheritance (`SINGLE_TABLE` / `JOINED` / `TABLE_PER_CLASS`), `@MappedSuperclass`
 - [x] Full relationships — `@OneToOne` / `@OneToMany` / `@ManyToMany` / `@ElementCollection`, `@MapsId`, `@AssociationOverride`, `@ManyToMany` over composite keys
