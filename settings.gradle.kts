@@ -21,4 +21,5 @@ include(
     ":nova-project:nova-metrics-micrometer",
     ":nova-project:nova-metamodel",
     ":nova-project:nova-cache",
+    ":nova-project:nova-example",
 )

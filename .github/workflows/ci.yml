@@ -47,3 +47,6 @@ jobs:
 
       - name: Build and test
         run: ./gradlew build --no-daemon
+
+      - name: Run Nova H2 example
+        run: ./gradlew :nova-project:nova-example:runNova --no-daemon
