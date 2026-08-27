@@ -2172,12 +2172,13 @@ public final class EntityMetadataFactory {
         boolean nullable = (column == null || column.nullable()) && (basic == null || basic.optional());
         // @Access(AccessType.PROPERTY): 클래스 레벨 기본 access type + 멤버 레벨 override를 해석하고,
         // PROPERTY access이면 JavaBean getter/setter를 resolve해 PP에 캐시한다(resolve 실패 시 fail-fast).
-        boolean propertyAccess = resolvePropertyAccess(field);
+        boolean recordComponent = field.getDeclaringClass().isRecord();
+        boolean propertyAccess = recordComponent || resolvePropertyAccess(field);
         Method propertyAccessGetter = null;
         Method propertyAccessSetter = null;
         if (propertyAccess) {
             propertyAccessGetter = resolvePropertyGetter(field);
-            propertyAccessSetter = resolvePropertySetter(field);
+            propertyAccessSetter = recordComponent ? null : resolvePropertySetter(field);
         }
         return new PersistentProperty(
                 field,
@@ -2343,6 +2344,14 @@ public final class EntityMetadataFactory {
      */
     private static Method resolvePropertyGetter(Field field) {
         Class<?> owner = field.getDeclaringClass();
+        if (owner.isRecord()) {
+            Method accessor = findZeroArgMethod(owner, field.getName());
+            if (accessor != null && accessor.getReturnType() == field.getType()) {
+                return accessor;
+            }
+            throw new IllegalStateException("Record component " + owner.getName() + "." + field.getName()
+                    + " has no matching component accessor");
+        }
         String capitalized = capitalize(field.getName());
         Class<?> type = field.getType();
         if (type == boolean.class || type == Boolean.class) {
@@ -2842,6 +2851,11 @@ public final class EntityMetadataFactory {
         boolean composite = embeddedIdField != null
                 || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class)
                 || idFields.size() > 1;
+        if (embeddedIdField != null && embeddedIdField.getType().isRecord()) {
+            throw new IllegalArgumentException(entityType.getName() + "." + field.getName()
+                    + " uses @MapsId with record @EmbeddedId " + embeddedIdField.getType().getName()
+                    + "; immutable record identifiers cannot be derived by mutation");
+        }
         if (value != null && !value.isBlank()) {
             // @MapsId("component"): owner는 복합 @Id여야 하고 named 컴포넌트가 존재해야 한다.
             if (!composite) {
@@ -4346,7 +4360,8 @@ public final class EntityMetadataFactory {
         // 컬럼 펼침은 getDeclaredFields()만 보므로 superclass(@MappedSuperclass 포함)에서 상속한 필드는
         // 조용히 누락된다. silent 데이터 손실을 막기 위해 상속 구조를 가진 @Embeddable 원소는 fail-fast로 거부한다.
         Class<?> elementSuperclass = elementType.getSuperclass();
-        if (elementSuperclass != null && elementSuperclass != Object.class) {
+        if (elementSuperclass != null && elementSuperclass != Object.class
+                && elementSuperclass != java.lang.Record.class) {
             throw new IllegalArgumentException(
                     location + " @ElementCollection of @Embeddable " + elementType.getName()
                             + " must not extend a superclass (" + elementSuperclass.getName()
@@ -4457,7 +4472,8 @@ public final class EntityMetadataFactory {
                             + " must not declare @Id-annotated fields");
         }
         Class<?> keySuperclass = keyType.getSuperclass();
-        if (keySuperclass != null && keySuperclass != Object.class) {
+        if (keySuperclass != null && keySuperclass != Object.class
+                && keySuperclass != java.lang.Record.class) {
             throw new IllegalArgumentException(
                     location + " @MapKeyClass @Embeddable key " + keyType.getName()
                             + " must not extend a superclass (" + keySuperclass.getName()

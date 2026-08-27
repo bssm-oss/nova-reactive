@@ -73,6 +73,10 @@ public final class ToOneForeignKeyColumn {
         return nullable;
     }
 
+    List<Field> referencedPath() {
+        return referencedPath;
+    }
+
     /**
      * 도메인 값(참조 {@code @Id} 컴포넌트 타입)을 저장 표현으로 인코딩한다. converter가 없으면 그대로 반환.
      */

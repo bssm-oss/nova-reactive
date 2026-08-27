@@ -265,13 +265,16 @@ public final class PersistentProperty {
         this.propertyAccessGetter = propertyAccessGetter;
         this.propertyAccessSetter = propertyAccessSetter;
         if (propertyAccess) {
-            if (propertyAccessGetter == null || propertyAccessSetter == null) {
+            boolean immutableRecordComponent = field.getDeclaringClass().isRecord();
+            if (propertyAccessGetter == null || (propertyAccessSetter == null && !immutableRecordComponent)) {
                 throw new IllegalStateException(
                         "PROPERTY access property " + propertyName
-                                + " requires both a getter and a setter");
+                                + " requires a getter and a setter; record components require only their accessor");
             }
             propertyAccessGetter.setAccessible(true);
-            propertyAccessSetter.setAccessible(true);
+            if (propertyAccessSetter != null) {
+                propertyAccessSetter.setAccessible(true);
+            }
         }
         this.toOneCascadeInfo = toOneCascadeInfo;
         this.secondaryTableName = secondaryTableName == null ? "" : secondaryTableName;
