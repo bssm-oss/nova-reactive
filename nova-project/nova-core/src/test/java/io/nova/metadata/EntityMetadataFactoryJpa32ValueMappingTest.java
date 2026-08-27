@@ -185,6 +185,7 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
     @Test
     void rejectsMapKeyTemporalBeforeEnumEmbeddableAndEntityKeyBranches() {
         for (Class<?> entityType : List.of(
+                InvalidScalarTemporalMapEntity.class,
                 InvalidEnumTemporalMapEntity.class,
                 InvalidEmbeddableTemporalMapEntity.class,
                 InvalidEntityTemporalMapEntity.class)) {
@@ -370,6 +371,13 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         @ElementCollection
         @MapKeyTemporal(TemporalType.DATE)
         Map<TextStatus, String> values;
+    }
+
+    @Entity static class InvalidScalarTemporalMapEntity {
+        @Id Long id;
+        @ElementCollection
+        @MapKeyTemporal(TemporalType.DATE)
+        Map<String, String> values;
     }
 
     @Entity static class InvalidEmbeddableTemporalMapEntity {
