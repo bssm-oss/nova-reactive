@@ -30,15 +30,17 @@ subprojects {
     }
 
     extensions.configure<JavaPluginExtension> {
-        toolchain {
-            languageVersion = JavaLanguageVersion.of(21)
-        }
         withSourcesJar()
         withJavadocJar()
     }
 
     tasks.withType<JavaCompile>().configureEach {
         options.encoding = "UTF-8"
+        // Publish Java 17 bytecode while compiling with the JDK selected by the
+        // CI matrix.  Keeping the compiler on the invoking JVM means the same
+        // build exercises Java 17, 21, 25, and newer runtimes instead of
+        // silently running every test on a pinned toolchain.
+        options.release.set(17)
     }
 
     tasks.withType<Test>().configureEach {
@@ -58,7 +60,7 @@ subprojects {
                     // is picked up here via project.description.
                     description.set(
                         project.description
-                            ?: "Nova: lightweight reactive ORM for Java 21 on R2DBC and Project Reactor.",
+                            ?: "Nova: lightweight reactive ORM for Java 17+ on R2DBC and Project Reactor.",
                     )
                     url.set("https://github.com/bssm-oss/nova-reactive")
 

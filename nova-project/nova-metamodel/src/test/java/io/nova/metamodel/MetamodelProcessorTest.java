@@ -6,6 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import javax.lang.model.SourceVersion;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 import java.util.Map;
@@ -17,6 +18,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MetamodelProcessorTest {
+
+    @Test
+    @DisplayName("프로세서는 실행 중인 JDK의 source level을 지원한다고 선언한다")
+    void advertisesRunningCompilerSourceVersion() {
+        assertEquals(SourceVersion.latestSupported(), new MetamodelProcessor().getSupportedSourceVersion());
+    }
 
     @Test
     @DisplayName("@Entity의 평탄 필드는 propertyName 그대로 상수로 발행된다")

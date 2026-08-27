@@ -3,7 +3,6 @@ package io.nova.metamodel;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
-import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.Element;
@@ -46,7 +45,6 @@ import java.util.Set;
  * </ul>
  */
 @SupportedAnnotationTypes("jakarta.persistence.Entity")
-@SupportedSourceVersion(SourceVersion.RELEASE_21)
 public final class MetamodelProcessor extends AbstractProcessor {
 
     private static final String ENTITY = "jakarta.persistence.Entity";
@@ -58,6 +56,17 @@ public final class MetamodelProcessor extends AbstractProcessor {
      * 실제 nested embedded는 2–3 단계를 거의 넘지 않는다.
      */
     private static final int MAX_EMBEDDED_DEPTH = 8;
+
+    /**
+     * Advertise the source level understood by the compiler running the
+     * processor.  A fixed RELEASE_21 value makes javac emit a warning on JDK
+     * 17 and prevents the processor from being a clean Java 17-compatible
+     * artifact.
+     */
+    @Override
+    public SourceVersion getSupportedSourceVersion() {
+        return SourceVersion.latestSupported();
+    }
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {

@@ -14,12 +14,6 @@ jmh {
     // profilers.set(listOf("gc"))
 }
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
-    }
-}
-
 dependencies {
     // Nova (composite-substituted to the local build). Version is nominal — the
     // composite build matches by group:module and supplies the local output.
@@ -78,4 +72,5 @@ tasks.named<JavaExec>("run") {
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
+    options.release.set(17)
 }
