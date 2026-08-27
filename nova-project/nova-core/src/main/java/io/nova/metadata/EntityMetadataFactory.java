@@ -4199,6 +4199,14 @@ public final class EntityMetadataFactory {
                             + " use a basic or enum map key with @MapKeyColumn");
         }
         Class<?> keyType = resolveMapKeyType(entityType, field, location);
+        MapKeyTemporal mapKeyTemporal = field.getAnnotation(MapKeyTemporal.class);
+        boolean isUtilDate = keyType == java.util.Date.class;
+        boolean isCalendar = java.util.Calendar.class.isAssignableFrom(keyType);
+        if (mapKeyTemporal != null && !isUtilDate && !isCalendar) {
+            throw new IllegalArgumentException(
+                    location + " @MapKeyTemporal is only valid on a java.util.Date or java.util.Calendar"
+                            + " map key, but the key type is " + keyType.getName());
+        }
         if (keyType.isAnnotationPresent(Embeddable.class)) {
             // @MapKeyClass가 @Embeddable를 가리키면 key를 다중 컬럼으로 펼쳐 저장한다. 펼침 규칙(단순 필드만,
             // @Id/관계/중첩 @Embedded/상속 금지)은 @Embeddable value 원소 펼침과 동일하게 재사용한다.
@@ -4236,7 +4244,6 @@ public final class EntityMetadataFactory {
                 ? mapKeyColumn.name()
                 : namingStrategy.columnName(field.getName()) + "_key";
         MapKeyEnumerated mapKeyEnumerated = field.getAnnotation(MapKeyEnumerated.class);
-        MapKeyTemporal mapKeyTemporal = field.getAnnotation(MapKeyTemporal.class);
         JpaConverterDescriptor explicitKeyConverter = explicitJpaConverter(field, keyType, "key", location);
         if (keyType.isEnum()) {
             EnumType enumType = mapKeyEnumerated != null ? mapKeyEnumerated.value() : EnumType.ORDINAL;
@@ -4281,14 +4288,7 @@ public final class EntityMetadataFactory {
         // 결정하고, 스칼라/EC 원소와 동일한 TemporalAttributeConverter 경로를 재사용해 java.time 저장 표현
         // (LocalDate/LocalTime/LocalDateTime)으로 왕복한다. @MapKeyTemporal 없이 Date/Calendar key를 쓰면
         // 매핑이 모호하므로(조용한 기본값 금지) fail-fast로 거부한다.
-        boolean isUtilDate = keyType == java.util.Date.class;
-        boolean isCalendar = java.util.Calendar.class.isAssignableFrom(keyType);
         if (mapKeyTemporal != null) {
-            if (!isUtilDate && !isCalendar) {
-                throw new IllegalArgumentException(
-                        location + " @MapKeyTemporal is only valid on a java.util.Date or java.util.Calendar"
-                                + " map key, but the key type is " + keyType.getName());
-            }
             TemporalType temporalType = mapKeyTemporal.value();
             Class<?> keyColumnType = switch (temporalType) {
                 case DATE -> java.time.LocalDate.class;

@@ -14,6 +14,7 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import reactor.test.StepVerifier;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -67,12 +68,11 @@ class SchemaBootstrapRunnerEffectTest {
                     assertEquals(null, context.getStartupFailure());
                     ReactiveEntityOperations operations = context.getBean(ReactiveEntityOperations.class);
                     DdlAutoConvertedEntity entity = new DdlAutoConvertedEntity(new DdlAutoCode("managed"));
-                    DdlAutoConvertedEntity loaded = operations.save(entity)
+                    StepVerifier.create(operations.save(entity)
                             .flatMap(saved -> operations.findById(
-                                    DdlAutoConvertedEntity.class, saved.getId()))
-                            .block();
-                    assertNotNull(loaded);
-                    assertEquals(new DdlAutoCode("managed"), loaded.getCode());
+                                    DdlAutoConvertedEntity.class, saved.getId())))
+                            .assertNext(loaded -> assertEquals(new DdlAutoCode("managed"), loaded.getCode()))
+                            .verifyComplete();
                 });
     }
 

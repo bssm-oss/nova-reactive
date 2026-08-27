@@ -182,6 +182,19 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         assertTrue(error.getMessage().contains("@MapKeyTemporal"));
     }
 
+    @Test
+    void rejectsMapKeyTemporalBeforeEnumEmbeddableAndEntityKeyBranches() {
+        for (Class<?> entityType : List.of(
+                InvalidEnumTemporalMapEntity.class,
+                InvalidEmbeddableTemporalMapEntity.class,
+                InvalidEntityTemporalMapEntity.class)) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> metadataFor(entityType), entityType.getSimpleName());
+            assertTrue(error.getMessage().contains("@MapKeyTemporal"), error.getMessage());
+            assertTrue(error.getMessage().contains("only valid"), error.getMessage());
+        }
+    }
+
     private static EntityMetadata<?> metadataFor(Class<?> type) {
         return new EntityMetadataFactory(new DefaultNamingStrategy()).getEntityMetadata(type);
     }
@@ -342,5 +355,34 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         @MapKeyTemporal(TemporalType.TIMESTAMP)
         @Convert(attributeName = "key", converter = DateStringConverter.class)
         Map<Date, String> values;
+    }
+
+    @Embeddable static class TemporalEmbeddableKey {
+        String value;
+    }
+
+    @Entity static class TemporalEntityKey {
+        @Id Long id;
+    }
+
+    @Entity static class InvalidEnumTemporalMapEntity {
+        @Id Long id;
+        @ElementCollection
+        @MapKeyTemporal(TemporalType.DATE)
+        Map<TextStatus, String> values;
+    }
+
+    @Entity static class InvalidEmbeddableTemporalMapEntity {
+        @Id Long id;
+        @ElementCollection
+        @MapKeyTemporal(TemporalType.DATE)
+        Map<TemporalEmbeddableKey, String> values;
+    }
+
+    @Entity static class InvalidEntityTemporalMapEntity {
+        @Id Long id;
+        @ElementCollection
+        @MapKeyTemporal(TemporalType.DATE)
+        Map<TemporalEntityKey, String> values;
     }
 }

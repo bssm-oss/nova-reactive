@@ -28,6 +28,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.DependsOn;
 
 import java.time.Duration;
 import java.util.List;
@@ -166,46 +167,46 @@ public class NovaAutoConfiguration {
      * runner does not appear in the context for the default (do-nothing) configuration.
      */
     @Bean
+    @DependsOn("novaEntityPreloadRunner")
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "nova", name = "ddl-auto", havingValue = "create", matchIfMissing = false)
     public SchemaBootstrapRunner novaSchemaBootstrapRunnerCreate(
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
-            BeanFactory beanFactory,
-            NovaEntityPreloadRunner converterAndEntityPreload) {
+            BeanFactory beanFactory) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 
     @Bean(name = "novaSchemaBootstrapRunner")
+    @DependsOn("novaEntityPreloadRunner")
     @ConditionalOnMissingBean(SchemaBootstrapRunner.class)
     @ConditionalOnProperty(prefix = "nova", name = "ddl-auto", havingValue = "create-drop", matchIfMissing = false)
     public SchemaBootstrapRunner novaSchemaBootstrapRunnerCreateDrop(
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
-            BeanFactory beanFactory,
-            NovaEntityPreloadRunner converterAndEntityPreload) {
+            BeanFactory beanFactory) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 
     @Bean(name = "novaSchemaBootstrapRunner")
+    @DependsOn("novaEntityPreloadRunner")
     @ConditionalOnMissingBean(SchemaBootstrapRunner.class)
     @ConditionalOnProperty(prefix = "nova", name = "ddl-auto", havingValue = "update", matchIfMissing = false)
     public SchemaBootstrapRunner novaSchemaBootstrapRunnerUpdate(
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
-            BeanFactory beanFactory,
-            NovaEntityPreloadRunner converterAndEntityPreload) {
+            BeanFactory beanFactory) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 
     @Bean(name = "novaSchemaBootstrapRunner")
+    @DependsOn("novaEntityPreloadRunner")
     @ConditionalOnMissingBean(SchemaBootstrapRunner.class)
     @ConditionalOnProperty(prefix = "nova", name = "ddl-auto", havingValue = "validate", matchIfMissing = false)
     public SchemaBootstrapRunner novaSchemaBootstrapRunnerValidate(
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
-            BeanFactory beanFactory,
-            NovaEntityPreloadRunner converterAndEntityPreload) {
+            BeanFactory beanFactory) {
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
     }
 }
