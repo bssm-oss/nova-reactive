@@ -404,6 +404,7 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
      * 컨버전은 개입하지 않는다). 연관 property는 컬럼 매핑이 아니므로 복사 대상이 아니다.
      */
     private static <T> void copyColumnState(EntityMetadata<T> metadata, Object source, Object target) {
+        List<EmbeddableInstantiationStrategy.DecodedLeaf> embeddedValues = new ArrayList<>();
         for (PersistentProperty property : metadata.columnMappedProperties()) {
             if (property.isCompositeToOne()) {
                 // 복합키 타겟 to-one은 단일 @Id로 축약하는 read()/write() stub 경로가 성립하지 않는다
@@ -413,7 +414,15 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                 property.writeReferenceInstance(target, property.readReferenceInstance(source));
                 continue;
             }
-            property.write(target, property.read(source));
+            Object value = property.read(source);
+            if (property.embedded()) {
+                embeddedValues.add(new EmbeddableInstantiationStrategy.DecodedLeaf(property, value));
+            } else {
+                property.write(target, value);
+            }
+        }
+        if (!embeddedValues.isEmpty()) {
+            EmbeddableInstantiationStrategy.hydrateSingleValued(target, embeddedValues);
         }
     }
 
