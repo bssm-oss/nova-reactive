@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each entry is the JVM that launches Gradle. Do not silently switch
+        # to a pinned runtime through a Java toolchain in CI.
+        java: ['17', '21', '25', '26']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Temurin ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify Gradle runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='${{ matrix.java }}'
+          actual="$(java -version 2>&1 | sed -nE 's/.*version "([0-9]+).*/\1/p' | head -n1)"
+          test "$actual" = "$expected"
+          ./gradlew --version
+          runtime="$(./gradlew --version | sed -nE 's/^JVM: *([0-9]+).*/\1/p' | head -n1)"
+          test "$runtime" = "$expected"
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon

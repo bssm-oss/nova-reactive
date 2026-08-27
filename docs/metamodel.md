@@ -3,7 +3,9 @@
 # Metamodel — type-safe property names
 
 `nova-metamodel` is an opt-in annotation processor that scans `@Entity` classes
-at compile time and generates a JPA-style `_` companion class per entity. Each
+at compile time and generates a JPA-style `_` companion class per entity. The
+processor is published as Java 17-compatible bytecode and can be used from
+Java 17, 21, 25, or 26 projects. Each
 companion exposes the entity's persistent properties as `public static final
 String` constants whose values match the property names accepted by
 `io.nova.query.Criteria`.

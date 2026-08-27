@@ -3,7 +3,7 @@
 
 # AGENTS instructions
 
-Nova is a lightweight reactive ORM for Java 21, built on R2DBC SPI and
+Nova is a lightweight reactive ORM for Java 17+, built on R2DBC SPI and
 Project Reactor.
 
 ## Architecture Boundaries
@@ -48,8 +48,10 @@ Never:
 - PostgreSQL dialect tests: `./gradlew :nova-project:nova-dialects:nova-dialect-postgresql:test`
 - MySQL dialect tests: `./gradlew :nova-project:nova-dialects:nova-dialect-mysql:test`
 
-Always use the Gradle Wrapper. Do not require a host Gradle or a host JDK
-different from the Java 21 toolchain configured by Gradle.
+Always use the Gradle Wrapper. The published bytecode targets Java 17. CI runs
+the complete build with Temurin 17, 21, 25, and 26, and each selected JDK must
+be the JVM that launches Gradle (do not hide runtime incompatibilities behind
+a pinned toolchain).
 
 After changing source, tests, or build logic, run the relevant narrow test first
 when useful, then finish with `./gradlew build`.

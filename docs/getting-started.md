@@ -2,7 +2,21 @@
 
 # Getting started
 
-Nova `2.8.0` is available from Maven Central. Entities are mapped with the standard `jakarta.persistence` annotations (Nova exports `jakarta.persistence-api` transitively); the move off the `1.x` `io.nova.annotation` clones happened in the breaking `2.0.0` release. Everything since `2.0.0` has been additive: composite keys (`@EmbeddedId` / `@IdClass`, including as relation targets), the full relationship set (`@OneToOne` / `@OneToMany` / `@ManyToMany` / `@ElementCollection`), inheritance, `@Convert`, a reactive `EntityManager`, JPQL and the Criteria API, `@NamedQuery` / `@NamedEntityGraph` / `@SqlResultSetMapping` / `@StoredProcedureQuery`, and a 2nd-level cache. Reactive equivalents return `Mono` / `Flux` rather than blocking. See [JPA compatibility](jpa-compatibility.md) for the full support matrix and [Entities](entities.md) for the annotation reference.
+Nova `2.8.0` is available from Maven Central. Nova runs on Java 17 and
+newer runtimes; the CI matrix verifies Temurin 17, 21, 25, and 26. Use the
+Gradle wrapper for development; Gradle 9.4 or newer is required when launching
+the build on Java 26. Entities are mapped with the standard
+`jakarta.persistence` annotations (Nova exports `jakarta.persistence-api`
+transitively); the move off the `1.x` `io.nova.annotation` clones happened in
+the breaking `2.0.0` release. Everything since `2.0.0` has been additive:
+composite keys (`@EmbeddedId` / `@IdClass`, including as relation targets), the
+full relationship set (`@OneToOne` / `@OneToMany` / `@ManyToMany` /
+`@ElementCollection`), inheritance, `@Convert`, a reactive `EntityManager`,
+JPQL and the Criteria API, `@NamedQuery` / `@NamedEntityGraph` /
+`@SqlResultSetMapping` / `@StoredProcedureQuery`, and a 2nd-level cache.
+Reactive equivalents return `Mono` / `Flux` rather than blocking. See [JPA
+compatibility](jpa-compatibility.md) for the full support matrix and
+[Entities](entities.md) for the annotation reference.
 
 ## 1. Add dependencies
 

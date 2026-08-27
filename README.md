@@ -12,13 +12,13 @@
 | Category   | Badges                                                                                                                                                                                                                                                                  |
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | License    | [![License](https://img.shields.io/:license-Apache%202-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0.txt)                                                                                                                                                        |
-| Build      | [![Java](https://img.shields.io/badge/Java-21-007396?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/) [![Gradle](https://img.shields.io/badge/Gradle-8.10+-02303A?logo=gradle&logoColor=white)](https://gradle.org/) [![Kotlin DSL](https://img.shields.io/badge/Kotlin_DSL-build_scripts-7F52FF?logo=kotlin&logoColor=white)](https://docs.gradle.org/current/userguide/kotlin_dsl.html) |
+| Build      | [![Java](https://img.shields.io/badge/Java-17%2B-007396?logo=openjdk&logoColor=white)](https://openjdk.org/) [![Gradle](https://img.shields.io/badge/Gradle-9.4+-02303A?logo=gradle&logoColor=white)](https://gradle.org/) [![Kotlin DSL](https://img.shields.io/badge/Kotlin_DSL-build_scripts-7F52FF?logo=kotlin&logoColor=white)](https://docs.gradle.org/current/userguide/kotlin_dsl.html) |
 | Stack      | [![Reactor](https://img.shields.io/badge/Project_Reactor-3.7-6db33f?logo=spring&logoColor=white)](https://projectreactor.io/) [![R2DBC](https://img.shields.io/badge/R2DBC-1.0-4479A1?logo=databricks&logoColor=white)](https://r2dbc.io/)                                |
 | Databases  | [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-supported-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/) [![MySQL](https://img.shields.io/badge/MySQL-supported-4479A1?logo=mysql&logoColor=white)](https://www.mysql.com/)                 |
 | Status     | ![Status](https://img.shields.io/badge/status-alpha-orange)                                                                                                                                                                                                              |
 
 <p align="center">
-  <b>Lightweight Reactive ORM for Java 21</b><br/>
+  <b>Lightweight Reactive ORM for Java 17+</b><br/>
   <i>JPA-style annotations · R2DBC-native · Pluggable dialects</i>
 </p>
 
@@ -101,8 +101,8 @@ Full documentation index: [`docs/`](docs/README.md).
 
 |                  | Version                         | Notes                              |
 |------------------|---------------------------------|------------------------------------|
-| Java             | 21                              | Resolved by Gradle Toolchains      |
-| Build            | Gradle 8.10+                    | Wrapper (`./gradlew`) included     |
+| Java             | 17+ (CI: 17 / 21 / 25 / 26)     | Published bytecode targets Java 17; the selected runtime launches Gradle and tests |
+| Build            | Gradle 9.4+                     | Wrapper (`./gradlew`) included; required for Java 26 runtime support     |
 | Reactive Runtime | Project Reactor 3.7.x           |                                    |
 | Driver SPI       | R2DBC SPI 1.0.0.RELEASE         |                                    |
 | PostgreSQL       | 14, 15, 16, 17                  | `nova-dialect-postgresql`          |
