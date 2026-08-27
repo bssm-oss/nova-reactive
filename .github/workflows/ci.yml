@@ -42,7 +42,7 @@ jobs:
           actual="$(java -version 2>&1 | sed -nE 's/.*version "([0-9]+).*/\1/p' | head -n1)"
           test "$actual" = "$expected"
           ./gradlew --version
-          runtime="$(./gradlew --version | sed -nE 's/^JVM: *([0-9]+).*/\1/p' | head -n1)"
+          runtime="$(./gradlew --version | sed -nE 's/^Launcher JVM: *([0-9]+).*/\1/p' | head -n1)"
           test "$runtime" = "$expected"
 
       - name: Build and test

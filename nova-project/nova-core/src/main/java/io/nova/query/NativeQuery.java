@@ -13,7 +13,7 @@ import java.util.Objects;
  * SQL은 dialect의 {@link io.nova.sql.BindMarkerStrategy}에 맞춰 호출자가 직접 작성한다.
  * binding 순서는 SQL 안의 marker 출현 순서를 따른다.
  * <p>
- * 인스턴스는 Java 21 {@code record}이며, {@link #equals(Object)}/{@link #hashCode()}/
+ * 인스턴스는 Java {@code record}이며, {@link #equals(Object)}/{@link #hashCode()}/
  * {@link #toString()}은 component 단위로 자동 생성된다. {@code bindings}는 canonical
  * constructor에서 {@link List#copyOf(java.util.Collection)}으로 immutable view로 캡처되므로
  * accessor 반환 값에 대한 변경 시도는 {@link UnsupportedOperationException}을 던진다.
