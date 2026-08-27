@@ -5,6 +5,11 @@ import io.nova.sql.AbstractSqlRenderer;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.PersistentProperty;
+
+import java.util.ArrayList;
+import java.util.List;
 import io.nova.sql.SqlRenderer;
 
 /**
@@ -80,6 +85,26 @@ public final class MySqlDialect implements Dialect {
     private static final class MySqlSchemaGenerator extends AbstractSchemaGenerator {
         private MySqlSchemaGenerator(Dialect dialect) {
             super(dialect);
+        }
+
+        @Override
+        public List<String> createComments(EntityMetadata<?> metadata) {
+            List<String> statements = new ArrayList<>();
+            if (!metadata.tableDdlDefinition().comment().isEmpty()) {
+                statements.add("alter table " + dialect().quote(metadata.tableName()) + " comment = "
+                        + sqlString(metadata.tableDdlDefinition().comment()));
+            }
+            for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
+                if (!property.columnDdlDefinition().comment().isEmpty()) {
+                    statements.add("alter table " + dialect().quote(metadata.tableName()) + " modify "
+                            + columnDefinition(property) + " comment " + sqlString(property.columnDdlDefinition().comment()));
+                }
+            }
+            return statements;
+        }
+
+        private static String sqlString(String value) {
+            return "'" + value.replace("'", "''") + "'";
         }
 
         @Override

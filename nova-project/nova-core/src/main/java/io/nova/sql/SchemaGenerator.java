@@ -115,6 +115,11 @@ public interface SchemaGenerator {
         return List.of();
     }
 
+    /** Additive auxiliary DDL hook for table and column comments. */
+    default List<String> createComments(EntityMetadata<?> metadata) {
+        return List.of();
+    }
+
     /**
      * Returns an idempotent {@code CREATE TABLE} statement that no-ops if the
      * table already exists. The default implementation rewrites the prefix of

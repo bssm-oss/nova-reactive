@@ -17,6 +17,7 @@ import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.DiscriminatorValue;
 import jakarta.persistence.CascadeType;
+import jakarta.persistence.CheckConstraint;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Embeddable;
@@ -474,7 +475,9 @@ public final class EntityMetadataFactory {
                 rootMeta.uniqueConstraints(),
                 rootMeta.inheritance(),
                 rootMeta.listenerCallbacks(),
-                rootMeta.excludeDefaultListeners()
+                rootMeta.excludeDefaultListeners(),
+                rootMeta.secondaryTables(),
+                rootMeta.tableDdlDefinition()
         );
     }
 
@@ -834,7 +837,8 @@ public final class EntityMetadataFactory {
                 inheritance,
                 collectEntityListeners(entityType),
                 entityType.isAnnotationPresent(ExcludeDefaultListeners.class),
-                secondaryTables
+                secondaryTables,
+                tableDdlDefinition(table, entityType)
         );
         registerHierarchyMember(metadata);
         return metadata;
@@ -1397,9 +1401,9 @@ public final class EntityMetadataFactory {
         }
         List<Field> hostPath = List.of(idField);
         // @EmbeddedId host 필드의 @AttributeOverride(name=..., column=@Column(name=...))로 컴포넌트 컬럼명을 재정의한다.
-        Map<String, String> columnOverrides = new java.util.HashMap<>();
+        Map<String, Column> columnOverrides = new java.util.HashMap<>();
         for (AttributeOverride override : idField.getAnnotationsByType(AttributeOverride.class)) {
-            columnOverrides.put(override.name(), override.column().name());
+            columnOverrides.put(override.name(), override.column());
         }
         List<PersistentProperty> result = new ArrayList<>();
         for (Field subField : embeddableType.getDeclaredFields()) {
@@ -1511,9 +1515,9 @@ public final class EntityMetadataFactory {
         List<Field> immutableHostPath = List.copyOf(hostPath);
         // @AttributeOverride(name="city", column=@Column(name="ship_city")) — 이 @Embedded 호스트 필드에
         // 선언된 override를 immediate sub-property 이름 기준으로 모은다. 컬럼 name만 적용한다.
-        Map<String, String> columnOverrides = new java.util.HashMap<>();
+        Map<String, Column> columnOverrides = new java.util.HashMap<>();
         for (AttributeOverride override : hostField.getAnnotationsByType(AttributeOverride.class)) {
-            columnOverrides.put(override.name(), override.column().name());
+            columnOverrides.put(override.name(), override.column());
         }
         List<PersistentProperty> result = new ArrayList<>();
         embeddableStack.add(embeddableType);
@@ -1782,9 +1786,9 @@ public final class EntityMetadataFactory {
             Field field,
             List<Field> hostPath,
             String columnPrefix,
-            String columnNameOverride
+            Column columnOverride
     ) {
-        Column column = field.getAnnotation(Column.class);
+        Column column = columnOverride != null ? columnOverride : field.getAnnotation(Column.class);
         GeneratedValue generatedValue = field.getAnnotation(GeneratedValue.class);
         boolean isId = field.isAnnotationPresent(Id.class);
         boolean isSoftDelete = field.isAnnotationPresent(SoftDelete.class);
@@ -1872,8 +1876,8 @@ public final class EntityMetadataFactory {
         String baseColumnName = column != null && !column.name().isBlank()
                 ? column.name()
                 : namingStrategy.columnName(field.getName());
-        String columnName = columnNameOverride != null && !columnNameOverride.isBlank()
-                ? columnNameOverride
+        String columnName = columnOverride != null && !columnOverride.name().isBlank()
+                ? columnOverride.name()
                 : columnPrefix + baseColumnName;
         String propertyName;
         if (hostPath == null || hostPath.isEmpty()) {
@@ -2112,8 +2116,95 @@ public final class EntityMetadataFactory {
                 propertyAccessSetter,
                 null,
                 secondaryTableName,
-                null
+                null,
+                columnDdlDefinition(column, field)
         );
+    }
+
+    private static ColumnDdlDefinition columnDdlDefinition(Column column, Field field) {
+        if (column == null) {
+            return ColumnDdlDefinition.EMPTY;
+        }
+        int secondPrecision = column.secondPrecision();
+        if (secondPrecision < -1) {
+            throw new IllegalArgumentException("@Column.secondPrecision on " + field.getDeclaringClass().getName()
+                    + "." + field.getName() + " must be -1 (unspecified) or non-negative");
+        }
+        if (secondPrecision >= 0 && !isSecondPrecisionCapable(field)) {
+            throw new IllegalArgumentException("@Column.secondPrecision on " + field.getDeclaringClass().getName()
+                    + "." + field.getName() + " requires a TIME or TIMESTAMP property");
+        }
+        List<CheckConstraintDefinition> checks = new ArrayList<>();
+        for (CheckConstraint check : column.check()) {
+            CheckConstraintDefinition definition = checkConstraint(check.name(), check.constraint(), check.options(),
+                    "@Column.check on " + field.getDeclaringClass().getName() + "." + field.getName());
+            if (definition != null) {
+                checks.add(definition);
+            }
+        }
+        String comment = column.comment();
+        String options = fragment(column.options(), "@Column.options on " + field.getDeclaringClass().getName()
+                + "." + field.getName());
+        validateNoNul(comment, "@Column.comment on " + field.getDeclaringClass().getName() + "." + field.getName());
+        return new ColumnDdlDefinition(checks, comment, options, secondPrecision);
+    }
+
+    private static boolean isSecondPrecisionCapable(Field field) {
+        if (field.getType() == java.time.LocalTime.class || field.getType() == java.time.LocalDateTime.class) {
+            return true;
+        }
+        Temporal temporal = field.getAnnotation(Temporal.class);
+        return temporal != null && (temporal.value() == TemporalType.TIME || temporal.value() == TemporalType.TIMESTAMP);
+    }
+
+    private static CheckConstraintDefinition checkConstraint(
+            String name, String constraint, String options, String location) {
+        String trimmedConstraint = fragment(constraint, location + " constraint");
+        String trimmedName = fragment(name, location + " name");
+        String trimmedOptions = fragment(options, location + " options");
+        if (trimmedConstraint.isEmpty()) {
+            if (!trimmedName.isEmpty() || !trimmedOptions.isEmpty()) {
+                throw new IllegalArgumentException(location + " declares a name or options without a constraint");
+            }
+            return null;
+        }
+        return new CheckConstraintDefinition(trimmedName, trimmedConstraint, trimmedOptions);
+    }
+
+    private static String fragment(String value, String location) {
+        String trimmed = value == null ? "" : value.trim();
+        validateNoNul(trimmed, location);
+        return trimmed;
+    }
+
+    private static void validateNoNul(String value, String location) {
+        if (value != null && value.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException(location + " must not contain NUL");
+        }
+    }
+
+    private static TableDdlDefinition tableDdlDefinition(Table table, Class<?> entityType) {
+        if (table == null) {
+            return TableDdlDefinition.EMPTY;
+        }
+        List<CheckConstraintDefinition> checks = new ArrayList<>();
+        Set<String> names = new java.util.HashSet<>();
+        for (CheckConstraint check : table.check()) {
+            CheckConstraintDefinition definition = checkConstraint(
+                    check.name(), check.constraint(), check.options(), "@Table.check on " + entityType.getName());
+            if (definition == null) {
+                continue;
+            }
+            if (!definition.name().isEmpty() && !names.add(definition.name())) {
+                throw new IllegalArgumentException(entityType.getName()
+                        + " declares duplicate @Table check constraint name '" + definition.name() + "'");
+            }
+            checks.add(definition);
+        }
+        String comment = table.comment();
+        validateNoNul(comment, "@Table.comment on " + entityType.getName());
+        return new TableDdlDefinition(checks, comment,
+                fragment(table.options(), "@Table.options on " + entityType.getName()));
     }
 
     /**
@@ -2479,7 +2570,8 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 "",
-                null
+                null,
+                ColumnDdlDefinition.EMPTY
         );
     }
 
@@ -3108,7 +3200,8 @@ public final class EntityMetadataFactory {
                 access.setter(),
                 toOneCascadeInfo,
                 "",
-                compositeForeignKey);
+                compositeForeignKey,
+                ColumnDdlDefinition.EMPTY);
     }
 
     /**
@@ -3189,7 +3282,8 @@ public final class EntityMetadataFactory {
                     access.setter(),
                     null,
                     "",
-                    null
+                    null,
+                    ColumnDdlDefinition.EMPTY
             );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
@@ -3268,7 +3362,8 @@ public final class EntityMetadataFactory {
                 access.setter(),
                 toOneCascadeInfo,
                 "",
-                compositeForeignKey);
+                compositeForeignKey,
+                ColumnDdlDefinition.EMPTY);
     }
 
     /**
@@ -3337,7 +3432,8 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null, null, false, "", false, null, null, null, "", null);
+                info, null, null, null, false, "", false, null, null, null, "", null,
+                ColumnDdlDefinition.EMPTY);
     }
 
     /**
@@ -3672,7 +3768,8 @@ public final class EntityMetadataFactory {
                 null,
                 null,
                 "",
-                null);
+                null,
+                ColumnDdlDefinition.EMPTY);
     }
 
     /**

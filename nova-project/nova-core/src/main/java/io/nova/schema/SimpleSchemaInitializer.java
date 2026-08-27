@@ -274,7 +274,15 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         String createDdl = options.ifNotExists()
                 ? generator.createTableIfNotExists(metadata)
                 : generator.createTable(metadata);
-        Mono<Void> create = operations.executeNative(NativeQuery.of(createDdl)).then();
+        boolean commentsDeclared = !generator.createComments(metadata).isEmpty();
+        Mono<Boolean> createdNow = options.ifNotExists() && commentsDeclared
+                ? operations.queryNative(NativeQuery.of(dialect.listTablesSql()),
+                                row -> row.get(Dialect.TABLE_NAME_COLUMN, String.class))
+                        .any(table -> table.equalsIgnoreCase(metadata.tableName()))
+                        .map(exists -> !exists)
+                : Mono.just(!options.ifNotExists());
+        Mono<Void> create = createdNow.flatMap(created -> operations.executeNative(NativeQuery.of(createDdl))
+                .then(created ? emitComments(generator, metadata) : Mono.empty()));
         if (metadata.hasSecondaryTables()) {
             // 보조 테이블은 primary 테이블 생성 이후에 만든다(보조 테이블 PK 조인 컬럼이 primary PK를 FK로 참조).
             create = create.then(Flux.fromIterable(metadata.secondaryTables())
@@ -291,6 +299,12 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
             return create;
         }
         return create.thenMany(Flux.fromIterable(indexDdls))
+                .concatMap(ddl -> operations.executeNative(NativeQuery.of(ddl)))
+                .then();
+    }
+
+    private Mono<Void> emitComments(SchemaGenerator generator, EntityMetadata<?> metadata) {
+        return Flux.fromIterable(generator.createComments(metadata))
                 .concatMap(ddl -> operations.executeNative(NativeQuery.of(ddl)))
                 .then();
     }

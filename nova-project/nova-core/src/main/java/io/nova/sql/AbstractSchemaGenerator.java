@@ -4,6 +4,7 @@ import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.GenerationType;
 import io.nova.metadata.CollectionTableDefinition;
+import io.nova.metadata.CheckConstraintDefinition;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.metadata.IndexDefinition;
@@ -253,9 +254,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (metadata.hasInheritance() && metadata.inheritance().singleTable()) {
             columns.add(discriminatorColumnDefinition(metadata));
         }
+        appendTableChecks(metadata, columns);
         return "create table " + (ifNotExists ? "if not exists " : "")
                 + qualifiedTable(metadata)
-                + " (" + String.join(", ", columns) + ")";
+                + " (" + String.join(", ", columns) + ")" + options(metadata.tableDdlDefinition().options());
     }
 
     /**
@@ -355,6 +357,21 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             statements.add(
                     "create unique index " + dialect.quote(constraint.name()) + " on " + quotedTable
                             + " (" + joinQuoted(constraint.columns()) + ")");
+        }
+        return statements;
+    }
+
+    @Override
+    public List<String> createComments(EntityMetadata<?> metadata) {
+        List<String> statements = new ArrayList<>();
+        if (!metadata.tableDdlDefinition().comment().isEmpty()) {
+            statements.add("comment on table " + qualifiedTable(metadata) + " is " + sqlString(metadata.tableDdlDefinition().comment()));
+        }
+        for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
+            if (!property.columnDdlDefinition().comment().isEmpty()) {
+                statements.add("comment on column " + qualifiedTable(metadata) + "." + dialect.quote(property.columnName())
+                        + " is " + sqlString(property.columnDdlDefinition().comment()));
+            }
         }
         return statements;
     }
@@ -503,6 +520,10 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (property.unique() && !property.id()) {
             builder.append(" unique");
         }
+        for (CheckConstraintDefinition check : property.columnDdlDefinition().checks()) {
+            builder.append(' ').append(renderCheck(check));
+        }
+        builder.append(options(property.columnDdlDefinition().options()));
         return builder.toString();
     }
 
@@ -628,15 +649,56 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             return dialect.dateColumnType();
         }
         if (type == java.time.LocalTime.class) {
-            return dialect.timeColumnType();
+            return dialect.timeColumnType(property.columnDdlDefinition().secondPrecision());
         }
         if (type == java.time.LocalDateTime.class) {
-            return dialect.timestampColumnType();
+            return dialect.timestampColumnType(property.columnDdlDefinition().secondPrecision());
         }
         // UUID 스칼라 컬럼은 여기 도달하지 않는다 — EntityMetadataFactory가 UUID property에 UuidStringConverter를
         // 달아 columnType()을 String으로 분리하므로 위 varchar 분기로 처리된다(EC 원소와 대칭, 드라이버가
         // varchar→UUID 직접 디코드를 못 하는 read-source-type 함정 회피). 저장타입이 String이 아닌 진짜 미지원
         // 타입만 여기서 fail-fast 한다(broken DDL ship 금지).
         throw new IllegalArgumentException("Unsupported column type: " + type.getName());
+    }
+
+    private void appendTableChecks(EntityMetadata<?> metadata, List<String> definitions) {
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
+            validateCheckNames(property.columnDdlDefinition().checks(), names);
+        }
+        appendChecks(definitions, metadata.tableDdlDefinition().checks(), names);
+    }
+
+    private void validateCheckNames(List<CheckConstraintDefinition> checks, java.util.Set<String> names) {
+        for (CheckConstraintDefinition check : checks) {
+            if (!check.name().isEmpty() && !names.add(boundConstraintName(check.name()))) {
+                throw new IllegalArgumentException("Duplicate check constraint name '" + check.name() + "'");
+            }
+        }
+    }
+
+    private void appendChecks(List<String> definitions, List<CheckConstraintDefinition> checks, java.util.Set<String> names) {
+        for (CheckConstraintDefinition check : checks) {
+            if (!check.name().isEmpty()) {
+                String name = boundConstraintName(check.name());
+                if (!names.add(name)) {
+                    throw new IllegalArgumentException("Duplicate check constraint name '" + name + "'");
+                }
+            }
+            definitions.add(renderCheck(check));
+        }
+    }
+
+    private String renderCheck(CheckConstraintDefinition check) {
+        String prefix = check.name().isEmpty() ? "" : "constraint " + dialect.quote(boundConstraintName(check.name())) + " ";
+        return prefix + "check (" + check.constraint() + ")" + options(check.options());
+    }
+
+    private static String options(String options) {
+        return options.isEmpty() ? "" : " " + options;
+    }
+
+    private static String sqlString(String value) {
+        return "'" + value.replace("'", "''") + "'";
     }
 }

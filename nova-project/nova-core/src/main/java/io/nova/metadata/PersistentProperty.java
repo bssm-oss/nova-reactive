@@ -140,6 +140,8 @@ public final class PersistentProperty {
      * N개 컬럼을 emit/바인딩하고, row 디코딩은 N개 컬럼을 읽어 복합 id를 가진 stub을 조립한다.
      */
     private final ToOneForeignKey toOneForeignKey;
+    /** DDL-only members of the effective {@code @Column} declaration. */
+    private final ColumnDdlDefinition columnDdlDefinition;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -188,7 +190,8 @@ public final class PersistentProperty {
             Method propertyAccessSetter,
             ToOneCascadeInfo toOneCascadeInfo,
             String secondaryTableName,
-            ToOneForeignKey toOneForeignKey
+            ToOneForeignKey toOneForeignKey,
+            ColumnDdlDefinition columnDdlDefinition
     ) {
         this.field = field;
         this.field.setAccessible(true);
@@ -250,6 +253,7 @@ public final class PersistentProperty {
         this.toOneCascadeInfo = toOneCascadeInfo;
         this.secondaryTableName = secondaryTableName == null ? "" : secondaryTableName;
         this.toOneForeignKey = toOneForeignKey;
+        this.columnDdlDefinition = columnDdlDefinition == null ? ColumnDdlDefinition.EMPTY : columnDdlDefinition;
     }
 
     /**
@@ -307,7 +311,8 @@ public final class PersistentProperty {
                 propertyAccessSetter,
                 toOneCascadeInfo,
                 secondaryTableName,
-                toOneForeignKey
+                toOneForeignKey,
+                columnDdlDefinition
         );
     }
 
@@ -367,7 +372,8 @@ public final class PersistentProperty {
                 propertyAccessSetter,
                 toOneCascadeInfo,
                 secondaryTableName,
-                toOneForeignKey
+                toOneForeignKey,
+                columnDdlDefinition
         );
     }
 
@@ -427,7 +433,8 @@ public final class PersistentProperty {
                 propertyAccessSetter,
                 toOneCascadeInfo,
                 secondaryTableName,
-                toOneForeignKey
+                toOneForeignKey,
+                columnDdlDefinition
         );
     }
 
@@ -465,6 +472,11 @@ public final class PersistentProperty {
      */
     public String columnDefinition() {
         return columnDefinition;
+    }
+
+    /** DDL-only members of the effective {@code @Column} declaration. */
+    public ColumnDdlDefinition columnDdlDefinition() {
+        return columnDdlDefinition;
     }
 
     public Field field() {
