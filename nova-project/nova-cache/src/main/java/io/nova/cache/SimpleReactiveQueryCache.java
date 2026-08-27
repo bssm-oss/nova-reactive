@@ -103,7 +103,8 @@ public final class SimpleReactiveQueryCache implements ReactiveQueryCache {
             this.options = options;
             this.store = new java.util.LinkedHashMap<>(16, 0.75f, true) {
                 @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Entry> eldest) {
+                protected boolean removeEldestEntry(
+                        java.util.Map.Entry<String, SimpleReactiveQueryCache.Entry> eldest) {
                     return options.isBounded() && size() > options.maximumSize();
                 }
             };

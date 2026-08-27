@@ -48,7 +48,7 @@ class MySqlDialectTest {
                 dialect.schemaGenerator().createComments(factory.getEntityMetadata(MySqlCommented.class)));
         EntityMetadata<MySqlSecondaryCommented> secondary = factory.getEntityMetadata(MySqlSecondaryCommented.class);
         assertEquals(java.util.List.of("alter table `audit`.`commented_secondary` modify `note` varchar(255) comment 0x69745c2773"),
-                dialect.schemaGenerator().createSecondaryComments(secondary, secondary.secondaryTables().getFirst()));
+                dialect.schemaGenerator().createSecondaryComments(secondary, secondary.secondaryTables().get(0)));
     }
 
     @jakarta.persistence.Entity

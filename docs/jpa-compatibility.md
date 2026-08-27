@@ -8,6 +8,15 @@ rather than blocking. Nova does **not** implement the blocking `jakarta.persiste
 contract literally — it provides a reactive equivalent (`ReactiveEntityManager`) that preserves
 Nova's non-blocking contract.
 
+## Java and Gradle compatibility
+
+Published Nova artifacts target Java 17 bytecode and run on Java 17 and newer
+compatible runtimes. Every change is built and tested in CI with Temurin 17,
+21, 25, and 26. The checked-in Gradle Wrapper is used for all builds; Gradle
+9.4 or newer is required when Gradle itself runs on Java 26. The CI matrix
+checks the selected JDK as the actual Gradle runtime, so a pinned compilation
+toolchain cannot hide a runtime incompatibility.
+
 Two rules make the table below predictable:
 
 - **Additive.** The reactive persistence API is unchanged; JPA annotations are read on top of it.

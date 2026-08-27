@@ -239,24 +239,38 @@ public final class JpqlEntityQueryPlanner {
     }
 
     private static boolean mentionsPolymorphic(io.nova.query.jpql.ast.Predicate predicate) {
-        return switch (predicate) {
-            case io.nova.query.jpql.ast.Predicate.And and ->
-                    mentionsPolymorphic(and.left()) || mentionsPolymorphic(and.right());
-            case io.nova.query.jpql.ast.Predicate.Or or ->
-                    mentionsPolymorphic(or.left()) || mentionsPolymorphic(or.right());
-            case io.nova.query.jpql.ast.Predicate.Not not -> mentionsPolymorphic(not.inner());
-            case io.nova.query.jpql.ast.Predicate.Comparison c ->
-                    isPolymorphic(c.left()) || isPolymorphic(c.right());
-            case io.nova.query.jpql.ast.Predicate.Like like ->
-                    isPolymorphic(like.value()) || isPolymorphic(like.pattern());
-            case io.nova.query.jpql.ast.Predicate.Between b ->
-                    isPolymorphic(b.value()) || isPolymorphic(b.low()) || isPolymorphic(b.high());
-            case io.nova.query.jpql.ast.Predicate.Null n -> isPolymorphic(n.value());
-            case io.nova.query.jpql.ast.Predicate.InList in ->
-                    isPolymorphic(in.value()) || in.items().stream().anyMatch(JpqlEntityQueryPlanner::isPolymorphic);
-            case io.nova.query.jpql.ast.Predicate.InSubquery in -> isPolymorphic(in.value());
-            case io.nova.query.jpql.ast.Predicate.Exists ignored -> false;
-        };
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.And and) {
+            return mentionsPolymorphic(and.left()) || mentionsPolymorphic(and.right());
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Or or) {
+            return mentionsPolymorphic(or.left()) || mentionsPolymorphic(or.right());
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Not not) {
+            return mentionsPolymorphic(not.inner());
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Comparison c) {
+            return isPolymorphic(c.left()) || isPolymorphic(c.right());
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Like like) {
+            return isPolymorphic(like.value()) || isPolymorphic(like.pattern());
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Between b) {
+            return isPolymorphic(b.value()) || isPolymorphic(b.low()) || isPolymorphic(b.high());
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Null n) {
+            return isPolymorphic(n.value());
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.InList in) {
+            return isPolymorphic(in.value())
+                    || in.items().stream().anyMatch(JpqlEntityQueryPlanner::isPolymorphic);
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.InSubquery in) {
+            return isPolymorphic(in.value());
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Exists) {
+            return false;
+        }
+        throw new IllegalStateException("Unknown JPQL predicate: " + predicate.getClass().getName());
     }
 
     private static boolean isPolymorphic(Expression expression) {
@@ -272,37 +286,51 @@ public final class JpqlEntityQueryPlanner {
     private Predicate translatePredicate(
             io.nova.query.jpql.ast.Predicate predicate, String rootAlias, EntityMetadata<?> rootMeta,
             JpqlParameters params) {
-        return switch (predicate) {
-            case io.nova.query.jpql.ast.Predicate.And and -> Criteria.and(
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.And and) {
+            return Criteria.and(
                     translatePredicate(and.left(), rootAlias, rootMeta, params),
                     translatePredicate(and.right(), rootAlias, rootMeta, params));
-            case io.nova.query.jpql.ast.Predicate.Or or -> Criteria.or(
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Or or) {
+            return Criteria.or(
                     translatePredicate(or.left(), rootAlias, rootMeta, params),
                     translatePredicate(or.right(), rootAlias, rootMeta, params));
-            case io.nova.query.jpql.ast.Predicate.Not not ->
-                    Criteria.not(translatePredicate(not.inner(), rootAlias, rootMeta, params));
-            case io.nova.query.jpql.ast.Predicate.Comparison c -> comparison(c, rootAlias, rootMeta, params);
-            case io.nova.query.jpql.ast.Predicate.Like like -> like(like, rootAlias, rootMeta, params);
-            case io.nova.query.jpql.ast.Predicate.Between b -> Criteria.between(
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Not not) {
+            return Criteria.not(translatePredicate(not.inner(), rootAlias, rootMeta, params));
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Comparison c) {
+            return comparison(c, rootAlias, rootMeta, params);
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Like like) {
+            return like(like, rootAlias, rootMeta, params);
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Between b) {
+            return Criteria.between(
                     field(b.value(), rootAlias, rootMeta),
                     value(b.low(), params),
                     value(b.high(), params));
-            case io.nova.query.jpql.ast.Predicate.Null n -> n.negated()
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Null n) {
+            return n.negated()
                     ? Criteria.isNotNull(field(n.value(), rootAlias, rootMeta))
                     : Criteria.isNull(field(n.value(), rootAlias, rootMeta));
-            case io.nova.query.jpql.ast.Predicate.InList in -> {
-                String field = field(in.value(), rootAlias, rootMeta);
-                List<Object> values = new ArrayList<>();
-                for (Expression item : in.items()) {
-                    values.add(value(item, params));
-                }
-                yield in.negated() ? Criteria.notIn(field, values) : Criteria.in(field, values);
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.InList in) {
+            String field = field(in.value(), rootAlias, rootMeta);
+            List<Object> values = new ArrayList<>();
+            for (Expression item : in.items()) {
+                values.add(value(item, params));
             }
-            case io.nova.query.jpql.ast.Predicate.InSubquery ignored ->
-                    throw unsupported("IN (subquery)");
-            case io.nova.query.jpql.ast.Predicate.Exists ignored ->
-                    throw unsupported("EXISTS (subquery)");
-        };
+            return in.negated() ? Criteria.notIn(field, values) : Criteria.in(field, values);
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.InSubquery) {
+            throw unsupported("IN (subquery)");
+        }
+        if (predicate instanceof io.nova.query.jpql.ast.Predicate.Exists) {
+            throw unsupported("EXISTS (subquery)");
+        }
+        throw new IllegalStateException("Unknown JPQL predicate: " + predicate.getClass().getName());
     }
 
     private Predicate comparison(
@@ -384,13 +412,17 @@ public final class JpqlEntityQueryPlanner {
     }
 
     private Object value(Expression expression, JpqlParameters params) {
-        return switch (expression) {
-            case Expression.Literal l -> l.value();
-            case Expression.NamedParameter p -> params.resolveNamed(p.name());
-            case Expression.PositionalParameter p -> params.resolvePositional(p.position());
-            default -> throw unsupported("non-literal/parameter value expression ("
-                    + expression.getClass().getSimpleName() + ")");
-        };
+        if (expression instanceof Expression.Literal l) {
+            return l.value();
+        }
+        if (expression instanceof Expression.NamedParameter p) {
+            return params.resolveNamed(p.name());
+        }
+        if (expression instanceof Expression.PositionalParameter p) {
+            return params.resolvePositional(p.position());
+        }
+        throw unsupported("non-literal/parameter value expression ("
+                + expression.getClass().getSimpleName() + ")");
     }
 
     private static JpqlException unsupported(String what) {
