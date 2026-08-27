@@ -95,12 +95,17 @@ public final class MySqlDialect implements Dialect {
 
         @Override
         public List<String> createComments(EntityMetadata<?> metadata) {
+            return createComments(metadata, metadata.primaryColumnMappedProperties());
+        }
+
+        @Override
+        public List<String> createComments(EntityMetadata<?> metadata, List<PersistentProperty> physicalColumns) {
             List<String> statements = new ArrayList<>();
             if (!metadata.tableDdlDefinition().comment().isEmpty()) {
                 statements.add("alter table " + qualifiedTable(metadata) + " comment = "
                         + sqlString(metadata.tableDdlDefinition().comment()));
             }
-            for (PersistentProperty property : metadata.primaryColumnMappedProperties()) {
+            for (PersistentProperty property : physicalColumns) {
                 if (!property.columnDdlDefinition().comment().isEmpty()) {
                     statements.add("alter table " + qualifiedTable(metadata) + " modify "
                             + columnDefinition(property) + " comment " + sqlString(property.columnDdlDefinition().comment()));
@@ -123,11 +128,11 @@ public final class MySqlDialect implements Dialect {
 
         private static String sqlString(String value) {
             byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            StringBuilder hex = new StringBuilder("convert(0x");
+            StringBuilder hex = new StringBuilder("0x");
             for (byte valueByte : bytes) {
                 hex.append(String.format("%02x", valueByte));
             }
-            return hex.append(" using utf8mb4)").toString();
+            return hex.toString();
         }
 
         @Override
