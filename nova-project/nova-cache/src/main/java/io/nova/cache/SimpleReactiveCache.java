@@ -30,7 +30,8 @@ public final class SimpleReactiveCache implements ReactiveCache {
         // accessOrder=true 로 LRU. removeEldestEntry로 최대 크기 초과 시 가장 오래 사용되지 않은 엔트리 제거.
         this.store = new LinkedHashMap<>(16, 0.75f, true) {
             @Override
-            protected boolean removeEldestEntry(Map.Entry<CacheKey, Entry> eldest) {
+            protected boolean removeEldestEntry(
+                    java.util.Map.Entry<CacheKey, SimpleReactiveCache.Entry> eldest) {
                 return options.isBounded() && size() > options.maximumSize();
             }
         };
