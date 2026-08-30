@@ -46,10 +46,14 @@ import io.nova.tx.ReactiveTransactionOperations;
 import io.nova.tx.TransactionContext;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.IdClass;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderColumn;
@@ -3001,6 +3005,30 @@ class SimpleReactiveEntityOperationsTest {
                 "save updates owner once and orphan removal deletes only the child");
     }
 
+    @Test
+    void embeddedIdSelfRemoveCascadeUsesAllIdentityComponents() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EmbeddedRemovalEntity entity = new EmbeddedRemovalEntity(new CompositeRemovalId("tenant", 1L));
+        entity.parent = entity;
+
+        StepVerifier.create(operations.delete(entity)).expectNext(1L).verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+    }
+
+    @Test
+    void idClassSelfRemoveCascadeUsesAllIdentityComponents() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        IdClassRemovalEntity entity = new IdClassRemovalEntity("tenant", 1L);
+        entity.parent = entity;
+
+        StepVerifier.create(operations.delete(entity)).expectNext(1L).verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+    }
+
     private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
         PersistenceSession session = new PersistenceSession();
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
@@ -3517,6 +3545,71 @@ class SimpleReactiveEntityOperationsTest {
         @PostRemove
         void postRemove() {
             RemovalCallbacks.events.add("self-post");
+        }
+    }
+
+    @Embeddable
+    private static final class CompositeRemovalId {
+        private String tenant;
+        private Long number;
+
+        private CompositeRemovalId() {
+        }
+
+        private CompositeRemovalId(String tenant, Long number) {
+            this.tenant = tenant;
+            this.number = number;
+        }
+    }
+
+    @Entity
+    @Table(name = "embedded_removal_entities")
+    private static final class EmbeddedRemovalEntity {
+        @EmbeddedId
+        private CompositeRemovalId id;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumns({
+                @JoinColumn(name = "parent_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "parent_number", referencedColumnName = "number")
+        })
+        private EmbeddedRemovalEntity parent;
+
+        private EmbeddedRemovalEntity() {
+        }
+
+        private EmbeddedRemovalEntity(CompositeRemovalId id) {
+            this.id = id;
+        }
+    }
+
+    private static final class IdClassRemovalKey {
+        private String tenant;
+        private Long number;
+    }
+
+    @Entity
+    @IdClass(IdClassRemovalKey.class)
+    @Table(name = "idclass_removal_entities")
+    private static final class IdClassRemovalEntity {
+        @Id
+        private String tenant;
+        @Id
+        private Long number;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumns({
+                @JoinColumn(name = "parent_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "parent_number", referencedColumnName = "number")
+        })
+        private IdClassRemovalEntity parent;
+
+        private IdClassRemovalEntity() {
+        }
+
+        private IdClassRemovalEntity(String tenant, Long number) {
+            this.tenant = tenant;
+            this.number = number;
         }
     }
 

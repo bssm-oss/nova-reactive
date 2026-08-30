@@ -909,7 +909,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (cascading.isEmpty()) {
             return Mono.empty();
         }
-        Object parentId = metadata.idProperty().read(parent);
+        Object parentId = metadata.readIdValue(parent);
         if (parentId == null) {
             return Mono.error(new IllegalStateException(
                     "parent id must be set before cascading @OneToMany children on "
@@ -972,7 +972,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         .contextWrite(context -> {
                             java.util.Set<RemoveKey> visited = context.<java.util.Set<RemoveKey>>
                                     getOrEmpty(REMOVE_VISITED_KEY).orElseGet(java.util.LinkedHashSet::new);
-                            visited.add(removeKey(metadata, parentId));
+                            visited.add(removeKeyForEntity(metadata, parent));
                             return context.put(REMOVE_VISITED_KEY, visited);
                         })
                         .then()));
@@ -2250,7 +2250,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     .contextWrite(context -> {
                         java.util.Set<RemoveKey> visited = context.<java.util.Set<RemoveKey>>
                                 getOrEmpty(REMOVE_VISITED_KEY).orElseGet(java.util.LinkedHashSet::new);
-                        visited.add(removeKey(metadata, ownerId));
+                        visited.add(removeKeyForEntity(metadata, owner));
                         return context.put(REMOVE_VISITED_KEY, visited);
                     });
         } else if (haveBaseline) {
@@ -2821,7 +2821,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             java.util.Set<RemoveKey> visited = ctx.<java.util.Set<RemoveKey>>getOrEmpty(REMOVE_VISITED_KEY)
                     .orElseGet(java.util.LinkedHashSet::new);
             Optional<PersistenceSession> session = currentSession(ctx);
-            if (!visited.add(removeKey(metadata, id)) || (session.isPresent() && session.get().isRemoved(metadata, entity))) {
+            if (!visited.add(removeKeyForEntity(metadata, entity))
+                    || (session.isPresent() && session.get().isRemoved(metadata, entity))) {
                 return Mono.empty();
             }
             try {
@@ -2851,13 +2852,24 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         });
     }
 
-    private RemoveKey removeKey(EntityMetadata<?> metadata, Object id) {
+    private RemoveKey removeKeyForEntity(EntityMetadata<?> metadata, Object entity) {
         EntityMetadata<?> identityMetadata = metadata.hasInheritance()
                 ? metadataFactory.getEntityMetadata(metadata.inheritance().root())
                 : metadata;
         List<Object> values = new ArrayList<>(identityMetadata.idProperties().size());
         for (PersistentProperty property : identityMetadata.idProperties()) {
-            values.add(property.toColumnValue(identityMetadata.idColumnValue(property, id)));
+            values.add(property.toColumnValue(property.read(entity)));
+        }
+        return new RemoveKey(identityMetadata.entityType(), List.copyOf(values));
+    }
+
+    private RemoveKey removeKeyForId(EntityMetadata<?> metadata, Object idHolder) {
+        EntityMetadata<?> identityMetadata = metadata.hasInheritance()
+                ? metadataFactory.getEntityMetadata(metadata.inheritance().root())
+                : metadata;
+        List<Object> values = new ArrayList<>(identityMetadata.idProperties().size());
+        for (PersistentProperty property : identityMetadata.idProperties()) {
+            values.add(property.toColumnValue(identityMetadata.idColumnValue(property, idHolder)));
         }
         return new RemoveKey(identityMetadata.entityType(), List.copyOf(values));
     }
