@@ -4,6 +4,9 @@ import io.nova.cache.spi.CacheKey;
 import io.nova.cache.spi.ReactiveCache;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -55,7 +58,7 @@ public final class SimpleReactiveCache implements ReactiveCache {
                     store.remove(key);
                     return Mono.empty();
                 }
-                return Mono.just(entry.value());
+                return Mono.just(copyContainer(entry.value()));
             }
         });
     }
@@ -69,7 +72,7 @@ public final class SimpleReactiveCache implements ReactiveCache {
         }
         return Mono.fromRunnable(() -> {
             synchronized (store) {
-                store.put(key, new Entry(value, expireAtNanos()));
+                store.put(key, new Entry(copyContainer(value), expireAtNanos()));
             }
         });
     }
@@ -105,6 +108,27 @@ public final class SimpleReactiveCache implements ReactiveCache {
             return 0L; // 만료 없음 sentinel.
         }
         return System.nanoTime() + options.timeToLive().toNanos();
+    }
+
+    /**
+     * Keep generic cache callers from aliasing a container entry. Entity state is
+     * materialized by {@link CachingReactiveEntityOperations}, which has mapping
+     * metadata needed to copy entity graphs.
+     */
+    private static Object copyContainer(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            return new LinkedHashMap<>(map);
+        }
+        if (value instanceof java.util.Set<?> set) {
+            return new LinkedHashSet<>(set);
+        }
+        if (value instanceof List<?> list) {
+            return new ArrayList<>(list);
+        }
+        if (value instanceof Collection<?> collection) {
+            return new ArrayList<>(collection);
+        }
+        return value;
     }
 
     private record Entry(Object value, long expireAtNanos) {

@@ -7,7 +7,9 @@ import io.nova.cache.spi.ReactiveQueryCache;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
 import io.nova.fetch.FetchGroup;
+import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.metadata.PersistentProperty;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.LockMode;
@@ -23,9 +25,23 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
+import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.Calendar;
+import java.util.Collection;
+import java.util.Date;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -142,9 +158,9 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         ReactiveCache cache = provider.getCache(config.region());
         Mono<T> load = delegate.findById(entityType, id)
                 .flatMap(loaded -> populateOnRead
-                        ? cache.put(key, loaded).thenReturn(loaded)
+                        ? cache.put(key, snapshot(loaded)).thenReturn(loaded)
                         : Mono.just(loaded));
-        return cache.get(key).map(value -> (T) value).switchIfEmpty(load);
+        return cache.get(key).map(value -> snapshot((T) value)).switchIfEmpty(load);
     }
 
     @Override
@@ -185,7 +201,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             String key = QuerySpecCacheKey.of(entityType, querySpec);
             Flux<T> onMiss = Flux.defer(() -> delegate.findAll(entityType, querySpec)
                     .collectList()
-                    .flatMapMany(list -> queryCache.put(partition, key, new ArrayList<Object>(list))
+                    .flatMapMany(list -> queryCache.put(partition, key, snapshotList(list))
                             // 결과를 쿼리 캐시에 저장 + 엔티티 캐시도 warming(이후 findById 히트).
                             .thenMany(Flux.fromIterable(list))
                             .concatMap(entity -> putEntity(entity).thenReturn(entity))));
@@ -195,7 +211,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
                     .map(Optional::of)
                     .defaultIfEmpty(Optional.empty())
                     .flatMapMany(hit -> hit.isPresent()
-                            ? Flux.fromIterable(hit.get()).map(CachingReactiveEntityOperations::castEntity)
+                            ? Flux.fromIterable(hit.get()).map(value -> snapshot(castEntity(value)))
                             : onMiss);
         }
         Flux<T> result = delegate.findAll(entityType, querySpec);
@@ -414,7 +430,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (id == null) {
             return Mono.empty();
         }
-        return provider.getCache(config.region()).put(new CacheKey(config.region(), config.keyType(), id), entity);
+        return provider.getCache(config.region()).put(
+                new CacheKey(config.region(), config.keyType(), id), snapshot(entity));
     }
 
     private Mono<Void> invalidateKey(Class<?> entityType, Object id) {
@@ -485,6 +502,19 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         return (T) value;
     }
 
+    private <T> List<Object> snapshotList(List<T> entities) {
+        List<Object> snapshots = new ArrayList<>(entities.size());
+        for (T entity : entities) {
+            snapshots.add(snapshot(entity));
+        }
+        return snapshots;
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T snapshot(T entity) {
+        return entity == null ? null : (T) new EntitySnapshotCopier(metadataFactory).copyEntity(entity);
+    }
+
     private static <E> List<E> toList(Iterable<E> iterable) {
         Objects.requireNonNull(iterable, "entities must not be null");
         if (iterable instanceof List<E> list) {
@@ -493,5 +523,161 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         List<E> collected = new ArrayList<>();
         iterable.forEach(collected::add);
         return collected;
+    }
+
+    /**
+     * Metadata-driven entity snapshotter. It copies persistent scalar state through
+     * {@link PersistentProperty}, relation fields through their raw references, and
+     * collection values recursively. The identity map preserves graph cycles while
+     * ensuring no source entity or collection is reused by a cache snapshot.
+     */
+    private static final class EntitySnapshotCopier {
+        private final EntityMetadataFactory metadataFactory;
+        private final IdentityHashMap<Object, Object> copies = new IdentityHashMap<>();
+
+        EntitySnapshotCopier(EntityMetadataFactory metadataFactory) {
+            this.metadataFactory = metadataFactory;
+        }
+
+        Object copyEntity(Object source) {
+            Object existing = copies.get(source);
+            if (existing != null) {
+                return existing;
+            }
+            EntityMetadata<Object> metadata = metadataFactory.getEntityMetadata(cast(source.getClass()));
+            Object target = instantiate(source.getClass(), "entity");
+            copies.put(source, target);
+            for (PersistentProperty property : metadata.properties()) {
+                if (property.isRelation()) {
+                    copyRelation(property, source, target);
+                } else {
+                    property.write(target, copyValue(property.read(source)));
+                }
+            }
+            return target;
+        }
+
+        private void copyRelation(PersistentProperty property, Object source, Object target) {
+            Object value = readField(property.field(), source);
+            Object copied = copyValue(value);
+            if (property.manyToOne()) {
+                property.writeReferenceInstance(target, copied);
+            } else {
+                writeField(property.field(), target, copied);
+            }
+        }
+
+        private Object copyValue(Object source) {
+            if (source == null || immutable(source.getClass())) {
+                return source;
+            }
+            Object existing = copies.get(source);
+            if (existing != null) {
+                return existing;
+            }
+            if (isEntity(source.getClass())) {
+                return copyEntity(source);
+            }
+            if (source instanceof Date date) {
+                return new Date(date.getTime());
+            }
+            if (source instanceof Calendar calendar) {
+                return (Calendar) calendar.clone();
+            }
+            Class<?> type = source.getClass();
+            if (type.isArray()) {
+                int length = Array.getLength(source);
+                Object target = Array.newInstance(type.componentType(), length);
+                copies.put(source, target);
+                for (int i = 0; i < length; i++) {
+                    Array.set(target, i, copyValue(Array.get(source, i)));
+                }
+                return target;
+            }
+            if (source instanceof Map<?, ?> map) {
+                Map<Object, Object> target = new LinkedHashMap<>();
+                copies.put(source, target);
+                map.forEach((key, value) -> target.put(copyValue(key), copyValue(value)));
+                return target;
+            }
+            if (source instanceof Set<?> set) {
+                Set<Object> target = new LinkedHashSet<>();
+                copies.put(source, target);
+                for (Object value : set) {
+                    target.add(copyValue(value));
+                }
+                return target;
+            }
+            if (source instanceof Collection<?> collection) {
+                List<Object> target = new ArrayList<>(collection.size());
+                copies.put(source, target);
+                for (Object value : collection) {
+                    target.add(copyValue(value));
+                }
+                return target;
+            }
+            if (type.isRecord() || type.getPackageName().startsWith("java.")) {
+                return source;
+            }
+            return copyPojo(source);
+        }
+
+        private Object copyPojo(Object source) {
+            Object target = instantiate(source.getClass(), "value");
+            copies.put(source, target);
+            for (Class<?> type = source.getClass(); type != Object.class; type = type.getSuperclass()) {
+                for (Field field : type.getDeclaredFields()) {
+                    if (!Modifier.isStatic(field.getModifiers())) {
+                        writeField(field, target, copyValue(readField(field, source)));
+                    }
+                }
+            }
+            return target;
+        }
+
+        private static boolean immutable(Class<?> type) {
+            return type.isPrimitive() || type.isEnum() || type == String.class || type == Boolean.class
+                    || type == Character.class || Number.class.isAssignableFrom(type) || type == BigDecimal.class
+                    || type == BigInteger.class || type == java.util.UUID.class
+                    || type.getPackageName().startsWith("java.time");
+        }
+
+        private static boolean isEntity(Class<?> type) {
+            for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+                if (current.isAnnotationPresent(jakarta.persistence.Entity.class)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static Object instantiate(Class<?> type, String kind) {
+            try {
+                Constructor<?> constructor = type.getDeclaredConstructor();
+                constructor.setAccessible(true);
+                return constructor.newInstance();
+            } catch (ReflectiveOperationException exception) {
+                throw new IllegalStateException(
+                        "Cached " + kind + " type must expose a no-args constructor: " + type.getName(), exception);
+            }
+        }
+
+        private static Object readField(Field field, Object source) {
+            try {
+                field.setAccessible(true);
+                return field.get(source);
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException("Cannot read cached property " + field.getName(), exception);
+            }
+        }
+
+        private static void writeField(Field field, Object target, Object value) {
+            try {
+                field.setAccessible(true);
+                field.set(target, value);
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException("Cannot write cached property " + field.getName(), exception);
+            }
+        }
     }
 }
