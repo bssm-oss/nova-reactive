@@ -44,7 +44,7 @@ public final class AnnotationFetchGroupBuilder {
         PersistentProperty idProperty = parentMetadata.idProperty();
         // @OneToMany — child 측 ManyToOne property의 FK column으로 IN-query를 발행한다.
         for (PersistentProperty oneToMany : parentMetadata.oneToManyProperties()) {
-            addOneToManySpec(builder, parentMetadata, oneToMany, idProperty);
+            addOneToManySpec(builder, parentType, oneToMany, idProperty);
         }
         // @ManyToOne — child 측 PK column으로 IN-query를 발행한다. parent에서 FK 값을 꺼내 IN 키로 사용.
         for (PersistentProperty manyToOne : parentMetadata.manyToOneProperties()) {
@@ -59,7 +59,7 @@ public final class AnnotationFetchGroupBuilder {
         }
         // inverse @OneToOne — 소유 측(반대편)이 FK를 가지므로 child 측 FK column으로 IN-query를 발행하고 단건만 주입한다.
         for (PersistentProperty oneToOne : parentMetadata.oneToOneInverseProperties()) {
-            addInverseOneToOneSpec(builder, parentMetadata, oneToOne, idProperty);
+            addInverseOneToOneSpec(builder, parentType, oneToOne, idProperty);
         }
         return builder.build();
     }
@@ -85,9 +85,9 @@ public final class AnnotationFetchGroupBuilder {
         FetchGroup.Builder<P> builder = FetchGroup.forParents(parentType);
         PersistentProperty idProperty = parentMetadata.idProperty();
         if (property.oneToMany()) {
-            addOneToManySpec(builder, parentMetadata, property, idProperty);
+            addOneToManySpec(builder, parentType, property, idProperty);
         } else if (property.inverseToOne()) {
-            addInverseOneToOneSpec(builder, parentMetadata, property, idProperty);
+            addInverseOneToOneSpec(builder, parentType, property, idProperty);
         } else if (property.manyToOne()) {
             if (property.isCompositeToOne()) {
                 // 복합키 타겟 to-one: 단일컬럼 IN은 불가하지만, buildFor(Class)와 동일한 composite spec으로
@@ -108,45 +108,30 @@ public final class AnnotationFetchGroupBuilder {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private <P> void addOneToManySpec(
-            FetchGroup.Builder<P> builder, EntityMetadata<P> parentMetadata, PersistentProperty oneToMany,
+            FetchGroup.Builder<P> builder, Class<P> parentType, PersistentProperty oneToMany,
             PersistentProperty idProperty) {
-        Class<P> parentType = parentMetadata.entityType();
         Class<?> childType = oneToMany.oneToManyTargetType();
         if (childType == null) {
             throw new IllegalStateException(
                     parentType.getName() + "." + oneToMany.propertyName()
                             + " @OneToMany requires targetEntity to be specified (cannot infer from generic List)");
         }
-        PersistentProperty owning = resolveOneToManyForeignKeyProperty(parentType, oneToMany, childType);
-        Function<P, Object> parentIdExtractor = owning.isCompositeToOne()
-                ? parentMetadata::readIdValue
-                : parent -> idProperty.read(parent);
+        String fkColumn = resolveOneToManyForeignKeyColumn(parentType, oneToMany, childType);
+        Function<P, Object> parentIdExtractor = parent -> idProperty.read(parent);
         BiConsumer<P, java.util.List<Object>> setter = (parent, children) ->
                 writeField(parent, oneToMany.field(), children);
         // @OrderColumn(child 테이블의 물리 순서 컬럼)과 @OrderBy(child property 정렬)는 상호 배타(factory에서 거부)다.
         String orderColumn = oneToMany.oneToManyOrderColumn() != null
                 ? oneToMany.oneToManyOrderColumn().columnName()
                 : null;
-        if (owning.isCompositeToOne()) {
-            builder.withCompositeInverse(
-                    (Class<Object>) childType,
-                    owning.propertyName(),
-                    parentIdExtractor,
-                    owning::readReference,
-                    setter,
-                    false,
-                    resolveOrderBy(oneToMany.field(), childType),
-                    orderColumn);
-        } else {
-            builder.with(
-                    (Class<Object>) childType,
-                    owning.columnName(),
-                    parentIdExtractor,
-                    setter,
-                    resolveOrderBy(oneToMany.field(), childType),
-                    orderColumn
-            );
-        }
+        builder.with(
+                (Class<Object>) childType,
+                fkColumn,
+                parentIdExtractor,
+                setter,
+                resolveOrderBy(oneToMany.field(), childType),
+                orderColumn
+        );
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -196,41 +181,24 @@ public final class AnnotationFetchGroupBuilder {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private <P> void addInverseOneToOneSpec(
-            FetchGroup.Builder<P> builder, EntityMetadata<P> parentMetadata, PersistentProperty oneToOne,
+            FetchGroup.Builder<P> builder, Class<P> parentType, PersistentProperty oneToOne,
             PersistentProperty idProperty) {
-        Class<P> parentType = parentMetadata.entityType();
         Class<?> childType = oneToOne.oneToManyTargetType();
         if (childType == null) {
             throw new IllegalStateException(
                     parentType.getName() + "." + oneToOne.propertyName()
                             + " inverse @OneToOne requires a resolvable target entity type");
         }
-        PersistentProperty owning = resolveOneToManyForeignKeyProperty(parentType, oneToOne, childType);
-        Function<P, Object> parentIdExtractor = owning.isCompositeToOne()
-                ? parentMetadata::readIdValue
-                : parent -> idProperty.read(parent);
+        String fkColumn = resolveOneToManyForeignKeyColumn(parentType, oneToOne, childType);
+        Function<P, Object> parentIdExtractor = parent -> idProperty.read(parent);
         // inverse @OneToOne도 @Access(PROPERTY)면 setter로 참조를 주입한다(FIELD면 field 직접 대입).
         BiConsumer<P, Object> singleSetter = oneToOne::writeReference;
-        if (owning.isCompositeToOne()) {
-            BiConsumer<P, java.util.List<Object>> listSetter = (parent, children) ->
-                    singleSetter.accept(parent, children.isEmpty() ? null : children.get(0));
-            builder.withCompositeInverse(
-                    (Class<Object>) childType,
-                    owning.propertyName(),
-                    parentIdExtractor,
-                    owning::readReference,
-                    listSetter,
-                    true,
-                    null,
-                    null);
-        } else {
-            builder.withInverseReference(
-                    (Class<Object>) childType,
-                    owning.columnName(),
-                    parentIdExtractor,
-                    singleSetter
-            );
-        }
+        builder.withInverseReference(
+                (Class<Object>) childType,
+                fkColumn,
+                parentIdExtractor,
+                singleSetter
+        );
     }
 
     /**
@@ -262,7 +230,7 @@ public final class AnnotationFetchGroupBuilder {
      * child entity의 {@code @ManyToOne mappedBy} property를 찾아 FK 컬럼 이름을 resolve한다.
      * mappedBy가 child entity 안에 존재하지 않거나 그 property가 {@code @ManyToOne}이 아니면 거부한다.
      */
-    private PersistentProperty resolveOneToManyForeignKeyProperty(
+    private String resolveOneToManyForeignKeyColumn(
             Class<?> parentType, PersistentProperty oneToMany, Class<?> childType) {
         String mappedBy = oneToMany.oneToManyMappedBy();
         EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(childType);
@@ -277,7 +245,7 @@ public final class AnnotationFetchGroupBuilder {
                             + " @OneToMany(mappedBy=\"" + mappedBy + "\") refers to a non-@ManyToOne property on "
                             + childType.getName());
         }
-        return owning;
+        return owning.columnName();
     }
 
     private static void writeField(Object instance, Field field, Object value) {
