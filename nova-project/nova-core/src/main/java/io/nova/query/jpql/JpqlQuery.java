@@ -165,7 +165,9 @@ public final class JpqlQuery<T> {
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
-        return pageResults(operations.queryNative(toNativeQuery(translated), mapper));
+        Flux<RawRow> rows = operations.queryNative(
+                toNativeQuery(translated), row -> snapshot(row, translated.slots(), columns));
+        return pageResults(rows).map(mapper);
     }
 
     /** {@code SELECT NEW ...} 단일 생성자 프로젝션이면 그 {@link ConstructorCall}, 아니면 {@code null}. */
@@ -223,14 +225,11 @@ public final class JpqlQuery<T> {
 
         Class<Object> entityType = (Class<Object>) metadata.entityType();
         Function<RowAccessor, Object> idMapper = row -> row.get(JpqlQuery.columnLabel(0), Object.class);
-        return operations.queryNative(toNativeQuery(idProjection), idMapper)
-                .collectList()
-                .flatMapMany(ids -> {
-                    List<Object> windowedIds = windowIds(ids);
-                    if (windowedIds.isEmpty()) {
-                        return Flux.<Object>empty();
-                    }
-                    QuerySpec spec = QuerySpec.empty().where(Criteria.in(idProperty, windowedIds));
+        int chunkSize = maxResults == null ? 256 : Math.min(maxResults, 256);
+        return pageResults(operations.queryNative(toNativeQuery(idProjection), idMapper).distinct())
+                .buffer(chunkSize)
+                .concatMap(ids -> {
+                    QuerySpec spec = QuerySpec.empty().where(Criteria.in(idProperty, ids));
                     if (sort != null) {
                         spec = spec.orderBy(sort);
                     }
@@ -253,11 +252,16 @@ public final class JpqlQuery<T> {
                 filterJoins.add(join);
             }
         }
-        SelectItem idItem = SelectItem.of(
-                new Expression.Path(select.rootAlias(), List.of(idProperty)), null);
+        List<SelectItem> selections = new ArrayList<>();
+        selections.add(SelectItem.of(new Expression.Path(select.rootAlias(), List.of(idProperty)), null));
+        // PostgreSQL requires every ORDER BY expression of a DISTINCT query to be selected. The id remains c0,
+        // so hydration always maps the intended root id; extra columns exist only to make this SQL portable.
+        for (io.nova.query.jpql.ast.OrderItem order : select.orderBy()) {
+            selections.add(SelectItem.of(order.expression(), null));
+        }
         return new JpqlStatement.Select(
                 true,
-                List.of(idItem),
+                selections,
                 select.rootEntity(),
                 select.rootAlias(),
                 filterJoins,
@@ -462,18 +466,35 @@ public final class JpqlQuery<T> {
     }
 
     /** Arbitrary projection SQL has no public dialect pagination hook, so page its reactive result stream. */
-    private Flux<T> pageResults(Flux<T> results) {
-        Flux<T> paged = firstResult == null ? results : results.skip(firstResult.longValue());
+    private <R> Flux<R> pageResults(Flux<R> results) {
+        Flux<R> paged = firstResult == null ? results : results.skip(firstResult.longValue());
         return maxResults == null ? paged : paged.take(maxResults.longValue());
     }
 
-    /** Applies the JPQL window to ordered root ids before the hydration query. */
-    private List<Object> windowIds(List<Object> ids) {
-        int from = firstResult == null ? 0 : firstResult;
-        if (from >= ids.size()) {
-            return List.of();
+    /** Captures a row before reactive pagination so skipped rows never reach DTO coercion. */
+    private static RawRow snapshot(
+            RowAccessor row, List<TranslatedSql.ResultSlot> slots, int columns) {
+        Object[] values = new Object[columns];
+        for (int index = 0; index < columns; index++) {
+            Class<?> type = Object.class;
+            for (TranslatedSql.ResultSlot slot : slots) {
+                if (slot.compositeFk() != null
+                        && index >= slot.firstColumn()
+                        && index < slot.firstColumn() + slot.columnCount()) {
+                    type = slot.compositeFk().columns().get(index - slot.firstColumn()).columnType();
+                    break;
+                }
+            }
+            values[index] = row.get(columnLabel(index), type);
         }
-        int to = maxResults == null ? ids.size() : Math.min(ids.size(), from + maxResults);
-        return new ArrayList<>(ids.subList(from, to));
+        return new RawRow(values);
+    }
+
+    private record RawRow(Object[] values) implements RowAccessor {
+        @Override
+        public <R> R get(String columnName, Class<R> type) {
+            int index = Integer.parseInt(columnName.substring(1));
+            return type.cast(values[index]);
+        }
     }
 }

@@ -98,6 +98,41 @@ class JpqlQueryTest {
     }
 
     @Test
+    void includesNonIdOrderExpressionInDistinctJoinIdSql() {
+        RecordingOperations recorder = new RecordingOperations(List.of(1L));
+
+        StepVerifier.create(query("SELECT e FROM Employee e JOIN e.department d ORDER BY e.name",
+                        recorder.operations())
+                .setMaxResults(1)
+                .getResultList()).verifyComplete();
+
+        assertEquals("select distinct e.\"id\" as \"c0\", e.\"name\" as \"c1\" from \"employee\" e "
+                        + "join \"department\" d on e.\"department_id\" = d.\"id\" order by e.\"name\" asc",
+                recorder.nativeQuery().sql());
+    }
+
+    @Test
+    void skipsInvalidDtoRowsBeforeConstructorCoercion() {
+        RecordingOperations recorder = new RecordingOperations(List.of(null, 7));
+        JpqlQuery<Object> query = query(
+                "SELECT NEW " + IntDto.class.getName() + "(e.id) FROM Employee e", recorder.operations())
+                .setFirstResult(1)
+                .setMaxResults(1);
+
+        StepVerifier.create(query.getResultList()).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void integerMaximumResultLimitDoesNotOverflowProjectionPaging() {
+        RecordingOperations recorder = new RecordingOperations();
+
+        StepVerifier.create(query("SELECT e.name FROM Employee e", recorder.operations())
+                .setFirstResult(1)
+                .setMaxResults(Integer.MAX_VALUE)
+                .getResultList()).expectNextCount(2).verifyComplete();
+    }
+
+    @Test
     void paginationRejectsNegativeValuesBeforeSqlConstruction() {
         JpqlQuery<Object> query = query("SELECT e.name FROM Employee e", new RecordingOperations().operations());
 
@@ -192,6 +227,11 @@ class JpqlQueryTest {
 
     public static class EmployeeDto {
         public EmployeeDto(String name) {
+        }
+    }
+
+    public static class IntDto {
+        public IntDto(int id) {
         }
     }
 
