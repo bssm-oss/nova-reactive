@@ -20,9 +20,22 @@ public final class SimpleReactiveTransactionOperations implements ReactiveTransa
                                      Function<TransactionContext, Mono<T>> callback) {
         Objects.requireNonNull(definition, "definition");
         Objects.requireNonNull(callback, "callback");
-        return transactionManager.begin(definition)
-                .flatMap(context -> callback.apply(context)
-                        .flatMap(result -> transactionManager.commit(context).thenReturn(result))
-                        .onErrorResume(error -> transactionManager.rollback(context).then(Mono.error(error))));
+        return Mono.usingWhen(
+                Mono.defer(() -> transactionManager.begin(definition)),
+                context -> Mono.defer(() -> callback.apply(context)),
+                context -> transactionManager.commit(context)
+                        .onErrorResume(error -> transactionManager.rollback(context).then(Mono.error(error))),
+                (context, error) -> transactionManager.rollback(context),
+                context -> transactionManager.rollback(context))
+                .onErrorMap(SimpleReactiveTransactionOperations::unwrapCleanupFailure);
+    }
+
+    private static Throwable unwrapCleanupFailure(Throwable error) {
+        if (error.getMessage() != null
+                && error.getMessage().startsWith("Async resource cleanup failed")
+                && error.getCause() != null) {
+            return error.getCause();
+        }
+        return error;
     }
 }

@@ -8,14 +8,19 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 class SimpleReactiveTransactionOperationsTest {
     @Test
-    void commitsOnSuccessfulCallback() {
+    void defersBeginUntilSubscription() {
         RecordingTransactionManager manager = new RecordingTransactionManager();
         SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
 
-        StepVerifier.create(operations.inTransaction(context -> Mono.just("ok")))
+        Mono<String> transaction = operations.inTransaction(context -> Mono.just("ok"));
+
+        assertEquals(List.of(), manager.events);
+
+        StepVerifier.create(transaction)
                 .expectNext("ok")
                 .verifyComplete();
 
@@ -23,25 +28,95 @@ class SimpleReactiveTransactionOperationsTest {
     }
 
     @Test
-    void rollsBackOnCallbackFailure() {
+    void commitsAfterAnEmptyCallback() {
         RecordingTransactionManager manager = new RecordingTransactionManager();
         SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
 
-        StepVerifier.create(operations.inTransaction(context -> Mono.error(new IllegalStateException("boom"))))
-                .expectErrorMessage("boom")
+        StepVerifier.create(operations.inTransaction(context -> Mono.empty()))
+                .verifyComplete();
+
+        assertEquals(List.of("begin", "commit"), manager.events);
+    }
+
+    @Test
+    void rollsBackOnSynchronousCallbackFailure() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException failure = new IllegalStateException("boom");
+
+        StepVerifier.create(operations.inTransaction(context -> {
+                    throw failure;
+                }))
+                .expectErrorSatisfies(error -> assertSame(failure, error))
                 .verify();
 
         assertEquals(List.of("begin", "rollback"), manager.events);
     }
 
     @Test
-    void rollsBackWhenCommitFails() {
+    void rollsBackOnAsynchronousCallbackFailure() {
         RecordingTransactionManager manager = new RecordingTransactionManager();
-        manager.commitFailure = new IllegalStateException("commit failed");
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException failure = new IllegalStateException("boom");
+
+        StepVerifier.create(operations.inTransaction(context -> Mono.error(failure)))
+                .expectErrorSatisfies(error -> assertSame(failure, error))
+                .verify();
+
+        assertEquals(List.of("begin", "rollback"), manager.events);
+    }
+
+    @Test
+    void rollsBackOnCancellationAfterBegin() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
         SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
 
+        StepVerifier.create(operations.inTransaction(context -> Mono.never()))
+                .then(() -> assertEquals(List.of("begin"), manager.events))
+                .thenCancel()
+                .verify();
+
+        assertEquals(List.of("begin", "rollback"), manager.events);
+    }
+
+    @Test
+    void propagatesBeginFailureWithoutCleanup() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException failure = new IllegalStateException("begin failed");
+        manager.beginFailure = failure;
+
         StepVerifier.create(operations.inTransaction(context -> Mono.just("ok")))
-                .expectErrorMessage("commit failed")
+                .expectErrorSatisfies(error -> assertSame(failure, error))
+                .verify();
+
+        assertEquals(List.of("begin"), manager.events);
+    }
+
+    @Test
+    void rollsBackWhenCommitFails() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException failure = new IllegalStateException("commit failed");
+        manager.commitFailure = failure;
+
+        StepVerifier.create(operations.inTransaction(context -> Mono.just("ok")))
+                .expectErrorSatisfies(error -> assertSame(failure, error))
+                .verify();
+
+        assertEquals(List.of("begin", "commit", "rollback"), manager.events);
+    }
+
+    @Test
+    void surfacesRollbackFailureWhenCommitAndRollbackFail() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException rollbackFailure = new IllegalStateException("rollback failed");
+        manager.commitFailure = new IllegalStateException("commit failed");
+        manager.rollbackFailure = rollbackFailure;
+
+        StepVerifier.create(operations.inTransaction(context -> Mono.just("ok")))
+                .expectErrorSatisfies(error -> assertSame(rollbackFailure, error))
                 .verify();
 
         assertEquals(List.of("begin", "commit", "rollback"), manager.events);
@@ -50,12 +125,13 @@ class SimpleReactiveTransactionOperationsTest {
     @Test
     void surfacesRollbackFailureWhenRollbackAlsoFails() {
         RecordingTransactionManager manager = new RecordingTransactionManager();
-        manager.callbackFailure = new IllegalStateException("callback failed");
-        manager.rollbackFailure = new IllegalStateException("rollback failed");
         SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException callbackFailure = new IllegalStateException("callback failed");
+        IllegalStateException rollbackFailure = new IllegalStateException("rollback failed");
+        manager.rollbackFailure = rollbackFailure;
 
-        StepVerifier.create(operations.inTransaction(context -> Mono.error(manager.callbackFailure)))
-                .expectErrorMessage("rollback failed")
+        StepVerifier.create(operations.inTransaction(context -> Mono.error(callbackFailure)))
+                .expectErrorSatisfies(error -> assertSame(rollbackFailure, error))
                 .verify();
 
         assertEquals(List.of("begin", "rollback"), manager.events);
@@ -63,18 +139,16 @@ class SimpleReactiveTransactionOperationsTest {
 
     private static final class RecordingTransactionManager implements ReactiveTransactionManager {
         private final List<String> events = new ArrayList<>();
+        private RuntimeException beginFailure;
         private RuntimeException commitFailure;
         private RuntimeException rollbackFailure;
-        private RuntimeException callbackFailure;
-
-        @Override
-        public <T> Mono<T> inTransaction(java.util.function.Function<TransactionContext, Mono<T>> callback) {
-            return begin().flatMap(callback);
-        }
 
         @Override
         public Mono<TransactionContext> begin() {
             events.add("begin");
+            if (beginFailure != null) {
+                return Mono.error(beginFailure);
+            }
             return Mono.just(() -> "tx");
         }
 
