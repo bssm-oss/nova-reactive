@@ -306,10 +306,11 @@ public final class JpqlEntityQueryPlanner {
             return like(like, rootAlias, rootMeta, params);
         }
         if (predicate instanceof io.nova.query.jpql.ast.Predicate.Between b) {
-            return Criteria.between(
+            Predicate between = Criteria.between(
                     field(b.value(), rootAlias, rootMeta),
                     value(b.low(), params),
                     value(b.high(), params));
+            return b.negated() ? Criteria.not(between) : between;
         }
         if (predicate instanceof io.nova.query.jpql.ast.Predicate.Null n) {
             return n.negated()
@@ -339,8 +340,8 @@ public final class JpqlEntityQueryPlanner {
         String field = field(c.left(), rootAlias, rootMeta);
         Object value = value(c.right(), params);
         return switch (c.op()) {
-            case EQ -> value == null ? Criteria.isNull(field) : Criteria.eq(field, value);
-            case NE -> value == null ? Criteria.isNotNull(field) : Criteria.ne(field, value);
+            case EQ -> Criteria.eq(field, value);
+            case NE -> Criteria.ne(field, value);
             case LT -> Criteria.lt(field, value);
             case GT -> Criteria.gt(field, value);
             case LE -> Criteria.lte(field, value);

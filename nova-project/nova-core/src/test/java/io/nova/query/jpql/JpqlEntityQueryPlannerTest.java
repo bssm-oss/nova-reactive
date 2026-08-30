@@ -2,6 +2,9 @@ package io.nova.query.jpql;
 
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.query.ComparisonOperator;
+import io.nova.query.Condition;
+import io.nova.query.NegationPredicate;
 import io.nova.query.jpql.ast.JpqlStatement;
 import io.nova.support.fixtures.FixtureEntities;
 import jakarta.persistence.DiscriminatorColumn;
@@ -18,6 +21,8 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,6 +42,11 @@ class JpqlEntityQueryPlannerTest {
     private void plan(String jpql) {
         JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(jpql).parse();
         planner.plan(select, new JpqlParameters());
+    }
+
+    private JpqlEntityQueryPlanner.EntityPlan plan(String jpql, JpqlParameters parameters) {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(jpql).parse();
+        return planner.plan(select, parameters);
     }
 
     private void assertRejectedComposite(String jpql) {
@@ -83,6 +93,45 @@ class JpqlEntityQueryPlannerTest {
         // 비-복합 basic 컬럼 술어/정렬은 기존대로 통과해야 한다(guard가 과잉 거부하지 않음).
         assertDoesNotThrow(() ->
                 plan("SELECT c FROM CompositeJoinChild c WHERE c.label = 'x' ORDER BY c.id"));
+    }
+
+    @Test
+    void preservesNotBetweenForEntityQuerySpecs() {
+        Condition between = assertInstanceOf(Condition.class,
+                assertInstanceOf(NegationPredicate.class,
+                        plan("SELECT c FROM CompositeJoinChild c WHERE c.id NOT BETWEEN :low AND :high",
+                                parameters("low", 1L, "high", 2L))
+                                .spec().predicate())
+                        .inner());
+        assertEquals(ComparisonOperator.BETWEEN, between.operator());
+    }
+
+    @Test
+    void preservesNullBoundComparisonOperatorsAndExplicitNullPredicates() {
+        Condition equals = assertInstanceOf(Condition.class,
+                plan("SELECT c FROM CompositeJoinChild c WHERE c.label = :value", parameters("value", null))
+                        .spec().predicate());
+        assertEquals(ComparisonOperator.EQ, equals.operator());
+        assertNull(equals.value());
+
+        Condition notEquals = assertInstanceOf(Condition.class,
+                plan("SELECT c FROM CompositeJoinChild c WHERE c.label <> :value", parameters("value", null))
+                        .spec().predicate());
+        assertEquals(ComparisonOperator.NE, notEquals.operator());
+        assertNull(notEquals.value());
+
+        Condition isNull = assertInstanceOf(Condition.class,
+                plan("SELECT c FROM CompositeJoinChild c WHERE c.label IS NULL", new JpqlParameters())
+                        .spec().predicate());
+        assertEquals(ComparisonOperator.IS_NULL, isNull.operator());
+    }
+
+    private static JpqlParameters parameters(Object... values) {
+        JpqlParameters parameters = new JpqlParameters();
+        for (int i = 0; i < values.length; i += 2) {
+            parameters.setNamed((String) values[i], values[i + 1]);
+        }
+        return parameters;
     }
 
     // ------------------------------------------------------------------------------------
