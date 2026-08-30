@@ -84,6 +84,20 @@ class JpqlIntegrationTest {
                         .getResultList())
                 .expectNext(new Code("updated"))
                 .verifyComplete();
+
+        StepVerifier.create(jpql.createQuery("SELECT e.stringStatus FROM ConversionEntity e "
+                        + "WHERE e.stringStatus = :status", Status.class)
+                .setParameter("status", Status.ACTIVE)
+                .getResultList())
+                .expectNext(Status.ACTIVE)
+                .verifyComplete();
+
+        StepVerifier.create(jpql.createQuery("SELECT e.ordinalStatus FROM ConversionEntity e "
+                        + "WHERE e.ordinalStatus = :status", Status.class)
+                .setParameter("status", Status.INACTIVE)
+                .getResultList())
+                .expectNext(Status.INACTIVE)
+                .verifyComplete();
     }
 
     @Test

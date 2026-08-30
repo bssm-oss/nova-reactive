@@ -37,7 +37,10 @@ public record TranslatedSql(
      * 스칼라 SELECT 결과의 논리 슬롯 하나. 물리 컬럼 {@code [firstColumn, firstColumn + columnCount)}에 대응한다.
      * {@code compositeFk}가 {@code null}이면 평범한 단일 컬럼 스칼라 슬롯({@code columnCount == 1})이고,
      * non-null이면 복합키 타겟 to-one 투영이다({@code columnCount} == 참조 엔티티 {@code @Id} 컴포넌트 개수).
+     * {@code property}는 직접 mapped-path 투영에서만 채워지며, storage 값을 domain 값으로 복원하는 데 쓴다.
      */
-    public record ResultSlot(int firstColumn, int columnCount, io.nova.metadata.ToOneForeignKey compositeFk) {
+    public record ResultSlot(
+            int firstColumn, int columnCount, io.nova.metadata.ToOneForeignKey compositeFk,
+            io.nova.metadata.PersistentProperty property) {
     }
 }

@@ -445,7 +445,11 @@ public final class JpqlQuery<T> {
      */
     private Object readSlot(RowAccessor row, TranslatedSql.ResultSlot slot) {
         if (slot.compositeFk() == null) {
-            return row.get(columnLabel(slot.firstColumn()), Object.class);
+            if (slot.property() == null) {
+                return row.get(columnLabel(slot.firstColumn()), Object.class);
+            }
+            Object stored = row.get(columnLabel(slot.firstColumn()), slot.property().columnType());
+            return slot.property().toPropertyValue(stored);
         }
         List<ToOneForeignKeyColumn> fkColumns = slot.compositeFk().columns();
         List<Object> decoded = new ArrayList<>(fkColumns.size());
@@ -482,6 +486,10 @@ public final class JpqlQuery<T> {
                         && index >= slot.firstColumn()
                         && index < slot.firstColumn() + slot.columnCount()) {
                     type = slot.compositeFk().columns().get(index - slot.firstColumn()).columnType();
+                    break;
+                }
+                if (slot.property() != null && index == slot.firstColumn()) {
+                    type = slot.property().columnType();
                     break;
                 }
             }

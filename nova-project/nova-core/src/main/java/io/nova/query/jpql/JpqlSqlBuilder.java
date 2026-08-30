@@ -384,7 +384,7 @@ public final class JpqlSqlBuilder {
         }
         int start = columns[0];
         renderColumn(ctx, expr, columns);
-        slots.add(new TranslatedSql.ResultSlot(start, 1, null));
+        slots.add(new TranslatedSql.ResultSlot(start, 1, null, mappedProjectionProperty(ctx, expr)));
     }
 
     /**
@@ -405,7 +405,16 @@ public final class JpqlSqlBuilder {
             ctx.sql.append(" as ").append(dialect.quote(JpqlQuery.columnLabel(columns[0])));
             columns[0]++;
         }
-        slots.add(new TranslatedSql.ResultSlot(start, fkColumns.size(), ref.property().toOneForeignKey()));
+        slots.add(new TranslatedSql.ResultSlot(start, fkColumns.size(), ref.property().toOneForeignKey(), null));
+    }
+
+    /** Direct non-relation paths retain their mapping so scalar rows can be decoded from storage values. */
+    private PersistentProperty mappedProjectionProperty(Ctx ctx, Expression expression) {
+        if (!(expression instanceof Expression.Path path)) {
+            return null;
+        }
+        PersistentProperty property = resolvePath(ctx, path).property();
+        return property.manyToOne() ? null : property;
     }
 
     private void renderColumn(Ctx ctx, Expression expr, int[] columns) {
