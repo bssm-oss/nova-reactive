@@ -12,6 +12,7 @@ import io.nova.sql.SqlStatement;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PostgresqlDialectTest {
@@ -23,6 +24,7 @@ class PostgresqlDialectTest {
     void usesOneBasedNumberedBindMarkers() {
         assertEquals("$1", dialect.bindMarkers().marker(1));
         assertEquals("$3", dialect.bindMarkers().marker(3));
+        assertThrows(IllegalArgumentException.class, () -> dialect.bindMarkers().marker(0));
     }
 
     @Test

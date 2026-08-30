@@ -312,7 +312,7 @@ public interface Dialect {
             if (i > 0) {
                 sql.append(", ");
             }
-            sql.append(bindMarkers().marker(i));
+            sql.append(bindMarkers().marker(i + 1));
         }
         return sql.append(')').toString();
     }

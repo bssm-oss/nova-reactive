@@ -13,6 +13,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Method;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -118,6 +120,32 @@ class AnnotatedQueryMethodTest {
         assertTrue(meta.nativeQuery());
         assertEquals(AnnotatedQueryMethod.Shape.FLUX, meta.shape());
         assertTrue(meta.isEntityElement(Account.class));
+    }
+
+    @Test
+    void translatesNumberedNativeParametersInOccurrenceOrder() {
+        NativeSqlTranslator.Translated translated = NativeSqlTranslator.translate(
+                "UPDATE accounts SET email = :email WHERE id = ?2 OR email = :email",
+                Map.of("email", "ada@nova.io"),
+                Map.of(2, 7L),
+                index -> "$" + index);
+
+        assertEquals("UPDATE accounts SET email = $1 WHERE id = $2 OR email = $3", translated.sql());
+        assertEquals(List.of("ada@nova.io", 7L, "ada@nova.io"), translated.bindings());
+    }
+
+    @Test
+    void ignoresNativeParametersInsideLiteralsCastsAndComments() {
+        NativeSqlTranslator.Translated translated = NativeSqlTranslator.translate(
+                "SELECT ':ignored ''?1''' /* :block ?2 */ WHERE email = :email"
+                        + " -- :line ?3\n AND id = ?2::bigint",
+                Map.of("email", "ada@nova.io"),
+                Map.of(2, 7L),
+                index -> "$" + index);
+
+        assertEquals("SELECT ':ignored ''?1''' /* :block ?2 */ WHERE email = $1"
+                + " -- :line ?3\n AND id = $2::bigint", translated.sql());
+        assertEquals(List.of("ada@nova.io", 7L), translated.bindings());
     }
 
     @Test

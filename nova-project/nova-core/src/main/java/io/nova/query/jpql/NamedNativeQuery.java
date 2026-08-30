@@ -123,7 +123,7 @@ public final class NamedNativeQuery<T> {
     /**
      * JPA 스타일 파라미터 마커({@code :name}, {@code ?n})를 dialect positional 마커로 치환하고, 마커 출현
      * 순서를 {@code markerKeys}에 기록한다. 작은따옴표 문자열 리터럴 내부와 PostgreSQL {@code ::} 캐스트
-     * 연산자는 파라미터로 오인하지 않는다.
+     * 연산자, SQL line/block comment는 파라미터로 오인하지 않는다.
      */
     private static String translate(String sql, Dialect dialect, List<Object> markerKeys) {
         StringBuilder out = new StringBuilder(sql.length() + 16);
@@ -148,6 +148,25 @@ public final class NamedNativeQuery<T> {
                         break;
                     }
                 }
+                continue;
+            }
+            if (c == '-' && i + 1 < length && sql.charAt(i + 1) == '-') {
+                int end = i + 2;
+                while (end < length && sql.charAt(end) != '\n' && sql.charAt(end) != '\r') {
+                    end++;
+                }
+                out.append(sql, i, end);
+                i = end;
+                continue;
+            }
+            if (c == '/' && i + 1 < length && sql.charAt(i + 1) == '*') {
+                int end = i + 2;
+                while (end + 1 < length && (sql.charAt(end) != '*' || sql.charAt(end + 1) != '/')) {
+                    end++;
+                }
+                end = end + 1 < length ? end + 2 : length;
+                out.append(sql, i, end);
+                i = end;
                 continue;
             }
             if (c == ':') {
