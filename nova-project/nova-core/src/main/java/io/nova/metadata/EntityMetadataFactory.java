@@ -182,6 +182,12 @@ public final class EntityMetadataFactory {
      */
     private final Map<Class<?>, List<NamedQueryDefinition>> namedQueryDefinitionsCache = new ConcurrentHashMap<>();
     /**
+     * Class별 named-query 정의와 물리적인 annotation 선언 클래스 캐시. 같은 mapped-superclass 선언이
+     * 여러 sibling 엔티티를 통해 발견될 때 registry가 단일 선언으로 식별하는 데 사용한다.
+     */
+    private final Map<Class<?>, List<NamedQueryDeclaration>> namedQueryDeclarationsCache =
+            new ConcurrentHashMap<>();
+    /**
      * 클래스별 {@code @SqlResultSetMapping} 정의 캐시. 애너테이션 파싱은 리플렉션이므로 타입당 1회만 수행해
      * 재사용한다. Batch E(native 결과 매핑) 전용 마커 네임스페이스({@code resultSetMapping*})로, 다른
      * 메타데이터 스캔 로직 및 {@code namedQuery*} 마커와 독립적이다.
@@ -297,13 +303,31 @@ public final class EntityMetadataFactory {
         if (cached != null) {
             return cached;
         }
-        List<NamedQueryDefinition> collected = collectNamedQueryDefinitions(type);
+        List<NamedQueryDefinition> collected = namedQueryDeclarations(type).stream()
+                .map(NamedQueryDeclaration::definition)
+                .toList();
         List<NamedQueryDefinition> immutable = List.copyOf(collected);
         namedQueryDefinitionsCache.put(type, immutable);
         return immutable;
     }
 
-    private List<NamedQueryDefinition> collectNamedQueryDefinitions(Class<?> type) {
+    /**
+     * Returns named-query definitions with their physical annotation declaration class.
+     * This is used by registries that aggregate multiple entity hierarchies and must distinguish
+     * a rediscovery of one inherited declaration from a same-name declaration on another class.
+     */
+    public List<NamedQueryDeclaration> namedQueryDeclarations(Class<?> type) {
+        Objects.requireNonNull(type, "type must not be null");
+        List<NamedQueryDeclaration> cached = namedQueryDeclarationsCache.get(type);
+        if (cached != null) {
+            return cached;
+        }
+        List<NamedQueryDeclaration> immutable = List.copyOf(collectNamedQueryDeclarations(type));
+        namedQueryDeclarationsCache.put(type, immutable);
+        return immutable;
+    }
+
+    private List<NamedQueryDeclaration> collectNamedQueryDeclarations(Class<?> type) {
         // 타입 자신과 매핑에 기여하는 조상(@MappedSuperclass/상위 @Entity)까지 root-first로 스캔한다 —
         // 상위에 선언된 명명 쿼리가 먼저 등록되도록 mappedFields와 동일한 계층 순서를 따른다.
         List<Class<?>> chain = new ArrayList<>();
@@ -315,10 +339,12 @@ public final class EntityMetadataFactory {
             chain.add(ancestor);
             ancestor = ancestor.getSuperclass();
         }
-        List<NamedQueryDefinition> definitions = new ArrayList<>();
+        List<NamedQueryDeclaration> definitions = new ArrayList<>();
         for (int i = chain.size() - 1; i >= 0; i--) {
             Class<?> source = chain.get(i);
-            for (NamedQuery nq : source.getAnnotationsByType(NamedQuery.class)) {
+            NamedQuery[] namedQueries = source.getAnnotationsByType(NamedQuery.class);
+            for (int queryIndex = 0; queryIndex < namedQueries.length; queryIndex++) {
+                NamedQuery nq = namedQueries[queryIndex];
                 if (nq.lockMode() != LockModeType.NONE) {
                     throw new IllegalStateException("@NamedQuery '" + nq.name() + "' on " + source.getName()
                             + " declares lockMode " + nq.lockMode() + " which is not supported");
@@ -327,9 +353,12 @@ public final class EntityMetadataFactory {
                     throw new IllegalStateException("@NamedQuery '" + nq.name() + "' on " + source.getName()
                             + " declares query hints which are not supported");
                 }
-                definitions.add(new NamedQueryDefinition(nq.name(), nq.query(), false, null));
+                definitions.add(new NamedQueryDeclaration(
+                        new NamedQueryDefinition(nq.name(), nq.query(), false, null), source, queryIndex));
             }
-            for (NamedNativeQuery nnq : source.getAnnotationsByType(NamedNativeQuery.class)) {
+            NamedNativeQuery[] namedNativeQueries = source.getAnnotationsByType(NamedNativeQuery.class);
+            for (int queryIndex = 0; queryIndex < namedNativeQueries.length; queryIndex++) {
+                NamedNativeQuery nnq = namedNativeQueries[queryIndex];
                 if (nnq.hints().length > 0) {
                     throw new IllegalStateException("@NamedNativeQuery '" + nnq.name() + "' on " + source.getName()
                             + " declares query hints which are not supported");
@@ -340,8 +369,8 @@ public final class EntityMetadataFactory {
                     throw new IllegalStateException("@NamedNativeQuery '" + nnq.name() + "' on " + source.getName()
                             + " declares both resultClass and resultSetMapping; use exactly one result mapping");
                 }
-                definitions.add(new NamedQueryDefinition(
-                        nnq.name(), nnq.query(), true, resultClass, resultSetMapping));
+                definitions.add(new NamedQueryDeclaration(new NamedQueryDefinition(
+                        nnq.name(), nnq.query(), true, resultClass, resultSetMapping), source, queryIndex));
             }
         }
         return definitions;
