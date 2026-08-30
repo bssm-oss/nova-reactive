@@ -27,6 +27,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.Table;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -128,12 +133,42 @@ class AbstractSchemaGeneratorTest {
                 factory.getEntityMetadata(SecondaryDdlEntity.class).secondaryTables().get(0));
 
         assertTrue(root.contains("check (root_value >= 0)"));
-        assertTrue(child.contains("check (child_value >= 0)"));
+        assertEquals(
+                "create table joined_ddl_child (id bigint not null primary key,"
+                        + " child_value integer check (child_value >= 0),"
+                        + " foreign key (id) references joined_ddl_root (id))",
+                child);
         assertTrue(secondary.contains("check (secondary_value >= 0)"));
         assertEquals(List.of("comment on column joined_ddl_child.child_value is 'child'"),
                 dialect.schemaGenerator().createComments(factory.getEntityMetadata(JoinedDdlChild.class),
                         layout.subtypes().stream().filter(s -> s.metadata().entityType() == JoinedDdlChild.class)
                                 .findFirst().orElseThrow().ownTableColumns()));
+    }
+
+    @Test
+    void joinedSubtypeForeignKeyUsesSeparatelyQuotedRootSchema() {
+        Dialect quotedDialect = new QuotedTestDialect();
+        factory.getEntityMetadata(SchemaJoinedChild.class);
+        var layout = factory.inheritanceLayout(SchemaJoinedRoot.class);
+        var child = layout.subtypes().stream()
+                .filter(subtype -> subtype.metadata().entityType() == SchemaJoinedChild.class)
+                .findFirst().orElseThrow();
+
+        assertEquals(
+                "create table \"child_schema\".\"schema_joined_child\" (\"id\" bigint not null primary key,"
+                        + " \"child_value\" integer, foreign key (\"id\") references \"root_schema\".\"schema_joined_root\" (\"id\"))",
+                quotedDialect.schemaGenerator().createJoinedSubtypeTable(layout, child, false));
+
+        factory.getEntityMetadata(JoinedDdlChild.class);
+        var blankSchemaLayout = factory.inheritanceLayout(JoinedDdlRoot.class);
+        var blankSchemaChild = blankSchemaLayout.subtypes().stream()
+                .filter(subtype -> subtype.metadata().entityType() == JoinedDdlChild.class)
+                .findFirst().orElseThrow();
+        assertEquals(
+                "create table joined_ddl_child (id bigint not null primary key,"
+                        + " child_value integer check (child_value >= 0),"
+                        + " foreign key (id) references joined_ddl_root (id))",
+                dialect.schemaGenerator().createJoinedSubtypeTable(blankSchemaLayout, blankSchemaChild, false));
     }
 
     @Test
@@ -228,6 +263,20 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void createIndexesRendersUniqueOrderedColumnsAndOptions() {
+        List<String> statements = dialect.schemaGenerator().createIndexes(
+                factory.getEntityMetadata(UniqueOrderedIndexEntity.class)
+        );
+
+        assertEquals(1, statements.size());
+        assertEquals(
+                "create unique index ix_unique_ordered_email_created on unique_ordered_indexed_accounts "
+                        + "(email DESC, created_at ASC) using btree",
+                statements.get(0)
+        );
+    }
+
+    @Test
     void createIndexesRendersUniqueConstraintAsUniqueIndex() {
         List<String> statements = dialect.schemaGenerator().createIndexes(
                 factory.getEntityMetadata(SingleUniqueConstraintEntity.class)
@@ -287,6 +336,22 @@ class AbstractSchemaGeneratorTest {
                         + "on multi_indexed_accounts (first_name, last_name)",
                 statements.get(0)
         );
+    }
+
+    @Entity
+    @Table(name = "unique_ordered_indexed_accounts",
+            indexes = @Index(
+                    name = "ix_unique_ordered_email_created",
+                    columnList = "email DESC, created_at ASC",
+                    unique = true,
+                    options = "using btree"))
+    static class UniqueOrderedIndexEntity {
+        @Id
+        private Long id;
+
+        private String email;
+
+        private java.time.Instant createdAt;
     }
 
     @Test
@@ -693,12 +758,37 @@ class AbstractSchemaGeneratorTest {
     }
 
     @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "schema_joined_root", schema = "root_schema")
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    static class SchemaJoinedRoot {
+        @jakarta.persistence.Id Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "schema_joined_child", schema = "child_schema")
+    static class SchemaJoinedChild extends SchemaJoinedRoot {
+        Integer childValue;
+    }
+
+    @jakarta.persistence.Entity
     @jakarta.persistence.SecondaryTable(name = "secondary_ddl")
     static class SecondaryDdlEntity {
         @jakarta.persistence.Id Long id;
         @jakarta.persistence.Column(table = "secondary_ddl", check = @jakarta.persistence.CheckConstraint(
                 constraint = "secondary_value >= 0"), comment = "secondary")
         Integer secondaryValue;
+    }
+
+    private static final class QuotedTestDialect implements Dialect {
+        private final BindMarkerStrategy bindMarkers = index -> "?";
+        private final SqlRenderer renderer = new AbstractSqlRenderer(this) {};
+        private final SchemaGenerator schemaGenerator = new AbstractSchemaGenerator(this) {};
+
+        @Override public String name() { return "quoted-test"; }
+        @Override public String quote(String identifier) { return "\"" + identifier + "\""; }
+        @Override public BindMarkerStrategy bindMarkers() { return bindMarkers; }
+        @Override public SqlRenderer sqlRenderer() { return renderer; }
+        @Override public SchemaGenerator schemaGenerator() { return schemaGenerator; }
     }
 
     /**

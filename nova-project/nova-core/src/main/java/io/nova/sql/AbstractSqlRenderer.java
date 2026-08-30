@@ -1720,7 +1720,10 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
      * JOINED 루트 물리 테이블을 schema-aware로 quote 한다. 루트 metadata의 schema를 따른다.
      */
     private String qualifiedRootTable(InheritanceInfo info, String rootTableName) {
-        return dialect.quote(rootTableName);
+        String quotedTable = dialect.quote(rootTableName);
+        return info.rootTableSchema().isBlank()
+                ? quotedTable
+                : dialect.quote(info.rootTableSchema()) + "." + quotedTable;
     }
 
     // =============================================================================================

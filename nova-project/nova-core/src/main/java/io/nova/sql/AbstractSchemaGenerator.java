@@ -286,7 +286,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         columns.add(discriminatorColumnDefinition(layout.rootMetadata()));
         appendTableChecks(layout.rootMetadata().tableDdlDefinition().checks(), layout.rootTableColumns(), columns);
         return "create table " + (ifNotExists ? "if not exists " : "")
-                + dialect.quote(info.rootTableName())
+                + qualifiedRootTable(info)
                 + " (" + String.join(", ", columns) + ")" + options(layout.rootMetadata().tableDdlDefinition().options());
     }
 
@@ -304,6 +304,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                 columns.add(columnDefinition(property, false));
             }
         }
+        String subtypeIdColumn = dialect.quote(metadata.idProperty().columnName());
+        columns.add("foreign key (" + subtypeIdColumn + ") references "
+                + qualifiedRootTable(layout.info()) + " (" + dialect.quote(layout.info().rootIdColumn()) + ")");
         appendTableChecks(metadata.tableDdlDefinition().checks(), subtype.ownTableColumns(), columns);
         return "create table " + (ifNotExists ? "if not exists " : "")
                 + qualifiedTable(metadata)
@@ -355,8 +358,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         String quotedTable = qualifiedTable(metadata);
         for (IndexDefinition index : metadata.indexes()) {
             statements.add(
-                    "create index " + dialect.quote(index.name()) + " on " + quotedTable
-                            + " (" + joinQuoted(index.columns()) + ")");
+                    "create " + (index.unique() ? "unique " : "") + "index " + dialect.quote(index.name())
+                            + " on " + quotedTable + " (" + joinIndexColumns(index.columns()) + ")"
+                            + options(index.options()));
         }
         for (UniqueConstraintDefinition constraint : metadata.uniqueConstraints()) {
             statements.add(
@@ -501,6 +505,21 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         return builder.toString();
     }
 
+    private String joinIndexColumns(List<IndexDefinition.Column> columns) {
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            IndexDefinition.Column column = columns.get(i);
+            builder.append(dialect.quote(column.name()));
+            if (column.direction() != null) {
+                builder.append(' ').append(column.direction());
+            }
+        }
+        return builder.toString();
+    }
+
     /**
      * 매핑된 프로퍼티에 대해 primary key, nullability를 포함한 컬럼 정의를 만든다.
      */
@@ -513,6 +532,13 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         return metadata.schema().isBlank()
                 ? quotedTable
                 : dialect.quote(metadata.schema()) + "." + quotedTable;
+    }
+
+    private String qualifiedRootTable(InheritanceInfo info) {
+        String quotedTable = dialect.quote(info.rootTableName());
+        return info.rootTableSchema().isBlank()
+                ? quotedTable
+                : dialect.quote(info.rootTableSchema()) + "." + quotedTable;
     }
 
     protected String columnDefinition(PersistentProperty property) {

@@ -1036,6 +1036,7 @@ public final class EntityMetadataFactory {
         String discriminatorValue = resolveDiscriminatorValue(
                 entityType, entityName, discriminatorType, abstractType, strategy);
         String rootTableName = "";
+        String rootTableSchema = "";
         String rootIdColumn = "";
         if (strategy == InheritanceType.JOINED) {
             // JOINED: 루트 물리 테이블과 루트 PK 컬럼은 모든 서브타입이 FK로 공유한다. 루트의 @Table/naming과
@@ -1044,12 +1045,13 @@ public final class EntityMetadataFactory {
             rootTableName = rootTable != null && !rootTable.name().isBlank()
                     ? rootTable.name()
                     : namingStrategy.tableName(root);
+            rootTableSchema = rootTable != null ? rootTable.schema() : "";
             rootIdColumn = joinedRootIdColumn(root);
         }
         return new InheritanceInfo(
                 root, strategy, root == entityType, abstractType,
                 columnName, discriminatorType, discriminatorLength, discriminatorValue,
-                rootTableName, rootIdColumn);
+                rootTableName, rootTableSchema, rootIdColumn);
     }
 
     /**
@@ -1133,18 +1135,42 @@ public final class EntityMetadataFactory {
         if (declarations.length == 0) {
             return List.of();
         }
-        List<IndexDefinition> result = new ArrayList<>(declarations.length);
+        List<UnboundIndexDefinition> definitions = new ArrayList<>(declarations.length);
         for (Index declaration : declarations) {
-            String[] columns = parseColumnList(declaration.columnList());
-            if (columns.length == 0) {
+            List<IndexDefinition.Column> indexColumns = parseIndexColumnList(
+                    declaration.columnList(), entityType);
+            if (indexColumns.isEmpty()) {
                 throw new IllegalArgumentException(
                         entityType.getName() + " @Index must declare at least one column");
             }
+            String[] columns = indexColumns.stream().map(IndexDefinition.Column::name).toArray(String[]::new);
             validateColumnsExist(entityType, "@Index", columns, columnNames);
-            String name = declaration.name().isBlank()
-                    ? autoGenerateName("ix_", tableName, columns)
-                    : declaration.name();
-            result.add(new IndexDefinition(name, List.of(columns)));
+            String options = indexOptions(declaration.options(), "@Index.options on " + entityType.getName());
+            boolean generatedName = declaration.name().isBlank();
+            String name = generatedName ? autoGenerateName("ix_", tableName, columns) : declaration.name();
+            definitions.add(new UnboundIndexDefinition(name, generatedName, indexColumns, declaration.unique(), options));
+        }
+        Map<String, Integer> generatedNameCounts = new LinkedHashMap<>();
+        for (UnboundIndexDefinition definition : definitions) {
+            if (definition.generatedName()) {
+                generatedNameCounts.merge(definition.name(), 1, Integer::sum);
+            }
+        }
+        List<IndexDefinition> result = new ArrayList<>(declarations.length);
+        Map<String, Integer> emittedNames = new LinkedHashMap<>();
+        for (UnboundIndexDefinition definition : definitions) {
+            String name = definition.name();
+            if (definition.generatedName() && generatedNameCounts.get(name) > 1) {
+                name = disambiguateGeneratedIndexName(name, definition);
+            }
+            int occurrence = emittedNames.merge(name, 1, Integer::sum);
+            if (definition.generatedName() && occurrence > 1) {
+                String ordinal = "_" + occurrence;
+                int prefixLength = Math.min(name.length(), MAX_AUTO_GENERATED_NAME_LENGTH - ordinal.length());
+                name = name.substring(0, prefixLength) + ordinal;
+                emittedNames.put(name, 1);
+            }
+            result.add(new IndexDefinition(name, definition.columns(), definition.unique(), definition.options()));
         }
         return result;
     }
@@ -1180,17 +1206,117 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * JPA {@link Index#columnList()} 형식(콤마 구분)을 컬럼 이름 배열로 파싱한다. 각 항목의 공백은
-     * 제거하고 빈 항목은 버린다.
+     * JPA {@link Index#columnList()} terms are comma-separated column identifiers with an
+     * optional ASC or DESC direction. Directions are parsed independently so the renderer can
+     * quote identifiers without treating the complete term as an identifier.
      */
-    private static String[] parseColumnList(String columnList) {
+    private static List<IndexDefinition.Column> parseIndexColumnList(String columnList, Class<?> entityType) {
         if (columnList == null || columnList.isBlank()) {
-            return new String[0];
+            return List.of();
         }
-        return Arrays.stream(columnList.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .toArray(String[]::new);
+        List<IndexDefinition.Column> columns = new ArrayList<>();
+        for (String term : columnList.split(",", -1)) {
+            String trimmed = term.trim();
+            if (trimmed.isEmpty()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @Index contains a blank column term");
+            }
+            String[] tokens = trimmed.split("\\s+");
+            if (tokens.length > 2) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @Index has malformed column term '" + trimmed + "'");
+            }
+            IndexDefinition.Direction direction = null;
+            if (tokens.length == 2) {
+                try {
+                    direction = IndexDefinition.Direction.valueOf(tokens[1].toUpperCase(java.util.Locale.ROOT));
+                } catch (IllegalArgumentException exception) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + " @Index has invalid direction '" + tokens[1]
+                                    + "' in column term '" + trimmed + "'; expected ASC or DESC",
+                            exception);
+                }
+            }
+            columns.add(new IndexDefinition.Column(tokens[0], direction));
+        }
+        return List.copyOf(columns);
+    }
+
+    private static String indexOptions(String value, String location) {
+        String options = fragment(value, location);
+        boolean singleQuoted = false;
+        boolean doubleQuoted = false;
+        int parentheses = 0;
+        for (int i = 0; i < options.length(); i++) {
+            char character = options.charAt(i);
+            if (Character.isISOControl(character)) {
+                throw new IllegalArgumentException(location + " must not contain control characters");
+            }
+            if (character == '\'' && !doubleQuoted) {
+                if (singleQuoted && i + 1 < options.length() && options.charAt(i + 1) == '\'') {
+                    i++;
+                } else {
+                    singleQuoted = !singleQuoted;
+                }
+                continue;
+            }
+            if (character == '"' && !singleQuoted) {
+                if (doubleQuoted && i + 1 < options.length() && options.charAt(i + 1) == '"') {
+                    i++;
+                } else {
+                    doubleQuoted = !doubleQuoted;
+                }
+                continue;
+            }
+            if (!singleQuoted && !doubleQuoted) {
+                if (character == ';' || (character == '-' && i + 1 < options.length()
+                        && options.charAt(i + 1) == '-') || (character == '/' && i + 1 < options.length()
+                        && options.charAt(i + 1) == '*') || (character == '*' && i + 1 < options.length()
+                        && options.charAt(i + 1) == '/')) {
+                    throw new IllegalArgumentException(
+                            location + " must not contain SQL statement delimiters or comments");
+                }
+                if (character == '(') {
+                    parentheses++;
+                } else if (character == ')') {
+                    if (parentheses == 0) {
+                        throw new IllegalArgumentException(location + " has unbalanced parentheses");
+                    }
+                    parentheses--;
+                }
+            }
+        }
+        if (singleQuoted || doubleQuoted) {
+            throw new IllegalArgumentException(location + " has an unbalanced quoted value");
+        }
+        if (parentheses != 0) {
+            throw new IllegalArgumentException(location + " has unbalanced parentheses");
+        }
+        return options;
+    }
+
+    private static String disambiguateGeneratedIndexName(String baseName, UnboundIndexDefinition definition) {
+        StringBuilder fingerprint = new StringBuilder();
+        for (IndexDefinition.Column column : definition.columns()) {
+            fingerprint.append(column.name()).append('\0');
+            if (column.direction() != null) {
+                fingerprint.append(column.direction().name());
+            }
+            fingerprint.append('\0');
+        }
+        fingerprint.append(definition.unique()).append('\0').append(definition.options());
+        String suffix = "_" + Integer.toHexString(fingerprint.toString().hashCode());
+        int prefixLength = Math.min(baseName.length(), MAX_AUTO_GENERATED_NAME_LENGTH - suffix.length());
+        return baseName.substring(0, prefixLength) + suffix;
+    }
+
+    private record UnboundIndexDefinition(
+            String name,
+            boolean generatedName,
+            List<IndexDefinition.Column> columns,
+            boolean unique,
+            String options
+    ) {
     }
 
     /**
@@ -2363,9 +2489,8 @@ public final class EntityMetadataFactory {
     }
 
     private static String fragment(String value, String location) {
-        String trimmed = value == null ? "" : value.trim();
-        validateNoNul(trimmed, location);
-        return trimmed;
+        validateNoNul(value, location);
+        return value == null ? "" : value.trim();
     }
 
     private static void validateNoNul(String value, String location) {

@@ -101,8 +101,10 @@ import jakarta.persistence.ExcludeDefaultListeners;
 import jakarta.persistence.ExcludeSuperclassListeners;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.PrePersist;
+import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
 import jakarta.persistence.EnumType;
 
@@ -595,7 +597,9 @@ class EntityMetadataFactoryTest {
         assertEquals(1, metadata.indexes().size());
         IndexDefinition index = metadata.indexes().get(0);
         assertEquals("ix_indexed_email", index.name());
-        assertEquals(java.util.List.of("email"), index.columns());
+        assertEquals(java.util.List.of(new IndexDefinition.Column("email", null)), index.columns());
+        assertFalse(index.unique());
+        assertEquals("", index.options());
         assertTrue(metadata.uniqueConstraints().isEmpty());
     }
 
@@ -616,8 +620,80 @@ class EntityMetadataFactoryTest {
         EntityMetadata<RepeatedIndexEntity> metadata = factory.getEntityMetadata(RepeatedIndexEntity.class);
 
         assertEquals(2, metadata.indexes().size());
-        assertEquals(java.util.List.of("email"), metadata.indexes().get(0).columns());
-        assertEquals(java.util.List.of("first_name", "last_name"), metadata.indexes().get(1).columns());
+        assertEquals(java.util.List.of(new IndexDefinition.Column("email", null)),
+                metadata.indexes().get(0).columns());
+        assertEquals(java.util.List.of(
+                        new IndexDefinition.Column("first_name", null),
+                        new IndexDefinition.Column("last_name", null)),
+                metadata.indexes().get(1).columns());
+    }
+
+    @Test
+    void capturesUniqueOrderedIndexColumnsAndOptions() {
+        IndexDefinition index = factory.getEntityMetadata(OrderedIndexEntity.class).indexes().get(0);
+
+        assertEquals("ix_ordered_email_created", index.name());
+        assertEquals(java.util.List.of(
+                        new IndexDefinition.Column("email", IndexDefinition.Direction.DESC),
+                        new IndexDefinition.Column("created_at", IndexDefinition.Direction.ASC)),
+                index.columns());
+        assertTrue(index.unique());
+        assertEquals("using btree", index.options());
+    }
+
+    @Test
+    void disambiguatesGeneratedNamesForIndexesWithDifferentDefinitions() {
+        List<IndexDefinition> indexes = factory.getEntityMetadata(CollidingGeneratedIndexEntity.class).indexes();
+
+        assertEquals(3, indexes.size());
+        assertEquals(3, indexes.stream().map(IndexDefinition::name).distinct().count());
+        assertTrue(indexes.stream().allMatch(index -> index.name().startsWith("ix_colliding_indexed_accounts_email")));
+        assertTrue(indexes.stream().allMatch(index -> index.name().length() <= 63));
+    }
+
+    @Test
+    void acceptsDelimiterAndCommentTokensInsideQuotedIndexOptions() {
+        IndexDefinition index = factory.getEntityMetadata(QuotedLiteralIndexOptionsEntity.class).indexes().get(0);
+
+        assertEquals("comment 'lookup; -- /* accelerator */'", index.options());
+    }
+
+    @Test
+    void rejectsIndexWithMalformedDirection() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(IndexWithMalformedDirectionEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@Index"));
+        assertTrue(exception.getMessage().contains("direction"));
+    }
+
+    @Test
+    void rejectsIndexWithUnsafeOptions() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(IndexWithUnsafeOptionsEntity.class)
+        );
+
+        assertTrue(exception.getMessage().contains("@Index.options"));
+        assertTrue(exception.getMessage().contains("NUL"));
+    }
+
+    @Test
+    void rejectsIndexOptionsWithSqlDelimitersCommentsOrUnbalancedSyntax() {
+        assertIndexOptionsRejected(IndexWithSemicolonOptionsEntity.class);
+        assertIndexOptionsRejected(IndexWithCommentOptionsEntity.class);
+        assertIndexOptionsRejected(IndexWithUnbalancedOptionsEntity.class);
+    }
+
+    private void assertIndexOptionsRejected(Class<?> entityType) {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(entityType)
+        );
+
+        assertTrue(exception.getMessage().contains("@Index.options"));
     }
 
     @Test
@@ -1504,5 +1580,97 @@ class EntityMetadataFactoryTest {
         @PrePersist
         void beforePersist(Object entity) {
         }
+    }
+
+    @Entity
+    @Table(name = "ordered_indexed_accounts",
+            indexes = @Index(
+                    name = "ix_ordered_email_created",
+                    columnList = "email DESC, created_at asc",
+                    unique = true,
+                    options = " using btree "))
+    static class OrderedIndexEntity {
+        @Id
+        private Long id;
+
+        private String email;
+
+        private java.time.Instant createdAt;
+    }
+
+    @Entity
+    @Table(name = "colliding_indexed_accounts",
+            indexes = {
+                    @Index(columnList = "email ASC"),
+                    @Index(columnList = "email DESC"),
+                    @Index(columnList = "email", unique = true, options = "where active = true")
+            })
+    static class CollidingGeneratedIndexEntity {
+        @Id
+        private Long id;
+
+        private String email;
+
+        private boolean active;
+    }
+
+    @Entity
+    @Table(name = "quoted_literal_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "comment 'lookup; -- /* accelerator */'"))
+    static class QuotedLiteralIndexOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
+    }
+
+    @Entity
+    @Table(name = "malformed_indexed_accounts",
+            indexes = @Index(columnList = "email sideways"))
+    static class IndexWithMalformedDirectionEntity {
+        @Id
+        private Long id;
+
+        private String email;
+    }
+
+    @Entity
+    @Table(name = "unsafe_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "using btree\0"))
+    static class IndexWithUnsafeOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
+    }
+
+    @Entity
+    @Table(name = "semicolon_option_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "using btree; drop table accounts"))
+    static class IndexWithSemicolonOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
+    }
+
+    @Entity
+    @Table(name = "comment_option_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "using btree -- ignored"))
+    static class IndexWithCommentOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
+    }
+
+    @Entity
+    @Table(name = "unbalanced_option_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "with (fillfactor = 70"))
+    static class IndexWithUnbalancedOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
     }
 }

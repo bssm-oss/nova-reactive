@@ -703,7 +703,12 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     private Mono<Void> dropMultiTableHierarchy(Class<?> entityType, SchemaOptions options) {
         io.nova.metadata.InheritanceLayout layout = metadataFactory.inheritanceLayout(schemaRootClass(entityType));
         SchemaGenerator generator = dialect.schemaGenerator();
-        Mono<Void> dropSubtypes = Flux.fromIterable(layout.subtypes())
+        List<io.nova.metadata.InheritanceLayout.ConcreteSubtype> subtypes = new ArrayList<>(layout.subtypes());
+        if (layout.info().joined()) {
+            // Most-derived tables can depend on their ancestor subtype tables; drop in reverse hierarchy order.
+            java.util.Collections.reverse(subtypes);
+        }
+        Mono<Void> dropSubtypes = Flux.fromIterable(subtypes)
                 .filter(subtype -> !(layout.info().joined()
                         && subtype.metadata().entityType() == layout.info().root()))
                 .concatMap(subtype -> {
@@ -718,11 +723,12 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
             return dropSubtypes;
         }
         // JOINED 루트 테이블은 서브타입 테이블 드롭 이후 마지막에 드롭한다.
-        String rootTable = layout.info().rootTableName();
+        EntityMetadata<?> rootMetadata = layout.rootMetadata();
         String rootDrop = options.ifNotExists()
-                ? "drop table if exists " + dialect.quote(rootTable)
-                : "drop table " + dialect.quote(rootTable);
-        return dropSubtypes.then(operations.executeNative(NativeQuery.of(rootDrop)).then());
+                ? generator.dropTableIfExists(rootMetadata)
+                : generator.dropTable(rootMetadata);
+        return dropSubtypes.then(Mono.defer(
+                () -> operations.executeNative(NativeQuery.of(rootDrop)).then()));
     }
 
     /**
