@@ -18,7 +18,7 @@ public sealed interface Expression
         }
     }
 
-    /** 리터럴 상수. {@code value}는 String/Long/java.math.BigDecimal/Boolean 중 하나. */
+    /** 리터럴 상수. {@code value}는 String, Integer, Long, Float, Double, BigInteger, BigDecimal, Boolean 또는 null이다. */
     record Literal(Object value) implements Expression {
     }
 

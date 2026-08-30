@@ -87,6 +87,19 @@ class JpqlSqlBuilderTest {
     }
 
     @Test
+    void bindsSignedNumericLiteralsWithoutArithmeticPromotion() {
+        TranslatedSql t = scalar("SELECT -1, -2L, -3F, -4D, -5BI, -6BD FROM Employee e");
+
+        assertEquals(List.of(
+                new JpqlBinding.Literal(-1),
+                new JpqlBinding.Literal(-2L),
+                new JpqlBinding.Literal(-3f),
+                new JpqlBinding.Literal(-4d),
+                new JpqlBinding.Literal(new java.math.BigInteger("-5")),
+                new JpqlBinding.Literal(new BigDecimal("-6"))), t.bindings());
+    }
+
+    @Test
     void rendersAggregateGroupByHavingOverManyToOneJoin() {
         TranslatedSql t = scalar("SELECT d.name, COUNT(e) FROM Employee e JOIN e.department d "
                 + "GROUP BY d.name HAVING COUNT(e) > 5");

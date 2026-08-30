@@ -130,6 +130,29 @@ class JpqlParserTest {
     }
 
     @Test
+    void parsesNegativeNumericLiteralsWithoutArithmeticPromotion() {
+        assertEquals(-1, literalValue("-1"));
+        assertEquals(-1L, literalValue("-1L"));
+        assertEquals(-1f, literalValue("-1F"));
+        assertEquals(-1d, literalValue("-1D"));
+        assertEquals(new BigInteger("-1"), literalValue("-1BI"));
+        assertEquals(new BigDecimal("-1"), literalValue("-1BD"));
+        assertEquals(Integer.MIN_VALUE, literalValue("-2147483648"));
+        assertEquals(Long.MIN_VALUE, literalValue("-9223372036854775808L"));
+    }
+
+    @Test
+    void rejectsFloatingPointUnderflowButAcceptsZeroAndSubnormalValues() {
+        for (String literal : List.of("1e-50F", "1e-400", "1e-400D")) {
+            assertThrows(JpqlSyntaxException.class, () -> literalValue(literal), literal);
+        }
+        assertEquals(0f, literalValue("0F"));
+        assertEquals(0d, literalValue("0e-400"));
+        assertEquals(Float.MIN_VALUE, literalValue("1.4e-45F"));
+        assertEquals(Double.MIN_VALUE, literalValue("4.9e-324D"));
+    }
+
+    @Test
     void parsesAggregateGroupByHaving() {
         JpqlStatement.Select select = parseSelect(
                 "SELECT d.name, COUNT(e) FROM Employee e JOIN e.department d GROUP BY d.name HAVING COUNT(e) > 5");

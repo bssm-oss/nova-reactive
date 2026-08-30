@@ -418,11 +418,17 @@ public final class JpqlParser {
     private Expression parseUnary() {
         if (isOperator("-")) {
             advance();
+            if (peek().type() == TokenType.NUMBER) {
+                return new Expression.Literal(numberValue(advance().text(), true));
+            }
             // 단항 마이너스는 0 - x 로 정규화
-            return new Expression.Arithmetic(ArithmeticOp.SUBTRACT, new Expression.Literal(0L), parseUnary());
+            return new Expression.Arithmetic(ArithmeticOp.SUBTRACT, new Expression.Literal(0), parseUnary());
         }
         if (isOperator("+")) {
             advance();
+            if (peek().type() == TokenType.NUMBER) {
+                return new Expression.Literal(numberValue(advance().text(), false));
+            }
             return parseUnary();
         }
         return parsePrimaryExpression();
@@ -812,6 +818,10 @@ public final class JpqlParser {
     }
 
     private static Object numberValue(String text) {
+        return numberValue(text, false);
+    }
+
+    private static Object numberValue(String text, boolean negative) {
         String suffix = "";
         String value = text;
         if (text.length() >= 2) {
@@ -827,6 +837,9 @@ public final class JpqlParser {
                 suffix = String.valueOf(Character.toUpperCase(last));
                 value = text.substring(0, text.length() - 1);
             }
+        }
+        if (negative) {
+            value = "-" + value;
         }
         boolean approximate = value.indexOf('.') >= 0 || value.indexOf('e') >= 0 || value.indexOf('E') >= 0;
         if ((suffix.equals("L") || suffix.equals("BI")) && approximate) {
@@ -859,6 +872,9 @@ public final class JpqlParser {
         if (!Float.isFinite(result)) {
             throw new JpqlSyntaxException("Numeric literal is out of range: " + text);
         }
+        if (result == 0.0f && new BigDecimal(value).signum() != 0) {
+            throw new JpqlSyntaxException("Numeric literal underflows to zero: " + text);
+        }
         return result;
     }
 
@@ -866,6 +882,9 @@ public final class JpqlParser {
         Double result = Double.valueOf(value);
         if (!Double.isFinite(result)) {
             throw new JpqlSyntaxException("Numeric literal is out of range: " + text);
+        }
+        if (result == 0.0d && new BigDecimal(value).signum() != 0) {
+            throw new JpqlSyntaxException("Numeric literal underflows to zero: " + text);
         }
         return result;
     }
