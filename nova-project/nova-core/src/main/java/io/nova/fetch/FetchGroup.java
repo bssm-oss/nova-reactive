@@ -31,14 +31,17 @@ public final class FetchGroup<P> {
     private final Class<P> parentType;
     private final List<FetchSpec<P, ?>> specs;
     private final List<CompositeToOneSpec<P, ?>> compositeToOneSpecs;
+    private final List<CompositeInverseSpec<P, ?>> compositeInverseSpecs;
 
     private FetchGroup(
             Class<P> parentType,
             List<FetchSpec<P, ?>> specs,
-            List<CompositeToOneSpec<P, ?>> compositeToOneSpecs) {
+            List<CompositeToOneSpec<P, ?>> compositeToOneSpecs,
+            List<CompositeInverseSpec<P, ?>> compositeInverseSpecs) {
         this.parentType = parentType;
         this.specs = List.copyOf(specs);
         this.compositeToOneSpecs = List.copyOf(compositeToOneSpecs);
+        this.compositeInverseSpecs = List.copyOf(compositeInverseSpecs);
     }
 
     /**
@@ -66,6 +69,10 @@ public final class FetchGroup<P> {
         return compositeToOneSpecs;
     }
 
+    public List<CompositeInverseSpec<P, ?>> compositeInverseSpecs() {
+        return compositeInverseSpecs;
+    }
+
     /**
      * {@link FetchGroup}을 누적해서 만드는 immutable builder. 각 {@link #with(Class, String, Function, BiConsumer)}
      * 호출은 동일 builder 인스턴스에 child spec을 추가하며 마지막에 {@link #build()}로 동결한다.
@@ -74,6 +81,7 @@ public final class FetchGroup<P> {
         private final Class<P> parentType;
         private final List<FetchSpec<P, ?>> specs = new ArrayList<>();
         private final List<CompositeToOneSpec<P, ?>> compositeToOneSpecs = new ArrayList<>();
+        private final List<CompositeInverseSpec<P, ?>> compositeInverseSpecs = new ArrayList<>();
 
         private Builder(Class<P> parentType) {
             this.parentType = parentType;
@@ -217,8 +225,36 @@ public final class FetchGroup<P> {
             return this;
         }
 
+        /**
+         * 복합키 parent를 가리키는 inverse {@code @OneToMany}/{@code @OneToOne} batch fetch를 추가한다.
+         * child owning to-one의 모든 FK 컴포넌트를 AND로, parent 튜플들을 OR로 묶어 조회한다.
+         */
+        public <C> Builder<P> withCompositeInverse(
+                Class<C> childType,
+                String childForeignKeyProperty,
+                Function<P, Object> parentIdExtractor,
+                Function<C, Object> childForeignKeyExtractor,
+                BiConsumer<P, List<C>> setter,
+                boolean single,
+                Sort orderBy,
+                String orderColumn
+        ) {
+            Objects.requireNonNull(childType, "childType must not be null");
+            Objects.requireNonNull(childForeignKeyProperty, "childForeignKeyProperty must not be null");
+            if (childForeignKeyProperty.isBlank()) {
+                throw new IllegalArgumentException("childForeignKeyProperty must not be blank");
+            }
+            Objects.requireNonNull(parentIdExtractor, "parentIdExtractor must not be null");
+            Objects.requireNonNull(childForeignKeyExtractor, "childForeignKeyExtractor must not be null");
+            Objects.requireNonNull(setter, "setter must not be null");
+            compositeInverseSpecs.add(new CompositeInverseSpec<>(
+                    childType, childForeignKeyProperty, parentIdExtractor, childForeignKeyExtractor,
+                    setter, single, orderBy, orderColumn));
+            return this;
+        }
+
         public FetchGroup<P> build() {
-            return new FetchGroup<>(parentType, specs, compositeToOneSpecs);
+            return new FetchGroup<>(parentType, specs, compositeToOneSpecs, compositeInverseSpecs);
         }
     }
 
@@ -264,6 +300,25 @@ public final class FetchGroup<P> {
         public CompositeToOneSpec {
             Objects.requireNonNull(targetType, "targetType must not be null");
             Objects.requireNonNull(referenceReader, "referenceReader must not be null");
+            Objects.requireNonNull(setter, "setter must not be null");
+        }
+    }
+
+    public record CompositeInverseSpec<P, C>(
+            Class<C> childType,
+            String childForeignKeyProperty,
+            Function<P, Object> parentIdExtractor,
+            Function<C, Object> childForeignKeyExtractor,
+            BiConsumer<P, List<C>> setter,
+            boolean single,
+            Sort orderBy,
+            String orderColumn
+    ) {
+        public CompositeInverseSpec {
+            Objects.requireNonNull(childType, "childType must not be null");
+            Objects.requireNonNull(childForeignKeyProperty, "childForeignKeyProperty must not be null");
+            Objects.requireNonNull(parentIdExtractor, "parentIdExtractor must not be null");
+            Objects.requireNonNull(childForeignKeyExtractor, "childForeignKeyExtractor must not be null");
             Objects.requireNonNull(setter, "setter must not be null");
         }
     }

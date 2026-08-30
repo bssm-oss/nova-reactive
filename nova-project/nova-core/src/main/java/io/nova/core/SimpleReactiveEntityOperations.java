@@ -966,7 +966,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // retainedIds가 비고, 결국 "이 parent의 child 전부 삭제"로 붕괴해 방금 저장한 child까지 지워진다.
         // 이 stateless 경로에는 세션-바운드 reparenting 개념이 없으므로 제외 집합은 항상 빈 리스트를 넘긴다.
         return persistChildren.then(
-                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parentId, children, List.of())
+                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parent, children, List.of())
                         // The removed child's reverse cascade may point back at this stateless save owner.
                         // Seed its persistence identity so that back-edge cannot delete the owner.
                         .contextWrite(context -> {
@@ -987,7 +987,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 참고). stateless 호출부(eager cascade)는 reparenting 개념이 없으므로 항상 빈 리스트를 넘긴다.
      */
     private Mono<Long> removeOrphans(
-            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId,
+            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parent,
             List<Object> children, List<Object> excludeIds) {
         List<Object> retainedIds = new ArrayList<>();
         for (Object child : children) {
@@ -997,7 +997,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
         }
         retainedIds.addAll(excludeIds);
-        Condition fkMatches = Criteria.eq(mappedByProperty.propertyName(), parentId);
+        // A composite owning to-one expands this entity reference through every ToOneForeignKey
+        // component. Passing only its id would make the renderer inspect the wrong object (and a
+        // first-component fallback would cross-wire tenants sharing that component).
+        Condition fkMatches = Criteria.eq(mappedByProperty.propertyName(), parent);
         QuerySpec spec = retainedIds.isEmpty()
                 ? QuerySpec.empty().where(fkMatches)
                 : QuerySpec.empty().where(Criteria.and(
@@ -2186,7 +2189,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     }
                     Object currentOwnerRef = mappedByProperty.readReferenceInstance(child);
                     Object currentOwnerId = currentOwnerRef == null ? null : metadata.readIdValue(currentOwnerRef);
-                    if (!Objects.equals(currentOwnerId, ownerId)) {
+                    if (!sameIdTuple(metadata, currentOwnerId, ownerId)) {
                         return Mono.error(new IllegalStateException(
                                 metadata.entityType().getName() + "." + property.propertyName()
                                         + ": moving an already-managed @OneToMany child (id=" + childId
@@ -2256,7 +2259,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         } else if (haveBaseline) {
             handleOrphans = trueOrphanIds.isEmpty()
                     ? Mono.empty()
-                    : disownOrphans(childMetadata, mappedByProperty, ownerId, trueOrphanIds);
+                    : disownOrphans(childMetadata, mappedByProperty, owner, trueOrphanIds);
         } else {
             // baseline 없음(detached) + orphanRemoval 없음: 현행 eager cascade와 동일하게 정리를 하지 않는다.
             handleOrphans = Mono.empty();
@@ -2305,11 +2308,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
             Object currentOwnerRef = mappedByProperty.readReferenceInstance(candidate.entity());
             Object currentOwnerId = currentOwnerRef == null ? null : ownerMetadata.readIdValue(currentOwnerRef);
-            if (currentOwnerId != null && !Objects.equals(currentOwnerId, ownerId)) {
+            if (currentOwnerId != null && !sameIdTuple(ownerMetadata, currentOwnerId, ownerId)) {
                 moved.add(candidateId);
             }
         }
         return moved;
+    }
+
+    private static boolean sameIdTuple(EntityMetadata<?> metadata, Object left, Object right) {
+        if (left == null || right == null) {
+            return left == right;
+        }
+        if (!metadata.hasCompositeId()) {
+            return Objects.equals(left, right);
+        }
+        return idColumnTuple(metadata, metadata.idProperties(), left)
+                .equals(idColumnTuple(metadata, metadata.idProperties(), right));
     }
 
     /**
@@ -2322,7 +2336,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * constraint-violation 예외로 실패한다 — 그 전에 명확한 메시지로 먼저 거부한다.
      */
     private Mono<Void> disownOrphans(
-            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId, List<Object> removedIds) {
+            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parent, List<Object> removedIds) {
         if (!mappedByProperty.manyToOneNullable()) {
             return Mono.error(new IllegalStateException(
                     childMetadata.entityType().getName() + "." + mappedByProperty.propertyName()
@@ -2334,7 +2348,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         LinkedHashMap<String, Object> fieldValues = new LinkedHashMap<>();
         fieldValues.put(mappedByProperty.propertyName(), null);
         QuerySpec spec = QuerySpec.empty().where(Criteria.and(
-                Criteria.eq(mappedByProperty.propertyName(), parentId),
+                Criteria.eq(mappedByProperty.propertyName(), parent),
                 Criteria.in(childMetadata.idProperty().propertyName(), removedIds)));
         return sqlExecutor.execute(dialect.sqlRenderer().updateByQuery(childMetadata, fieldValues, spec)).then();
     }
@@ -3787,7 +3801,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return userGroup;
         }
         FetchGroup<P> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
-        if (annotationGroup.specs().isEmpty() && annotationGroup.compositeToOneSpecs().isEmpty()) {
+        if (annotationGroup.specs().isEmpty() && annotationGroup.compositeToOneSpecs().isEmpty()
+                && annotationGroup.compositeInverseSpecs().isEmpty()) {
             return userGroup;
         }
         LinkedHashSet<String> userKeys = new LinkedHashSet<>();
@@ -3818,6 +3833,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
             appendCompositeSpec(builder, spec);
         }
+        for (FetchGroup.CompositeInverseSpec<P, ?> spec : userGroup.compositeInverseSpecs()) {
+            appendCompositeInverseSpec(builder, spec);
+        }
+        for (FetchGroup.CompositeInverseSpec<P, ?> spec : annotationGroup.compositeInverseSpecs()) {
+            appendCompositeInverseSpec(builder, spec);
+        }
         return builder.build();
     }
 
@@ -3828,6 +3849,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private static <P, C> void appendCompositeSpec(
             FetchGroup.Builder<P> builder, FetchGroup.CompositeToOneSpec<P, C> spec) {
         builder.withCompositeReferencedParent(spec.targetType(), spec.referenceReader(), spec.setter());
+    }
+
+    private static <P, C> void appendCompositeInverseSpec(
+            FetchGroup.Builder<P> builder, FetchGroup.CompositeInverseSpec<P, C> spec) {
+        builder.withCompositeInverse(
+                spec.childType(), spec.childForeignKeyProperty(), spec.parentIdExtractor(),
+                spec.childForeignKeyExtractor(), spec.setter(), spec.single(), spec.orderBy(), spec.orderColumn());
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -3870,13 +3898,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private <P> Mono<Void> hydrateChildren(List<P> parents, FetchGroup<P> fetchGroup) {
         if (parents.isEmpty()
-                || (fetchGroup.specs().isEmpty() && fetchGroup.compositeToOneSpecs().isEmpty())) {
+                || (fetchGroup.specs().isEmpty() && fetchGroup.compositeToOneSpecs().isEmpty()
+                && fetchGroup.compositeInverseSpecs().isEmpty())) {
             return Mono.empty();
         }
         return Flux.fromIterable(fetchGroup.specs())
                 .concatMap(spec -> hydrateChildSpec(parents, spec))
                 .thenMany(Flux.fromIterable(fetchGroup.compositeToOneSpecs())
                         .concatMap(spec -> hydrateCompositeToOneSpec(parents, spec)))
+                .thenMany(Flux.fromIterable(fetchGroup.compositeInverseSpecs())
+                        .concatMap(spec -> hydrateCompositeInverseSpec(parents, spec)))
                 .then();
     }
 
@@ -4528,6 +4559,71 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     return sortChildrenByOrderColumn(childMetadata, spec, orderedParentIds, children)
                             .doOnNext(sorted -> assignChildrenToParents(parents, sorted, spec, fkProperty))
                             .then();
+                })
+                .then();
+    }
+
+    /**
+     * Composite parent FK inverse fetch. A child owning to-one stores one FK column per parent id
+     * component, so a first-component IN predicate would cross-wire parents sharing that component.
+     * Keep each complete parent tuple as the grouping key and let the existing composite to-one
+     * criteria renderer expand the query into OR-of-AND component predicates.
+     */
+    private <P, C> Mono<Void> hydrateCompositeInverseSpec(
+            List<P> parents, FetchGroup.CompositeInverseSpec<P, C> spec) {
+        EntityMetadata<C> childMetadata = metadataFactory.getEntityMetadata(spec.childType());
+        PersistentProperty owning = childMetadata.findProperty(spec.childForeignKeyProperty())
+                .orElseThrow(() -> new IllegalStateException(
+                        "No property '" + spec.childForeignKeyProperty() + "' on "
+                                + childMetadata.entityType().getName()));
+        if (!owning.isCompositeToOne()) {
+            return Mono.error(new IllegalStateException(
+                    childMetadata.entityType().getName() + "." + owning.propertyName()
+                            + " is not a composite to-one foreign key"));
+        }
+        EntityMetadata<?> parentMetadata = metadataFactory.getEntityMetadata(owning.manyToOneTargetType());
+        List<PersistentProperty> parentIdProperties = parentMetadata.idProperties();
+        LinkedHashMap<List<Object>, P> parentByTuple = new LinkedHashMap<>();
+        for (P parent : parents) {
+            Object id = spec.parentIdExtractor().apply(parent);
+            if (id != null) {
+                parentByTuple.putIfAbsent(idColumnTuple(parentMetadata, parentIdProperties, id), parent);
+            }
+        }
+        if (parentByTuple.isEmpty()) {
+            for (P parent : parents) {
+                spec.setter().accept(parent, new ArrayList<>());
+            }
+            return Mono.empty();
+        }
+        List<Predicate> terms = new ArrayList<>(parentByTuple.size());
+        for (P parent : parentByTuple.values()) {
+            terms.add(Criteria.eq(owning.propertyName(), parent));
+        }
+        Predicate predicate = terms.size() == 1 ? terms.get(0) : Criteria.or(terms.toArray(new Predicate[0]));
+        QuerySpec query = QuerySpec.empty().where(predicate);
+        if (spec.orderBy() != null) {
+            query = query.orderBy(spec.orderBy());
+        }
+        return findAllInternal(childMetadata, query)
+                .collectList()
+                .doOnNext(children -> {
+                    LinkedHashMap<List<Object>, List<C>> grouped = new LinkedHashMap<>();
+                    for (C child : children) {
+                        Object reference = spec.childForeignKeyExtractor().apply(child);
+                        List<Object> tuple = compositeIdTuple(parentMetadata, parentIdProperties, reference);
+                        if (tuple != null) {
+                            grouped.computeIfAbsent(tuple, ignored -> new ArrayList<>()).add(child);
+                        }
+                    }
+                    for (P parent : parents) {
+                        Object id = spec.parentIdExtractor().apply(parent);
+                        List<C> bucket = id == null
+                                ? new ArrayList<>()
+                                : new ArrayList<>(grouped.getOrDefault(
+                                        idColumnTuple(parentMetadata, parentIdProperties, id), List.of()));
+                        spec.setter().accept(parent, bucket);
+                    }
                 })
                 .then();
     }

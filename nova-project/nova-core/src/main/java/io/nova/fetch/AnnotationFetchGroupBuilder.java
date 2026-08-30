@@ -116,7 +116,7 @@ public final class AnnotationFetchGroupBuilder {
                     parentType.getName() + "." + oneToMany.propertyName()
                             + " @OneToMany requires targetEntity to be specified (cannot infer from generic List)");
         }
-        String fkColumn = resolveOneToManyForeignKeyColumn(parentType, oneToMany, childType);
+        PersistentProperty owning = resolveOneToManyForeignKeyProperty(parentType, oneToMany, childType);
         Function<P, Object> parentIdExtractor = parent -> idProperty.read(parent);
         BiConsumer<P, java.util.List<Object>> setter = (parent, children) ->
                 writeField(parent, oneToMany.field(), children);
@@ -124,14 +124,26 @@ public final class AnnotationFetchGroupBuilder {
         String orderColumn = oneToMany.oneToManyOrderColumn() != null
                 ? oneToMany.oneToManyOrderColumn().columnName()
                 : null;
-        builder.with(
-                (Class<Object>) childType,
-                fkColumn,
-                parentIdExtractor,
-                setter,
-                resolveOrderBy(oneToMany.field(), childType),
-                orderColumn
-        );
+        if (owning.isCompositeToOne()) {
+            builder.withCompositeInverse(
+                    (Class<Object>) childType,
+                    owning.propertyName(),
+                    parentIdExtractor,
+                    owning::readReference,
+                    setter,
+                    false,
+                    resolveOrderBy(oneToMany.field(), childType),
+                    orderColumn);
+        } else {
+            builder.with(
+                    (Class<Object>) childType,
+                    owning.columnName(),
+                    parentIdExtractor,
+                    setter,
+                    resolveOrderBy(oneToMany.field(), childType),
+                    orderColumn
+            );
+        }
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -189,16 +201,30 @@ public final class AnnotationFetchGroupBuilder {
                     parentType.getName() + "." + oneToOne.propertyName()
                             + " inverse @OneToOne requires a resolvable target entity type");
         }
-        String fkColumn = resolveOneToManyForeignKeyColumn(parentType, oneToOne, childType);
+        PersistentProperty owning = resolveOneToManyForeignKeyProperty(parentType, oneToOne, childType);
         Function<P, Object> parentIdExtractor = parent -> idProperty.read(parent);
         // inverse @OneToOne도 @Access(PROPERTY)면 setter로 참조를 주입한다(FIELD면 field 직접 대입).
         BiConsumer<P, Object> singleSetter = oneToOne::writeReference;
-        builder.withInverseReference(
-                (Class<Object>) childType,
-                fkColumn,
-                parentIdExtractor,
-                singleSetter
-        );
+        if (owning.isCompositeToOne()) {
+            BiConsumer<P, java.util.List<Object>> listSetter = (parent, children) ->
+                    singleSetter.accept(parent, children.isEmpty() ? null : children.get(0));
+            builder.withCompositeInverse(
+                    (Class<Object>) childType,
+                    owning.propertyName(),
+                    parentIdExtractor,
+                    owning::readReference,
+                    listSetter,
+                    true,
+                    null,
+                    null);
+        } else {
+            builder.withInverseReference(
+                    (Class<Object>) childType,
+                    owning.columnName(),
+                    parentIdExtractor,
+                    singleSetter
+            );
+        }
     }
 
     /**
@@ -230,7 +256,7 @@ public final class AnnotationFetchGroupBuilder {
      * child entity의 {@code @ManyToOne mappedBy} property를 찾아 FK 컬럼 이름을 resolve한다.
      * mappedBy가 child entity 안에 존재하지 않거나 그 property가 {@code @ManyToOne}이 아니면 거부한다.
      */
-    private String resolveOneToManyForeignKeyColumn(
+    private PersistentProperty resolveOneToManyForeignKeyProperty(
             Class<?> parentType, PersistentProperty oneToMany, Class<?> childType) {
         String mappedBy = oneToMany.oneToManyMappedBy();
         EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(childType);
@@ -245,7 +271,7 @@ public final class AnnotationFetchGroupBuilder {
                             + " @OneToMany(mappedBy=\"" + mappedBy + "\") refers to a non-@ManyToOne property on "
                             + childType.getName());
         }
-        return owning.columnName();
+        return owning;
     }
 
     private static void writeField(Object instance, Field field, Object value) {

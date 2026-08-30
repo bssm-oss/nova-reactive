@@ -2406,6 +2406,30 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void compositeInverseOneToManyGroupsChildrenByTheCompleteEmbeddedIdTuple() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("tenant", "acme", "number", 1L)),
+                new MapRowAccessor(Map.of("tenant", "acme", "number", 2L))));
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 10L, "parent_tenant", "acme", "parent_number", 1L)),
+                new MapRowAccessor(Map.of("id", 20L, "parent_tenant", "acme", "parent_number", 2L))));
+
+        List<CompositeFetchParent> result = new ArrayList<>();
+        StepVerifier.create(operations.findAll(CompositeFetchParent.class, FetchGroup.forParents(CompositeFetchParent.class).build()))
+                .recordWith(() -> result)
+                .expectNextCount(2)
+                .verifyComplete();
+
+        assertEquals(List.of(10L), result.get(0).children.stream().map(child -> child.id).toList());
+        assertEquals(List.of(20L), result.get(1).children.stream().map(child -> child.id).toList());
+        assertTrue(executor.lastStatement.sql().contains("parent_tenant")
+                && executor.lastStatement.sql().contains("parent_number"));
+        assertEquals(List.of("acme", 1L, "acme", 2L), executor.lastStatement.bindings());
+    }
+
+    @Test
     void findAllWithFetchGroupSkipsChildQueryWhenParentsAreEmpty() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
@@ -3560,6 +3584,39 @@ class SimpleReactiveEntityOperationsTest {
             this.tenant = tenant;
             this.number = number;
         }
+    }
+
+    @Embeddable
+    private static final class CompositeFetchId {
+        private String tenant;
+        private Long number;
+
+        private CompositeFetchId() {
+        }
+    }
+
+    @Entity
+    @Table(name = "composite_fetch_parents")
+    private static final class CompositeFetchParent {
+        @EmbeddedId
+        private CompositeFetchId id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = CompositeFetchChild.class)
+        private List<CompositeFetchChild> children;
+    }
+
+    @Entity
+    @Table(name = "composite_fetch_children")
+    private static final class CompositeFetchChild {
+        @Id
+        private Long id;
+
+        @ManyToOne
+        @JoinColumns({
+                @JoinColumn(name = "parent_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "parent_number", referencedColumnName = "number")
+        })
+        private CompositeFetchParent parent;
     }
 
     @Entity

@@ -1,8 +1,15 @@
 package io.nova.fetch;
 
 import jakarta.persistence.Entity;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Id;
+import jakarta.persistence.IdClass;
+import jakarta.persistence.JoinColumns;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.support.fixtures.FixtureEntities.AuthorWithBooksAnnotated;
@@ -90,6 +97,29 @@ class AnnotationFetchGroupBuilderTest {
         assertEquals(null, book.getAuthor(), "empty bucket은 reference를 null로 되돌려야 한다");
     }
 
+    @Test
+    void buildForUsesCompositeInverseSpecsForEmbeddedIdAndIdClassParents() {
+        FetchGroup<EmbeddedParent> embedded = builder.buildFor(EmbeddedParent.class);
+        FetchGroup<IdClassParent> idClass = builder.buildFor(IdClassParent.class);
+
+        assertTrue(embedded.specs().isEmpty());
+        assertEquals(1, embedded.compositeInverseSpecs().size());
+        assertEquals("parent", embedded.compositeInverseSpecs().get(0).childForeignKeyProperty());
+        assertFalse(embedded.compositeInverseSpecs().get(0).single());
+        assertTrue(idClass.specs().isEmpty());
+        assertEquals(1, idClass.compositeInverseSpecs().size());
+        assertEquals("parent", idClass.compositeInverseSpecs().get(0).childForeignKeyProperty());
+    }
+
+    @Test
+    void buildForUsesCompositeInverseSpecForInverseOneToOne() {
+        FetchGroup<EmbeddedProfileOwner> group = builder.buildFor(EmbeddedProfileOwner.class);
+
+        assertEquals(1, group.compositeInverseSpecs().size());
+        assertTrue(group.compositeInverseSpecs().get(0).single());
+        assertEquals("owner", group.compositeInverseSpecs().get(0).childForeignKeyProperty());
+    }
+
     @Entity
     static class PlainEntity {
         @Id
@@ -122,6 +152,86 @@ class AnnotationFetchGroupBuilderTest {
 
         AuthorWithNonManyToOneMappedBy() {
         }
+    }
+
+    @Embeddable
+    static class EmbeddedParentId {
+        String tenant;
+        Long number;
+    }
+
+    @Entity
+    static class EmbeddedParent {
+        @EmbeddedId
+        EmbeddedParentId id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = EmbeddedChild.class)
+        List<EmbeddedChild> children;
+    }
+
+    @Entity
+    static class EmbeddedChild {
+        @Id
+        Long id;
+
+        @ManyToOne
+        @JoinColumns({
+                @JoinColumn(name = "parent_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "parent_number", referencedColumnName = "number")
+        })
+        EmbeddedParent parent;
+    }
+
+    static class IdClassParentId {
+        String tenant;
+        Long number;
+    }
+
+    @Entity
+    @IdClass(IdClassParentId.class)
+    static class IdClassParent {
+        @Id
+        String tenant;
+        @Id
+        Long number;
+
+        @OneToMany(mappedBy = "parent", targetEntity = IdClassChild.class)
+        List<IdClassChild> children;
+    }
+
+    @Entity
+    static class IdClassChild {
+        @Id
+        Long id;
+
+        @ManyToOne
+        @JoinColumns({
+                @JoinColumn(name = "parent_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "parent_number", referencedColumnName = "number")
+        })
+        IdClassParent parent;
+    }
+
+    @Entity
+    static class EmbeddedProfileOwner {
+        @EmbeddedId
+        EmbeddedParentId id;
+
+        @OneToOne(mappedBy = "owner", targetEntity = EmbeddedProfile.class)
+        EmbeddedProfile profile;
+    }
+
+    @Entity
+    static class EmbeddedProfile {
+        @Id
+        Long id;
+
+        @OneToOne
+        @JoinColumns({
+                @JoinColumn(name = "owner_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "owner_number", referencedColumnName = "number")
+        })
+        EmbeddedProfileOwner owner;
     }
 
 }
