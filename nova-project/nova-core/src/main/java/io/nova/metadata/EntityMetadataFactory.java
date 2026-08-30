@@ -816,14 +816,10 @@ public final class EntityMetadataFactory {
         List<Method> preRemoveCallbacks = new ArrayList<>();
         List<Method> postRemoveCallbacks = new ArrayList<>();
         // 콜백은 @MappedSuperclass와 SINGLE_TABLE 상속 상위 @Entity까지 포함해 수집한다 — 루트/베이스에
-        // 선언된 audit 콜백이 서브타입에서도 발화하도록. 서브클래스가 같은 메서드를 override하면 가장
-        // 하위 정의만 한 번 수집한다(중복 호출 방지).
-        Set<String> seenCallbackSignatures = new LinkedHashSet<>();
+        // 선언된 audit 콜백이 서브타입에서도 발화하도록. Java override인 경우에만 superclass callback을
+        // 가장 하위 정의로 대체한다; private/non-inherited same-signature callback은 각각 수집한다.
         for (Method method : mappedMethods(entityType)) {
             if (method.isSynthetic()) {
-                continue;
-            }
-            if (!seenCallbackSignatures.add(callbackSignature(method))) {
                 continue;
             }
             collectCallback(entityType, method, PrePersist.class, prePersistCallbacks);
@@ -887,7 +883,7 @@ public final class EntityMetadataFactory {
                 uniqueConstraints,
                 inheritance,
                 collectEntityListeners(entityType),
-                entityType.isAnnotationPresent(ExcludeDefaultListeners.class),
+                hasExcludeDefaultListeners(entityType),
                 secondaryTables,
                 tableDdlDefinition(table, entityType)
         );
@@ -1221,24 +1217,76 @@ public final class EntityMetadataFactory {
 
     /**
      * 엔티티 자신과 매핑에 기여하는 조상({@link MappedSuperclass} / 상위 {@link Entity})의 선언 메서드를
-     * 서브클래스-우선(most-derived first) 순서로 반환한다. override 판별은 호출부에서 시그니처 dedupe로
-     * 처리하므로, 더 하위에 선언된 override가 먼저 보이도록 entityType부터 위로 올라가며 수집한다.
+     * root-우선 순서로 반환한다. superclass method는 subclass가 Java language rules에 따라 실제 override한
+     * 경우에만 제외한다. private method는 상속/override되지 않으며, package-private method는 같은 package
+     * subclass만 override할 수 있다.
      */
     private static List<Method> mappedMethods(Class<?> entityType) {
-        List<Method> methods = new ArrayList<>();
+        List<List<Method>> declaredByType = new ArrayList<>();
         Class<?> current = entityType;
         while (current != null && current != Object.class
                 && (current == entityType
                 || current.isAnnotationPresent(MappedSuperclass.class)
                 || current.isAnnotationPresent(Entity.class))) {
-            // getDeclaredMethods()는 클래스 내 순서가 JVM 비결정이므로, 같은 phase의 콜백이 여럿일 때
-            // 호출 순서가 들쭉날쭉하지 않도록 클래스별로 안정 정렬한다(클래스 계층 순서=derived→base는 유지).
             List<Method> declared = new ArrayList<>(Arrays.asList(current.getDeclaredMethods()));
             declared.sort(STABLE_METHOD_ORDER);
-            methods.addAll(declared);
+            declaredByType.add(declared);
             current = current.getSuperclass();
         }
+        List<Method> methods = new ArrayList<>();
+        for (int i = declaredByType.size() - 1; i >= 0; i--) {
+            for (Method method : declaredByType.get(i)) {
+                if (!isOverriddenByDescendant(method, declaredByType, i)) {
+                    methods.add(method);
+                }
+            }
+        }
         return methods;
+    }
+
+    private static boolean isOverriddenByDescendant(
+            Method method, List<List<Method>> declaredByType, int methodTypeIndex) {
+        for (int descendantIndex = methodTypeIndex - 1; descendantIndex >= 0; descendantIndex--) {
+            for (Method descendant : declaredByType.get(descendantIndex)) {
+                if (overrides(descendant, method)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean overrides(Method descendant, Method ancestor) {
+        int descendantModifiers = descendant.getModifiers();
+        int ancestorModifiers = ancestor.getModifiers();
+        if (Modifier.isPrivate(descendantModifiers) || Modifier.isStatic(descendantModifiers)
+                || Modifier.isPrivate(ancestorModifiers) || Modifier.isStatic(ancestorModifiers)
+                || !ancestor.getDeclaringClass().isAssignableFrom(descendant.getDeclaringClass())
+                || ancestor.getDeclaringClass() == descendant.getDeclaringClass()
+                || !ancestor.getName().equals(descendant.getName())
+                || !Arrays.equals(ancestor.getParameterTypes(), descendant.getParameterTypes())) {
+            return false;
+        }
+        if (!Modifier.isPublic(ancestorModifiers) && !Modifier.isProtected(ancestorModifiers)
+                && !ancestor.getDeclaringClass().getPackageName()
+                .equals(descendant.getDeclaringClass().getPackageName())) {
+            return false;
+        }
+        return ancestor.getReturnType().isAssignableFrom(descendant.getReturnType());
+    }
+
+    private static boolean hasExcludeDefaultListeners(Class<?> entityType) {
+        Class<?> current = entityType;
+        while (current != null && current != Object.class
+                && (current == entityType
+                || current.isAnnotationPresent(MappedSuperclass.class)
+                || current.isAnnotationPresent(Entity.class))) {
+            if (current.isAnnotationPresent(ExcludeDefaultListeners.class)) {
+                return true;
+            }
+            current = current.getSuperclass();
+        }
+        return false;
     }
 
     /**
@@ -1263,13 +1311,17 @@ public final class EntityMetadataFactory {
 
     /**
      * 영속 대상이 아닌 필드인지 판정한다. synthetic / static / Java {@code transient} 키워드뿐 아니라
-     * JPA {@link Transient} 애너테이션이 붙은 필드도 매핑에서 제외한다.
+     * JPA {@link Transient} 애너테이션이 붙은 필드도 매핑에서 제외한다. effective PROPERTY access에서는
+     * JavaBean getter에 선언된 {@code @Transient}도 해당 property를 제외한다. FIELD access는 getter
+     * 애너테이션을 매핑 신호로 사용하지 않는다.
      */
     private static boolean isNotPersistable(Field field) {
         return field.isSynthetic()
                 || Modifier.isStatic(field.getModifiers())
                 || Modifier.isTransient(field.getModifiers())
-                || field.isAnnotationPresent(Transient.class);
+                || field.isAnnotationPresent(Transient.class)
+                || (resolvePropertyAccess(field)
+                && resolvePropertyGetter(field).isAnnotationPresent(Transient.class));
     }
 
     /**
@@ -1762,12 +1814,10 @@ public final class EntityMetadataFactory {
         List<ListenerCallback> postRemove = new ArrayList<>();
         for (Class<?> listenerClass : listenerClasses) {
             Object listener = instantiateListener(listenerClass);
-            Set<String> seen = new LinkedHashSet<>();
-            // JPA 규약: 리스너 콜백 메서드는 상속된다. 리스너 클래스 자신의 superclass 체인을 루트→자식
-            // 순으로 순회하며 콜백을 모은다(superclass 콜백 먼저). 자식이 같은 시그니처를 override하면
-            // 가장 하위 정의만 한 번 수집한다(중복 호출 방지).
+            // JPA 규약: 리스너 클래스의 lifecycle callback은 root-to-child 순서다. Java language rules에
+            // 따른 실제 override만 superclass method를 대체하며, private same-signature method는 각각 유지한다.
             for (Method method : listenerCallbackMethods(listenerClass)) {
-                if (method.isSynthetic() || !seen.add(callbackSignature(method))) {
+                if (method.isSynthetic()) {
                     continue;
                 }
                 collectListenerCallback(entityType, listenerClass, listener, method, PrePersist.class, prePersist);
@@ -1784,19 +1834,25 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * 리스너 클래스의 콜백 후보 메서드를, 클래스 계층을 자식(가장 하위)→루트(최상위 superclass) 순으로
-     * 평탄화해 반환한다. 호출부의 {@code seen} 집합이 시그니처별 첫 등장만 채택하므로, 자식이 superclass
-     * 콜백을 override하면 가장 하위 정의가 한 번만 수집되어 중복 호출이 방지된다(JPA: 콜백 메서드는 상속됨).
+     * 리스너 클래스의 콜백 후보 메서드를 root-to-child 순서로 반환한다. superclass callback은 Java
+     * language rules에 따른 실제 override일 때만 제외한다.
      */
     private static List<Method> listenerCallbackMethods(Class<?> listenerClass) {
-        List<Method> methods = new ArrayList<>();
+        List<List<Method>> declaredByType = new ArrayList<>();
         Class<?> current = listenerClass;
         while (current != null && current != Object.class) {
-            // 클래스별 안정 정렬로 콜백 호출 순서를 결정적이게 한다(계층 순서 child→root는 유지).
             List<Method> declared = new ArrayList<>(Arrays.asList(current.getDeclaredMethods()));
             declared.sort(STABLE_METHOD_ORDER);
-            methods.addAll(declared);
+            declaredByType.add(declared);
             current = current.getSuperclass();
+        }
+        List<Method> methods = new ArrayList<>();
+        for (int i = declaredByType.size() - 1; i >= 0; i--) {
+            for (Method method : declaredByType.get(i)) {
+                if (!isOverriddenByDescendant(method, declaredByType, i)) {
+                    methods.add(method);
+                }
+            }
         }
         return methods;
     }
@@ -1805,13 +1861,12 @@ public final class EntityMetadataFactory {
      * {@code @EntityListeners}를 선언할 수 있는 호스트 체인(자신 + {@code @MappedSuperclass}/상속 상위
      * {@code @Entity})을 루트-우선 순서로 반환한다 — 슈퍼클래스 리스너가 먼저 invoke되도록.
      *
-     * <p>entity에 {@code @ExcludeSuperclassListeners}(jakarta.persistence)가 선언되면 상위 호스트가
-     * 기여하는 리스너를 제외하고 entity 자신만 호스트로 남긴다.
+     * <p>호스트에 {@code @ExcludeSuperclassListeners}(jakarta.persistence)가 선언되면, 그 호스트보다
+     * 상위가 기여하는 리스너를 제외한다. 따라서 중간 {@code @MappedSuperclass}의 선언도 그 아래 entity에
+     * 적용되는 listener-host hierarchy cutoff가 된다. entity 자체 lifecycle callback 상속은 이 체인과
+     * 독립적으로 {@link #mappedMethods(Class)}가 처리한다.
      */
     private static List<Class<?>> listenerHostChain(Class<?> entityType) {
-        if (entityType.isAnnotationPresent(ExcludeSuperclassListeners.class)) {
-            return List.of(entityType);
-        }
         List<Class<?>> chain = new ArrayList<>();
         Class<?> current = entityType;
         while (current != null && current != Object.class
@@ -1819,6 +1874,9 @@ public final class EntityMetadataFactory {
                 || current.isAnnotationPresent(MappedSuperclass.class)
                 || current.isAnnotationPresent(Entity.class))) {
             chain.add(current);
+            if (current.isAnnotationPresent(ExcludeSuperclassListeners.class)) {
+                break;
+            }
             current = current.getSuperclass();
         }
         Collections.reverse(chain);

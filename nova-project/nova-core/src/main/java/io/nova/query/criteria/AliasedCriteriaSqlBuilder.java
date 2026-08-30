@@ -28,13 +28,13 @@ final class AliasedCriteriaSqlBuilder {
     }
 
     /** 스칼라/집계/투영 SELECT(사용자 선택 목록)를 alias 한정 SQL로 렌더한다. */
-    CriteriaSql buildScalar(CriteriaQueryImpl<?> query) {
+    CriteriaSql buildScalar(CriteriaQueryImpl<?> query, CriteriaParameterBindings bindings) {
         CriteriaRoot<?> root = query.root();
         List<Selection<?>> selections = query.selections();
         if (selections.isEmpty()) {
             throw new CriteriaException("Criteria query with joins requires an explicit select()/multiselect()");
         }
-        Ctx ctx = new Ctx();
+        Ctx ctx = new Ctx(bindings);
         assignAliases(root);
 
         ctx.sql.append("select ");
@@ -56,14 +56,14 @@ final class AliasedCriteriaSqlBuilder {
      * 엔티티 반환 쿼리의 2단계 실행 1단계: 루트 id 컬럼만 순서대로 투영한다. 이후 호출자가 이 id들로
      * 기존 하이드레이션 경로에 위임해 완전한 엔티티(연관 포함)를 로드하고 이 순서로 재배열한다.
      */
-    CriteriaSql buildRootIdProjection(CriteriaQueryImpl<?> query) {
+    CriteriaSql buildRootIdProjection(CriteriaQueryImpl<?> query, CriteriaParameterBindings bindings) {
         CriteriaRoot<?> root = query.root();
         EntityMetadata<?> metadata = root.ownerMetadata();
         if (metadata.hasCompositeId()) {
             throw new CriteriaException("Entity-returning Criteria query with joins/subqueries requires a "
                     + "single-column @Id on the root; composite-id roots are not supported in v1");
         }
-        Ctx ctx = new Ctx();
+        Ctx ctx = new Ctx(bindings);
         assignAliases(root);
         ctx.sql.append("select ").append(qualified(root.alias(), metadata.idProperty().columnName()))
                 .append(" as ").append(dialect.quote(CriteriaSqlBuilder.columnLabel(0)));
@@ -178,15 +178,16 @@ final class AliasedCriteriaSqlBuilder {
                 if (predicate.aggregate() != null) {
                     renderAggregate(ctx, predicate.aggregate());
                     ctx.sql.append(' ').append(predicate.op().symbol()).append(' ');
-                    bindMarker(ctx, predicate.value());
+                    bindAggregateMarker(ctx, predicate.aggregate(), predicate.value(ctx.bindingsResolver));
                     break;
                 }
                 if (isCompositeToOne(predicate.path())) {
-                    renderCompositeToOneComparison(ctx, predicate.path(), predicate.op(), predicate.value());
+                    renderCompositeToOneComparison(ctx, predicate.path(), predicate.op(),
+                            predicate.value(ctx.bindingsResolver));
                     break;
                 }
                 ctx.sql.append(column(predicate.path())).append(' ').append(predicate.op().symbol()).append(' ');
-                bindMarker(ctx, predicate.value());
+                bindMarker(ctx, predicate.value(ctx.bindingsResolver), predicate.path());
             }
             case LIKE -> {
                 if (isCompositeToOne(predicate.path())) {
@@ -195,17 +196,18 @@ final class AliasedCriteriaSqlBuilder {
                             + "spans multiple columns with no single text representation");
                 }
                 ctx.sql.append(column(predicate.path())).append(predicate.negated() ? " not like " : " like ");
-                bindMarker(ctx, predicate.value());
+                bindMarker(ctx, predicate.value(ctx.bindingsResolver), predicate.path());
             }
             case BETWEEN -> {
                 if (isCompositeToOne(predicate.path())) {
-                    renderCompositeToOneBetween(ctx, predicate.path(), predicate.low(), predicate.high());
+                    renderCompositeToOneBetween(ctx, predicate.path(), predicate.low(ctx.bindingsResolver),
+                            predicate.high(ctx.bindingsResolver));
                     break;
                 }
                 ctx.sql.append(column(predicate.path())).append(" between ");
-                bindMarker(ctx, predicate.low());
+                bindMarker(ctx, predicate.low(ctx.bindingsResolver), predicate.path());
                 ctx.sql.append(" and ");
-                bindMarker(ctx, predicate.high());
+                bindMarker(ctx, predicate.high(ctx.bindingsResolver), predicate.path());
             }
             case IN -> renderIn(ctx, predicate);
             case NULL -> {
@@ -265,7 +267,7 @@ final class AliasedCriteriaSqlBuilder {
     }
 
     private void renderIn(Ctx ctx, CriteriaPredicate predicate) {
-        List<Object> values = predicate.inValues();
+        List<Object> values = predicate.inValues(ctx.bindingsResolver);
         if (isCompositeToOne(predicate.path())) {
             renderCompositeToOneIn(ctx, predicate.path(), values, predicate.negated());
             return;
@@ -279,7 +281,7 @@ final class AliasedCriteriaSqlBuilder {
             if (i > 0) {
                 ctx.sql.append(", ");
             }
-            bindMarker(ctx, values.get(i));
+            bindMarker(ctx, values.get(i), predicate.path());
         }
         ctx.sql.append(')');
     }
@@ -505,6 +507,18 @@ final class AliasedCriteriaSqlBuilder {
     }
 
     private void bindMarker(Ctx ctx, Object value) {
+        addBinding(ctx, ctx.bindingsResolver.resolve(value));
+    }
+
+    private void bindMarker(Ctx ctx, Object value, CriteriaColumnPath path) {
+        addBinding(ctx, path.property().toColumnValue(ctx.bindingsResolver.resolve(value)));
+    }
+
+    private void bindAggregateMarker(Ctx ctx, CriteriaAggregate<?> aggregate, Object value) {
+        addBinding(ctx, aggregate.toComparisonColumnValue(value));
+    }
+
+    private void addBinding(Ctx ctx, Object value) {
         ctx.bindings.add(value);
         ctx.sql.append(dialect.bindMarkers().marker(ctx.bindings.size()));
     }
@@ -512,5 +526,10 @@ final class AliasedCriteriaSqlBuilder {
     private static final class Ctx {
         final StringBuilder sql = new StringBuilder();
         final List<Object> bindings = new ArrayList<>();
+        final CriteriaParameterBindings bindingsResolver;
+
+        Ctx(CriteriaParameterBindings bindingsResolver) {
+            this.bindingsResolver = bindingsResolver;
+        }
     }
 }

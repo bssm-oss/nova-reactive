@@ -18,23 +18,23 @@ final class CriteriaEntityTranslator {
     private CriteriaEntityTranslator() {
     }
 
-    static Predicate toPredicate(CriteriaPredicate predicate) {
+    static Predicate toPredicate(CriteriaPredicate predicate, CriteriaParameterBindings bindings) {
         if (predicate instanceof DiscriminatorPredicate) {
             throw new CriteriaException("cb.equal(root.type(), ...) narrows the queried entity type and is "
                     + "handled before QuerySpec translation; it cannot appear as a QuerySpec predicate");
         }
         return switch (predicate.kind()) {
-            case AND -> Criteria.and(childArray(predicate));
-            case OR -> Criteria.or(childArray(predicate));
-            case NOT -> Criteria.not(toPredicate(predicate.inner()));
-            case COMPARISON -> comparison(predicate);
+            case AND -> Criteria.and(childArray(predicate, bindings));
+            case OR -> Criteria.or(childArray(predicate, bindings));
+            case NOT -> Criteria.not(toPredicate(predicate.inner(), bindings));
+            case COMPARISON -> comparison(predicate, bindings);
             case LIKE -> predicate.negated()
-                    ? Criteria.notLike(name(predicate), predicate.value())
-                    : Criteria.like(name(predicate), predicate.value());
-            case BETWEEN -> Criteria.between(name(predicate), predicate.low(), predicate.high());
+                    ? Criteria.notLike(name(predicate), predicate.value(bindings))
+                    : Criteria.like(name(predicate), predicate.value(bindings));
+            case BETWEEN -> Criteria.between(name(predicate), predicate.low(bindings), predicate.high(bindings));
             case IN -> predicate.negated()
-                    ? Criteria.notIn(name(predicate), predicate.inValues())
-                    : Criteria.in(name(predicate), predicate.inValues());
+                    ? Criteria.notIn(name(predicate), predicate.inValues(bindings))
+                    : Criteria.in(name(predicate), predicate.inValues(bindings));
             case NULL -> predicate.negated()
                     ? Criteria.isNotNull(name(predicate))
                     : Criteria.isNull(name(predicate));
@@ -56,9 +56,9 @@ final class CriteriaEntityTranslator {
         return new Sort(result);
     }
 
-    private static Predicate comparison(CriteriaPredicate predicate) {
+    private static Predicate comparison(CriteriaPredicate predicate, CriteriaParameterBindings bindings) {
         String field = name(predicate);
-        Object value = predicate.value();
+        Object value = predicate.value(bindings);
         return switch (predicate.op()) {
             case EQ -> Criteria.eq(field, value);
             case NE -> Criteria.ne(field, value);
@@ -69,11 +69,11 @@ final class CriteriaEntityTranslator {
         };
     }
 
-    private static Predicate[] childArray(CriteriaPredicate predicate) {
+    private static Predicate[] childArray(CriteriaPredicate predicate, CriteriaParameterBindings bindings) {
         List<CriteriaPredicate> children = predicate.children();
         Predicate[] translated = new Predicate[children.size()];
         for (int i = 0; i < children.size(); i++) {
-            translated[i] = toPredicate(children.get(i));
+            translated[i] = toPredicate(children.get(i), bindings);
         }
         return translated;
     }

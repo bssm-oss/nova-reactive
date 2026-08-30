@@ -4,6 +4,7 @@ import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Predicate;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -185,19 +186,50 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
     }
 
     Object value() {
-        return value;
+        return requireBound(value);
+    }
+
+    Object value(CriteriaParameterBindings bindings) {
+        return bindings.resolve(value);
     }
 
     Object low() {
-        return low;
+        return requireBound(low);
+    }
+
+    Object low(CriteriaParameterBindings bindings) {
+        return bindings.resolve(low);
     }
 
     Object high() {
-        return high;
+        return requireBound(high);
+    }
+
+    Object high(CriteriaParameterBindings bindings) {
+        return bindings.resolve(high);
     }
 
     List<Object> inValues() {
+        if (inValues != null) {
+            inValues.forEach(CriteriaPredicate::requireBound);
+        }
         return inValues;
+    }
+
+    List<Object> inValues(CriteriaParameterBindings bindings) {
+        if (inValues == null) {
+            return null;
+        }
+        List<Object> resolved = new ArrayList<>(inValues.size());
+        for (Object value : inValues) {
+            resolved.add(bindings.resolve(value));
+        }
+        return resolved;
+    }
+
+    /** Construction-only mutable IN list; parameter resolution occurs only during execution rendering. */
+    final void addInValue(Object value) {
+        inValues.add(value);
     }
 
     List<CriteriaPredicate> children() {
@@ -224,6 +256,13 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
         return aggregate;
     }
 
+    private static Object requireBound(Object value) {
+        if (value instanceof CriteriaParameter<?>) {
+            throw new CriteriaException("Criteria parameter execution is not wired yet");
+        }
+        return value;
+    }
+
     static boolean containsAggregateComparison(CriteriaPredicate predicate) {
         if (predicate == null) {
             return false;
@@ -234,6 +273,31 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
             case NOT -> containsAggregateComparison(predicate.inner);
             default -> false;
         };
+    }
+
+    static void collectParameters(CriteriaPredicate predicate, LinkedHashSet<CriteriaParameter<?>> parameters) {
+        if (predicate == null) {
+            return;
+        }
+        addParameter(predicate.value, parameters);
+        addParameter(predicate.low, parameters);
+        addParameter(predicate.high, parameters);
+        if (predicate.inValues != null) {
+            predicate.inValues.forEach(value -> addParameter(value, parameters));
+        }
+        if (predicate.children != null) {
+            predicate.children.forEach(child -> collectParameters(child, parameters));
+        }
+        collectParameters(predicate.inner, parameters);
+        if (predicate.subquery != null) {
+            collectParameters(predicate.subquery.restrictionPredicate(), parameters);
+        }
+    }
+
+    private static void addParameter(Object value, LinkedHashSet<CriteriaParameter<?>> parameters) {
+        if (value instanceof CriteriaParameter<?> parameter) {
+            parameters.add(parameter);
+        }
     }
 
     // --- jakarta Predicate --------------------------------------------------------------------

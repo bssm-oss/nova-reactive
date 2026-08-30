@@ -46,10 +46,13 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@Convert` + `jakarta.persistence.AttributeConverter` | ✅ | Storage-type driven read/write; managed converter classes support `autoApply`, explicit override, and disable semantics |
 | Scalar types | ✅ | `UUID`, `Float`, `Short`, `BigDecimal`, `BigInteger`(driver-permitting), … — driver-verified |
 | `@Version` optimistic locking | ✅ | `Long` / `Integer` / `Short` / `LocalDateTime`; surfaces `OptimisticLockingFailureException` |
+| `@Transient` | ✅ | Field annotations are excluded; under effective `@Access(PROPERTY)`, getter annotations are also excluded |
 | `@Access(FIELD)` | ✅ | Default |
 | `@Access(PROPERTY)` | ✅ | Basic **and** `@ManyToOne` / `@OneToOne` relations (JavaBean getter/setter) |
 | `@SecondaryTable` / `@PrimaryKeyJoinColumn` | ✅ | |
 | Auditing (`@CreatedAt` / `@UpdatedAt`), lifecycle callbacks, `@EntityListeners` | ✅ | 7 lifecycle phases; listener + superclass inheritance |
+| `@ExcludeSuperclassListeners` | ✅ | Excludes external listener hosts above the annotated entity or mapped-superclass host; entity callbacks remain inherited |
+| `@ExcludeDefaultListeners` | ✅ | No-op without XML default listeners; explicit `@EntityListeners` and entity callbacks remain active |
 
 ## Inheritance
 
@@ -97,6 +100,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | JPQL `setFirstResult` / `setMaxResults` | ✅ | Negative values are rejected; zero max results completes without querying. Simple entity SELECTs use the dialect renderer, including offset-only requests as `Integer.MAX_VALUE` limits. Filtering-join entity SELECTs use SQL `DISTINCT` root IDs and page them reactively before incremental bounded (256-id) hydration chunks. Scalar, aggregate, and `SELECT NEW` projections preserve their SQL bindings and apply the window with reactive `skip` / `take` before result mapping because arbitrary JPQL SQL has no public dialect pagination hook. These client-side paths may read skipped rows from the database. |
 | JPQL / Criteria `TREAT()` / `TYPE()` polymorphism | ✅ | `SINGLE_TABLE` / `JOINED` / `TABLE_PER_CLASS` (JOINED/TPC via the polymorphic derived table); discriminator-aware, shadowed-subtype-column fail-fast. Subquery positions fail-fast |
 | Criteria API (`jakarta.persistence.criteria`) | ⟳ | Joins (M2O/O2O/O2M/inverse), subqueries (`EXISTS`/`IN`/correlate) |
+| Criteria `ParameterExpression` | ✅ | Named and identity-bound scalar parameters execute across entity, scalar, join, and subquery routes. Values are validated and converted for the target column per subscription, then supplied as bind markers in SQL traversal order; positional, null, collection, missing, foreign, and type-conflicting bindings fail fast. |
 | Joins over a **composite-key** to-one target | ✅ | Multi-column `ON` (`a.c1=b.c1 AND a.c2=b.c2`) |
 | Composite-key to-one in `WHERE` (`=` / `IS NULL`, ordering `< <= > >=`, `IN`, `BETWEEN`), `GROUP BY` / `ORDER BY`, and scalar `SELECT` projection | ✅ | Scalar JPQL + Criteria; lexicographic multi-column expansion, single canonical component order. `SELECT c.parent` yields a target id-stub. `LIKE` / entity-returning-JPQL `WHERE` fail-fast |
 | `@NamedQuery` / `@NamedNativeQuery` | ✅ | Per-entity registry, duplicate-name fail-fast |
@@ -110,7 +114,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `ReactiveEntityManager` (`persist` / `merge` / `remove` / `find` / `getReference` / `flush` / `clear` / `detach` / `refresh` / `contains`) | ⟳ | `Nova.entityManager(...)` |
 | `LockModeType` (`PESSIMISTIC_WRITE`/`READ`, `OPTIMISTIC`, `FORCE_INCREMENT`) | ✅ | `find` / `lock` / `getLockMode` overloads |
 | `FlushModeType` | ✅ | Propagated via Reactor `Context` |
-| Transaction-bound persistence session (identity map + dirty checking + flush) | ✅ | Opt-in; collection diff-at-flush |
+| Transaction-bound persistence session (identity map + dirty checking + flush) | ✅ | Opt-in; collection diff-at-flush. A successful `remove` retains an internal tombstone until `clear`: it is excluded from scalar/collection flush and `contains`/lock management, and re-persisting that identity in the same session fails explicitly. Lifecycle remove callbacks run on subscription, with `@PostRemove` after successful DML. |
 | 2nd-level cache (`nova-cache`, `@Cacheable` / `SharedCacheMode`) | ✅ | Read-through + query cache + post-commit type-region eviction |
 
 ## Spring
@@ -150,4 +154,4 @@ These declare cleanly but are rejected with a message until implemented — Nova
 > Types whose stored form does not decode back byte-for-byte (`BigDecimal` scale drift, sub-second
 > timestamp precision) are not recommended as key components.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.8.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.12.0`).

@@ -29,13 +29,21 @@ final class CriteriaInPredicate<T> extends CriteriaPredicate implements Criteria
 
     @Override
     public CriteriaBuilder.In<T> value(T value) {
-        inValues().add(value);
+        if (value instanceof CriteriaParameter<?> parameter) {
+            CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path()), parameter, "In.value");
+        }
+        addInValue(value);
         return this;
     }
 
     @Override
     public CriteriaBuilder.In<T> value(Expression<? extends T> value) {
-        throw new CriteriaException("CriteriaBuilder.In.value(Expression) (column-to-column IN) is not supported in v1");
+        if (!(value instanceof CriteriaParameter<?> parameter)) {
+            throw new CriteriaException("CriteriaBuilder.In.value(Expression) requires a Criteria parameter");
+        }
+        CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path()), parameter, "In.value");
+        addInValue(parameter);
+        return this;
     }
 
     List<Object> values() {

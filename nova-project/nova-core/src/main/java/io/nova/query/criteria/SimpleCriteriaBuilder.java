@@ -5,6 +5,7 @@ import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Order;
+import jakarta.persistence.criteria.ParameterExpression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Subquery;
@@ -48,6 +49,16 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     @Override
     public <T> CriteriaQuery<T> createQuery(Class<T> resultClass) {
         return new CriteriaQueryImpl<>(resultClass, metamodel);
+    }
+
+    @Override
+    public <T> ParameterExpression<T> parameter(Class<T> paramClass) {
+        return CriteriaParameter.unnamed(paramClass);
+    }
+
+    @Override
+    public <T> ParameterExpression<T> parameter(Class<T> paramClass, String name) {
+        return CriteriaParameter.named(paramClass, name);
     }
 
     // --- ordering -------------------------------------------------------------------------------
@@ -156,6 +167,15 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         if (expression instanceof CriteriaTypeExpression typeExpr) {
             return discriminatorEqual(typeExpr, value);
         }
+        if (value instanceof CriteriaParameter<?> parameter) {
+            if (expression instanceof CriteriaAggregate<?> aggregate) {
+                CriteriaGuards.validateParameterType(aggregate.getJavaType(), parameter, "equal");
+                return CriteriaPredicate.comparison(aggregate, CompareOp.EQ, parameter);
+            }
+            CriteriaColumnPath path = path(expression, "equal");
+            CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path), parameter, "equal");
+            return CriteriaPredicate.comparison(path, CompareOp.EQ, parameter);
+        }
         if (value == null) {
             if (expression instanceof CriteriaAggregate<?>) {
                 throw new CriteriaException("CriteriaBuilder.equal does not accept null for an aggregate expression");
@@ -174,6 +194,15 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
 
     @Override
     public Predicate notEqual(Expression<?> expression, Object value) {
+        if (value instanceof CriteriaParameter<?> parameter) {
+            if (expression instanceof CriteriaAggregate<?> aggregate) {
+                CriteriaGuards.validateParameterType(aggregate.getJavaType(), parameter, "notEqual");
+                return CriteriaPredicate.comparison(aggregate, CompareOp.NE, parameter);
+            }
+            CriteriaColumnPath path = path(expression, "notEqual");
+            CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path), parameter, "notEqual");
+            return CriteriaPredicate.comparison(path, CompareOp.NE, parameter);
+        }
         if (value == null) {
             if (expression instanceof CriteriaAggregate<?>) {
                 throw new CriteriaException("CriteriaBuilder.notEqual does not accept null for an aggregate expression");
@@ -219,6 +248,18 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         return CriteriaPredicate.between(path(expression, "between"), low, high);
     }
 
+    @Override
+    public <Y extends Comparable<? super Y>> Predicate between(
+            Expression<? extends Y> expression, Expression<? extends Y> low, Expression<? extends Y> high) {
+        if (!(low instanceof CriteriaParameter<?> lowParameter) || !(high instanceof CriteriaParameter<?> highParameter)) {
+            throw new CriteriaException("CriteriaBuilder.between expression bounds must be Criteria parameters");
+        }
+        CriteriaColumnPath path = path(expression, "between");
+        CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path), lowParameter, "between");
+        CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path), highParameter, "between");
+        return CriteriaPredicate.between(path, lowParameter, highParameter);
+    }
+
     // --- numeric ordering -----------------------------------------------------------------------
 
     @Override
@@ -253,6 +294,26 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     public Predicate notLike(Expression<String> expression, String pattern) {
         Objects.requireNonNull(pattern, "notLike pattern must not be null");
         return CriteriaPredicate.like(path(expression, "notLike"), pattern, true);
+    }
+
+    @Override
+    public Predicate like(Expression<String> expression, Expression<String> pattern) {
+        if (!(pattern instanceof CriteriaParameter<?> parameter)) {
+            throw new CriteriaException("CriteriaBuilder.like expression pattern must be a Criteria parameter");
+        }
+        CriteriaColumnPath path = path(expression, "like");
+        CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path), parameter, "like");
+        return CriteriaPredicate.like(path, parameter, false);
+    }
+
+    @Override
+    public Predicate notLike(Expression<String> expression, Expression<String> pattern) {
+        if (!(pattern instanceof CriteriaParameter<?> parameter)) {
+            throw new CriteriaException("CriteriaBuilder.notLike expression pattern must be a Criteria parameter");
+        }
+        CriteriaColumnPath path = path(expression, "notLike");
+        CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path), parameter, "notLike");
+        return CriteriaPredicate.like(path, parameter, true);
     }
 
     @Override
@@ -318,6 +379,15 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     }
 
     private static Predicate subqueryCompare(Expression<?> left, Expression<?> right, CompareOp op, String name) {
+        if (right instanceof CriteriaParameter<?> parameter) {
+            if (left instanceof CriteriaAggregate<?> aggregate) {
+                CriteriaGuards.validateParameterType(aggregate.getJavaType(), parameter, name);
+                return CriteriaPredicate.comparison(aggregate, op, parameter);
+            }
+            CriteriaColumnPath leftPath = path(left, name);
+            CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(leftPath), parameter, name);
+            return CriteriaPredicate.comparison(leftPath, op, parameter);
+        }
         CriteriaColumnPath leftPath = path(left, name);
         if (right instanceof CriteriaSubquery<?> subquery) {
             return CriteriaPredicate.comparisonSubquery(leftPath, op, subquery);
@@ -379,6 +449,15 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     // --- helpers --------------------------------------------------------------------------------
 
     private Predicate compare(Expression<?> expression, CompareOp op, Object value, String op2) {
+        if (value instanceof CriteriaParameter<?> parameter) {
+            if (expression instanceof CriteriaAggregate<?> aggregate) {
+                CriteriaGuards.validateParameterType(aggregate.getJavaType(), parameter, op2);
+                return CriteriaPredicate.comparison(aggregate, op, parameter);
+            }
+            CriteriaColumnPath path = path(expression, op2);
+            CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path), parameter, op2);
+            return CriteriaPredicate.comparison(path, op, parameter);
+        }
         if (expression instanceof CriteriaAggregate<?> aggregate) {
             CriteriaAggregate.validateComparison(aggregate, value, "CriteriaBuilder." + op2);
             return CriteriaPredicate.comparison(aggregate, op, value);

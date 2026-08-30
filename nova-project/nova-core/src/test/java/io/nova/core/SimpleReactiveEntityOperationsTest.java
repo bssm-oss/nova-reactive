@@ -2,6 +2,7 @@ package io.nova.core;
 
 import io.nova.fetch.FetchGroup;
 import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateFunction;
 import io.nova.query.AggregateSpec;
@@ -45,14 +46,21 @@ import io.nova.tx.ReactiveTransactionOperations;
 import io.nova.tx.TransactionContext;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.IdClass;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderColumn;
+import jakarta.persistence.PostRemove;
+import jakarta.persistence.PreRemove;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -77,6 +85,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SimpleReactiveEntityOperationsTest {
+    private static final List<String> ORDERED_REMOVAL_TRACE = new ArrayList<>();
+
     @Test
     void saveUsesInsertWithGeneratedKeyForNewIdentityEntity() {
         CapturingExecutor executor = new CapturingExecutor();
@@ -2109,6 +2119,49 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void deleteDefersRemoveCallbacksUntilSubscription() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(11L, "x@nova.io");
+
+        Mono<Long> delete = operations.delete(entity);
+
+        assertEquals(0, EntityWithCallbacks.preRemoveCount.get());
+        assertEquals(0, EntityWithCallbacks.postRemoveCount.get());
+        StepVerifier.create(delete).expectNext(1L).verifyComplete();
+        assertEquals(1, EntityWithCallbacks.preRemoveCount.get());
+        assertEquals(1, EntityWithCallbacks.postRemoveCount.get());
+    }
+
+    @Test
+    void successfulManagedDeleteCreatesTombstoneAndFlushSkipsDirtyUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityMetadata<SampleAccount> metadata =
+                new EntityMetadataFactory(new DefaultNamingStrategy()).getEntityMetadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        SampleAccount account = new SampleAccount(9L, "a@nova.io", true);
+        session.registerOnLoad(metadata, account);
+
+        StepVerifier.create(operations.delete(account)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(1L)
+                .verifyComplete();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size(), "tombstone must not emit a post-delete UPDATE");
+        assertTrue(session.managedEntries().iterator().next().isRemoved());
+        StepVerifier.create(operations.save(account)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("Cannot persist removed entity"))
+                .verify();
+    }
+
+    @Test
     void saveFiresPostPersistCallbackAfterInsert() {
         EntityWithCallbacks.reset();
         CapturingExecutor executor = new CapturingExecutor();
@@ -2659,12 +2712,15 @@ class SimpleReactiveEntityOperationsTest {
     void sessionFlushPersistsMembershipChangesBeforeReindexingOrderedOneToMany() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.generatedKey = 4L;
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 2L, "name", "second", "parent_id", 100L, "child_position", 1))));
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         OrderedSessionParent parent = orderedParent();
         OrderedSessionChild added = new OrderedSessionChild(null, "fourth");
 
         StepVerifier.create(operations.inTransaction(current ->
                         prepareOrderedCollectionBaseline(current, executor, parent)
+                                .then(Mono.fromRunnable(ORDERED_REMOVAL_TRACE::clear))
                                 .then(Mono.fromRunnable(() -> {
                                     parent.children.remove(1);
                                     parent.children.add(added);
@@ -2680,6 +2736,9 @@ class SimpleReactiveEntityOperationsTest {
                 .anyMatch(statement -> statement.startsWith("insert into ordered_session_children")));
         assertTrue(sql.subList(0, firstOrderUpdate).stream()
                 .anyMatch(statement -> statement.startsWith("delete from ordered_session_children")));
+        assertEquals("pre-remove", ORDERED_REMOVAL_TRACE.get(0));
+        assertEquals("post-remove", ORDERED_REMOVAL_TRACE.get(1));
+        assertEquals("reindex", ORDERED_REMOVAL_TRACE.get(2));
     }
 
     @Test
@@ -2731,6 +2790,269 @@ class SimpleReactiveEntityOperationsTest {
 
         assertEquals(4, executor.executedStatements.size(),
                 "the third flush must be zero-SQL after retry refreshes the ordered snapshot");
+    }
+
+    @Test
+    void orphanRemovalWithNullOwnerTombstonesDirtyUnversionedChildBeforeFlush() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+        OrderedSessionChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        parent.children.remove(child);
+        child.parent = null;
+        child.name = "dirty";
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertTrue(session.managedEntry(metadata(OrderedSessionChild.class), child).isRemoved());
+        assertTrue(executor.executedStatements.stream().anyMatch(statement ->
+                statement.sql().startsWith("delete from ordered_session_children")));
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                statement.sql().startsWith("update ordered_session_children set name")));
+    }
+
+    @Test
+    void parentCascadeWithChangedOwnerTombstonesDirtyUnversionedChildBeforeFlush() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+        OrderedSessionChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        child.parent = new OrderedSessionParent(200L, "other");
+        child.name = "dirty";
+
+        StepVerifier.create(operations.delete(parent)
+                        .then(operations.flush())
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertTrue(session.managedEntry(metadata(OrderedSessionChild.class), child).isRemoved());
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                statement.sql().startsWith("update ordered_session_children")));
+    }
+
+    @Test
+    void orphanRemovalWithNullOwnerTombstonesDirtyVersionedChildBeforeFlush() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedRemovalParent parent = versionedRemovalParent();
+        VersionedRemovalChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        parent.children.clear();
+        child.parent = null;
+        child.name = "dirty";
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertTrue(session.managedEntry(metadata(VersionedRemovalChild.class), child).isRemoved());
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                statement.sql().startsWith("update versioned_removal_children")));
+    }
+
+    @Test
+    void parentCascadeWithChangedOwnerTombstonesDirtyVersionedChildBeforeFlush() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedRemovalParent parent = versionedRemovalParent();
+        VersionedRemovalChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        child.parent = new VersionedRemovalParent(200L, "other");
+        child.name = "dirty";
+
+        StepVerifier.create(operations.delete(parent)
+                        .then(operations.flush())
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertTrue(session.managedEntry(metadata(VersionedRemovalChild.class), child).isRemoved());
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                statement.sql().startsWith("update versioned_removal_children")));
+    }
+
+    @Test
+    void cascadeRemoveInvokesToOneCallbacksAfterOwnerDelete() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackTarget target = new CallbackTarget(2L);
+        CallbackOwner owner = new CallbackOwner(1L, target);
+
+        StepVerifier.create(operations.delete(owner)).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("owner-pre", "owner-post", "target-pre", "target-post"), RemovalCallbacks.events);
+    }
+
+    @Test
+    void cascadeRemoveInvokesOneToManyCallbacksBeforeParentCallbacks() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(new MapRowAccessor(Map.of("id", 2L, "parent_id", 1L))));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.delete(new CallbackChildrenOwner(1L))).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("children-owner-pre", "child-pre", "child-post", "children-owner-post"),
+                RemovalCallbacks.events);
+    }
+
+    @Test
+    void orphanRemovalInvokesChildCallbacks() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(new MapRowAccessor(Map.of("id", 2L, "parent_id", 1L))));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackChildrenOwner owner = new CallbackChildrenOwner(1L);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CallbackChildrenOwner.class), owner);
+        session.managedEntry(metadata(CallbackChildrenOwner.class), owner)
+                .putCollectionSnapshot("children", List.of(2L));
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(List.of("child-pre", "child-post"), RemovalCallbacks.events);
+    }
+
+    @Test
+    void selfReferencingRemoveCascadeVisitsEntityOnce() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SelfRemovingEntity entity = new SelfRemovingEntity(1L);
+        entity.parent = entity;
+
+        StepVerifier.create(operations.delete(entity)).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("self-pre", "self-post"), RemovalCallbacks.events);
+        assertEquals(1, executor.executedStatements.size());
+    }
+
+    @Test
+    void bidirectionalRemoveCascadeVisitsEachTargetOnce() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackOwner owner = new CallbackOwner(1L, new CallbackTarget(2L));
+        owner.target.owner = owner;
+
+        StepVerifier.create(operations.delete(owner)).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("owner-pre", "owner-post", "target-pre", "target-post"), RemovalCallbacks.events);
+        assertEquals(2, executor.executedStatements.size());
+    }
+
+    @Test
+    void alreadyRemovedVersionedChildIsSkippedDuringParentCascade() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedRemovalParent parent = versionedRemovalParent();
+        VersionedRemovalChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        session.markRemoved(metadata(VersionedRemovalChild.class), child);
+
+        StepVerifier.create(operations.delete(parent)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size(), "removed child must not be deleted again");
+    }
+
+    @Test
+    void bidirectionalOneToManyRemoveCascadeVisitsEachEntityOnce() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackChildrenOwner parent = new CallbackChildrenOwner(1L);
+        CallbackChild child = new CallbackChild();
+        child.id = 2L;
+        child.parent = parent;
+        parent.children.add(child);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CallbackChildrenOwner.class), parent);
+        session.registerOnLoad(metadata(CallbackChild.class), child);
+        session.managedEntry(metadata(CallbackChildrenOwner.class), parent).putCollectionSnapshot("children", List.of(2L));
+
+        StepVerifier.create(operations.delete(parent)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(List.of("children-owner-pre", "child-pre", "child-post", "children-owner-post"),
+                RemovalCallbacks.events);
+        assertEquals(2, executor.executedStatements.size());
+    }
+
+    @Test
+    void statelessOrphanRemovalDoesNotCascadeBackToSavedOwner() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 2L, "parent_id", 1L))));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackChildrenOwner owner = new CallbackChildrenOwner(1L);
+
+        StepVerifier.create(operations.save(owner)).expectNext(owner).verifyComplete();
+
+        assertEquals(List.of("child-pre", "child-post"), RemovalCallbacks.events);
+        assertEquals(2, executor.executedStatements.size(),
+                "save updates owner once and orphan removal deletes only the child");
+    }
+
+    @Test
+    void embeddedIdSelfRemoveCascadeUsesAllIdentityComponents() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EmbeddedRemovalEntity entity = new EmbeddedRemovalEntity(new CompositeRemovalId("tenant", 1L));
+        entity.parent = entity;
+
+        StepVerifier.create(operations.delete(entity)).expectNext(1L).verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+    }
+
+    @Test
+    void idClassSelfRemoveCascadeUsesAllIdentityComponents() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        IdClassRemovalEntity entity = new IdClassRemovalEntity("tenant", 1L);
+        entity.parent = entity;
+
+        StepVerifier.create(operations.delete(entity)).expectNext(1L).verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size());
+    }
+
+    private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
+        PersistenceSession session = new PersistenceSession();
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        io.nova.metadata.EntityMetadata<P> parentMetadata =
+                factory.getEntityMetadata((Class<P>) parent.getClass());
+        io.nova.metadata.EntityMetadata<C> childMetadata =
+                factory.getEntityMetadata((Class<C>) child.getClass());
+        session.registerOnLoad(parentMetadata, parent);
+        session.registerOnLoad(childMetadata, child);
+        session.managedEntry(parentMetadata, parent).putCollectionSnapshot("children", List.of(
+                childMetadata.readIdValue(child)));
+        return session;
+    }
+
+    private <T> io.nova.metadata.EntityMetadata<T> metadata(Class<T> type) {
+        return new EntityMetadataFactory(new DefaultNamingStrategy()).getEntityMetadata(type);
+    }
+
+    private VersionedRemovalParent versionedRemovalParent() {
+        VersionedRemovalParent parent = new VersionedRemovalParent(100L, "parent");
+        VersionedRemovalChild child = new VersionedRemovalChild(1L, "first", 0L);
+        child.parent = parent;
+        parent.children.add(child);
+        return parent;
     }
 
     private Mono<Void> prepareOrderedCollectionBaseline(
@@ -2945,6 +3267,9 @@ class SimpleReactiveEntityOperationsTest {
             this.lastStatement = statement;
             this.executedStatements.add(statement);
             this.chronologicalSqlCalls.add(statement.sql());
+            if (statement.sql().startsWith("update ordered_session_children set child_position")) {
+                ORDERED_REMOVAL_TRACE.add("reindex");
+            }
             if (!executeErrors.isEmpty()) {
                 return Mono.error(executeErrors.removeFirst());
             }
@@ -3107,6 +3432,265 @@ class SimpleReactiveEntityOperationsTest {
         private OrderedSessionChild(Long id, String name) {
             this.id = id;
             this.name = name;
+        }
+
+        @PreRemove
+        void preRemove() {
+            ORDERED_REMOVAL_TRACE.add("pre-remove");
+        }
+
+        @PostRemove
+        void postRemove() {
+            ORDERED_REMOVAL_TRACE.add("post-remove");
+        }
+    }
+
+    @Entity
+    @Table(name = "versioned_removal_parents")
+    private static final class VersionedRemovalParent {
+        @Id
+        private Long id;
+        private String name;
+
+        @OneToMany(mappedBy = "parent", targetEntity = VersionedRemovalChild.class,
+                cascade = CascadeType.REMOVE, orphanRemoval = true)
+        private List<VersionedRemovalChild> children = new ArrayList<>();
+
+        private VersionedRemovalParent() {
+        }
+
+        private VersionedRemovalParent(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "versioned_removal_children")
+    private static final class VersionedRemovalChild {
+        @Id
+        private Long id;
+        private String name;
+        @Version
+        private Long version;
+
+        @ManyToOne
+        @JoinColumn(name = "parent_id")
+        private VersionedRemovalParent parent;
+
+        private VersionedRemovalChild() {
+        }
+
+        private VersionedRemovalChild(Long id, String name, Long version) {
+            this.id = id;
+            this.name = name;
+            this.version = version;
+        }
+    }
+
+    private static final class RemovalCallbacks {
+        private static final List<String> events = new ArrayList<>();
+    }
+
+    @Entity
+    @Table(name = "callback_targets")
+    private static final class CallbackTarget {
+        @Id
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumn(name = "owner_id")
+        private CallbackOwner owner;
+
+        private CallbackTarget() {
+        }
+
+        private CallbackTarget(Long id) {
+            this.id = id;
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("target-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("target-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "self_removing_entities")
+    private static final class SelfRemovingEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumn(name = "parent_id")
+        private SelfRemovingEntity parent;
+
+        private SelfRemovingEntity() {
+        }
+
+        private SelfRemovingEntity(Long id) {
+            this.id = id;
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("self-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("self-post");
+        }
+    }
+
+    @Embeddable
+    private static final class CompositeRemovalId {
+        private String tenant;
+        private Long number;
+
+        private CompositeRemovalId() {
+        }
+
+        private CompositeRemovalId(String tenant, Long number) {
+            this.tenant = tenant;
+            this.number = number;
+        }
+    }
+
+    @Entity
+    @Table(name = "embedded_removal_entities")
+    private static final class EmbeddedRemovalEntity {
+        @EmbeddedId
+        private CompositeRemovalId id;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumns({
+                @JoinColumn(name = "parent_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "parent_number", referencedColumnName = "number")
+        })
+        private EmbeddedRemovalEntity parent;
+
+        private EmbeddedRemovalEntity() {
+        }
+
+        private EmbeddedRemovalEntity(CompositeRemovalId id) {
+            this.id = id;
+        }
+    }
+
+    private static final class IdClassRemovalKey {
+        private String tenant;
+        private Long number;
+    }
+
+    @Entity
+    @IdClass(IdClassRemovalKey.class)
+    @Table(name = "idclass_removal_entities")
+    private static final class IdClassRemovalEntity {
+        @Id
+        private String tenant;
+        @Id
+        private Long number;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumns({
+                @JoinColumn(name = "parent_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "parent_number", referencedColumnName = "number")
+        })
+        private IdClassRemovalEntity parent;
+
+        private IdClassRemovalEntity() {
+        }
+
+        private IdClassRemovalEntity(String tenant, Long number) {
+            this.tenant = tenant;
+            this.number = number;
+        }
+    }
+
+    @Entity
+    @Table(name = "callback_owners")
+    private static final class CallbackOwner {
+        @Id
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumn(name = "target_id")
+        private CallbackTarget target;
+
+        private CallbackOwner() {
+        }
+
+        private CallbackOwner(Long id, CallbackTarget target) {
+            this.id = id;
+            this.target = target;
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("owner-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("owner-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "callback_children_owners")
+    private static final class CallbackChildrenOwner {
+        @Id
+        private Long id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = CallbackChild.class,
+                cascade = CascadeType.REMOVE, orphanRemoval = true)
+        private List<CallbackChild> children = new ArrayList<>();
+
+        private CallbackChildrenOwner() {
+        }
+
+        private CallbackChildrenOwner(Long id) {
+            this.id = id;
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("children-owner-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("children-owner-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "callback_children")
+    private static final class CallbackChild {
+        @Id
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumn(name = "parent_id")
+        private CallbackChildrenOwner parent;
+
+        private CallbackChild() {
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("child-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("child-post");
         }
     }
 

@@ -18,6 +18,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -127,6 +128,51 @@ class PersistenceSessionTest {
         assertSame(first, managed);
         assertSame(first, second, "복합키 컴포넌트 값이 같으면 holder equals 없이도 dedupe돼야 한다");
         assertEquals(1, session.size());
+    }
+
+    @Test
+    void removedEntryIsUnmanagedAndCannotBePersistedAgainInSameSession() {
+        EntityMetadata<Person> metadata = factory.getEntityMetadata(Person.class);
+        PersistenceSession session = new PersistenceSession();
+        Person person = person(1L, "ada", 30);
+        session.registerOnLoad(metadata, person);
+
+        session.markRemoved(metadata, person);
+
+        assertFalse(session.isManaged(metadata, person));
+        assertTrue(session.managedEntries().iterator().next().isRemoved());
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class, () -> session.registerOnPersist(metadata, person));
+        assertTrue(error.getMessage().contains("Cannot persist removed entity"));
+    }
+
+    @Test
+    void removedCompositeIdIsMatchedWithoutIdHolderEquals() {
+        EntityMetadata<OrderLine> metadata = factory.getEntityMetadata(OrderLine.class);
+        PersistenceSession session = new PersistenceSession();
+        OrderLine line = orderLine(10L, 1, 5);
+        session.registerOnLoad(metadata, line);
+
+        session.markRemovedById(metadata, orderLine(10L, 1, 0).id);
+
+        assertFalse(session.isManaged(metadata, line));
+    }
+
+    @Test
+    void detachPreservesRemovedTombstoneUntilClear() {
+        EntityMetadata<Person> metadata = factory.getEntityMetadata(Person.class);
+        PersistenceSession session = new PersistenceSession();
+        Person person = person(1L, "ada", 30);
+        session.registerOnLoad(metadata, person);
+        session.markRemoved(metadata, person);
+
+        session.detach(metadata, person);
+
+        assertEquals(1, session.size());
+        assertThrows(IllegalStateException.class, () -> session.registerOnPersist(metadata, person));
+        session.clear();
+        session.registerOnPersist(metadata, person);
+        assertTrue(session.isManaged(metadata, person));
     }
 
     private static Person person(Long id, String name, int age) {

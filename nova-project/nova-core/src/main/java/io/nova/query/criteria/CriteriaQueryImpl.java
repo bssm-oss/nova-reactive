@@ -12,6 +12,8 @@ import jakarta.persistence.criteria.Subquery;
 import jakarta.persistence.metamodel.EntityType;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -20,8 +22,7 @@ import java.util.Set;
  * {@code jakarta.persistence.criteria.CriteriaQuery} 구현. 단일 루트 SELECT를 조립한다 — 선택 목록,
  * WHERE 술어, GROUP BY, HAVING, ORDER BY, DISTINCT를 담아 {@link ReactiveCriteriaQuery}가 실행 시
  * 엔티티/스칼라 경로로 변환한다. {@code subquery(Class)}로 서브쿼리를 만들 수 있으며, join/서브쿼리를
- * 포함한 쿼리는 {@link #requiresAliasedSql()}로 판별해 alias 한정 SQL 경로로 실행된다. 다중 루트/파라미터
- * 표현식은 v1 미지원으로 fail-fast한다.
+ * 포함한 쿼리는 {@link #requiresAliasedSql()}로 판별해 alias 한정 SQL 경로로 실행된다. 다중 루트는 v1 미지원으로 fail-fast한다. Criteria parameter 값 실행 바인딩은 phase 2에서 연결한다.
  *
  * <p><b>v1 제약</b>:
  * <ul>
@@ -251,7 +252,11 @@ final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {
 
     @Override
     public Set<ParameterExpression<?>> getParameters() {
-        return Set.of();
+        LinkedHashSet<CriteriaParameter<?>> parameters = new LinkedHashSet<>();
+        CriteriaPredicate.collectParameters(restriction, parameters);
+        CriteriaPredicate.collectParameters(having, parameters);
+        LinkedHashSet<ParameterExpression<?>> result = new LinkedHashSet<>(parameters);
+        return Collections.unmodifiableSet(result);
     }
 
     @Override

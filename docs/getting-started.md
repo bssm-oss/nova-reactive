@@ -2,7 +2,7 @@
 
 # Getting started
 
-Nova `2.8.0` is available from Maven Central. Nova runs on Java 17 and
+Nova `2.12.0` is available from Maven Central. Nova runs on Java 17 and
 newer runtimes; the CI matrix verifies Temurin 17, 21, 25, and 26. Use the
 Gradle wrapper for development; Gradle 9.4 or newer is required when launching
 the build on Java 26. Entities are mapped with the standard
@@ -29,7 +29,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.8.0")
+    implementation("io.github.bssm-oss:nova:2.12.0")
 
     // The R2DBC driver for your database (pick one)
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
@@ -43,9 +43,9 @@ To pull in only a specific dialect instead of the aggregate, depend on `nova-cor
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-core:2.8.0")
-    implementation("io.github.bssm-oss:nova-r2dbc:2.8.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.8.0")
+    implementation("io.github.bssm-oss:nova-core:2.12.0")
+    implementation("io.github.bssm-oss:nova-r2dbc:2.12.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.12.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -55,12 +55,13 @@ Groovy DSL:
 ```groovy
 // build.gradle
 dependencies {
-    implementation 'io.github.bssm-oss:nova:2.8.0'
+    implementation 'io.github.bssm-oss:nova:2.12.0'
     runtimeOnly 'io.r2dbc:r2dbc-h2:1.0.0.RELEASE'
 }
 ```
 
-> **Snapshots**: next-dev builds (e.g. `2.9.0-SNAPSHOT`) are available from the Central snapshots repository.
+> **Source builds**: the development default is `2.13.0-SNAPSHOT`. Build from
+> source with that version or use the Central snapshots repository.
 >
 > ```kotlin
 > repositories {

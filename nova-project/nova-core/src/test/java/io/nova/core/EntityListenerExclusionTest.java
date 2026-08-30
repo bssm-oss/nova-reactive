@@ -121,6 +121,26 @@ class EntityListenerExclusionTest {
         assertEquals(List.of("base:postLoad", "child:prePersist"), events);
     }
 
+    @Test
+    void inheritedListenerCallbacksInvokeRootToChildForSamePhase() {
+        EntityMetadata<EntityWithOrderedListener> metadata =
+                factory.getEntityMetadata(EntityWithOrderedListener.class);
+
+        invoker.invokePrePersist(new EntityWithOrderedListener(), metadata);
+
+        assertEquals(List.of("base:prePersist", "child:prePersist"), events);
+    }
+
+    @Test
+    void privateSameSignatureListenerCallbacksBothInvokeRootToChild() {
+        EntityMetadata<EntityWithPrivateListener> metadata =
+                factory.getEntityMetadata(EntityWithPrivateListener.class);
+
+        invoker.invokePrePersist(new EntityWithPrivateListener(), metadata);
+
+        assertEquals(List.of("private-base:prePersist", "private-child:prePersist"), events);
+    }
+
     // (d) 회귀: 리스너 상속 없이 단일 리스너 클래스의 콜백은 그대로 동작한다.
     @Test
     void plainListenerStillWorks() {
@@ -130,6 +150,36 @@ class EntityListenerExclusionTest {
         invoker.invokePostLoad(new EntityKeepingDefaults(), metadata);
 
         assertEquals(List.of("recording:postLoad"), events);
+    }
+
+    @Test
+    void entityCallbacksInvokeRootToChild() {
+        EntityMetadata<OrderedCallbackChild> metadata =
+                factory.getEntityMetadata(OrderedCallbackChild.class);
+
+        invoker.invokePrePersist(new OrderedCallbackChild(), metadata);
+
+        assertEquals(List.of("root", "middle", "child"), events);
+    }
+
+    @Test
+    void entityCallbackOverrideSuppressesSuperclassCallback() {
+        EntityMetadata<OverridingCallbackChild> metadata =
+                factory.getEntityMetadata(OverridingCallbackChild.class);
+
+        invoker.invokePrePersist(new OverridingCallbackChild(), metadata);
+
+        assertEquals(List.of("child-override"), events);
+    }
+
+    @Test
+    void privateSameSignatureCallbacksBothInvokeRootToChild() {
+        EntityMetadata<PrivateCallbackChild> metadata =
+                factory.getEntityMetadata(PrivateCallbackChild.class);
+
+        invoker.invokePrePersist(new PrivateCallbackChild(), metadata);
+
+        assertEquals(List.of("private-root", "private-child"), events);
     }
 
     // ---- fixtures ----
@@ -232,5 +282,118 @@ class EntityListenerExclusionTest {
     static class EntityWithInheritingListener {
         @Id
         Long id;
+    }
+
+    static class BaseOrderedListener {
+        @PrePersist
+        void baseCallback(Object entity) {
+            events.add("base:prePersist");
+        }
+    }
+
+    static class OrderedListener extends BaseOrderedListener {
+        @PrePersist
+        void childCallback(Object entity) {
+            events.add("child:prePersist");
+        }
+    }
+
+    @Entity
+    @Table(name = "ordered_listener")
+    @EntityListeners(OrderedListener.class)
+    static class EntityWithOrderedListener {
+        @Id
+        Long id;
+    }
+
+    static class BasePrivateListener {
+        @PrePersist
+        private void callback(Object entity) {
+            events.add("private-base:prePersist");
+        }
+    }
+
+    static class PrivateListener extends BasePrivateListener {
+        @PrePersist
+        private void callback(Object entity) {
+            events.add("private-child:prePersist");
+        }
+    }
+
+    @Entity
+    @Table(name = "private_listener")
+    @EntityListeners(PrivateListener.class)
+    static class EntityWithPrivateListener {
+        @Id
+        Long id;
+    }
+
+    @MappedSuperclass
+    static class OrderedCallbackRoot {
+        @Id
+        Long id;
+
+        @PrePersist
+        void rootCallback() {
+            events.add("root");
+        }
+    }
+
+    @MappedSuperclass
+    static class OrderedCallbackMiddle extends OrderedCallbackRoot {
+        @PrePersist
+        void middleCallback() {
+            events.add("middle");
+        }
+    }
+
+    @Entity
+    @Table(name = "ordered_callbacks")
+    static class OrderedCallbackChild extends OrderedCallbackMiddle {
+        @PrePersist
+        void childCallback() {
+            events.add("child");
+        }
+    }
+
+    @MappedSuperclass
+    static class OverridingCallbackRoot {
+        @Id
+        Long id;
+
+        @PrePersist
+        void callback() {
+            events.add("root-override");
+        }
+    }
+
+    @Entity
+    @Table(name = "overriding_callback")
+    static class OverridingCallbackChild extends OverridingCallbackRoot {
+        @Override
+        @PrePersist
+        void callback() {
+            events.add("child-override");
+        }
+    }
+
+    @MappedSuperclass
+    static class PrivateCallbackRoot {
+        @Id
+        Long id;
+
+        @PrePersist
+        private void callback() {
+            events.add("private-root");
+        }
+    }
+
+    @Entity
+    @Table(name = "private_callback")
+    static class PrivateCallbackChild extends PrivateCallbackRoot {
+        @PrePersist
+        private void callback() {
+            events.add("private-child");
+        }
     }
 }

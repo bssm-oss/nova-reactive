@@ -41,9 +41,15 @@ final class PersistenceSession {
     static final Object FORCE_FULL = new Object();
 
     static final class ManagedEntry {
+        enum State {
+            MANAGED,
+            REMOVED
+        }
+
         private final Object entity;
         private final EntityMetadata<?> metadata;
         private Map<String, Object> snapshot;
+        private State state = State.MANAGED;
         // propertyName -> 컬렉션의 영속 baseline 정규 표현(ops가 만들어 넣는다: multiset Map / ordered List /
         // Map / FORCE_FULL). 키가 없으면 "아직 baseline 미캡처"(로드 hydration 전 등)다.
         private final Map<String, Object> collectionSnapshots = new LinkedHashMap<>();
@@ -60,6 +66,18 @@ final class PersistenceSession {
 
         EntityMetadata<?> metadata() {
             return metadata;
+        }
+
+        boolean isRemoved() {
+            return state == State.REMOVED;
+        }
+
+        void markRemoved() {
+            state = State.REMOVED;
+        }
+
+        Object snapshotColumnValue(String columnName) {
+            return snapshot.get(columnName);
         }
 
         /**
@@ -156,6 +174,9 @@ final class PersistenceSession {
         }
         ManagedEntry existing = identityMap.get(key);
         if (existing != null) {
+            if (existing.isRemoved()) {
+                throw removedEntityCannotBePersisted(metadata, entity);
+            }
             existing.refreshSnapshot();
             return;
         }
@@ -167,7 +188,8 @@ final class PersistenceSession {
      */
     boolean isManaged(EntityMetadata<?> metadata, Object entity) {
         EntityKey key = keyFor(metadata, entity);
-        return key != null && identityMap.containsKey(key);
+        ManagedEntry entry = key == null ? null : identityMap.get(key);
+        return entry != null && !entry.isRemoved();
     }
 
     /**
@@ -184,6 +206,44 @@ final class PersistenceSession {
     ManagedEntry managedEntry(EntityMetadata<?> metadata, Object entity) {
         EntityKey key = keyFor(metadata, entity);
         return key == null ? null : identityMap.get(key);
+    }
+
+    boolean isRemoved(EntityMetadata<?> metadata, Object entity) {
+        ManagedEntry entry = managedEntry(metadata, entity);
+        return entry != null && entry.isRemoved();
+    }
+
+    /**
+     * 성공한 DELETE/soft-delete DML 뒤에 엔티티를 tombstone으로 전환한다. 엔트리는 identity map에 남아
+     * 같은 세션 안에서의 재-persist를 명확히 거부하지만, flush/contains/lock에서는 미관리로 취급된다.
+     */
+    void markRemoved(EntityMetadata<?> metadata, Object entity) {
+        EntityKey key = keyFor(metadata, entity);
+        if (key != null) {
+            markRemoved(key);
+        }
+    }
+
+    void markRemovedById(EntityMetadata<?> metadata, Object id) {
+        EntityKey key = keyForId(metadata, id);
+        if (key != null) {
+            markRemoved(key);
+            // find/deleteById may be invoked with an inheritance root while the identity map holds a concrete
+            // subtype key. Match its normalized id components without weakening unrelated entity-type isolation.
+            for (Map.Entry<EntityKey, ManagedEntry> candidate : identityMap.entrySet()) {
+                if (metadata.entityType().isAssignableFrom(candidate.getValue().metadata().entityType())
+                        && key.idValues().equals(candidate.getKey().idValues())) {
+                    candidate.getValue().markRemoved();
+                }
+            }
+        }
+    }
+
+    private void markRemoved(EntityKey key) {
+        ManagedEntry entry = identityMap.get(key);
+        if (entry != null) {
+            entry.markRemoved();
+        }
     }
 
     boolean isEmpty() {
@@ -206,7 +266,10 @@ final class PersistenceSession {
     void detach(EntityMetadata<?> metadata, Object entity) {
         EntityKey key = keyFor(metadata, entity);
         if (key != null) {
-            identityMap.remove(key);
+            ManagedEntry entry = identityMap.get(key);
+            if (entry == null || !entry.isRemoved()) {
+                identityMap.remove(key);
+            }
         }
     }
 
@@ -215,7 +278,14 @@ final class PersistenceSession {
      * 모든 컬럼 값이 null이면(아직 식별 불가) {@code null}을 반환해 관리 대상에서 제외한다.
      */
     private static EntityKey keyFor(EntityMetadata<?> metadata, Object entity) {
-        Object idObject = metadata.readIdValue(entity);
+        return keyForId(metadata, metadata.readIdValue(entity), entity.getClass());
+    }
+
+    private static EntityKey keyForId(EntityMetadata<?> metadata, Object idObject) {
+        return keyForId(metadata, idObject, metadata.entityType());
+    }
+
+    private static EntityKey keyForId(EntityMetadata<?> metadata, Object idObject, Class<?> entityType) {
         List<PersistentProperty> idProperties = metadata.idProperties();
         List<Object> values = new ArrayList<>(idProperties.size());
         boolean allNull = true;
@@ -230,7 +300,12 @@ final class PersistenceSession {
         if (allNull) {
             return null;
         }
-        return new EntityKey(entity.getClass(), Collections.unmodifiableList(values));
+        return new EntityKey(entityType, Collections.unmodifiableList(values));
+    }
+
+    private static IllegalStateException removedEntityCannotBePersisted(EntityMetadata<?> metadata, Object entity) {
+        return new IllegalStateException("Cannot persist removed entity " + metadata.entityType().getName()
+                + " in the same persistence session; clear the session before persisting it again");
     }
 
     /**
