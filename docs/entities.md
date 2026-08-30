@@ -470,17 +470,24 @@ Nova honors the column attributes that have a clear non-blocking meaning:
 | `unique = true` | Emits an inline `UNIQUE` constraint in the column DDL. |
 | `columnDefinition = "..."` | Used verbatim as the column's type in `CREATE TABLE`, replacing the dialect-derived type. |
 
-## Unsupported JPA attributes
+## Compatibility limitations
 
-Nova reuses the JPA annotations but is a non-blocking, persistence-context-free ORM, so a few attributes cannot be honored. Rather than silently ignoring them (a debugging trap), Nova **rejects them fail-fast** when entity metadata is first built:
+Nova is non-blocking and offers an opt-in transaction-bound persistence session with an identity
+map, dirty checking, collection diffing, and flush. It supports `@SecondaryTable`,
+`@GeneratedValue(strategy = TABLE)`, and `@Inheritance` strategies `SINGLE_TABLE`, `JOINED`, and
+`TABLE_PER_CLASS`; these are not limitations. Relationship `fetch = LAZY` is accepted without lazy
+proxies and is batch-hydrated reactively.
 
-| Annotation / attribute | Why rejected |
-|------------------------|--------------|
-| `@ManyToOne(fetch = LAZY)` / `@OneToOne(fetch = LAZY)` | No lazy proxy. Relations are fetched eagerly with a single IN-query, or explicitly via `FetchGroup`. The JPA default `EAGER` is honored. |
-| `@ManyToOne(cascade = ...)` / `@OneToMany(cascade = ...)` / `@OneToOne(cascade = ...)` | Supported: `PERSIST`/`MERGE`/`REMOVE` (and `ALL`) propagate to the related entity/collection on `save` / `delete`. `REFRESH`/`DETACH` are accepted but no-ops (no persistence-context graph). |
-| `@OneToMany(orphanRemoval = true)` | Supported by the opt-in transaction-bound persistence session, which detects collection diffs at flush. Outside a session, delete children explicitly. |
-| `@Column(table = ...)` | Secondary tables are not supported. |
-| `@GeneratedValue(strategy = TABLE)` | Use `IDENTITY`, `SEQUENCE`, `UUID`, or `AUTO`. |
-| `@Inheritance(strategy = JOINED \| TABLE_PER_CLASS)` | Only `SINGLE_TABLE` is supported. |
+The following declared forms are rejected explicitly because they are outside the supported
+compatibility surface:
 
-`@OneToMany`'s default `fetch = LAZY` is the one exception: it is treated as eager (Nova's only mode) rather than rejected, since rejecting the default would reject every collection.
+| Annotation / usage | Limitation |
+|--------------------|------------|
+| Composite-key to-one in `LIKE`, or an entity-returning JPQL `WHERE` predicate | Use a scalar projection or Criteria API; equality, null checks, ordering, `IN`, `BETWEEN`, grouping, and joins are supported. |
+| Nested `EntityGraph` below a composite-key to-one leaf | The composite leaf is hydrated, but a deeper subgraph below it is rejected. |
+| `@MapKeyClass` naming a composite-`@Id` entity key | Basic, enum, `@Embeddable`, and single-`@Id` entity key classes are supported. |
+| `@MapsId` targeting a record `@EmbeddedId`, or nested `@EmbeddedId` values | Flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported. |
+| Session-only collection reparenting without updating the owning `@ManyToOne` | Set the owning side explicitly; membership-only reparenting is rejected. A non-`orphanRemoval` removal with a non-nullable owning FK is likewise rejected. |
+
+`@OneToMany(orphanRemoval = true)` is supported. See the [JPA compatibility matrix](jpa-compatibility.md)
+for the complete, current feature list.
