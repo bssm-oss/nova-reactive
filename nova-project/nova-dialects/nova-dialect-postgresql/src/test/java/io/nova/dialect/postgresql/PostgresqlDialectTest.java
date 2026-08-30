@@ -20,6 +20,12 @@ class PostgresqlDialectTest {
             .getEntityMetadata(PostgresqlSampleAccount.class);
 
     @Test
+    void usesOneBasedNumberedBindMarkers() {
+        assertEquals("$1", dialect.bindMarkers().marker(1));
+        assertEquals("$3", dialect.bindMarkers().marker(3));
+    }
+
+    @Test
     void rendersPagedSelectUsingPositionalBindMarkers() {
         SqlStatement statement = dialect.sqlRenderer().select(
                 metadata,

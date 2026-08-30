@@ -117,6 +117,34 @@ class NamedQueryRegistryTest {
     }
 
     @Test
+    void translatesRepeatedAndMixedParametersInOccurrenceOrder() {
+        NamedQueryRegistry registry = registry(Person.class);
+        registry.createNativeQuery("Person.rawRepeatedAndMixed", row -> row)
+                .setParameter("name", "Ada")
+                .setParameter(2, 40)
+                .executeUpdate()
+                .block();
+
+        NativeQuery captured = operations.lastExecute.get();
+        assertEquals("UPDATE person SET name = $1 WHERE age = $2 OR name = $3", captured.sql());
+        assertFalse(captured.sql().contains("$0"));
+        assertEquals(List.of("Ada", 40, "Ada"), captured.bindings());
+    }
+
+    @Test
+    void leavesAnonymousMarkersUntouched() {
+        NamedQueryRegistry registry = registry(Person.class);
+        registry.createNativeQuery("Person.rawAnonymousMarker", row -> row)
+                .setParameter("name", "Ada")
+                .executeUpdate()
+                .block();
+
+        NativeQuery captured = operations.lastExecute.get();
+        assertEquals("UPDATE person SET note = ? WHERE name = $1", captured.sql());
+        assertEquals(List.of("Ada"), captured.bindings());
+    }
+
+    @Test
     void missingBindingFailsFast() {
         NamedQueryRegistry registry = registry(Person.class);
         assertThrows(NamedQueryException.class, () -> registry.createNativeQuery("Person.rawByNameAndAge", row -> row)
@@ -144,6 +172,10 @@ class NamedQueryRegistryTest {
     @NamedNativeQuery(name = "Person.rawByNameAndAge", query = "UPDATE person SET age = :age WHERE name = :name")
     @NamedNativeQuery(name = "Person.rawPositional",
             query = "UPDATE person SET tag = ?1::text WHERE note = 'a:b' AND age = ?2")
+    @NamedNativeQuery(name = "Person.rawRepeatedAndMixed",
+            query = "UPDATE person SET name = :name WHERE age = ?2 OR name = :name")
+    @NamedNativeQuery(name = "Person.rawAnonymousMarker",
+            query = "UPDATE person SET note = ? WHERE name = :name")
     static class Person {
         @Id
         Long id;
@@ -165,7 +197,7 @@ class NamedQueryRegistryTest {
     // ------------------------------------------------------------------------------------
 
     private static final class NumberedDialect implements Dialect {
-        private final BindMarkerStrategy bindMarkers = index -> "$" + (index + 1);
+        private final BindMarkerStrategy bindMarkers = index -> "$" + index;
 
         @Override
         public String name() {

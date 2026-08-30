@@ -164,7 +164,7 @@ public final class NamedNativeQuery<T> {
                         end++;
                     }
                     String name = sql.substring(start, end);
-                    out.append(dialect.bindMarkers().marker(markerKeys.size()));
+                    out.append(dialect.bindMarkers().marker(markerKeys.size() + 1));
                     markerKeys.add(name);
                     i = end;
                     continue;
@@ -180,7 +180,7 @@ public final class NamedNativeQuery<T> {
                     end++;
                 }
                 int position = Integer.parseInt(sql.substring(start, end));
-                out.append(dialect.bindMarkers().marker(markerKeys.size()));
+                out.append(dialect.bindMarkers().marker(markerKeys.size() + 1));
                 markerKeys.add(position);
                 i = end;
                 continue;
