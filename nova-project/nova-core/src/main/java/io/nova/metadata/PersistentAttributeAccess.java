@@ -45,9 +45,13 @@ public final class PersistentAttributeAccess {
     }
 
     PersistentAttributeAccess(String name, Method getter, Method setter) {
+        this(name, getter, setter, null);
+    }
+
+    PersistentAttributeAccess(String name, Method getter, Method setter, Field backingField) {
         this.name = Objects.requireNonNull(name, "name");
         this.getter = Objects.requireNonNull(getter, "getter");
-        this.field = null;
+        this.field = backingField;
         this.declaringType = getter.getDeclaringClass();
         this.javaType = getter.getReturnType();
         this.genericType = getter.getGenericReturnType();

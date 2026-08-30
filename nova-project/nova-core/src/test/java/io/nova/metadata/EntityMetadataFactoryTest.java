@@ -1458,7 +1458,6 @@ class EntityMetadataFactoryTest {
     @Entity
     @Access(AccessType.PROPERTY)
     static class GetterTransientPropertyEntity {
-        @Id
         private Long id;
         private String persisted;
         private String cached;

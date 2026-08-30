@@ -1744,19 +1744,18 @@ public final class EntityMetadataFactory {
         }
         for (PersistentProperty idProperty : idProperties) {
             String name = idProperty.propertyName();
-            Field idClassField;
-            try {
-                idClassField = idClass.getDeclaredField(name);
-            } catch (NoSuchFieldException exception) {
+            PersistentAttributeAccess idClassAttribute = new PersistentAccessResolver().resolve(
+                    idClass, idProperty.propertyAccess() ? AccessType.PROPERTY : AccessType.FIELD).attribute(name);
+            if (idClassAttribute == null) {
                 throw new IllegalArgumentException(
-                        "@IdClass " + idClass.getName() + " is missing field '" + name
-                                + "' declared as @Id on " + entityType.getName(), exception);
+                        "@IdClass " + idClass.getName() + " is missing property '" + name
+                                + "' declared as @Id on " + entityType.getName());
             }
             Class<?> expected = wrapPrimitiveType(idProperty.javaType());
-            Class<?> actual = wrapPrimitiveType(idClassField.getType());
+            Class<?> actual = wrapPrimitiveType(idClassAttribute.javaType());
             if (!expected.equals(actual)) {
                 throw new IllegalArgumentException(
-                        "@IdClass " + idClass.getName() + " field '" + name + "' type " + actual.getName()
+                        "@IdClass " + idClass.getName() + " property '" + name + "' type " + actual.getName()
                                 + " does not match @Id type " + expected.getName()
                                 + " on " + entityType.getName());
             }

@@ -3,12 +3,17 @@ package io.nova.metadata;
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
 import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -86,8 +91,8 @@ class PersistentPropertyAccessTest {
 
     @Test
     void rejectsPropertyAccessWithoutGetter() {
-        IllegalStateException exception = assertThrows(
-                IllegalStateException.class,
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(MissingGetterAccount.class));
         assertTrue(exception.getMessage().contains("no JavaBean getter"),
                 "getter 부재는 fail-fast로 거부되어야 한다: " + exception.getMessage());
@@ -95,8 +100,8 @@ class PersistentPropertyAccessTest {
 
     @Test
     void rejectsPropertyAccessWithoutSetter() {
-        IllegalStateException exception = assertThrows(
-                IllegalStateException.class,
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(MissingSetterAccount.class));
         assertTrue(exception.getMessage().contains("no JavaBean setter"),
                 "setter 부재는 fail-fast로 거부되어야 한다: " + exception.getMessage());
@@ -135,11 +140,32 @@ class PersistentPropertyAccessTest {
 
     @Test
     void rejectsPropertyAccessRelationWithoutAccessors() {
-        IllegalStateException exception = assertThrows(
-                IllegalStateException.class,
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(MissingRelationAccessorPost.class));
-        assertTrue(exception.getMessage().contains("no JavaBean"),
-                "관계 getter/setter 부재도 basic과 동일하게 fail-fast여야 한다: " + exception.getMessage());
+        assertTrue(exception.getMessage().contains("inactive FIELD member"),
+                "PROPERTY mapping의 field-side 관계 annotation은 fail-fast여야 한다: " + exception.getMessage());
+    }
+
+    @Test
+    void propertyAccessExpandsGetterAnnotatedEmbeddedValue() {
+        EntityMetadata<PropertyEmbeddedAccount> metadata =
+                factory.getEntityMetadata(PropertyEmbeddedAccount.class);
+
+        PersistentProperty street = property(metadata, "address.street");
+        assertTrue(street.propertyAccess());
+        assertEquals("address_street", street.columnName());
+    }
+
+    @Test
+    void propertyAccessExpandsGetterAnnotatedEmbeddedId() {
+        EntityMetadata<PropertyEmbeddedIdAccount> metadata =
+                factory.getEntityMetadata(PropertyEmbeddedIdAccount.class);
+
+        assertEquals(2, metadata.idProperties().size());
+        assertEquals(List.of("country", "number"),
+                metadata.idProperties().stream().map(PersistentProperty::columnName).toList());
+        assertTrue(metadata.idProperties().stream().allMatch(PersistentProperty::propertyAccess));
     }
 
     private static PersistentProperty property(EntityMetadata<?> metadata, String name) {
@@ -153,7 +179,6 @@ class PersistentPropertyAccessTest {
     @Table(name = "class_level_property_accounts")
     @Access(AccessType.PROPERTY)
     static class ClassLevelPropertyAccount {
-        @Id
         private Long id;
         private String name;
 
@@ -213,7 +238,6 @@ class PersistentPropertyAccessTest {
     @Table(name = "boolean_property_accounts")
     @Access(AccessType.PROPERTY)
     static class BooleanPropertyAccount {
-        @Id
         private Long id;
         private boolean active;
 
@@ -239,7 +263,6 @@ class PersistentPropertyAccessTest {
     @Table(name = "missing_getter_accounts")
     @Access(AccessType.PROPERTY)
     static class MissingGetterAccount {
-        @Id
         private Long id;
         private String name;
 
@@ -262,7 +285,6 @@ class PersistentPropertyAccessTest {
     @Table(name = "missing_setter_accounts")
     @Access(AccessType.PROPERTY)
     static class MissingSetterAccount {
-        @Id
         private Long id;
         private String name;
 
@@ -286,7 +308,6 @@ class PersistentPropertyAccessTest {
     @Entity
     @Table(name = "property_access_authors")
     static class PropertyAccessAuthor {
-        @Id
         private Long id;
 
         @Id
@@ -303,7 +324,6 @@ class PersistentPropertyAccessTest {
     @Table(name = "property_access_posts")
     @Access(AccessType.PROPERTY)
     static class PropertyAccessPost {
-        @Id
         private Long id;
 
         private PropertyAccessAuthor author;
@@ -358,7 +378,6 @@ class PersistentPropertyAccessTest {
     @Table(name = "missing_relation_accessor_posts")
     @Access(AccessType.PROPERTY)
     static class MissingRelationAccessorPost {
-        @Id
         private Long id;
 
         // getAuthor/setAuthor 없음 → PROPERTY access resolve 실패(fail-fast).
@@ -372,6 +391,83 @@ class PersistentPropertyAccessTest {
         }
 
         public void setId(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Embeddable
+    @Access(AccessType.PROPERTY)
+    static class PropertyAddress {
+        private String street;
+
+        public String getStreet() {
+            return street;
+        }
+
+        public void setStreet(String street) {
+            this.street = street;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class PropertyEmbeddedAccount {
+        private Long id;
+        private PropertyAddress address;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @Embedded
+        public PropertyAddress getAddress() {
+            return address;
+        }
+
+        public void setAddress(PropertyAddress address) {
+            this.address = address;
+        }
+    }
+
+    @Embeddable
+    @Access(AccessType.PROPERTY)
+    static class PropertyKey {
+        private String country;
+        private Long number;
+
+        public String getCountry() {
+            return country;
+        }
+
+        public void setCountry(String country) {
+            this.country = country;
+        }
+
+        public Long getNumber() {
+            return number;
+        }
+
+        public void setNumber(Long number) {
+            this.number = number;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class PropertyEmbeddedIdAccount {
+        private PropertyKey id;
+
+        @EmbeddedId
+        public PropertyKey getId() {
+            return id;
+        }
+
+        public void setId(PropertyKey id) {
             this.id = id;
         }
     }

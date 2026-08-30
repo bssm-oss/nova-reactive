@@ -54,7 +54,6 @@ public final class PersistentAccessResolver {
         List<String> names = new ArrayList<>();
         names.addAll(fields.keySet());
         for (String name : getters.keySet()) if (!names.contains(name)) names.add(name);
-        names.sort(String::compareTo);
         List<PersistentAttributeAccess> attributes = new ArrayList<>();
         for (String name : names) {
             Field field = fields.get(name);
@@ -76,6 +75,10 @@ public final class PersistentAccessResolver {
                     if (field != null && hasMappingAnnotation(field)) {
                         throw new IllegalArgumentException(type.getName() + "." + name + " has mapping annotations on inactive FIELD member");
                     }
+                    if (field != null) {
+                        throw new IllegalArgumentException(type.getName() + "." + name
+                                + " has no JavaBean getter required by PROPERTY access");
+                    }
                     continue;
                 }
                 validateAccess(getter, AccessType.PROPERTY);
@@ -85,7 +88,11 @@ public final class PersistentAccessResolver {
                     if (setter != null && !setter.getParameterTypes()[0].equals(getter.getReturnType())) {
                         throw new IllegalArgumentException(type.getName() + "." + name + " getter/setter types are incompatible");
                     }
-                    attributes.add(new PersistentAttributeAccess(name, getter, setter));
+                    if (setter == null && !type.isRecord()) {
+                        throw new IllegalArgumentException(type.getName() + "." + name
+                                + " has no JavaBean setter required by PROPERTY access");
+                    }
+                    attributes.add(new PersistentAttributeAccess(name, getter, setter, field));
                 }
             }
         }
@@ -103,11 +110,19 @@ public final class PersistentAccessResolver {
     }
 
     private static AccessType hierarchyDefault(Class<?> type) {
-        AccessType found = null;
+        // JPA's implicit strategy is determined by identifier placement. A field
+        // identifier wins before getter identifiers are considered, so an inactive
+        // getter annotation is diagnosed by the selected-member validation rather
+        // than changing a FIELD mapping into PROPERTY.
         for (Class<?> current : hierarchy(type)) {
             for (Field field : current.getDeclaredFields()) {
-                if (field.isAnnotationPresent(Id.class) || field.isAnnotationPresent(EmbeddedId.class)) found = mergeIdentifierAccess(found, AccessType.FIELD, type);
+                if (field.isAnnotationPresent(Id.class) || field.isAnnotationPresent(EmbeddedId.class)) {
+                    return AccessType.FIELD;
+                }
             }
+        }
+        AccessType found = null;
+        for (Class<?> current : hierarchy(type)) {
             for (Method method : current.getDeclaredMethods()) {
                 if (method.isAnnotationPresent(Id.class) || method.isAnnotationPresent(EmbeddedId.class)) found = mergeIdentifierAccess(found, AccessType.PROPERTY, type);
             }
