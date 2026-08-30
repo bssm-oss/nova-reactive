@@ -224,7 +224,9 @@ public static class Book {
 
 - For explicit fetch control, pass a `FetchGroup` to `findById(Class, ID, FetchGroup)` / `findAll(Class, FetchGroup)`. User-supplied and annotation-derived specs are deduped by `(childType, FK column)` with the user spec winning, so each child is fetched exactly once.
 - If the FK column seen by `@ManyToOne` clashes with another `@Column(name)` on the same entity, `EntityMetadataFactory` raises an explicit error rather than silently merging them.
-- There is no lazy proxy and no persistence context. For partial collections, drive `FetchGroup` explicitly.
+- Ordinary operations are stateless; an opt-in transaction-bound persistence session provides an identity map,
+  dirty checking, and flush. There is no lazy proxy in either mode. For partial collections, drive `FetchGroup`
+  explicitly.
 
 ### `@OneToOne`
 
