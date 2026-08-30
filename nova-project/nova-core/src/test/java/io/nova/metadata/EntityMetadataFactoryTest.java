@@ -642,6 +642,23 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
+    void disambiguatesGeneratedNamesForIndexesWithDifferentDefinitions() {
+        List<IndexDefinition> indexes = factory.getEntityMetadata(CollidingGeneratedIndexEntity.class).indexes();
+
+        assertEquals(3, indexes.size());
+        assertEquals(3, indexes.stream().map(IndexDefinition::name).distinct().count());
+        assertTrue(indexes.stream().allMatch(index -> index.name().startsWith("ix_colliding_indexed_accounts_email")));
+        assertTrue(indexes.stream().allMatch(index -> index.name().length() <= 63));
+    }
+
+    @Test
+    void acceptsDelimiterAndCommentTokensInsideQuotedIndexOptions() {
+        IndexDefinition index = factory.getEntityMetadata(QuotedLiteralIndexOptionsEntity.class).indexes().get(0);
+
+        assertEquals("comment 'lookup; -- /* accelerator */'", index.options());
+    }
+
+    @Test
     void rejectsIndexWithMalformedDirection() {
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,
@@ -1579,6 +1596,32 @@ class EntityMetadataFactoryTest {
         private String email;
 
         private java.time.Instant createdAt;
+    }
+
+    @Entity
+    @Table(name = "colliding_indexed_accounts",
+            indexes = {
+                    @Index(columnList = "email ASC"),
+                    @Index(columnList = "email DESC"),
+                    @Index(columnList = "email", unique = true, options = "where active = true")
+            })
+    static class CollidingGeneratedIndexEntity {
+        @Id
+        private Long id;
+
+        private String email;
+
+        private boolean active;
+    }
+
+    @Entity
+    @Table(name = "quoted_literal_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "comment 'lookup; -- /* accelerator */'"))
+    static class QuotedLiteralIndexOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
     }
 
     @Entity

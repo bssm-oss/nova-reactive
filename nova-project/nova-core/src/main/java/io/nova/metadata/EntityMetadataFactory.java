@@ -1135,7 +1135,7 @@ public final class EntityMetadataFactory {
         if (declarations.length == 0) {
             return List.of();
         }
-        List<IndexDefinition> result = new ArrayList<>(declarations.length);
+        List<UnboundIndexDefinition> definitions = new ArrayList<>(declarations.length);
         for (Index declaration : declarations) {
             List<IndexDefinition.Column> indexColumns = parseIndexColumnList(
                     declaration.columnList(), entityType);
@@ -1145,12 +1145,24 @@ public final class EntityMetadataFactory {
             }
             String[] columns = indexColumns.stream().map(IndexDefinition.Column::name).toArray(String[]::new);
             validateColumnsExist(entityType, "@Index", columns, columnNames);
-            String name = declaration.name().isBlank()
-                    ? autoGenerateName("ix_", tableName, columns)
-                    : declaration.name();
-            result.add(new IndexDefinition(
-                    name, indexColumns, declaration.unique(),
-                    indexOptions(declaration.options(), "@Index.options on " + entityType.getName())));
+            String options = indexOptions(declaration.options(), "@Index.options on " + entityType.getName());
+            boolean generatedName = declaration.name().isBlank();
+            String name = generatedName ? autoGenerateName("ix_", tableName, columns) : declaration.name();
+            definitions.add(new UnboundIndexDefinition(name, generatedName, indexColumns, declaration.unique(), options));
+        }
+        Map<String, Integer> generatedNameCounts = new LinkedHashMap<>();
+        for (UnboundIndexDefinition definition : definitions) {
+            if (definition.generatedName()) {
+                generatedNameCounts.merge(definition.name(), 1, Integer::sum);
+            }
+        }
+        List<IndexDefinition> result = new ArrayList<>(declarations.length);
+        for (UnboundIndexDefinition definition : definitions) {
+            String name = definition.name();
+            if (definition.generatedName() && generatedNameCounts.get(name) > 1) {
+                name = disambiguateGeneratedIndexName(name, definition);
+            }
+            result.add(new IndexDefinition(name, definition.columns(), definition.unique(), definition.options()));
         }
         return result;
     }
@@ -1232,12 +1244,6 @@ public final class EntityMetadataFactory {
             if (Character.isISOControl(character)) {
                 throw new IllegalArgumentException(location + " must not contain control characters");
             }
-            if (character == ';' || (character == '-' && i + 1 < options.length()
-                    && options.charAt(i + 1) == '-') || (character == '/' && i + 1 < options.length()
-                    && options.charAt(i + 1) == '*') || (character == '*' && i + 1 < options.length()
-                    && options.charAt(i + 1) == '/')) {
-                throw new IllegalArgumentException(location + " must not contain SQL statement delimiters or comments");
-            }
             if (character == '\'' && !doubleQuoted) {
                 if (singleQuoted && i + 1 < options.length() && options.charAt(i + 1) == '\'') {
                     i++;
@@ -1255,6 +1261,13 @@ public final class EntityMetadataFactory {
                 continue;
             }
             if (!singleQuoted && !doubleQuoted) {
+                if (character == ';' || (character == '-' && i + 1 < options.length()
+                        && options.charAt(i + 1) == '-') || (character == '/' && i + 1 < options.length()
+                        && options.charAt(i + 1) == '*') || (character == '*' && i + 1 < options.length()
+                        && options.charAt(i + 1) == '/')) {
+                    throw new IllegalArgumentException(
+                            location + " must not contain SQL statement delimiters or comments");
+                }
                 if (character == '(') {
                     parentheses++;
                 } else if (character == ')') {
@@ -1272,6 +1285,30 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(location + " has unbalanced parentheses");
         }
         return options;
+    }
+
+    private static String disambiguateGeneratedIndexName(String baseName, UnboundIndexDefinition definition) {
+        StringBuilder fingerprint = new StringBuilder();
+        for (IndexDefinition.Column column : definition.columns()) {
+            fingerprint.append(column.name()).append('\0');
+            if (column.direction() != null) {
+                fingerprint.append(column.direction().name());
+            }
+            fingerprint.append('\0');
+        }
+        fingerprint.append(definition.unique()).append('\0').append(definition.options());
+        String suffix = "_" + Integer.toHexString(fingerprint.toString().hashCode());
+        int prefixLength = Math.min(baseName.length(), MAX_AUTO_GENERATED_NAME_LENGTH - suffix.length());
+        return baseName.substring(0, prefixLength) + suffix;
+    }
+
+    private record UnboundIndexDefinition(
+            String name,
+            boolean generatedName,
+            List<IndexDefinition.Column> columns,
+            boolean unique,
+            String options
+    ) {
     }
 
     /**
