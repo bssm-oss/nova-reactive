@@ -101,7 +101,7 @@ class JpqlQueryTest {
     @Test
     void offsetOnlyJoinHydratesDistinctIdsInIncrementalBoundedChunks() {
         List<Object> ids = new ArrayList<>();
-        for (long id = 1; id <= 513; id++) {
+        for (long id = 1; id <= 514; id++) {
             ids.add(id);
         }
         RecordingOperations recorder = new RecordingOperations(ids);
@@ -114,7 +114,7 @@ class JpqlQueryTest {
         assertEquals(3, recorder.querySpecs().size());
         assertEquals(256, ((List<?>) ((Condition) recorder.querySpecs().get(0).predicate()).value()).size());
         assertEquals(256, ((List<?>) ((Condition) recorder.querySpecs().get(1).predicate()).value()).size());
-        assertEquals(List.of(513L), ((Condition) recorder.querySpecs().get(2).predicate()).value());
+        assertEquals(List.of(514L), ((Condition) recorder.querySpecs().get(2).predicate()).value());
     }
 
     @Test
