@@ -156,6 +156,10 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                                 + " with a null identifier; persist it first"));
             }
             Optional<PersistenceSession> session = currentSession(ctx);
+            if (session.isPresent() && session.get().isRemoved(metadata, entity)) {
+                return Mono.error(new IllegalStateException("Cannot refresh removed entity "
+                        + entity.getClass().getName() + "; clear the persistence session first"));
+            }
             // 보류 변경 폐기: 재조회 전에 세션에서 분리해 auto-flush가 이 엔티티의 미저장 변경을 쓰지 않게 한다.
             session.ifPresent(active -> active.detach(metadata, entity));
             Class<T> entityType = metadata.entityType();

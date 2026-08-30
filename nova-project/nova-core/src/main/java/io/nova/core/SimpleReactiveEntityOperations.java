@@ -985,9 +985,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 : QuerySpec.empty().where(Criteria.and(
                         fkMatches,
                         Criteria.notIn(childMetadata.idProperty().propertyName(), retainedIds)));
-        return Mono.deferContextual(ctx -> sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec))
-                .doOnNext(affected -> currentSession(ctx).ifPresent(
-                        session -> markChildrenRemoved(session, childMetadata, mappedByProperty, parentId, retainedIds))));
+        return Mono.deferContextual(ctx -> {
+            Optional<PersistenceSession> session = currentSession(ctx);
+            return findAllInternal(childMetadata, spec)
+                    .map(child -> manage(session, child))
+                    .concatMap(this::delete)
+                    .reduce(0L, Long::sum);
+        });
     }
 
     /**
@@ -2856,7 +2860,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         // id 없는 참조(미영속)면 삭제할 row가 없다 → no-op.
                         return Mono.empty();
                     }
-                    return deleteById(referenceType, referenceId).then();
+                    return delete(reference).then();
                 })
                 .then();
     }
@@ -2887,10 +2891,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                     resolveMappedByProperty(metadata, property, childMetadata);
                             QuerySpec spec = QuerySpec.empty()
                                     .where(Criteria.eq(mappedByProperty.propertyName(), parentId));
-                            return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec))
-                                    .doOnNext(affected -> currentSession(ctx).ifPresent(
-                                            session -> markChildrenRemoved(session, childMetadata, mappedByProperty,
-                                                    parentId, List.of())));
+                            Optional<PersistenceSession> session = currentSession(ctx);
+                            return findAllInternal(childMetadata, spec)
+                                    .map(child -> manage(session, child))
+                                    .concatMap(this::delete)
+                                    .then();
                         })
                         .then());
     }

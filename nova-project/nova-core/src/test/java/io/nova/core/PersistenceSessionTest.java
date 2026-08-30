@@ -158,6 +158,23 @@ class PersistenceSessionTest {
         assertFalse(session.isManaged(metadata, line));
     }
 
+    @Test
+    void detachPreservesRemovedTombstoneUntilClear() {
+        EntityMetadata<Person> metadata = factory.getEntityMetadata(Person.class);
+        PersistenceSession session = new PersistenceSession();
+        Person person = person(1L, "ada", 30);
+        session.registerOnLoad(metadata, person);
+        session.markRemoved(metadata, person);
+
+        session.detach(metadata, person);
+
+        assertEquals(1, session.size());
+        assertThrows(IllegalStateException.class, () -> session.registerOnPersist(metadata, person));
+        session.clear();
+        session.registerOnPersist(metadata, person);
+        assertTrue(session.isManaged(metadata, person));
+    }
+
     private static Person person(Long id, String name, int age) {
         Person person = new Person();
         person.id = id;

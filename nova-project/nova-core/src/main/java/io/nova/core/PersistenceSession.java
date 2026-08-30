@@ -266,7 +266,10 @@ final class PersistenceSession {
     void detach(EntityMetadata<?> metadata, Object entity) {
         EntityKey key = keyFor(metadata, entity);
         if (key != null) {
-            identityMap.remove(key);
+            ManagedEntry entry = identityMap.get(key);
+            if (entry == null || !entry.isRemoved()) {
+                identityMap.remove(key);
+            }
         }
     }
 

@@ -171,6 +171,22 @@ class SimpleReactiveEntityManagerTest {
     }
 
     @Test
+    void refreshRejectsRemovedEntityWithoutErasingTombstone() {
+        PersistenceSession session = new PersistenceSession();
+        Widget widget = new Widget(11L, "k");
+        EntityMetadata<Widget> metadata = metadataFor(Widget.class);
+        session.registerOnLoad(metadata, widget);
+        session.markRemoved(metadata, widget);
+
+        StepVerifier.create(withSession(manager.refresh(widget), session))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("Cannot refresh removed entity"))
+                .verify();
+
+        assertTrue(session.managedEntry(metadata, widget).isRemoved());
+    }
+
+    @Test
     void refreshReloadsColumnStateInPlaceAndReRegisters() {
         PersistenceSession session = new PersistenceSession();
         Widget managed = new Widget(12L, "stale");
