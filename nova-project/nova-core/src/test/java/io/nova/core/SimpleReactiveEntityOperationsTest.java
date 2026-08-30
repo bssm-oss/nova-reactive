@@ -81,6 +81,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SimpleReactiveEntityOperationsTest {
+    private static final List<String> ORDERED_REMOVAL_TRACE = new ArrayList<>();
+
     @Test
     void saveUsesInsertWithGeneratedKeyForNewIdentityEntity() {
         CapturingExecutor executor = new CapturingExecutor();
@@ -2706,9 +2708,12 @@ class SimpleReactiveEntityOperationsTest {
     void sessionFlushPersistsMembershipChangesBeforeReindexingOrderedOneToMany() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.generatedKey = 4L;
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 2L, "name", "second", "parent_id", 100L, "child_position", 1))));
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         OrderedSessionParent parent = orderedParent();
         OrderedSessionChild added = new OrderedSessionChild(null, "fourth");
+        ORDERED_REMOVAL_TRACE.clear();
 
         StepVerifier.create(operations.inTransaction(current ->
                         prepareOrderedCollectionBaseline(current, executor, parent)
@@ -2727,6 +2732,9 @@ class SimpleReactiveEntityOperationsTest {
                 .anyMatch(statement -> statement.startsWith("insert into ordered_session_children")));
         assertTrue(sql.subList(0, firstOrderUpdate).stream()
                 .anyMatch(statement -> statement.startsWith("delete from ordered_session_children")));
+        assertEquals("pre-remove", ORDERED_REMOVAL_TRACE.get(0));
+        assertEquals("post-remove", ORDERED_REMOVAL_TRACE.get(1));
+        assertEquals("reindex", ORDERED_REMOVAL_TRACE.get(2));
     }
 
     @Test
@@ -3145,6 +3153,9 @@ class SimpleReactiveEntityOperationsTest {
             this.lastStatement = statement;
             this.executedStatements.add(statement);
             this.chronologicalSqlCalls.add(statement.sql());
+            if (statement.sql().startsWith("update ordered_session_children set child_position")) {
+                ORDERED_REMOVAL_TRACE.add("reindex");
+            }
             if (!executeErrors.isEmpty()) {
                 return Mono.error(executeErrors.removeFirst());
             }
@@ -3307,6 +3318,16 @@ class SimpleReactiveEntityOperationsTest {
         private OrderedSessionChild(Long id, String name) {
             this.id = id;
             this.name = name;
+        }
+
+        @PreRemove
+        void preRemove() {
+            ORDERED_REMOVAL_TRACE.add("pre-remove");
+        }
+
+        @PostRemove
+        void postRemove() {
+            ORDERED_REMOVAL_TRACE.add("post-remove");
         }
     }
 
