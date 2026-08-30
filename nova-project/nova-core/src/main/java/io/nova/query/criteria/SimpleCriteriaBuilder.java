@@ -237,8 +237,8 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
             throw new CriteriaException("CriteriaBuilder.between expression bounds must be Criteria parameters");
         }
         CriteriaColumnPath path = path(expression, "between");
-        validateParameterType(path.getJavaType(), lowParameter, "between");
-        validateParameterType(path.getJavaType(), highParameter, "between");
+        validateParameterType(path.property().javaType(), lowParameter, "between");
+        validateParameterType(path.property().javaType(), highParameter, "between");
         return CriteriaPredicate.between(path, lowParameter, highParameter);
     }
 
@@ -347,7 +347,7 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
                 return CriteriaPredicate.comparison(aggregate, op, parameter);
             }
             CriteriaColumnPath leftPath = path(left, name);
-            validateParameterType(leftPath.getJavaType(), parameter, name);
+            validateParameterType(leftPath.property().javaType(), parameter, name);
             return CriteriaPredicate.comparison(leftPath, op, parameter);
         }
         CriteriaColumnPath leftPath = path(left, name);
@@ -428,12 +428,29 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     }
 
     private static void validateParameterType(Class<?> expressionType, CriteriaParameter<?> parameter, String operation) {
-        if (!expressionType.isAssignableFrom(parameter.getJavaType())
-                && !parameter.getJavaType().isAssignableFrom(expressionType)) {
+        Class<?> boxedExpressionType = boxed(expressionType);
+        Class<?> boxedParameterType = boxed(parameter.getJavaType());
+        if (!boxedExpressionType.isAssignableFrom(boxedParameterType)
+                && !boxedParameterType.isAssignableFrom(boxedExpressionType)) {
             throw new CriteriaException("CriteriaBuilder." + operation + " parameter type "
                     + parameter.getJavaType().getSimpleName() + " is incompatible with expression type "
                     + expressionType.getSimpleName());
         }
+    }
+
+    private static Class<?> boxed(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == boolean.class) return Boolean.class;
+        if (type == byte.class) return Byte.class;
+        if (type == short.class) return Short.class;
+        if (type == int.class) return Integer.class;
+        if (type == long.class) return Long.class;
+        if (type == float.class) return Float.class;
+        if (type == double.class) return Double.class;
+        if (type == char.class) return Character.class;
+        throw new CriteriaException("Unsupported primitive Criteria parameter type " + type.getName());
     }
 
     private CriteriaPredicate junction(CriteriaPredicate.Kind kind, List<Predicate> parts, String op) {
