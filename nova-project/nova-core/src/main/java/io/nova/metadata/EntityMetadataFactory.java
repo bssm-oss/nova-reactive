@@ -215,8 +215,14 @@ public final class EntityMetadataFactory {
     /**
      * 프로퍼티 타입용 converter를 등록해 컬럼 값과 프로퍼티 값 사이의 변환에 사용한다.
      */
-    public <X, Y> void registerConverter(Class<X> propertyType, AttributeConverter<X, Y> converter) {
-        converters.put(propertyType, converter);
+    public synchronized <X, Y> void registerConverter(Class<X> propertyType, AttributeConverter<X, Y> converter) {
+        ensureConverterRegistrationOpen();
+        Objects.requireNonNull(propertyType, "propertyType must not be null");
+        Objects.requireNonNull(converter, "converter must not be null");
+        AttributeConverter<?, ?> previous = converters.putIfAbsent(propertyType, converter);
+        if (previous != null && previous != converter) {
+            throw new IllegalArgumentException("A converter is already registered for " + propertyType.getName());
+        }
     }
 
     /** Registers a managed Jakarta converter class for explicit and auto-apply conversion. */

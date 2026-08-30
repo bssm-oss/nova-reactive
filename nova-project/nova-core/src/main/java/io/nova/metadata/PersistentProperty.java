@@ -13,6 +13,7 @@ import java.util.Objects;
 
 public final class PersistentProperty {
     private final Field field;
+    private final PersistentAttributeAccess access;
     /**
      * leaf 필드의 {@link VarHandle} — reflective {@code Field.get/set}보다 빠른 접근 경로다. 모듈 제약 등으로
      * 생성에 실패하면 {@code null}로 두고 {@link #field} 리플렉션으로 fallback한다(동작 동일). 기본(non-exact)
@@ -219,6 +220,9 @@ public final class PersistentProperty {
         this.field = field;
         this.field.setAccessible(true);
         this.fieldHandle = resolveFieldHandle(field);
+        this.access = propertyAccess
+                ? new PersistentAttributeAccess(propertyName, propertyAccessGetter, propertyAccessSetter)
+                : new PersistentAttributeAccess(propertyName, field);
         this.propertyName = propertyName;
         this.columnName = columnName;
         this.javaType = javaType;
@@ -507,6 +511,11 @@ public final class PersistentProperty {
 
     public Field field() {
         return field;
+    }
+
+    /** The selected state and annotation carrier for this property. */
+    public PersistentAttributeAccess access() {
+        return access;
     }
 
     public String propertyName() {
