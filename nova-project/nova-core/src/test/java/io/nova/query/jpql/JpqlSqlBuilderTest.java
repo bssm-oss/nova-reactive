@@ -59,7 +59,7 @@ class JpqlSqlBuilderTest {
                 t.sql());
         assertEquals(1, t.selectionCount());
         assertEquals(1, t.bindings().size());
-        assertEquals(new JpqlBinding.Named("min"), t.bindings().get(0));
+        assertConverted(t.bindings().get(0), "min", "salary");
     }
 
     @Test
@@ -68,7 +68,8 @@ class JpqlSqlBuilderTest {
         assertEquals(
                 "select e.\"name\" as \"c0\" from \"employee\" e where (e.\"age\" = ? and e.\"name\" = ?)",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Literal(30L), new JpqlBinding.Named("n")), t.bindings());
+        assertEquals(new JpqlBinding.Literal(30L), t.bindings().get(0));
+        assertConverted(t.bindings().get(1), "n", "name");
     }
 
     @Test
@@ -141,9 +142,9 @@ class JpqlSqlBuilderTest {
         assertEquals(
                 "update \"employee\" set \"name\" = ?, \"age\" = (\"age\" + ?) where \"id\" = ?",
                 t.sql());
-        assertEquals(
-                List.of(new JpqlBinding.Named("n"), new JpqlBinding.Literal(1L), new JpqlBinding.Named("id")),
-                t.bindings());
+        assertConverted(t.bindings().get(0), "n", "name");
+        assertEquals(new JpqlBinding.Literal(1L), t.bindings().get(1));
+        assertConverted(t.bindings().get(2), "id", "id");
     }
 
     @Test
@@ -151,11 +152,11 @@ class JpqlSqlBuilderTest {
         TranslatedSql scalar = scalar("SELECT c.id FROM ConvertedEntity c WHERE c.stringStatus = :s "
                 + "AND c.ordinalStatus IN (?1, :o) AND c.code BETWEEN :low AND ?2");
         assertEquals(5, scalar.bindings().size());
-        assertConverted(scalar.bindings().get(0), "s");
-        assertConverted(scalar.bindings().get(1), 1);
-        assertConverted(scalar.bindings().get(2), "o");
-        assertConverted(scalar.bindings().get(3), "low");
-        assertConverted(scalar.bindings().get(4), 2);
+        assertConverted(scalar.bindings().get(0), "s", "stringStatus");
+        assertConverted(scalar.bindings().get(1), 1, "ordinalStatus");
+        assertConverted(scalar.bindings().get(2), "o", "ordinalStatus");
+        assertConverted(scalar.bindings().get(3), "low", "code");
+        assertConverted(scalar.bindings().get(4), 2, "code");
 
         JpqlParameters parameters = new JpqlParameters();
         parameters.setNamed("s", Status.ACTIVE);
@@ -172,15 +173,16 @@ class JpqlSqlBuilderTest {
         JpqlStatement.Update update = (JpqlStatement.Update) new JpqlParser(
                 "UPDATE ConvertedEntity c SET c.code = :code WHERE :status = c.stringStatus").parse();
         TranslatedSql bulk = builder.buildUpdate(update);
-        assertConverted(bulk.bindings().get(0), "code");
-        assertConverted(bulk.bindings().get(1), "status");
+        assertConverted(bulk.bindings().get(0), "code", "code");
+        assertConverted(bulk.bindings().get(1), "status", "stringStatus");
     }
 
-    private static void assertConverted(JpqlBinding binding, Object source) {
+    private static void assertConverted(JpqlBinding binding, Object source, String propertyName) {
         assertTrue(binding instanceof JpqlBinding.Converted, "expected converted binding, got " + binding);
-        JpqlBinding inner = ((JpqlBinding.Converted) binding).source();
+        JpqlBinding.Converted converted = (JpqlBinding.Converted) binding;
         assertEquals(source instanceof String ? new JpqlBinding.Named((String) source)
-                : new JpqlBinding.Positional((Integer) source), inner);
+                : new JpqlBinding.Positional((Integer) source), converted.source());
+        assertEquals(propertyName, converted.property().propertyName());
     }
 
     @Test
@@ -201,7 +203,7 @@ class JpqlSqlBuilderTest {
                         + "join \"department\" j0 on e.\"dept_id\" = j0.\"id\" "
                         + "where j0.\"name\" = ? order by j0.\"name\" asc",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Named("n")), t.bindings());
+        assertConverted(t.bindings().get(0), "n", "name");
     }
 
     @Test
@@ -270,7 +272,7 @@ class JpqlSqlBuilderTest {
                 "select e.\"id\" as \"c0\" from \"employee\" e where e.\"salary\" > all ("
                         + "select m.\"salary\" from \"employee\" m where m.\"age\" < ?)",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Named("a")), t.bindings());
+        assertConverted(t.bindings().get(0), "a", "age");
     }
 
     @Test
@@ -353,8 +355,10 @@ class JpqlSqlBuilderTest {
 
     @Test
     void rendersCoalesceAndNullif() {
-        assertEquals("select coalesce(e.\"name\", ?) as \"c0\" from \"employee\" e",
-                scalar("SELECT COALESCE(e.name, :d) FROM Employee e").sql());
+        TranslatedSql coalesce = scalar("SELECT COALESCE(e.name, :d) FROM Employee e");
+        assertEquals("select coalesce(e.\"name\", ?) as \"c0\" from \"employee\" e", coalesce.sql());
+        // Function arguments have no direct property binding context and therefore remain raw.
+        assertEquals(new JpqlBinding.Named("d"), coalesce.bindings().get(0));
         assertEquals("select nullif(e.\"age\", ?) as \"c0\" from \"employee\" e",
                 scalar("SELECT NULLIF(e.age, 0) FROM Employee e").sql());
     }
