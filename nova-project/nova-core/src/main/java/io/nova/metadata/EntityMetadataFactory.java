@@ -1137,16 +1137,20 @@ public final class EntityMetadataFactory {
         }
         List<IndexDefinition> result = new ArrayList<>(declarations.length);
         for (Index declaration : declarations) {
-            String[] columns = parseColumnList(declaration.columnList());
-            if (columns.length == 0) {
+            List<IndexDefinition.Column> indexColumns = parseIndexColumnList(
+                    declaration.columnList(), entityType);
+            if (indexColumns.isEmpty()) {
                 throw new IllegalArgumentException(
                         entityType.getName() + " @Index must declare at least one column");
             }
+            String[] columns = indexColumns.stream().map(IndexDefinition.Column::name).toArray(String[]::new);
             validateColumnsExist(entityType, "@Index", columns, columnNames);
             String name = declaration.name().isBlank()
                     ? autoGenerateName("ix_", tableName, columns)
                     : declaration.name();
-            result.add(new IndexDefinition(name, List.of(columns)));
+            result.add(new IndexDefinition(
+                    name, indexColumns, declaration.unique(),
+                    fragment(declaration.options(), "@Index.options on " + entityType.getName())));
         }
         return result;
     }
@@ -1182,17 +1186,40 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * JPA {@link Index#columnList()} 형식(콤마 구분)을 컬럼 이름 배열로 파싱한다. 각 항목의 공백은
-     * 제거하고 빈 항목은 버린다.
+     * JPA {@link Index#columnList()} terms are comma-separated column identifiers with an
+     * optional ASC or DESC direction. Directions are parsed independently so the renderer can
+     * quote identifiers without treating the complete term as an identifier.
      */
-    private static String[] parseColumnList(String columnList) {
+    private static List<IndexDefinition.Column> parseIndexColumnList(String columnList, Class<?> entityType) {
         if (columnList == null || columnList.isBlank()) {
-            return new String[0];
+            return List.of();
         }
-        return Arrays.stream(columnList.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .toArray(String[]::new);
+        List<IndexDefinition.Column> columns = new ArrayList<>();
+        for (String term : columnList.split(",", -1)) {
+            String trimmed = term.trim();
+            if (trimmed.isEmpty()) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @Index contains a blank column term");
+            }
+            String[] tokens = trimmed.split("\\s+");
+            if (tokens.length > 2) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @Index has malformed column term '" + trimmed + "'");
+            }
+            IndexDefinition.Direction direction = null;
+            if (tokens.length == 2) {
+                try {
+                    direction = IndexDefinition.Direction.valueOf(tokens[1].toUpperCase(java.util.Locale.ROOT));
+                } catch (IllegalArgumentException exception) {
+                    throw new IllegalArgumentException(
+                            entityType.getName() + " @Index has invalid direction '" + tokens[1]
+                                    + "' in column term '" + trimmed + "'; expected ASC or DESC",
+                            exception);
+                }
+            }
+            columns.add(new IndexDefinition.Column(tokens[0], direction));
+        }
+        return List.copyOf(columns);
     }
 
     /**

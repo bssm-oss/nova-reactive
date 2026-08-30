@@ -27,6 +27,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.Table;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -258,6 +263,20 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void createIndexesRendersUniqueOrderedColumnsAndOptions() {
+        List<String> statements = dialect.schemaGenerator().createIndexes(
+                factory.getEntityMetadata(UniqueOrderedIndexEntity.class)
+        );
+
+        assertEquals(1, statements.size());
+        assertEquals(
+                "create unique index ix_unique_ordered_email_created on unique_ordered_indexed_accounts "
+                        + "(email DESC, created_at ASC) using btree",
+                statements.get(0)
+        );
+    }
+
+    @Test
     void createIndexesRendersUniqueConstraintAsUniqueIndex() {
         List<String> statements = dialect.schemaGenerator().createIndexes(
                 factory.getEntityMetadata(SingleUniqueConstraintEntity.class)
@@ -317,6 +336,22 @@ class AbstractSchemaGeneratorTest {
                         + "on multi_indexed_accounts (first_name, last_name)",
                 statements.get(0)
         );
+    }
+
+    @Entity
+    @Table(name = "unique_ordered_indexed_accounts",
+            indexes = @Index(
+                    name = "ix_unique_ordered_email_created",
+                    columnList = "email DESC, created_at ASC",
+                    unique = true,
+                    options = "using btree"))
+    static class UniqueOrderedIndexEntity {
+        @Id
+        private Long id;
+
+        private String email;
+
+        private java.time.Instant createdAt;
     }
 
     @Test

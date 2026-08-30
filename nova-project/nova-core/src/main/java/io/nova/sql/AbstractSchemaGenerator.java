@@ -358,8 +358,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         String quotedTable = qualifiedTable(metadata);
         for (IndexDefinition index : metadata.indexes()) {
             statements.add(
-                    "create index " + dialect.quote(index.name()) + " on " + quotedTable
-                            + " (" + joinQuoted(index.columns()) + ")");
+                    "create " + (index.unique() ? "unique " : "") + "index " + dialect.quote(index.name())
+                            + " on " + quotedTable + " (" + joinIndexColumns(index.columns()) + ")"
+                            + options(index.options()));
         }
         for (UniqueConstraintDefinition constraint : metadata.uniqueConstraints()) {
             statements.add(
@@ -500,6 +501,21 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                 builder.append(", ");
             }
             builder.append(dialect.quote(identifiers.get(i)));
+        }
+        return builder.toString();
+    }
+
+    private String joinIndexColumns(List<IndexDefinition.Column> columns) {
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            IndexDefinition.Column column = columns.get(i);
+            builder.append(dialect.quote(column.name()));
+            if (column.direction() != null) {
+                builder.append(' ').append(column.direction());
+            }
         }
         return builder.toString();
     }
