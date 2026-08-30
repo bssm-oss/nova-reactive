@@ -30,6 +30,9 @@ public final class JpqlParameters {
         if (binding instanceof JpqlBinding.Positional positionalBinding) {
             return resolvePositional(positionalBinding.position());
         }
+        if (binding instanceof JpqlBinding.Converted converted) {
+            return converted.property().toColumnValue(resolve(converted.source()));
+        }
         if (binding instanceof JpqlBinding.Component component) {
             // 참조 엔티티에서 이 FK 컴포넌트의 @Id 도메인 값을 꺼내 저장 표현으로 인코딩한다.
             Object reference = resolve(component.source());

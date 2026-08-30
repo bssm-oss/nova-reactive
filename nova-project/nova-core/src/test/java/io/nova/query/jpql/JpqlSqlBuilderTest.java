@@ -2,6 +2,7 @@ package io.nova.query.jpql;
 
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.convert.AttributeConverter;
 import io.nova.query.jpql.ast.JpqlStatement;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
@@ -11,7 +12,11 @@ import jakarta.persistence.Column;
 import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.DiscriminatorValue;
+import jakarta.persistence.Convert;
+import jakarta.persistence.Converter;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.EnumType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Inheritance;
 import jakarta.persistence.InheritanceType;
@@ -38,7 +43,7 @@ class JpqlSqlBuilderTest {
     private final EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
     private final JpqlEntityResolver resolver =
             new JpqlEntityResolver(metadataFactory, List.of(Employee.class, Department.class, Company.class,
-                    Vehicle.class, Car.class, Truck.class));
+                    Vehicle.class, Car.class, Truck.class, ConvertedEntity.class));
     private final JpqlSqlBuilder builder = new JpqlSqlBuilder(dialect, resolver);
 
     private TranslatedSql scalar(String jpql) {
@@ -139,6 +144,43 @@ class JpqlSqlBuilderTest {
         assertEquals(
                 List.of(new JpqlBinding.Named("n"), new JpqlBinding.Literal(1L), new JpqlBinding.Named("id")),
                 t.bindings());
+    }
+
+    @Test
+    void convertsDirectScalarAndBulkParametersUsingMappedProperty() {
+        TranslatedSql scalar = scalar("SELECT c.id FROM ConvertedEntity c WHERE c.stringStatus = :s "
+                + "AND c.ordinalStatus IN (?1, :o) AND c.code BETWEEN :low AND ?2");
+        assertEquals(5, scalar.bindings().size());
+        assertConverted(scalar.bindings().get(0), "s");
+        assertConverted(scalar.bindings().get(1), 1);
+        assertConverted(scalar.bindings().get(2), "o");
+        assertConverted(scalar.bindings().get(3), "low");
+        assertConverted(scalar.bindings().get(4), 2);
+
+        JpqlParameters parameters = new JpqlParameters();
+        parameters.setNamed("s", Status.ACTIVE);
+        parameters.setPositional(1, Status.INACTIVE);
+        parameters.setNamed("o", Status.ACTIVE);
+        parameters.setNamed("low", new Code("a"));
+        parameters.setPositional(2, new Code("z"));
+        assertEquals("ACTIVE", parameters.resolve(scalar.bindings().get(0)));
+        assertEquals(1, parameters.resolve(scalar.bindings().get(1)));
+        assertEquals(0, parameters.resolve(scalar.bindings().get(2)));
+        assertEquals("a", parameters.resolve(scalar.bindings().get(3)));
+        assertEquals("z", parameters.resolve(scalar.bindings().get(4)));
+
+        JpqlStatement.Update update = (JpqlStatement.Update) new JpqlParser(
+                "UPDATE ConvertedEntity c SET c.code = :code WHERE :status = c.stringStatus").parse();
+        TranslatedSql bulk = builder.buildUpdate(update);
+        assertConverted(bulk.bindings().get(0), "code");
+        assertConverted(bulk.bindings().get(1), "status");
+    }
+
+    private static void assertConverted(JpqlBinding binding, Object source) {
+        assertTrue(binding instanceof JpqlBinding.Converted, "expected converted binding, got " + binding);
+        JpqlBinding inner = ((JpqlBinding.Converted) binding).source();
+        assertEquals(source instanceof String ? new JpqlBinding.Named((String) source)
+                : new JpqlBinding.Positional((Integer) source), inner);
     }
 
     @Test
@@ -972,6 +1014,40 @@ class JpqlSqlBuilderTest {
     public static class ShTruck extends ShVehicle {
         @Column(name = "tag")
         private String tag;
+    }
+
+    enum Status { ACTIVE, INACTIVE }
+
+    record Code(String value) { }
+
+    @Converter
+    public static class CodeConverter implements AttributeConverter<Code, String> {
+        @Override
+        public String write(Code value) {
+            return value == null ? null : value.value();
+        }
+
+        @Override
+        public Code read(String value) {
+            return value == null ? null : new Code(value);
+        }
+    }
+
+    @Entity
+    @Table(name = "converted_entity")
+    public static class ConvertedEntity {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Enumerated(EnumType.STRING)
+        @Column(name = "string_status")
+        private Status stringStatus;
+        @Enumerated(EnumType.ORDINAL)
+        @Column(name = "ordinal_status")
+        private Status ordinalStatus;
+        @Convert(converter = CodeConverter.class)
+        @Column(name = "code")
+        private Code code;
     }
 
     @Entity
