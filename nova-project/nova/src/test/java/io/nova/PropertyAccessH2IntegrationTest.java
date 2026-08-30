@@ -127,11 +127,7 @@ class PropertyAccessH2IntegrationTest {
     @Table(name = "property_access_accounts")
     @Access(AccessType.PROPERTY)
     public static class PropertyAccessAccount {
-        @Id
-        @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
-
-        @Column(name = "email")
         private String email;
 
         public transient boolean emailSetterInvoked;
@@ -143,6 +139,8 @@ class PropertyAccessH2IntegrationTest {
             this.email = email;
         }
 
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
         public Long getId() {
             return id;
         }
@@ -151,6 +149,7 @@ class PropertyAccessH2IntegrationTest {
             this.id = id;
         }
 
+        @Column(name = "email")
         public String getEmail() {
             return email;
         }
@@ -172,9 +171,7 @@ class PropertyAccessH2IntegrationTest {
         @Column(name = "field_mapped")
         private String fieldMapped;
 
-        // 멤버 레벨 override → PROPERTY 접근.
-        @Access(AccessType.PROPERTY)
-        @Column(name = "property_mapped")
+        // Getter-level override → PROPERTY 접근.
         private String propertyMapped;
 
         public transient boolean propertySetterInvoked;
@@ -196,6 +193,8 @@ class PropertyAccessH2IntegrationTest {
             return fieldMapped;
         }
 
+        @Access(AccessType.PROPERTY)
+        @Column(name = "property_mapped")
         public String getPropertyMapped() {
             return propertyMapped;
         }
@@ -234,15 +233,8 @@ class PropertyAccessH2IntegrationTest {
     @Table(name = "property_access_articles")
     @Access(AccessType.PROPERTY)
     public static class PropertyAccessArticle {
-        @Id
-        @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
-
-        @Column(name = "title")
         private String title;
-
-        @ManyToOne
-        @JoinColumn(name = "blog_id")
         private Blog blog;
 
         public transient boolean blogGetterInvoked;
@@ -255,6 +247,8 @@ class PropertyAccessH2IntegrationTest {
             this.title = title;
         }
 
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
         public Long getId() {
             return id;
         }
@@ -263,6 +257,7 @@ class PropertyAccessH2IntegrationTest {
             this.id = id;
         }
 
+        @Column(name = "title")
         public String getTitle() {
             return title;
         }
@@ -271,6 +266,8 @@ class PropertyAccessH2IntegrationTest {
             this.title = title;
         }
 
+        @ManyToOne
+        @JoinColumn(name = "blog_id")
         public Blog getBlog() {
             this.blogGetterInvoked = true;
             return blog;

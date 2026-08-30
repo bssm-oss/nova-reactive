@@ -839,7 +839,8 @@ public final class EntityMetadataFactory {
         applyAssociationOverrides(entityType, properties);
 
         if (idProperty == null) {
-            throw new IllegalArgumentException(entityType.getName() + " must declare a field annotated with @Id");
+            throw new IllegalArgumentException(entityType.getName()
+                    + " must declare an access member annotated with @Id or @EmbeddedId");
         }
         if (hasIdClass) {
             validateIdClass(entityType, properties);
