@@ -967,6 +967,22 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void aggregateRejectsCaseOnlyAliasCollidingWithSelectedGroupColumnLabel() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().aggregate(
+                        metadata,
+                        AggregateSpec.of(Aggregation.count("id").as("ACTIVE")).groupBy("active")
+                )
+        );
+
+        assertEquals(
+                "Aggregate alias 'ACTIVE' collides with a selected group-column label; call .as(...) to assign a unique alias",
+                exception.getMessage()
+        );
+    }
+
+    @Test
     void aggregateRendersWhereAndGroupByInExpectedOrder() {
         SqlStatement statement = dialect.sqlRenderer().aggregate(
                 metadata,

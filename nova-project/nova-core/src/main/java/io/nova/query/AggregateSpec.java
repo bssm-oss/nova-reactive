@@ -3,6 +3,7 @@ package io.nova.query;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 
@@ -125,7 +126,7 @@ public final class AggregateSpec {
         Set<String> aliases = new LinkedHashSet<>();
         for (Aggregation aggregation : aggregations) {
             String alias = aggregation.resolvedAlias();
-            if (!aliases.add(alias)) {
+            if (!aliases.add(alias.toLowerCase(Locale.ROOT))) {
                 throw new IllegalArgumentException(
                         "Duplicate aggregate alias '" + alias + "'; call .as(...) to assign unique aliases"
                 );

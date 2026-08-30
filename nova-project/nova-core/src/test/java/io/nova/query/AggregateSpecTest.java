@@ -65,6 +65,22 @@ class AggregateSpecTest {
     }
 
     @Test
+    void rejectsCaseOnlyDuplicateAggregateAliases() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> AggregateSpec.of(
+                        Aggregation.count("id").as("total"),
+                        Aggregation.sum("id").as("TOTAL")
+                )
+        );
+
+        assertEquals(
+                "Duplicate aggregate alias 'TOTAL'; call .as(...) to assign unique aliases",
+                exception.getMessage()
+        );
+    }
+
+    @Test
     void preservesExplicitUniqueAggregateAliasOrder() {
         AggregateSpec spec = AggregateSpec.of(
                 Aggregation.sum("id").as("total"),

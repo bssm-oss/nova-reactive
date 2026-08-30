@@ -25,6 +25,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -1055,11 +1056,11 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
     private void validateAggregateAliasesAgainstGroupColumns(EntityMetadata<?> metadata, AggregateSpec spec) {
         Set<String> groupColumnLabels = new LinkedHashSet<>();
         for (String groupProperty : spec.groupBy()) {
-            groupColumnLabels.add(findProperty(metadata, groupProperty).columnName());
+            groupColumnLabels.add(findProperty(metadata, groupProperty).columnName().toLowerCase(Locale.ROOT));
         }
         for (Aggregation aggregation : spec.aggregations()) {
             String alias = aggregation.resolvedAlias();
-            if (groupColumnLabels.contains(alias)) {
+            if (groupColumnLabels.contains(alias.toLowerCase(Locale.ROOT))) {
                 throw new IllegalArgumentException(
                         "Aggregate alias '" + alias
                                 + "' collides with a selected group-column label; call .as(...) to assign a unique alias"
