@@ -25,7 +25,8 @@ import java.util.Objects;
  *   <li>NULL: {@code isNull}/{@code isNotNull}
  *   <li>패턴: {@code like}/{@code notLike}(리터럴 패턴)
  *   <li>IN: {@code in(Expression)}(누적형)
- *   <li>집계: {@code count}/{@code countDistinct}/{@code sum}/{@code avg}/{@code max}/{@code min}
+ *   <li>집계: {@code count}/{@code countDistinct}/{@code sum}/{@code sumAsLong}/{@code sumAsDouble}/
+ *       {@code avg}/{@code max}/{@code min}
  *   <li>정렬: {@code asc}/{@code desc}
  * </ul>
  * 비교/집계/정렬의 표현식 인자는 단일 컬럼 경로({@code root.get("attr")} 또는 루트 자체)여야 하며,
@@ -94,6 +95,16 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     @SuppressWarnings("unchecked")
     public <N extends Number> Expression<N> sum(Expression<N> expression) {
         return new CriteriaAggregate<>(AggregateFunction.SUM, path(expression, "sum"), (Class<N>) expression.getJavaType());
+    }
+
+    @Override
+    public Expression<Long> sumAsLong(Expression<Integer> expression) {
+        return new CriteriaAggregate<>(AggregateFunction.SUM, path(expression, "sumAsLong"), Long.class, false);
+    }
+
+    @Override
+    public Expression<Double> sumAsDouble(Expression<Float> expression) {
+        return new CriteriaAggregate<>(AggregateFunction.SUM, path(expression, "sumAsDouble"), Double.class, false);
     }
 
     @Override

@@ -1,5 +1,8 @@
 package io.nova.query.criteria;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+
 /**
  * {@code CriteriaBuilder.count/countDistinct/sum/avg/max/min}이 만드는 집계 표현식. 피연산자는 단일
  * 컬럼 경로({@link CriteriaColumnPath})여야 하며, 스칼라 SQL 렌더 시 {@code fn("col")} 형태가 된다.
@@ -11,11 +14,21 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
 
     private final AggregateFunction function;
     private final CriteriaColumnPath operand;
+    private final boolean comparisonUsesOperandConverter;
 
     CriteriaAggregate(AggregateFunction function, CriteriaColumnPath operand, Class<N> resultType) {
+        this(function, operand, resultType, true);
+    }
+
+    CriteriaAggregate(
+            AggregateFunction function,
+            CriteriaColumnPath operand,
+            Class<N> resultType,
+            boolean comparisonUsesOperandConverter) {
         super(boxed(resultType));
         this.function = function;
         this.operand = operand;
+        this.comparisonUsesOperandConverter = comparisonUsesOperandConverter;
         validateOperand();
     }
 
@@ -29,13 +42,28 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
 
     /**
      * Converts an aggregate comparison value only when the SQL aggregate preserves the operand's
-     * domain representation. COUNT and AVG produce independent numeric result domains.
+     * domain representation. COUNT, AVG, and widened SUM produce independent numeric result domains.
      */
     Object toComparisonColumnValue(Object value) {
-        return switch (function) {
-            case COUNT, COUNT_DISTINCT, AVG -> value;
-            case SUM, MIN, MAX -> operand.property().toColumnValue(value);
-        };
+        return comparisonUsesOperandConverter ? operand.property().toColumnValue(value) : value;
+    }
+
+    Object normalizeResult(Object value) {
+        if (value == null) {
+            return null;
+        }
+        Class<?> resultType = boxed(getJavaType());
+        if (resultType.isInstance(value)) {
+            return value;
+        }
+        if (!(value instanceof Number number)) {
+            throw resultTypeMismatch(value, resultType);
+        }
+        try {
+            return normalizeNumber(number, resultType);
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw resultTypeMismatch(value, resultType, e);
+        }
     }
 
     @Override
@@ -77,6 +105,65 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
                 throw new CriteriaException(function.sqlName() + " requires a numeric scalar attribute operand");
             }
         }
+    }
+
+    private CriteriaException resultTypeMismatch(Object value, Class<?> resultType) {
+        return resultTypeMismatch(value, resultType, null);
+    }
+
+    private CriteriaException resultTypeMismatch(Object value, Class<?> resultType, Exception cause) {
+        String message = function.sqlName() + " returned " + value.getClass().getSimpleName()
+                + " which cannot be represented exactly as declared " + resultType.getSimpleName();
+        return cause == null ? new CriteriaException(message) : new CriteriaException(message, cause);
+    }
+
+    private static Object normalizeNumber(Number value, Class<?> target) {
+        if (target == BigDecimal.class) {
+            return decimal(value);
+        }
+        if (target == BigInteger.class) {
+            return decimal(value).toBigIntegerExact();
+        }
+        if (target == Byte.class) {
+            return decimal(value).byteValueExact();
+        }
+        if (target == Short.class) {
+            return decimal(value).shortValueExact();
+        }
+        if (target == Integer.class) {
+            return decimal(value).intValueExact();
+        }
+        if (target == Long.class) {
+            return decimal(value).longValueExact();
+        }
+        if (target == Float.class) {
+            float converted = value.floatValue();
+            if (!Float.isFinite(converted) || (converted == 0.0f && decimal(value).signum() != 0)) {
+                throw new ArithmeticException("outside Float range");
+            }
+            return converted;
+        }
+        if (target == Double.class) {
+            double converted = value.doubleValue();
+            if (!Double.isFinite(converted) || (converted == 0.0d && decimal(value).signum() != 0)) {
+                throw new ArithmeticException("outside Double range");
+            }
+            return converted;
+        }
+        throw new CriteriaException("Unsupported aggregate result type " + target.getName());
+    }
+
+    private static BigDecimal decimal(Number value) {
+        if (value instanceof BigDecimal decimal) {
+            return decimal;
+        }
+        if (value instanceof BigInteger integer) {
+            return new BigDecimal(integer);
+        }
+        if ((value instanceof Double d && !Double.isFinite(d)) || (value instanceof Float f && !Float.isFinite(f))) {
+            throw new ArithmeticException("non-finite value");
+        }
+        return new BigDecimal(value.toString());
     }
 
     @SuppressWarnings("unchecked")
