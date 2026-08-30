@@ -109,6 +109,21 @@ class AnnotationFetchGroupBuilderTest {
         assertTrue(idClass.specs().isEmpty());
         assertEquals(1, idClass.compositeInverseSpecs().size());
         assertEquals("parent", idClass.compositeInverseSpecs().get(0).childForeignKeyProperty());
+
+        EmbeddedParent embeddedParent = new EmbeddedParent();
+        embeddedParent.id = new EmbeddedParentId();
+        embeddedParent.id.tenant = "acme";
+        embeddedParent.id.number = 1L;
+        assertSame(embeddedParent.id, embedded.compositeInverseSpecs().get(0).parentIdExtractor()
+                .apply(embeddedParent));
+
+        IdClassParent idClassParent = new IdClassParent();
+        idClassParent.tenant = "acme";
+        idClassParent.number = 2L;
+        Object idHolder = idClass.compositeInverseSpecs().get(0).parentIdExtractor().apply(idClassParent);
+        assertEquals(List.of("acme", 2L), factory.getEntityMetadata(IdClassParent.class).idProperties().stream()
+                .map(property -> factory.getEntityMetadata(IdClassParent.class).idColumnValue(property, idHolder))
+                .toList());
     }
 
     @Test

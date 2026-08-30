@@ -201,10 +201,14 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             String key = QuerySpecCacheKey.of(entityType, querySpec);
             Flux<T> onMiss = Flux.defer(() -> delegate.findAll(entityType, querySpec)
                     .collectList()
-                    .flatMapMany(list -> queryCache.put(partition, key, snapshotList(list))
+                    .flatMapMany(list -> {
+                        List<Object> snapshots = snapshotList(list);
+                        return queryCache.put(partition, key, snapshots)
                             // 결과를 쿼리 캐시에 저장 + 엔티티 캐시도 warming(이후 findById 히트).
-                            .thenMany(Flux.fromIterable(list))
-                            .concatMap(entity -> putEntity(entity).thenReturn(entity))));
+                            .thenMany(Flux.fromIterable(snapshots))
+                            .concatMap(this::putEntitySnapshot)
+                            .thenMany(Flux.fromIterable(list));
+                    }));
             // 빈 리스트도 히트로 취급해야 하므로 Mono 존재 여부로 hit/miss를 판별한다(빈 Flux를
             // switchIfEmpty로 miss 처리하면 빈 결과가 매번 재실행됨).
             return queryCache.get(partition, key)
@@ -219,7 +223,12 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             return result;
         }
         // 조회된 엔티티를 캐시에 채워 이후 findById가 히트하도록 한다(쿼리 캐시 미배선 시 결과 자체는 캐시 안 함).
-        return result.concatMap(entity -> putEntity(entity).thenReturn(entity));
+        return result.collectList().flatMapMany(list -> {
+            List<Object> snapshots = snapshotList(list);
+            return Flux.fromIterable(snapshots)
+                    .concatMap(this::putEntitySnapshot)
+                    .thenMany(Flux.fromIterable(list));
+        });
     }
 
     @Override
@@ -443,7 +452,10 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     }
 
     private Mono<Void> invalidate(CacheKey key) {
-        Mono<Void> evict = provider.getCache(key.region()).evict(key);
+        // Association snapshots can contain entities from other regions, including
+        // non-cacheable children. Without reverse dependency tracking, clear all
+        // entity regions rather than retaining a stale parent graph.
+        Mono<Void> evict = provider.clearAll();
         if (evictionBuffer != null) {
             evictionBuffer.recordKey(key);
         }
@@ -504,10 +516,24 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
 
     private <T> List<Object> snapshotList(List<T> entities) {
         List<Object> snapshots = new ArrayList<>(entities.size());
+        EntitySnapshotCopier copier = new EntitySnapshotCopier(metadataFactory);
         for (T entity : entities) {
-            snapshots.add(snapshot(entity));
+            snapshots.add(entity == null ? null : copier.copyEntity(entity));
         }
         return snapshots;
+    }
+
+    private Mono<Void> putEntitySnapshot(Object snapshot) {
+        if (snapshot == null) {
+            return Mono.empty();
+        }
+        CacheConfiguration config = resolver.resolve(snapshot.getClass());
+        if (!config.cacheable()) {
+            return Mono.empty();
+        }
+        Object id = metadataFactory.getEntityMetadata(cast(snapshot.getClass())).readIdValue(snapshot);
+        return id == null ? Mono.empty() : provider.getCache(config.region())
+                .put(new CacheKey(config.region(), config.keyType(), id), snapshot);
     }
 
     @SuppressWarnings("unchecked")
@@ -548,22 +574,54 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             Object target = instantiate(source.getClass(), "entity");
             copies.put(source, target);
             for (PersistentProperty property : metadata.properties()) {
-                if (property.isRelation()) {
+                if (property.isRelation() || property.elementCollection()) {
                     copyRelation(property, source, target);
                 } else {
-                    property.write(target, copyValue(property.read(source)));
+                    Object value = property.read(source);
+                    if (property.converterColumnType() != null || property.json()) {
+                        value = property.toPropertyValue(copyValue(property.toColumnValue(value)));
+                    } else {
+                        value = copyValue(value);
+                    }
+                    property.write(target, value);
                 }
             }
             return target;
         }
 
         private void copyRelation(PersistentProperty property, Object source, Object target) {
-            Object value = readField(property.field(), source);
+            Object value = readMapped(property, source);
             Object copied = copyValue(value);
             if (property.manyToOne()) {
                 property.writeReferenceInstance(target, copied);
             } else {
-                writeField(property.field(), target, copied);
+                writeMapped(property, target, copied);
+            }
+        }
+
+        private static Object readMapped(PersistentProperty property, Object source) {
+            if (property.manyToOne()) {
+                return property.readReferenceInstance(source);
+            }
+            if (!property.propertyAccess()) {
+                return readField(property.field(), source);
+            }
+            try {
+                return property.propertyAccessGetter().invoke(source);
+            } catch (ReflectiveOperationException exception) {
+                throw new IllegalStateException("Cannot read cached property " + property.propertyName(), exception);
+            }
+        }
+
+        private static void writeMapped(PersistentProperty property, Object target, Object value) {
+            if (!property.propertyAccess()) {
+                writeField(property.field(), target, value);
+                return;
+            }
+            try {
+                property.propertyAccessSetter().invoke(target, value);
+            } catch (ReflectiveOperationException exception) {
+                throw new IllegalStateException("Cannot write cached property " + property.propertyName(), exception);
             }
         }
 

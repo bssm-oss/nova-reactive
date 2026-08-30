@@ -51,7 +51,7 @@ public final class SimpleReactiveQueryCache implements ReactiveQueryCache {
                 return Mono.empty();
             }
             List<Object> hit = region.get(queryKey);
-            return hit == null ? Mono.empty() : Mono.just(new ArrayList<>(hit));
+            return hit == null ? Mono.empty() : Mono.just(copyResults(hit));
         });
     }
 
@@ -61,7 +61,7 @@ public final class SimpleReactiveQueryCache implements ReactiveQueryCache {
         Objects.requireNonNull(queryKey, "queryKey must not be null");
         Objects.requireNonNull(results, "results must not be null");
         // 방어적 불변 스냅샷 — 호출자의 이후 변형으로부터 캐시 격리.
-        List<Object> snapshot = List.copyOf(results);
+        List<Object> snapshot = copyResults(results);
         return Mono.fromRunnable(() ->
                 regions.computeIfAbsent(entityType, t -> new TypeRegion(options)).put(queryKey, snapshot));
     }
@@ -90,6 +90,12 @@ public final class SimpleReactiveQueryCache implements ReactiveQueryCache {
     long size(Class<?> entityType) {
         TypeRegion region = regions.get(entityType);
         return region == null ? 0L : region.size();
+    }
+
+    private static List<Object> copyResults(List<Object> results) {
+        @SuppressWarnings("unchecked")
+        List<Object> copy = (List<Object>) SimpleReactiveCache.copy(results);
+        return copy;
     }
 
     /**
