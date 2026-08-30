@@ -2713,10 +2713,10 @@ class SimpleReactiveEntityOperationsTest {
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         OrderedSessionParent parent = orderedParent();
         OrderedSessionChild added = new OrderedSessionChild(null, "fourth");
-        ORDERED_REMOVAL_TRACE.clear();
 
         StepVerifier.create(operations.inTransaction(current ->
                         prepareOrderedCollectionBaseline(current, executor, parent)
+                                .then(Mono.fromRunnable(ORDERED_REMOVAL_TRACE::clear))
                                 .then(Mono.fromRunnable(() -> {
                                     parent.children.remove(1);
                                     parent.children.add(added);
