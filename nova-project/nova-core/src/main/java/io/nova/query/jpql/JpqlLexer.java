@@ -12,7 +12,7 @@ import java.util.Set;
  * 인식하는 렉시컬 요소:
  * <ul>
  *   <li>식별자와 예약어(대소문자 무시). 예약어 목록에 없으면 {@link TokenType#IDENTIFIER}.</li>
- *   <li>정수/소수 리터럴, 지수 표기는 미지원(있으면 fail-fast).</li>
+ *   <li>정수/소수 리터럴과 지수/타입 접미사({@code L}, {@code F}, {@code D}, {@code BI}, {@code BD}).</li>
  *   <li>작은따옴표 문자열 리터럴. {@code ''}는 escape된 단일 따옴표로 처리.</li>
  *   <li>{@code :name} named 파라미터, {@code ?1} positional 파라미터.</li>
  *   <li>연산자/구두점: {@code = <> != < > <= >= + - * / ( ) , .}</li>
@@ -107,6 +107,11 @@ public final class JpqlLexer {
 
     private JpqlToken numberLiteral(int start) {
         boolean seenDot = false;
+        boolean seenExponent = false;
+        if (source.charAt(pos) == '.') {
+            seenDot = true;
+            pos++;
+        }
         while (pos < source.length()) {
             char c = source.charAt(pos);
             if (Character.isDigit(c)) {
@@ -114,18 +119,43 @@ public final class JpqlLexer {
             } else if (c == '.' && !seenDot) {
                 seenDot = true;
                 pos++;
+            } else if ((c == 'e' || c == 'E') && !seenExponent) {
+                seenExponent = true;
+                pos++;
+                if (pos < source.length() && (source.charAt(pos) == '+' || source.charAt(pos) == '-')) {
+                    pos++;
+                }
+                int exponentStart = pos;
+                while (pos < source.length() && Character.isDigit(source.charAt(pos))) {
+                    pos++;
+                }
+                if (pos == exponentStart) {
+                    throw malformedNumericLiteral(start);
+                }
             } else {
                 break;
             }
         }
+        if (pos < source.length() && isIdentifierStart(source.charAt(pos))) {
+            char suffixStart = source.charAt(pos);
+            if (suffixStart == 'l' || suffixStart == 'L' || suffixStart == 'f' || suffixStart == 'F'
+                    || suffixStart == 'd' || suffixStart == 'D') {
+                pos++;
+            } else if ((suffixStart == 'b' || suffixStart == 'B') && pos + 1 < source.length()
+                    && (source.charAt(pos + 1) == 'i' || source.charAt(pos + 1) == 'I'
+                    || source.charAt(pos + 1) == 'd' || source.charAt(pos + 1) == 'D')) {
+                pos += 2;
+            }
+        }
         String text = source.substring(start, pos);
-        // 지수 표기(1e5)나 접미사(L/D/F)는 v1 미지원 — 뒤에 식별자 문자가 붙으면 fail-fast.
         if (pos < source.length() && isIdentifierPart(source.charAt(pos))) {
-            throw new JpqlSyntaxException(
-                    "Malformed numeric literal near position " + start + " ('" + text
-                            + source.charAt(pos) + "...'): exponent/suffix notation is not supported");
+            throw malformedNumericLiteral(start);
         }
         return new JpqlToken(TokenType.NUMBER, text, start);
+    }
+
+    private JpqlSyntaxException malformedNumericLiteral(int start) {
+        return new JpqlSyntaxException("Malformed numeric literal near position " + start);
     }
 
     private JpqlToken namedParameter(int start) {

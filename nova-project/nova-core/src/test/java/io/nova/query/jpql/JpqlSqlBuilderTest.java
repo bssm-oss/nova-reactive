@@ -68,8 +68,22 @@ class JpqlSqlBuilderTest {
         assertEquals(
                 "select e.\"name\" as \"c0\" from \"employee\" e where (e.\"age\" = ? and e.\"name\" = ?)",
                 t.sql());
-        assertEquals(new JpqlBinding.Literal(30L), t.bindings().get(0));
+        assertEquals(new JpqlBinding.Literal(30), t.bindings().get(0));
         assertConverted(t.bindings().get(1), "n", "name");
+    }
+
+    @Test
+    void bindsNumericLiteralValuesWithoutChangingTheirJavaTypes() {
+        TranslatedSql t = scalar("SELECT 1, 1.5, 2L, 3F, 4D, 5BI, 6BD FROM Employee e");
+
+        assertEquals(List.of(
+                new JpqlBinding.Literal(1),
+                new JpqlBinding.Literal(1.5d),
+                new JpqlBinding.Literal(2L),
+                new JpqlBinding.Literal(3f),
+                new JpqlBinding.Literal(4d),
+                new JpqlBinding.Literal(new java.math.BigInteger("5")),
+                new JpqlBinding.Literal(new BigDecimal("6"))), t.bindings());
     }
 
     @Test
@@ -82,7 +96,7 @@ class JpqlSqlBuilderTest {
                         + "group by d.\"name\" having count(e.\"id\") > ?",
                 t.sql());
         assertEquals(2, t.selectionCount());
-        assertEquals(List.of(new JpqlBinding.Literal(5L)), t.bindings());
+        assertEquals(List.of(new JpqlBinding.Literal(5)), t.bindings());
     }
 
     @Test
@@ -143,7 +157,7 @@ class JpqlSqlBuilderTest {
                 "update \"employee\" set \"name\" = ?, \"age\" = (\"age\" + ?) where \"id\" = ?",
                 t.sql());
         assertConverted(t.bindings().get(0), "n", "name");
-        assertEquals(new JpqlBinding.Literal(1L), t.bindings().get(1));
+        assertEquals(new JpqlBinding.Literal(1), t.bindings().get(1));
         assertConverted(t.bindings().get(2), "id", "id");
     }
 
@@ -682,7 +696,7 @@ class JpqlSqlBuilderTest {
                 "select count(c.\"id\") as \"c0\" from \"gc_composite_child\" c "
                         + "group by c.\"p_k1\", c.\"p_k2\" having count(c.\"id\") > ?",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Literal(1L)), t.bindings());
+        assertEquals(List.of(new JpqlBinding.Literal(1)), t.bindings());
     }
 
     // ------------------------------------------------------------------------------------
