@@ -36,6 +36,46 @@ class AggregateSpecTest {
     }
 
     @Test
+    void rejectsDuplicateDefaultAggregateAliases() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> AggregateSpec.of(Aggregation.count("id"), Aggregation.count("email"))
+        );
+
+        assertEquals(
+                "Duplicate aggregate alias 'count'; call .as(...) to assign unique aliases",
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void rejectsDuplicateExplicitAggregateAliases() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> AggregateSpec.of(
+                        Aggregation.count("id").as("total"),
+                        Aggregation.sum("id").as("total")
+                )
+        );
+
+        assertEquals(
+                "Duplicate aggregate alias 'total'; call .as(...) to assign unique aliases",
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void preservesExplicitUniqueAggregateAliasOrder() {
+        AggregateSpec spec = AggregateSpec.of(
+                Aggregation.sum("id").as("total"),
+                Aggregation.count("id").as("entries")
+        );
+
+        assertEquals(List.of("total", "entries"),
+                spec.aggregations().stream().map(Aggregation::resolvedAlias).toList());
+    }
+
+    @Test
     void buildersReturnNewInstances() {
         AggregateSpec base = AggregateSpec.of(Aggregation.sum("total").as("total_sum"));
         AggregateSpec grouped = base.groupBy("active");
