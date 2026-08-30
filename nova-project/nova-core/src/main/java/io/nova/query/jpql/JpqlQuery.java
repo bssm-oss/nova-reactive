@@ -329,7 +329,7 @@ public final class JpqlQuery<T> {
             Object[] args = new Object[slots.size()];
             for (int i = 0; i < slots.size(); i++) {
                 Object raw = readSlot(row, slots.get(i));
-                args[i] = coerce(raw, paramTypes[i], call.className(), i);
+                args[i] = coerce(raw, paramTypes[i], "SELECT NEW " + call.className(), i);
             }
             try {
                 @SuppressWarnings("unchecked")
@@ -372,11 +372,11 @@ public final class JpqlQuery<T> {
     }
 
     /** 스칼라 컬럼 값을 생성자 파라미터 타입으로 강제 변환한다. 변환 불가면 fail-fast. */
-    private static Object coerce(Object value, Class<?> target, String className, int index) {
+    private static Object coerce(Object value, Class<?> target, String context, int index) {
         if (value == null) {
             if (target.isPrimitive()) {
-                throw new JpqlException("SELECT NEW " + className + ": null cannot be assigned to primitive "
-                        + "parameter " + index + " of type " + target.getName());
+                throw new JpqlException(context + ": null cannot be assigned to primitive value at position "
+                        + index + " of type " + target.getName());
             }
             return null;
         }
@@ -415,8 +415,8 @@ public final class JpqlQuery<T> {
         if (target == String.class) {
             return value.toString();
         }
-        throw new JpqlException("SELECT NEW " + className + ": cannot convert value of type "
-                + value.getClass().getName() + " to constructor parameter " + index + " of type "
+        throw new JpqlException(context + ": cannot convert value of type "
+                + value.getClass().getName() + " at position " + index + " to type "
                 + target.getName());
     }
 

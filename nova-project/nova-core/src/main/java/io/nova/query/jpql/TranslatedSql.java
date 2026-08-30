@@ -9,8 +9,8 @@ import java.util.List;
  * <p>
  * {@code slots}는 스칼라 SELECT의 논리 결과 슬롯 목록이다({@code SELECT} 항목 개수만큼, {@code selectionCount}는
  * 물리 컬럼 개수). 대부분 슬롯 1개=물리 컬럼 1개지만, 복합키 타겟 to-one 투영({@code SELECT c.parent})은
- * 여러 물리 컬럼을 논리 슬롯 1개(id-stub)로 묶는다. 벌크 UPDATE/DELETE와 {@code SELECT NEW} 인자는 이 필드를
- * 쓰지 않는다. {@code SELECT NEW}도 인자별 슬롯을 보존해 mapped-path 값을 도메인 타입으로 복원한다.
+ * 여러 물리 컬럼을 논리 슬롯 1개(id-stub)로 묶는다. 벌크 UPDATE/DELETE는 이 필드를 쓰지 않는다.
+ * {@code SELECT NEW}도 인자별 슬롯을 보존해 mapped-path 값을 도메인 타입으로 복원한다.
  */
 public record TranslatedSql(
         String sql, List<JpqlBinding> bindings, ResultKind resultKind, int selectionCount,
