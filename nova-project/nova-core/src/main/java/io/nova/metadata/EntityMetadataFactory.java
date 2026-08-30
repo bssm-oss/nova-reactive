@@ -2444,9 +2444,8 @@ public final class EntityMetadataFactory {
     }
 
     private static String fragment(String value, String location) {
-        String trimmed = value == null ? "" : value.trim();
-        validateNoNul(trimmed, location);
-        return trimmed;
+        validateNoNul(value, location);
+        return value == null ? "" : value.trim();
     }
 
     private static void validateNoNul(String value, String location) {
