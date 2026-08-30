@@ -138,18 +138,18 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
             return decimal(value).longValueExact();
         }
         if (target == Float.class) {
-            BigDecimal decimal = decimal(value);
+            BigDecimal original = canonicalDecimal(value);
             float converted = value.floatValue();
             if (!Float.isFinite(converted)
-                    || decimal.compareTo(BigDecimal.valueOf((double) converted)) != 0) {
+                    || original.compareTo(BigDecimal.valueOf((double) converted)) != 0) {
                 throw new ArithmeticException("outside Float range");
             }
             return converted;
         }
         if (target == Double.class) {
-            BigDecimal decimal = decimal(value);
+            BigDecimal original = canonicalDecimal(value);
             double converted = value.doubleValue();
-            if (!Double.isFinite(converted) || decimal.compareTo(BigDecimal.valueOf(converted)) != 0) {
+            if (!Double.isFinite(converted) || original.compareTo(BigDecimal.valueOf(converted)) != 0) {
                 throw new ArithmeticException("outside Double range");
             }
             return converted;
@@ -158,14 +158,27 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
     }
 
     private static BigDecimal decimal(Number value) {
+        return canonicalDecimal(value);
+    }
+
+    private static BigDecimal canonicalDecimal(Number value) {
         if (value instanceof BigDecimal decimal) {
             return decimal;
         }
         if (value instanceof BigInteger integer) {
             return new BigDecimal(integer);
         }
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+            return BigDecimal.valueOf(value.longValue());
+        }
         if ((value instanceof Double d && !Double.isFinite(d)) || (value instanceof Float f && !Float.isFinite(f))) {
             throw new ArithmeticException("non-finite value");
+        }
+        if (value instanceof Double d) {
+            return BigDecimal.valueOf(d);
+        }
+        if (value instanceof Float f) {
+            return BigDecimal.valueOf((double) f);
         }
         return new BigDecimal(value.toString());
     }
