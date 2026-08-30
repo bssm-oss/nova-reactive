@@ -24,6 +24,7 @@ import reactor.test.StepVerifier;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -98,6 +99,25 @@ class JpqlQueryTest {
     }
 
     @Test
+    void offsetOnlyJoinHydratesDistinctIdsInIncrementalBoundedChunks() {
+        List<Object> ids = new ArrayList<>();
+        for (long id = 1; id <= 513; id++) {
+            ids.add(id);
+        }
+        RecordingOperations recorder = new RecordingOperations(ids);
+
+        StepVerifier.create(query("SELECT e FROM Employee e JOIN e.department d ORDER BY e.id",
+                        recorder.operations())
+                .setFirstResult(1)
+                .getResultList()).verifyComplete();
+
+        assertEquals(3, recorder.querySpecs().size());
+        assertEquals(256, ((List<?>) ((Condition) recorder.querySpecs().get(0).predicate()).value()).size());
+        assertEquals(256, ((List<?>) ((Condition) recorder.querySpecs().get(1).predicate()).value()).size());
+        assertEquals(List.of(513L), ((Condition) recorder.querySpecs().get(2).predicate()).value());
+    }
+
+    @Test
     void includesNonIdOrderExpressionInDistinctJoinIdSql() {
         RecordingOperations recorder = new RecordingOperations(List.of(1L));
 
@@ -155,6 +175,7 @@ class JpqlQueryTest {
         private final AtomicInteger invocations = new AtomicInteger();
         private final AtomicReference<NativeQuery> nativeQuery = new AtomicReference<>();
         private final AtomicReference<QuerySpec> querySpec = new AtomicReference<>();
+        private final List<QuerySpec> querySpecs = new ArrayList<>();
         private final List<Object> nativeRows;
 
         private RecordingOperations() {
@@ -185,6 +206,7 @@ class JpqlQueryTest {
                         }
                         if (method.getName().equals("findAll")) {
                             querySpec.set((QuerySpec) arguments[1]);
+                            querySpecs.add((QuerySpec) arguments[1]);
                             return Flux.empty();
                         }
                         throw new AssertionError("Unexpected operation: " + method.getName());
@@ -201,6 +223,10 @@ class JpqlQueryTest {
 
         private QuerySpec querySpec() {
             return querySpec.get();
+        }
+
+        private List<QuerySpec> querySpecs() {
+            return querySpecs;
         }
     }
 

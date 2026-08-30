@@ -226,7 +226,7 @@ public final class JpqlQuery<T> {
         Class<Object> entityType = (Class<Object>) metadata.entityType();
         Function<RowAccessor, Object> idMapper = row -> row.get(JpqlQuery.columnLabel(0), Object.class);
         int chunkSize = maxResults == null ? 256 : Math.min(maxResults, 256);
-        return pageResults(operations.queryNative(toNativeQuery(idProjection), idMapper).distinct())
+        return pageResults(operations.queryNative(toNativeQuery(idProjection), idMapper))
                 .buffer(chunkSize)
                 .concatMap(ids -> {
                     QuerySpec spec = QuerySpec.empty().where(Criteria.in(idProperty, ids));
