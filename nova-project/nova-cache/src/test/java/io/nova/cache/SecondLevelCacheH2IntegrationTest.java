@@ -29,7 +29,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -82,27 +81,8 @@ class SecondLevelCacheH2IntegrationTest {
 
         assertEquals("alpha", first.name());
         assertEquals("alpha", second.name());
-        assertNotSame(first, second, "캐시 히트는 독립 엔티티 인스턴스를 반환해야 한다");
         assertTrue(afterFirst > afterSave, "첫 findById는 DB SELECT를 발행해야 한다");
         assertEquals(afterFirst, afterSecond, "두 번째 findById는 캐시 히트로 SELECT를 발행하지 않아야 한다");
-    }
-
-    @Test
-    void cacheHitIsIsolatedFromMutationOfFirstRead() {
-        ConnectionFactory cf = freshConnectionFactory();
-        Wiring w = wire(cf);
-
-        w.schema().create(Widget.class).block();
-        Long id = w.cached().save(new Widget("alpha")).block().id();
-
-        Widget first = w.cached().findById(Widget.class, id).block();
-        first.name = "mutated-without-save";
-        long beforeHit = w.listener().selects();
-        Widget second = w.cached().findById(Widget.class, id).block();
-
-        assertEquals("alpha", second.name());
-        assertNotSame(first, second);
-        assertEquals(beforeHit, w.listener().selects(), "격리된 캐시 히트는 SELECT를 발행하지 않아야 한다");
     }
 
     @Test

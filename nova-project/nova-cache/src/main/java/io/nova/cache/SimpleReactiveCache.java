@@ -4,18 +4,7 @@ import io.nova.cache.spi.CacheKey;
 import io.nova.cache.spi.ReactiveCache;
 import reactor.core.publisher.Mono;
 
-import java.util.ArrayList;
-import java.lang.reflect.Array;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
-import java.util.Collection;
-import java.util.Date;
-import java.util.Calendar;
-import java.util.IdentityHashMap;
-import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -66,7 +55,7 @@ public final class SimpleReactiveCache implements ReactiveCache {
                     store.remove(key);
                     return Mono.empty();
                 }
-                return Mono.just(copy(entry.value()));
+                return Mono.just(entry.value());
             }
         });
     }
@@ -80,7 +69,7 @@ public final class SimpleReactiveCache implements ReactiveCache {
         }
         return Mono.fromRunnable(() -> {
             synchronized (store) {
-                store.put(key, new Entry(copy(value), expireAtNanos()));
+                store.put(key, new Entry(value, expireAtNanos()));
             }
         });
     }
@@ -116,127 +105,6 @@ public final class SimpleReactiveCache implements ReactiveCache {
             return 0L; // 만료 없음 sentinel.
         }
         return System.nanoTime() + options.timeToLive().toNanos();
-    }
-
-    /**
-     * Keep generic cache callers from aliasing a container entry. Entity state is
-     * materialized by {@link CachingReactiveEntityOperations}, which has mapping
-     * metadata needed to copy entity graphs.
-     */
-    static Object copy(Object value) {
-        return copy(value, new IdentityHashMap<>());
-    }
-
-    private static Object copy(Object value, IdentityHashMap<Object, Object> copies) {
-        if (value == null || immutable(value.getClass())) {
-            return value;
-        }
-        Object existing = copies.get(value);
-        if (existing != null) {
-            return existing;
-        }
-        if (value instanceof java.sql.Timestamp timestamp) {
-            java.sql.Timestamp copy = new java.sql.Timestamp(timestamp.getTime());
-            copy.setNanos(timestamp.getNanos());
-            return copy;
-        }
-        if (value instanceof java.sql.Time time) {
-            return new java.sql.Time(time.getTime());
-        }
-        if (value instanceof java.sql.Date date) {
-            return new java.sql.Date(date.getTime());
-        }
-        if (value instanceof Date date) {
-            return new Date(date.getTime());
-        }
-        if (value instanceof Calendar calendar) {
-            return (Calendar) calendar.clone();
-        }
-        Class<?> type = value.getClass();
-        if (type.isArray()) {
-            int length = Array.getLength(value);
-            Object target = Array.newInstance(type.componentType(), length);
-            copies.put(value, target);
-            for (int i = 0; i < length; i++) {
-                Array.set(target, i, copy(Array.get(value, i), copies));
-            }
-            return target;
-        }
-        if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> target = new LinkedHashMap<>();
-            copies.put(value, target);
-            map.forEach((key, item) -> target.put(copy(key, copies), copy(item, copies)));
-            return target;
-        }
-        if (value instanceof java.util.Set<?> set) {
-            java.util.Set<Object> target = new LinkedHashSet<>();
-            copies.put(value, target);
-            set.forEach(item -> target.add(copy(item, copies)));
-            return target;
-        }
-        if (value instanceof List<?> list) {
-            List<Object> target = new ArrayList<>(list.size());
-            copies.put(value, target);
-            list.forEach(item -> target.add(copy(item, copies)));
-            return target;
-        }
-        if (value instanceof Collection<?> collection) {
-            Collection<Object> target = new ArrayList<>(collection.size());
-            copies.put(value, target);
-            collection.forEach(item -> target.add(copy(item, copies)));
-            return target;
-        }
-        if (type.isRecord()) {
-            return copyRecord(value, copies);
-        }
-        return copyObject(value, copies);
-    }
-
-    private static Object copyRecord(Object source, IdentityHashMap<Object, Object> copies) {
-        try {
-            var components = source.getClass().getRecordComponents();
-            Class<?>[] types = new Class<?>[components.length];
-            Object[] values = new Object[components.length];
-            for (int i = 0; i < components.length; i++) {
-                types[i] = components[i].getType();
-                values[i] = copy(components[i].getAccessor().invoke(source), copies);
-            }
-            Constructor<?> constructor = source.getClass().getDeclaredConstructor(types);
-            constructor.setAccessible(true);
-            Object target = constructor.newInstance(values);
-            copies.put(source, target);
-            return target;
-        } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException("Cannot snapshot record " + source.getClass().getName(), exception);
-        }
-    }
-
-    private static Object copyObject(Object source, IdentityHashMap<Object, Object> copies) {
-        try {
-            Constructor<?> constructor = source.getClass().getDeclaredConstructor();
-            constructor.setAccessible(true);
-            Object target = constructor.newInstance();
-            copies.put(source, target);
-            for (Class<?> type = source.getClass(); type != Object.class; type = type.getSuperclass()) {
-                for (Field field : type.getDeclaredFields()) {
-                    if (!Modifier.isStatic(field.getModifiers())) {
-                        field.setAccessible(true);
-                        field.set(target, copy(field.get(source), copies));
-                    }
-                }
-            }
-            return target;
-        } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException(
-                    "Cached value must be immutable, a record, or expose a no-args constructor: "
-                            + source.getClass().getName(), exception);
-        }
-    }
-
-    private static boolean immutable(Class<?> type) {
-        return type.isPrimitive() || type.isEnum() || type == String.class || type == Boolean.class
-                || type == Character.class || Number.class.isAssignableFrom(type)
-                || type == java.util.UUID.class || type.getPackageName().startsWith("java.time");
     }
 
     private record Entry(Object value, long expireAtNanos) {

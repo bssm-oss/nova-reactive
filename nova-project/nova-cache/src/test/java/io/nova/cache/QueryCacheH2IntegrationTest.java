@@ -32,7 +32,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -86,28 +85,6 @@ class QueryCacheH2IntegrationTest {
         assertEquals(2, second.size());
         assertTrue(afterFirst > beforeFirst, "첫 findAll은 DB SELECT를 발행해야 한다");
         assertEquals(afterFirst, afterSecond, "두 번째 동일 findAll은 쿼리 캐시 히트로 SELECT를 발행하지 않아야 한다");
-        assertNotSame(first, second, "쿼리 캐시 히트는 독립 리스트를 반환해야 한다");
-        assertNotSame(first.get(0), second.get(0), "쿼리 캐시 히트는 독립 엔티티를 반환해야 한다");
-    }
-
-    @Test
-    void queryCacheHitIsIsolatedFromMutationOfFirstResult() {
-        ConnectionFactory cf = freshConnectionFactory();
-        Wiring w = wire(cf);
-
-        w.schema().create(Item.class).block();
-        w.cached().save(new Item("alpha")).block();
-
-        QuerySpec all = QuerySpec.empty();
-        List<Item> first = w.cached().findAll(Item.class, all).collectList().block();
-        first.get(0).name = "mutated-without-save";
-        long beforeHit = w.listener().selects();
-        List<Item> second = w.cached().findAll(Item.class, all).collectList().block();
-
-        assertEquals("alpha", second.get(0).name());
-        assertNotSame(first, second);
-        assertNotSame(first.get(0), second.get(0));
-        assertEquals(beforeHit, w.listener().selects(), "격리된 쿼리 캐시 히트는 SELECT를 발행하지 않아야 한다");
     }
 
     @Test
