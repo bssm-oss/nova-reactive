@@ -175,10 +175,10 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
             throw new ArithmeticException("non-finite value");
         }
         if (value instanceof Double d) {
-            return BigDecimal.valueOf(d);
+            return new BigDecimal(d);
         }
         if (value instanceof Float f) {
-            return BigDecimal.valueOf((double) f);
+            return new BigDecimal((double) f);
         }
         return new BigDecimal(value.toString());
     }

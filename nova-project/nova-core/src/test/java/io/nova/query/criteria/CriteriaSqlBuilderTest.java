@@ -311,6 +311,19 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void normalizesExactFloatingWrapperCrossovers() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        CriteriaAggregate<?> floatSum = (CriteriaAggregate<?>) cb.sum(e.<Float>get("rating"));
+        CriteriaAggregate<?> average = (CriteriaAggregate<?>) cb.avg(e.<Integer>get("age"));
+        float floatValue = 0.1f;
+
+        assertEquals((double) floatValue, average.normalizeResult(floatValue));
+        assertEquals(floatValue, floatSum.normalizeResult((double) floatValue));
+        assertThrows(CriteriaException.class, () -> floatSum.normalizeResult(0.1d));
+    }
+
+    @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
     void widenedSumsRequireExactlyIntegerAndFloatOperands() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
