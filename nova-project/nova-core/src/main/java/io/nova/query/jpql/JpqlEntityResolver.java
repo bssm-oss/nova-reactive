@@ -5,7 +5,6 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.InheritanceLayout;
 
 import java.util.HashMap;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -13,8 +12,8 @@ import java.util.Objects;
  * JPQL 엔티티명 → {@link EntityMetadata} 해석기. JPQL은 테이블명이 아니라 엔티티명(대개 단순 클래스명 또는
  * {@code @Entity(name=...)})을 참조하므로, 실행기 구성 시 등록한 엔티티 클래스들로부터 이름 색인을 만든다.
  * <p>
- * 대소문자를 무시하고 우선 {@code entityName()}으로, 없으면 단순 클래스명으로 매칭한다. 미등록 이름은
- * {@link JpqlException}으로 fail-fast한다.
+ * 유효 엔티티명만 정확한 대소문자로 매칭한다. 미등록 이름 또는 중복 이름은 {@link JpqlException}으로
+ * fail-fast한다.
  */
 public final class JpqlEntityResolver {
 
@@ -26,25 +25,22 @@ public final class JpqlEntityResolver {
         this.byName = new HashMap<>();
         for (Class<?> type : entityClasses) {
             EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
-            index(metadata.entityName(), metadata);
-            index(type.getSimpleName(), metadata);
+            index(metadata);
         }
     }
 
-    private void index(String name, EntityMetadata<?> metadata) {
-        if (name == null || name.isBlank()) {
-            return;
+    private void index(EntityMetadata<?> metadata) {
+        String name = metadata.entityName();
+        EntityMetadata<?> previous = byName.putIfAbsent(name, metadata);
+        if (previous != null && previous.entityType() != metadata.entityType()) {
+            throw new JpqlException("Duplicate JPQL entity name '" + name + "' for "
+                    + previous.entityType().getName() + " and " + metadata.entityType().getName());
         }
-        byName.putIfAbsent(key(name), metadata);
-    }
-
-    private static String key(String name) {
-        return name.toLowerCase(Locale.ROOT);
     }
 
     /** JPQL 엔티티명으로 메타데이터를 찾는다. 미등록이면 fail-fast. */
     public EntityMetadata<?> resolve(String entityName) {
-        EntityMetadata<?> metadata = byName.get(key(entityName));
+        EntityMetadata<?> metadata = byName.get(entityName);
         if (metadata == null) {
             throw new JpqlException("Unknown JPQL entity '" + entityName
                     + "'. Register the entity class with the JpqlExecutor.");
