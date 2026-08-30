@@ -909,7 +909,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (cascading.isEmpty()) {
             return Mono.empty();
         }
-        Object parentId = metadata.readIdValue(parent);
+        Object parentId = metadata.idProperty().read(parent);
         if (parentId == null) {
             return Mono.error(new IllegalStateException(
                     "parent id must be set before cascading @OneToMany children on "
@@ -965,13 +965,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // 호출되도록 Mono.defer로 감싼다. 그러지 않으면 assembly 시점에 아직 save 전인 child의 id(null)를 읽어
         // retainedIds가 비고, 결국 "이 parent의 child 전부 삭제"로 붕괴해 방금 저장한 child까지 지워진다.
         // 이 stateless 경로에는 세션-바운드 reparenting 개념이 없으므로 제외 집합은 항상 빈 리스트를 넘긴다.
-        // The relation marker is not authoritative for every metadata path (notably mappedBy relations).
-        // Determine FK width from the target metadata: a composite target needs the parent reference so
-        // Criteria expands every identifier component; a single-column target keeps the scalar-id bind.
-        boolean compositeParentIdentity = metadata.idProperties().size() > 1;
-        Object orphanParentValue = compositeParentIdentity ? parent : parentId;
         return persistChildren.then(
-                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, orphanParentValue, children, List.of())
+                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parentId, children, List.of())
                         // The removed child's reverse cascade may point back at this stateless save owner.
                         // Seed its persistence identity so that back-edge cannot delete the owner.
                         .contextWrite(context -> {
