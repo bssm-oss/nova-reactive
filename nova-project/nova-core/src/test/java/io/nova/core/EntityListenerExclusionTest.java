@@ -121,6 +121,26 @@ class EntityListenerExclusionTest {
         assertEquals(List.of("base:postLoad", "child:prePersist"), events);
     }
 
+    @Test
+    void inheritedListenerCallbacksInvokeRootToChildForSamePhase() {
+        EntityMetadata<EntityWithOrderedListener> metadata =
+                factory.getEntityMetadata(EntityWithOrderedListener.class);
+
+        invoker.invokePrePersist(new EntityWithOrderedListener(), metadata);
+
+        assertEquals(List.of("base:prePersist", "child:prePersist"), events);
+    }
+
+    @Test
+    void privateSameSignatureListenerCallbacksBothInvokeRootToChild() {
+        EntityMetadata<EntityWithPrivateListener> metadata =
+                factory.getEntityMetadata(EntityWithPrivateListener.class);
+
+        invoker.invokePrePersist(new EntityWithPrivateListener(), metadata);
+
+        assertEquals(List.of("private-base:prePersist", "private-child:prePersist"), events);
+    }
+
     // (d) 회귀: 리스너 상속 없이 단일 리스너 클래스의 콜백은 그대로 동작한다.
     @Test
     void plainListenerStillWorks() {
@@ -260,6 +280,50 @@ class EntityListenerExclusionTest {
     @Table(name = "inheriting_listener")
     @EntityListeners(DerivedInheritingListener.class)
     static class EntityWithInheritingListener {
+        @Id
+        Long id;
+    }
+
+    static class BaseOrderedListener {
+        @PrePersist
+        void baseCallback(Object entity) {
+            events.add("base:prePersist");
+        }
+    }
+
+    static class OrderedListener extends BaseOrderedListener {
+        @PrePersist
+        void childCallback(Object entity) {
+            events.add("child:prePersist");
+        }
+    }
+
+    @Entity
+    @Table(name = "ordered_listener")
+    @EntityListeners(OrderedListener.class)
+    static class EntityWithOrderedListener {
+        @Id
+        Long id;
+    }
+
+    static class BasePrivateListener {
+        @PrePersist
+        private void callback(Object entity) {
+            events.add("private-base:prePersist");
+        }
+    }
+
+    static class PrivateListener extends BasePrivateListener {
+        @PrePersist
+        private void callback(Object entity) {
+            events.add("private-child:prePersist");
+        }
+    }
+
+    @Entity
+    @Table(name = "private_listener")
+    @EntityListeners(PrivateListener.class)
+    static class EntityWithPrivateListener {
         @Id
         Long id;
     }

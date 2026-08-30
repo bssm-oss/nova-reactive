@@ -1814,12 +1814,10 @@ public final class EntityMetadataFactory {
         List<ListenerCallback> postRemove = new ArrayList<>();
         for (Class<?> listenerClass : listenerClasses) {
             Object listener = instantiateListener(listenerClass);
-            Set<String> seen = new LinkedHashSet<>();
-            // JPA 규약: 리스너 콜백 메서드는 상속된다. 리스너 클래스 자신의 superclass 체인을 루트→자식
-            // 순으로 순회하며 콜백을 모은다(superclass 콜백 먼저). 자식이 같은 시그니처를 override하면
-            // 가장 하위 정의만 한 번 수집한다(중복 호출 방지).
+            // JPA 규약: 리스너 클래스의 lifecycle callback은 root-to-child 순서다. Java language rules에
+            // 따른 실제 override만 superclass method를 대체하며, private same-signature method는 각각 유지한다.
             for (Method method : listenerCallbackMethods(listenerClass)) {
-                if (method.isSynthetic() || !seen.add(callbackSignature(method))) {
+                if (method.isSynthetic()) {
                     continue;
                 }
                 collectListenerCallback(entityType, listenerClass, listener, method, PrePersist.class, prePersist);
@@ -1836,19 +1834,25 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * 리스너 클래스의 콜백 후보 메서드를, 클래스 계층을 자식(가장 하위)→루트(최상위 superclass) 순으로
-     * 평탄화해 반환한다. 호출부의 {@code seen} 집합이 시그니처별 첫 등장만 채택하므로, 자식이 superclass
-     * 콜백을 override하면 가장 하위 정의가 한 번만 수집되어 중복 호출이 방지된다(JPA: 콜백 메서드는 상속됨).
+     * 리스너 클래스의 콜백 후보 메서드를 root-to-child 순서로 반환한다. superclass callback은 Java
+     * language rules에 따른 실제 override일 때만 제외한다.
      */
     private static List<Method> listenerCallbackMethods(Class<?> listenerClass) {
-        List<Method> methods = new ArrayList<>();
+        List<List<Method>> declaredByType = new ArrayList<>();
         Class<?> current = listenerClass;
         while (current != null && current != Object.class) {
-            // 클래스별 안정 정렬로 콜백 호출 순서를 결정적이게 한다(계층 순서 child→root는 유지).
             List<Method> declared = new ArrayList<>(Arrays.asList(current.getDeclaredMethods()));
             declared.sort(STABLE_METHOD_ORDER);
-            methods.addAll(declared);
+            declaredByType.add(declared);
             current = current.getSuperclass();
+        }
+        List<Method> methods = new ArrayList<>();
+        for (int i = declaredByType.size() - 1; i >= 0; i--) {
+            for (Method method : declaredByType.get(i)) {
+                if (!isOverriddenByDescendant(method, declaredByType, i)) {
+                    methods.add(method);
+                }
+            }
         }
         return methods;
     }
