@@ -54,12 +54,12 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
 
     @Override
     public Order asc(Expression<?> expression) {
-        return new CriteriaOrder(expression, path(expression, "asc"), true);
+        return new CriteriaOrder(expression, orderPath(expression, "asc"), true);
     }
 
     @Override
     public Order desc(Expression<?> expression) {
-        return new CriteriaOrder(expression, path(expression, "desc"), false);
+        return new CriteriaOrder(expression, orderPath(expression, "desc"), false);
     }
 
     // --- aggregates -----------------------------------------------------------------------------
@@ -156,20 +156,36 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         if (expression instanceof CriteriaTypeExpression typeExpr) {
             return discriminatorEqual(typeExpr, value);
         }
-        CriteriaColumnPath path = path(expression, "equal");
         if (value == null) {
+            if (expression instanceof CriteriaAggregate<?>) {
+                throw new CriteriaException("CriteriaBuilder.equal does not accept null for an aggregate expression");
+            }
+            CriteriaColumnPath path = path(expression, "equal");
             return CriteriaPredicate.isNull(path);
         }
+        if (expression instanceof CriteriaAggregate<?> aggregate) {
+            CriteriaAggregate.validateComparison(aggregate, value, "CriteriaBuilder.equal");
+            return CriteriaPredicate.comparison(aggregate, CompareOp.EQ, value);
+        }
+        CriteriaColumnPath path = path(expression, "equal");
         CriteriaGuards.rejectExpressionValue(value, "CriteriaBuilder.equal");
         return CriteriaPredicate.comparison(path, CompareOp.EQ, value);
     }
 
     @Override
     public Predicate notEqual(Expression<?> expression, Object value) {
-        CriteriaColumnPath path = path(expression, "notEqual");
         if (value == null) {
+            if (expression instanceof CriteriaAggregate<?>) {
+                throw new CriteriaException("CriteriaBuilder.notEqual does not accept null for an aggregate expression");
+            }
+            CriteriaColumnPath path = path(expression, "notEqual");
             return CriteriaPredicate.isNotNull(path);
         }
+        if (expression instanceof CriteriaAggregate<?> aggregate) {
+            CriteriaAggregate.validateComparison(aggregate, value, "CriteriaBuilder.notEqual");
+            return CriteriaPredicate.comparison(aggregate, CompareOp.NE, value);
+        }
+        CriteriaColumnPath path = path(expression, "notEqual");
         CriteriaGuards.rejectExpressionValue(value, "CriteriaBuilder.notEqual");
         return CriteriaPredicate.comparison(path, CompareOp.NE, value);
     }
@@ -363,6 +379,10 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     // --- helpers --------------------------------------------------------------------------------
 
     private Predicate compare(Expression<?> expression, CompareOp op, Object value, String op2) {
+        if (expression instanceof CriteriaAggregate<?> aggregate) {
+            CriteriaAggregate.validateComparison(aggregate, value, "CriteriaBuilder." + op2);
+            return CriteriaPredicate.comparison(aggregate, op, value);
+        }
         Objects.requireNonNull(value, op2 + " value must not be null");
         CriteriaGuards.rejectExpressionValue(value, "CriteriaBuilder." + op2);
         return CriteriaPredicate.comparison(path(expression, op2), op, value);
@@ -383,6 +403,13 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         throw new CriteriaException("CriteriaBuilder." + op
                 + " requires a single-column attribute path (root or root.get(\"attr\")) in v1, got "
                 + (expression == null ? "null" : expression.getClass().getSimpleName()));
+    }
+
+    private static CriteriaColumnPath orderPath(Expression<?> expression, String op) {
+        if (expression instanceof CriteriaAggregate<?>) {
+            return null;
+        }
+        return path(expression, op);
     }
 
     private static CriteriaPredicate predicate(Expression<Boolean> expression, String op) {

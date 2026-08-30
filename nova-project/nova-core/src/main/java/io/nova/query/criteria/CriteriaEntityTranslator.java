@@ -47,6 +47,9 @@ final class CriteriaEntityTranslator {
     static Sort toSort(List<CriteriaOrder> orders) {
         List<Sort.Order> result = new ArrayList<>(orders.size());
         for (CriteriaOrder order : orders) {
+            if (order.getExpression() instanceof CriteriaAggregate<?>) {
+                throw new CriteriaException("Aggregate ordering is not supported for entity-returning Criteria queries");
+            }
             String property = order.path().property().propertyName();
             result.add(new Sort.Order(property, order.isAscending() ? Sort.Direction.ASC : Sort.Direction.DESC));
         }

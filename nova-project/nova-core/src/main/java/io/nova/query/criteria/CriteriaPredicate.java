@@ -38,6 +38,7 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
     private final boolean negated;
     private final CriteriaSubquery<?> subquery;
     private final CriteriaColumnPath rightPath;
+    private final CriteriaAggregate<?> aggregate;
 
     CriteriaPredicate(
             Kind kind,
@@ -81,6 +82,23 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
             boolean negated,
             CriteriaSubquery<?> subquery,
             CriteriaColumnPath rightPath) {
+        this(kind, path, op, value, low, high, inValues, children, inner, negated, subquery, rightPath, null);
+    }
+
+    private CriteriaPredicate(
+            Kind kind,
+            CriteriaColumnPath path,
+            CompareOp op,
+            Object value,
+            Object low,
+            Object high,
+            List<Object> inValues,
+            List<CriteriaPredicate> children,
+            CriteriaPredicate inner,
+            boolean negated,
+            CriteriaSubquery<?> subquery,
+            CriteriaColumnPath rightPath,
+            CriteriaAggregate<?> aggregate) {
         super(Boolean.class);
         this.kind = kind;
         this.path = path;
@@ -94,12 +112,18 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
         this.negated = negated;
         this.subquery = subquery;
         this.rightPath = rightPath;
+        this.aggregate = aggregate;
     }
 
     // --- factories ----------------------------------------------------------------------------
 
     static CriteriaPredicate comparison(CriteriaColumnPath path, CompareOp op, Object value) {
         return new CriteriaPredicate(Kind.COMPARISON, path, op, value, null, null, null, null, null, false);
+    }
+
+    static CriteriaPredicate comparison(CriteriaAggregate<?> aggregate, CompareOp op, Object value) {
+        return new CriteriaPredicate(
+                Kind.COMPARISON, null, op, value, null, null, null, null, null, false, null, null, aggregate);
     }
 
     static CriteriaPredicate like(CriteriaColumnPath path, Object pattern, boolean negated) {
@@ -194,6 +218,22 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
 
     CriteriaColumnPath rightPath() {
         return rightPath;
+    }
+
+    CriteriaAggregate<?> aggregate() {
+        return aggregate;
+    }
+
+    static boolean containsAggregateComparison(CriteriaPredicate predicate) {
+        if (predicate == null) {
+            return false;
+        }
+        return switch (predicate.kind()) {
+            case COMPARISON -> predicate.aggregate != null;
+            case AND, OR -> predicate.children.stream().anyMatch(CriteriaPredicate::containsAggregateComparison);
+            case NOT -> containsAggregateComparison(predicate.inner);
+            default -> false;
+        };
     }
 
     // --- jakarta Predicate --------------------------------------------------------------------

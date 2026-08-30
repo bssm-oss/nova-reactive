@@ -141,19 +141,19 @@ final class CriteriaSubquery<U> extends AbstractCriteriaExpression<U> implements
 
     @Override
     public Subquery<U> where(Expression<Boolean> restriction) {
-        this.restriction = asPredicate(restriction);
+        this.restriction = wherePredicate(asPredicate(restriction));
         return this;
     }
 
     @Override
     public Subquery<U> where(Predicate... restrictions) {
-        this.restriction = conjoin(List.of(restrictions));
+        this.restriction = wherePredicate(conjoin(List.of(restrictions)));
         return this;
     }
 
     @Override
     public Subquery<U> where(List<Predicate> restrictions) {
-        this.restriction = conjoin(restrictions);
+        this.restriction = wherePredicate(conjoin(restrictions));
         return this;
     }
 
@@ -264,6 +264,13 @@ final class CriteriaSubquery<U> extends AbstractCriteriaExpression<U> implements
             return predicate;
         }
         throw new CriteriaException("Subquery WHERE requires a Predicate built by this CriteriaBuilder");
+    }
+
+    private static CriteriaPredicate wherePredicate(CriteriaPredicate predicate) {
+        if (CriteriaPredicate.containsAggregateComparison(predicate)) {
+            throw new CriteriaException("Aggregate comparison predicates are only supported in HAVING");
+        }
+        return predicate;
     }
 
     private static CriteriaPredicate conjoin(List<Predicate> predicates) {

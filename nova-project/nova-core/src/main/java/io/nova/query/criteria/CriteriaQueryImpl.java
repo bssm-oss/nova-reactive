@@ -25,9 +25,8 @@ import java.util.Set;
  *
  * <p><b>v1 제약</b>:
  * <ul>
- *   <li>HAVING은 grouping 컬럼에 대한 술어만 지원한다. 집계 함수 피연산자를 쓰는 대표 용례
- *       (예: {@code having(cb.gt(cb.count(root), 5L))})는 v1 미지원이며 조립 시점에 fail-fast한다
- *       — Criteria 술어 모델이 컬럼 경로 피연산자만 받기 때문이다.
+ *   <li>HAVING은 grouping 컬럼 또는 단일 집계 표현식에 대한 비교 술어를 지원한다. 집계 비교는 선택
+ *       별칭이 아니라 원래 집계 SQL 표현식으로 렌더되어 dialect별 SELECT 별칭 규칙에 의존하지 않는다.
  *   <li>{@code distinct(true)}는 스칼라/집계 경로에서만 반영된다. 엔티티 반환 경로는 {@code QuerySpec}에
  *       DISTINCT 표현 수단이 없어 실행 시 fail-fast한다(조용한 무시 금지).
  * </ul>
@@ -129,19 +128,19 @@ final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {
 
     @Override
     public CriteriaQuery<T> where(Expression<Boolean> restriction) {
-        this.restriction = asPredicate(restriction);
+        this.restriction = wherePredicate(asPredicate(restriction));
         return this;
     }
 
     @Override
     public CriteriaQuery<T> where(Predicate... restrictions) {
-        this.restriction = conjoin(List.of(restrictions));
+        this.restriction = wherePredicate(conjoin(List.of(restrictions)));
         return this;
     }
 
     @Override
     public CriteriaQuery<T> where(List<Predicate> restrictions) {
-        this.restriction = conjoin(restrictions);
+        this.restriction = wherePredicate(conjoin(restrictions));
         return this;
     }
 
@@ -328,6 +327,13 @@ final class CriteriaQueryImpl<T> implements CriteriaQuery<T> {
         }
         throw new CriteriaException("WHERE/HAVING requires a Predicate built by this CriteriaBuilder, got "
                 + (expression == null ? "null" : expression.getClass().getSimpleName()));
+    }
+
+    private static CriteriaPredicate wherePredicate(CriteriaPredicate predicate) {
+        if (CriteriaPredicate.containsAggregateComparison(predicate)) {
+            throw new CriteriaException("Aggregate comparison predicates are only supported in HAVING");
+        }
+        return predicate;
     }
 
     private static CriteriaPredicate conjoin(List<Predicate> predicates) {
