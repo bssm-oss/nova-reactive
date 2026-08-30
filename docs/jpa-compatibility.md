@@ -113,7 +113,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `ReactiveEntityManager` (`persist` / `merge` / `remove` / `find` / `getReference` / `flush` / `clear` / `detach` / `refresh` / `contains`) | ⟳ | `Nova.entityManager(...)` |
 | `LockModeType` (`PESSIMISTIC_WRITE`/`READ`, `OPTIMISTIC`, `FORCE_INCREMENT`) | ✅ | `find` / `lock` / `getLockMode` overloads |
 | `FlushModeType` | ✅ | Propagated via Reactor `Context` |
-| Transaction-bound persistence session (identity map + dirty checking + flush) | ✅ | Opt-in; collection diff-at-flush |
+| Transaction-bound persistence session (identity map + dirty checking + flush) | ✅ | Opt-in; collection diff-at-flush. A successful `remove` retains an internal tombstone until `clear`: it is excluded from scalar/collection flush and `contains`/lock management, and re-persisting that identity in the same session fails explicitly. Lifecycle remove callbacks run on subscription, with `@PostRemove` after successful DML. |
 | 2nd-level cache (`nova-cache`, `@Cacheable` / `SharedCacheMode`) | ✅ | Read-through + query cache + post-commit type-region eviction |
 
 ## Spring

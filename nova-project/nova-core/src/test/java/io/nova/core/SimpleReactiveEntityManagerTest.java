@@ -158,7 +158,7 @@ class SimpleReactiveEntityManagerTest {
     }
 
     @Test
-    void removeDetachesManagedEntityBeforeDelete() {
+    void removeLeavesManagedEntryForDeleteToResolve() {
         PersistenceSession session = new PersistenceSession();
         Widget widget = new Widget(11L, "k");
         session.registerOnLoad(metadataFor(Widget.class), widget);
@@ -166,7 +166,8 @@ class SimpleReactiveEntityManagerTest {
         StepVerifier.create(withSession(manager.remove(widget), session))
                 .verifyComplete();
         assertEquals(List.of(widget), operations.deleted);
-        assertTrue(session.isEmpty(), "remove는 삭제 전에 세션에서 분리해야 한다");
+        assertTrue(session.isManaged(metadataFor(Widget.class), widget),
+                "remove는 delete 성공 여부를 알기 전에 세션 엔트리를 분리하면 안 된다");
     }
 
     @Test

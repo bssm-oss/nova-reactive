@@ -1757,6 +1757,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Mono.defer(() -> {
             Object entity = entry.entity();
             EntityMetadata<?> metadata = entry.metadata();
+            if (entry.isRemoved()) {
+                // A successful remove retains a tombstone for explicit same-session re-persist rejection, but
+                // must never reach scalar or collection/orphan/cascade flush choreography.
+                return Mono.empty();
+            }
             if (entry.dirtyPropertyNames().isEmpty()) {
                 // 스칼라 변경이 없어도 세션에서 지연된 컬렉션(join/collection 테이블)은 flush로 동기화한다.
                 return syncCollections(session, entry, entity, metadata);
@@ -2768,48 +2773,36 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     @Override
     public <T> Mono<Long> delete(T entity) {
-        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
-        Object id = metadata.readIdValue(entity);
-        if (id == null) {
-            return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
-        }
-        // soft-delete UPDATE 경로에서도 동일하게 @PreRemove를 호출해 hard/soft 차이를 콜백 관점에서는 숨긴다.
-        try {
-            listenerInvoker.invokePreRemove(entity, metadata);
-        } catch (RuntimeException exception) {
-            return Mono.error(exception);
-        }
-        // @OneToMany(cascade=REMOVE/ALL) 또는 orphanRemoval=true child를 parent 삭제 전에 먼저 삭제해 FK 의존성을
-        // 만족시킨다. 전파할 관계가 없으면 무비용. 그 뒤 parent를 삭제한다(reactive 순서 보장).
-        //
-        // @ManyToOne/@OneToOne(cascade=REMOVE/ALL) 참조 엔티티는 반대로 owner 삭제 *후*에 삭제한다 — FK가 owner
-        // row에 있으므로 owner가 먼저 사라져야 참조 row 삭제가 FK 의존성을 위반하지 않는다. 참조 id는 owner row가
-        // 사라지기 전에 미리 수집해 둔다(entity 객체에서 동기적으로 읽음).
-        // hard delete일 때만 owner 소유 컬렉션(@ElementCollection 행, owning @ManyToMany link 행)을 owner보다
-        // 먼저 정리한다 — collection/join 테이블의 @ForeignKey가 owner를 참조하면 FK 의존성을 만족시켜야 한다.
-        // soft delete는 owner 행을 논리 보존하므로 컬렉션도 보존한다.
-        boolean hardDelete = metadata.softDeleteProperty().isEmpty();
-        Mono<Void> ownedCollectionCleanup = hardDelete
-                ? removeOwnedCollectionRows(metadata, id)
-                : Mono.empty();
-        // versioned hard delete에서 owner DELETE *전에* 비가역 정리(owned-collection 행, cascade-remove/orphan child)가
-        // 일어나는 경우에만, 그 정리 앞에서 (id, version) 존재를 선검증한다. 비트랜잭션(autocommit)에서 stale version이면
-        // 정리 SQL이 이미 커밋된 뒤 owner DELETE가 0행으로 실패해 부분 삭제가 되는 것을 막는다(performDelete가 실제
-        // DELETE에서 다시 version-check 하므로 그 사이 동시 변경도 막힌다). 비가역 작업이 없으면(또는 @SecondaryTable만
-        // 있으면 performDelete가 자체 선검증) 추가 COUNT 없이 performDelete의 version-checked DELETE로 충분하다.
-        boolean irreversiblePreOwnerWork = hasOwnedCollectionTables(metadata)
-                || metadata.oneToManyProperties().stream()
-                        .anyMatch(property -> property.cascadeRemoveChildren() || property.orphanRemoval());
-        Mono<Void> versionGuard =
-                (hardDelete && metadata.versionProperty().isPresent() && irreversiblePreOwnerWork)
-                        ? ensurePrimaryVersionPresent(metadata, entity, id, metadata.versionProperty().get())
-                        : Mono.empty();
-        return versionGuard
-                .then(cascadeRemoveOneToManyChildren(metadata, id))
-                .then(ownedCollectionCleanup)
-                .then(performDelete(metadata, entity, id))
-                .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata))
-                .flatMap(affected -> cascadeRemoveToOneReferences(metadata, entity).thenReturn(affected));
+        return Mono.deferContextual(ctx -> {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
+            Object id = metadata.readIdValue(entity);
+            if (id == null) {
+                return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
+            }
+            try {
+                listenerInvoker.invokePreRemove(entity, metadata);
+            } catch (RuntimeException exception) {
+                return Mono.error(exception);
+            }
+            boolean hardDelete = metadata.softDeleteProperty().isEmpty();
+            Mono<Void> ownedCollectionCleanup = hardDelete
+                    ? removeOwnedCollectionRows(metadata, id)
+                    : Mono.empty();
+            boolean irreversiblePreOwnerWork = hasOwnedCollectionTables(metadata)
+                    || metadata.oneToManyProperties().stream()
+                            .anyMatch(property -> property.cascadeRemoveChildren() || property.orphanRemoval());
+            Mono<Void> versionGuard =
+                    (hardDelete && metadata.versionProperty().isPresent() && irreversiblePreOwnerWork)
+                            ? ensurePrimaryVersionPresent(metadata, entity, id, metadata.versionProperty().get())
+                            : Mono.empty();
+            return versionGuard
+                    .then(cascadeRemoveOneToManyChildren(metadata, id))
+                    .then(ownedCollectionCleanup)
+                    .then(performDelete(metadata, entity, id))
+                    .doOnNext(affected -> currentSession(ctx).ifPresent(session -> session.markRemoved(metadata, entity)))
+                    .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata))
+                    .flatMap(affected -> cascadeRemoveToOneReferences(metadata, entity).thenReturn(affected));
+        });
     }
 
     /**
@@ -3075,27 +3068,28 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     @Override
     public <T, ID> Mono<Long> deleteById(Class<T> entityType, ID id) {
+        return Mono.deferContextual(ctx -> {
         Objects.requireNonNull(id, "id must not be null");
         EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+            Mono<Long> deleted;
         if (metadata.hasInheritance() && metadata.inheritance().joined()) {
-            return deleteJoined(metadata, id);
-        }
+                deleted = deleteJoined(metadata, id);
+            } else {
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         if (softDelete.isPresent()) {
             Object deletedAt = currentTimeFor(softDelete.get());
-            return sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
-        }
-        // hard delete: owner 소유 컬렉션(@ElementCollection 행, owning @ManyToMany link 행)을 owner보다 먼저
-        // 정리한다(@ForeignKey FK 의존성). 소유 컬렉션이 없으면 무비용. delete(entity)뿐 아니라 cascade-remove가
-        // 경유하는 이 경로도 같은 정리를 받아야 고아 행/FK 위반이 생기지 않는다.
+                    deleted = sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
+                } else {
         Mono<Void> ownedCleanup = removeOwnedCollectionRows(metadata, id);
-        if (metadata.hasSecondaryTables()) {
-            // @SecondaryTable hard delete: 보조 테이블 행을 먼저 삭제(FK 의존성) 후 primary 행을 삭제한다.
-            return ownedCleanup
-                    .then(deleteSecondaryRows(metadata, id))
-                    .then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)));
+                    deleted = metadata.hasSecondaryTables()
+                            ? ownedCleanup.then(deleteSecondaryRows(metadata, id))
+                                    .then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)))
+                            : ownedCleanup.then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)));
         }
-        return ownedCleanup.then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)));
+        }
+            return deleted.doOnNext(affected -> currentSession(ctx).ifPresent(
+                    session -> session.markRemovedById(metadata, id)));
+        });
     }
 
     @Override

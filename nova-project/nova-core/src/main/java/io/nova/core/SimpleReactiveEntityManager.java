@@ -92,11 +92,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
     @Override
     public Mono<Void> remove(Object entity) {
         Objects.requireNonNull(entity, "entity must not be null");
-        return Mono.deferContextual(ctx -> {
-            // 세션이 있으면 먼저 분리해 이 엔티티의 미flush 변경이 뒤늦게 UPDATE로 나가지 않게 한 뒤 DELETE한다.
-            currentSession(ctx).ifPresent(session -> session.detach(metadataFor(entity), entity));
-            return operations.delete(entity).then();
-        });
+        // delete() turns a managed entry into a tombstone only after successful DML. Detaching first would
+        // lose failed-delete recovery and would permit a same-session re-persist.
+        return operations.delete(entity).then();
     }
 
     @Override

@@ -2,6 +2,7 @@ package io.nova.core;
 
 import io.nova.fetch.FetchGroup;
 import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateFunction;
 import io.nova.query.AggregateSpec;
@@ -2106,6 +2107,49 @@ class SimpleReactiveEntityOperationsTest {
                 .verifyComplete();
 
         assertEquals(1, EntityWithCallbacks.preRemoveCount.get());
+    }
+
+    @Test
+    void deleteDefersRemoveCallbacksUntilSubscription() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(11L, "x@nova.io");
+
+        Mono<Long> delete = operations.delete(entity);
+
+        assertEquals(0, EntityWithCallbacks.preRemoveCount.get());
+        assertEquals(0, EntityWithCallbacks.postRemoveCount.get());
+        StepVerifier.create(delete).expectNext(1L).verifyComplete();
+        assertEquals(1, EntityWithCallbacks.preRemoveCount.get());
+        assertEquals(1, EntityWithCallbacks.postRemoveCount.get());
+    }
+
+    @Test
+    void successfulManagedDeleteCreatesTombstoneAndFlushSkipsDirtyUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityMetadata<SampleAccount> metadata =
+                new EntityMetadataFactory(new DefaultNamingStrategy()).getEntityMetadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        SampleAccount account = new SampleAccount(9L, "a@nova.io", true);
+        session.registerOnLoad(metadata, account);
+
+        StepVerifier.create(operations.delete(account)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(1L)
+                .verifyComplete();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size(), "tombstone must not emit a post-delete UPDATE");
+        assertTrue(session.managedEntries().iterator().next().isRemoved());
+        StepVerifier.create(operations.save(account)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("Cannot persist removed entity"))
+                .verify();
     }
 
     @Test
