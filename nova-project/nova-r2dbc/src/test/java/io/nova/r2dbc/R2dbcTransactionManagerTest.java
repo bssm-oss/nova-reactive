@@ -15,7 +15,6 @@ import io.r2dbc.spi.ConnectionFactoryMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 
 import java.lang.reflect.Proxy;
@@ -365,17 +364,18 @@ class R2dbcTransactionManagerTest {
 
     @Test
     void closesConnectionWhenBeginIsCancelledAfterAcquisition() {
-        AtomicInteger setAutoCommitCalls = new AtomicInteger();
+        AtomicInteger acquisitions = new AtomicInteger();
+        AtomicInteger beginTransactionCalls = new AtomicInteger();
         AtomicInteger closeCalls = new AtomicInteger();
-        Sinks.Empty<Void> settings = Sinks.empty();
         Connection connection = (Connection) Proxy.newProxyInstance(
                 Connection.class.getClassLoader(),
                 new Class<?>[]{Connection.class},
                 (proxy, method, args) -> switch (method.getName()) {
-                    case "setAutoCommit" -> {
-                        setAutoCommitCalls.incrementAndGet();
-                        yield settings.asMono();
-                    }
+                    case "setAutoCommit" -> Mono.empty();
+                    case "beginTransaction" -> Mono.defer(() -> {
+                        beginTransactionCalls.incrementAndGet();
+                        return Mono.never();
+                    });
                     case "close" -> {
                         closeCalls.incrementAndGet();
                         yield Mono.empty();
@@ -385,7 +385,10 @@ class R2dbcTransactionManagerTest {
         ConnectionFactory factory = new ConnectionFactory() {
             @Override
             public Mono<? extends Connection> create() {
-                return Mono.just(connection);
+                return Mono.defer(() -> {
+                    acquisitions.incrementAndGet();
+                    return Mono.just(connection);
+                });
             }
 
             @Override
@@ -395,8 +398,11 @@ class R2dbcTransactionManagerTest {
         };
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(factory);
 
-        StepVerifier.create(txManager.begin())
-                .then(() -> assertEquals(1, setAutoCommitCalls.get()))
+        StepVerifier.create(txManager.begin(), 1)
+                .then(() -> {
+                    assertEquals(1, acquisitions.get());
+                    assertEquals(1, beginTransactionCalls.get());
+                })
                 .thenCancel()
                 .verify();
 
