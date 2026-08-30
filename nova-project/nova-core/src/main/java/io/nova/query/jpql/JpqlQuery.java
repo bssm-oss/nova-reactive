@@ -74,12 +74,7 @@ public final class JpqlQuery<T> {
         return this;
     }
 
-    /**
-     * JPA {@code setFirstResult} 등가(0-기반 offset).
-     *
-     * <p>현재는 dialect renderer가 arbitrary JPQL SQL에 offset 절을 붙이는 public contract를 제공하지 않아,
-     * entity-returning SELECT와 {@code setMaxResults}를 함께 쓴 경우에만 실행할 수 있다.
-     */
+    /** JPA {@code setFirstResult} 등가(0-기반 offset). */
     public JpqlQuery<T> setFirstResult(int firstResult) {
         if (firstResult < 0) {
             throw new JpqlException("firstResult must be >= 0");
@@ -88,12 +83,7 @@ public final class JpqlQuery<T> {
         return this;
     }
 
-    /**
-     * JPA {@code setMaxResults} 등가(limit).
-     *
-     * <p>현재는 entity-returning SELECT에만 실행 지원한다. Scalar, aggregate, and {@code SELECT NEW} projections
-     * need a dialect-owned pagination renderer to preserve bind marker order and Oracle pagination syntax.
-     */
+    /** JPA {@code setMaxResults} 등가(limit). */
     public JpqlQuery<T> setMaxResults(int maxResults) {
         if (maxResults < 0) {
             throw new JpqlException("maxResults must be >= 0");
@@ -153,19 +143,14 @@ public final class JpqlQuery<T> {
 
     @SuppressWarnings("unchecked")
     private Flux<T> execute(JpqlStatement.Select select) {
+        if (maxResults != null && maxResults == 0) {
+            return Flux.empty();
+        }
         if (entityPlanner.isEntitySelect(select) && !isForcedScalar()) {
             return executeEntity(select);
         }
         if (entityPlanner.isJoinedEntitySelect(select) && joinedEntityMatches(select)) {
             return executeJoinedEntity(select);
-        }
-        // Scalar/aggregate/DTO projection SQL cannot safely append a page window: SqlRenderer only exposes
-        // entity-metadata rendering, while its dialect-specific page hook is protected. In particular Oracle's
-        // OFFSET/FETCH marker order differs from LIMIT/OFFSET dialects. Do not interpolate or emulate in memory.
-        if (firstResult != null || maxResults != null) {
-            return Flux.error(new JpqlException(
-                    "setFirstResult/setMaxResults for scalar, aggregate, and SELECT NEW JPQL projections "
-                            + "requires a dialect-owned arbitrary-SELECT pagination renderer"));
         }
         TranslatedSql translated;
         Function<RowAccessor, T> mapper;
@@ -180,7 +165,7 @@ public final class JpqlQuery<T> {
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
-        return operations.queryNative(toNativeQuery(translated), mapper);
+        return pageResults(operations.queryNative(toNativeQuery(translated), mapper));
     }
 
     /** {@code SELECT NEW ...} 단일 생성자 프로젝션이면 그 {@link ConstructorCall}, 아니면 {@code null}. */
@@ -225,18 +210,13 @@ public final class JpqlQuery<T> {
                     "Entity-returning JPQL with a filtering JOIN is not supported for composite-id entity "
                             + metadata.entityType().getSimpleName()));
         }
-        if (maxResults != null && maxResults == 0) {
-            return Flux.empty();
-        }
         String idProperty = metadata.idProperty().propertyName();
 
         TranslatedSql idProjection;
         Sort sort;
-        Pageable page;
         try {
             idProjection = sqlBuilder.buildScalarSelect(rootIdProjection(select, idProperty));
             sort = entityPlanner.translateRootOrderBy(select.orderBy(), select.rootAlias(), metadata);
-            page = pageWindow();
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
@@ -246,15 +226,13 @@ public final class JpqlQuery<T> {
         return operations.queryNative(toNativeQuery(idProjection), idMapper)
                 .collectList()
                 .flatMapMany(ids -> {
-                    if (ids.isEmpty()) {
+                    List<Object> windowedIds = windowIds(ids);
+                    if (windowedIds.isEmpty()) {
                         return Flux.<Object>empty();
                     }
-                    QuerySpec spec = QuerySpec.empty().where(Criteria.in(idProperty, ids));
+                    QuerySpec spec = QuerySpec.empty().where(Criteria.in(idProperty, windowedIds));
                     if (sort != null) {
                         spec = spec.orderBy(sort);
-                    }
-                    if (page != null) {
-                        spec = spec.page(page);
                     }
                     return operations.findAll(entityType, spec);
                 })
@@ -284,22 +262,18 @@ public final class JpqlQuery<T> {
                 select.rootAlias(),
                 filterJoins,
                 select.where(),
-                List.of(),
+                select.orderBy(),
                 null,
                 List.of());
     }
 
     /** {@code firstResult}/{@code maxResults}를 {@link Pageable}로. 둘 다 없으면 {@code null}. */
     private Pageable pageWindow() {
-        if (maxResults == null) {
-            if (firstResult != null) {
-                throw new JpqlException(
-                        "setFirstResult without setMaxResults requires dialect-owned offset-only pagination");
-            }
+        if (maxResults == null && firstResult == null) {
             return null;
         }
         long offset = firstResult == null ? 0L : firstResult.longValue();
-        return Pageable.of(maxResults.intValue(), offset);
+        return Pageable.of(maxResults == null ? Integer.MAX_VALUE : maxResults, offset);
     }
 
     /** {@code resultType}이 엔티티 타입이 아니면(스칼라 강제) 엔티티 경로를 우회한다. */
@@ -331,15 +305,9 @@ public final class JpqlQuery<T> {
                     + " which is not assignable to requested result type " + resultType.getName()));
         }
         QuerySpec spec = plan.spec();
-        if (maxResults != null) {
-            if (maxResults == 0) {
-                return Flux.empty();
-            }
-            long offset = firstResult == null ? 0L : firstResult.longValue();
-            spec = spec.page(Pageable.of(maxResults.intValue(), offset));
-        } else if (firstResult != null) {
-            return Flux.error(new JpqlException(
-                    "setFirstResult without setMaxResults requires dialect-owned offset-only pagination"));
+        Pageable page = pageWindow();
+        if (page != null) {
+            spec = spec.page(page);
         }
         Class<Object> entityType = (Class<Object>) metadata.entityType();
         return (Flux<T>) operations.findAll(entityType, spec);
@@ -491,5 +459,21 @@ public final class JpqlQuery<T> {
             values.add(parameters.resolve(binding));
         }
         return new NativeQuery(translated.sql(), values);
+    }
+
+    /** Arbitrary projection SQL has no public dialect pagination hook, so page its reactive result stream. */
+    private Flux<T> pageResults(Flux<T> results) {
+        Flux<T> paged = firstResult == null ? results : results.skip(firstResult.longValue());
+        return maxResults == null ? paged : paged.take(maxResults.longValue());
+    }
+
+    /** Applies the JPQL window to ordered root ids before the hydration query. */
+    private List<Object> windowIds(List<Object> ids) {
+        int from = firstResult == null ? 0 : firstResult;
+        if (from >= ids.size()) {
+            return List.of();
+        }
+        int to = maxResults == null ? ids.size() : Math.min(ids.size(), from + maxResults);
+        return new ArrayList<>(ids.subList(from, to));
     }
 }
