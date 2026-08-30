@@ -119,7 +119,9 @@ class JpqlQueryTest {
                 .setFirstResult(1)
                 .setMaxResults(1);
 
-        StepVerifier.create(query.getResultList()).expectNextCount(1).verifyComplete();
+        StepVerifier.create(query.getResultList())
+                .assertNext(result -> assertEquals(7, ((IntDto) result).id()))
+                .verifyComplete();
     }
 
     @Test
@@ -174,10 +176,10 @@ class JpqlQueryTest {
                             @SuppressWarnings("unchecked")
                             java.util.function.Function<RowAccessor, Object> mapper =
                                     (java.util.function.Function<RowAccessor, Object>) arguments[1];
-                            return Flux.fromIterable(nativeRows).map(value -> mapper.apply(new RowAccessor() {
+                            return Flux.range(0, nativeRows.size()).map(index -> mapper.apply(new RowAccessor() {
                                 @Override
                                 public <T> T get(String columnName, Class<T> type) {
-                                    return type.cast(value);
+                                    return type.cast(nativeRows.get(index));
                                 }
                             }));
                         }
@@ -231,7 +233,14 @@ class JpqlQueryTest {
     }
 
     public static class IntDto {
+        private final int id;
+
         public IntDto(int id) {
+            this.id = id;
+        }
+
+        public int id() {
+            return id;
         }
     }
 
