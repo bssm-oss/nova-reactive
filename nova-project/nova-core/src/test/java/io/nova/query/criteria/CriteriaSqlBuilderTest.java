@@ -769,6 +769,26 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void accumulatesParametersAndLiteralsInCriteriaInBeforeExecutionResolution() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<Integer> first = cb.parameter(Integer.class, "first");
+        ParameterExpression<Integer> second = cb.parameter(Integer.class, "second");
+        cq.multiselect(e.<Long>get("id"))
+                .where(cb.in(e.<Integer>get("age"))
+                        .value((Expression<Integer>) first)
+                        .value(30)
+                        .value((Expression<Integer>) second)
+                        .value((Expression<Integer>) first));
+
+        CriteriaSql translated = aliased(cq, Map.of(), Map.of("first", 10, "second", 20));
+
+        assertEquals(List.of(10, 30, 20, 10), translated.bindings());
+        assertTrue(translated.sql().contains("\"age\" in (?, ?, ?, ?)"));
+    }
+
+    @Test
     void latestNamedAndIdentityBindingWinsAcrossSetterOverloads() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);

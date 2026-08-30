@@ -13,11 +13,14 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 조립된 {@link CriteriaQueryImpl}에 페이지 창을 바인딩해 리액티브로 실행하는 쿼리 핸들. JPA
@@ -38,8 +41,8 @@ public final class ReactiveCriteriaQuery<T> {
 
     private Integer firstResult;
     private Integer maxResults;
-    private final Map<ParameterExpression<?>, Object> identityParameterValues = new LinkedHashMap<>();
-    private final Map<String, Object> namedParameterValues = new LinkedHashMap<>();
+    private final AtomicReference<Map<ParameterExpression<?>, Object>> parameterValues =
+            new AtomicReference<>(Map.of());
 
     ReactiveCriteriaQuery(
             CriteriaQueryImpl<T> query,
@@ -80,10 +83,12 @@ public final class ReactiveCriteriaQuery<T> {
         if (name == null || name.isBlank()) {
             throw new CriteriaException("Criteria parameter name must not be blank");
         }
-        query.getParameters().stream()
-                .filter(parameter -> name.equals(parameter.getName()))
-                .forEach(identityParameterValues::remove);
-        namedParameterValues.put(name, value);
+        ParameterExpression<?> parameter = query.getParameters().stream()
+                .filter(candidate -> name.equals(candidate.getName()))
+                .findFirst()
+                .orElseThrow(() -> new CriteriaException(
+                        "No Criteria parameter named '" + name + "' is declared by this query"));
+        replaceParameterValue(parameter, value);
         return this;
     }
 
@@ -92,10 +97,7 @@ public final class ReactiveCriteriaQuery<T> {
         if (!(parameter instanceof CriteriaParameter<?>)) {
             throw new CriteriaException("Criteria parameter was not created by this CriteriaBuilder");
         }
-        if (parameter.getName() != null) {
-            namedParameterValues.remove(parameter.getName());
-        }
-        identityParameterValues.put(parameter, value);
+        replaceParameterValue(parameter, value);
         return this;
     }
 
@@ -125,8 +127,7 @@ public final class ReactiveCriteriaQuery<T> {
     private Flux<T> execute() {
         try {
             CriteriaParameterBindings bindings = CriteriaParameterBindings.resolve(
-                    query.getParameters(), new LinkedHashMap<>(identityParameterValues),
-                    new LinkedHashMap<>(namedParameterValues));
+                    query.getParameters(), parameterValues.get(), Map.of());
             boolean entitySelect = isEntitySelect();
             if (entitySelect) {
                 rejectAggregateOrderingForEntitySelect();
@@ -143,6 +144,14 @@ public final class ReactiveCriteriaQuery<T> {
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
+    }
+
+    private void replaceParameterValue(ParameterExpression<?> parameter, Object value) {
+        parameterValues.updateAndGet(previous -> {
+            Map<ParameterExpression<?>, Object> updated = new IdentityHashMap<>(previous);
+            updated.put(parameter, value);
+            return Collections.unmodifiableMap(updated);
+        });
     }
 
     private boolean isEntitySelect() {

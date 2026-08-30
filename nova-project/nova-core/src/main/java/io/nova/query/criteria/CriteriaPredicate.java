@@ -227,6 +227,11 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
         return resolved;
     }
 
+    /** Construction-only mutable IN list; parameter resolution occurs only during execution rendering. */
+    final void addInValue(Object value) {
+        inValues.add(value);
+    }
+
     List<CriteriaPredicate> children() {
         return children;
     }

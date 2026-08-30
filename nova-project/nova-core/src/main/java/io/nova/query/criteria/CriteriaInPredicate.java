@@ -32,7 +32,7 @@ final class CriteriaInPredicate<T> extends CriteriaPredicate implements Criteria
         if (value instanceof CriteriaParameter<?> parameter) {
             CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path()), parameter, "In.value");
         }
-        inValues().add(value);
+        addInValue(value);
         return this;
     }
 
@@ -42,7 +42,7 @@ final class CriteriaInPredicate<T> extends CriteriaPredicate implements Criteria
             throw new CriteriaException("CriteriaBuilder.In.value(Expression) requires a Criteria parameter");
         }
         CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path()), parameter, "In.value");
-        inValues().add(parameter);
+        addInValue(parameter);
         return this;
     }
 
