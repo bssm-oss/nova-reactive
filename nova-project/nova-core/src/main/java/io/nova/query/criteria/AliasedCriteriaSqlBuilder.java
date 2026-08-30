@@ -178,7 +178,7 @@ final class AliasedCriteriaSqlBuilder {
                 if (predicate.aggregate() != null) {
                     renderAggregate(ctx, predicate.aggregate());
                     ctx.sql.append(' ').append(predicate.op().symbol()).append(' ');
-                    bindMarker(ctx, predicate.value(ctx.bindingsResolver), predicate.aggregate().operand());
+                    bindAggregateMarker(ctx, predicate.aggregate(), predicate.value(ctx.bindingsResolver));
                     break;
                 }
                 if (isCompositeToOne(predicate.path())) {
@@ -512,6 +512,10 @@ final class AliasedCriteriaSqlBuilder {
 
     private void bindMarker(Ctx ctx, Object value, CriteriaColumnPath path) {
         addBinding(ctx, path.property().toColumnValue(ctx.bindingsResolver.resolve(value)));
+    }
+
+    private void bindAggregateMarker(Ctx ctx, CriteriaAggregate<?> aggregate, Object value) {
+        addBinding(ctx, aggregate.toComparisonColumnValue(value));
     }
 
     private void addBinding(Ctx ctx, Object value) {

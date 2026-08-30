@@ -27,6 +27,17 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
         return operand;
     }
 
+    /**
+     * Converts an aggregate comparison value only when the SQL aggregate preserves the operand's
+     * domain representation. COUNT and AVG produce independent numeric result domains.
+     */
+    Object toComparisonColumnValue(Object value) {
+        return switch (function) {
+            case COUNT, COUNT_DISTINCT, AVG -> value;
+            case SUM, MIN, MAX -> operand.property().toColumnValue(value);
+        };
+    }
+
     @Override
     public jakarta.persistence.criteria.Predicate equalTo(Object value) {
         return comparison(CompareOp.EQ, value, "equalTo");

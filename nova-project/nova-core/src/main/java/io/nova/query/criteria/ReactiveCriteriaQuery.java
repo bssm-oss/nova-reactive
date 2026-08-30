@@ -80,6 +80,9 @@ public final class ReactiveCriteriaQuery<T> {
         if (name == null || name.isBlank()) {
             throw new CriteriaException("Criteria parameter name must not be blank");
         }
+        query.getParameters().stream()
+                .filter(parameter -> name.equals(parameter.getName()))
+                .forEach(identityParameterValues::remove);
         namedParameterValues.put(name, value);
         return this;
     }
@@ -88,6 +91,9 @@ public final class ReactiveCriteriaQuery<T> {
     public <P> ReactiveCriteriaQuery<T> setParameter(ParameterExpression<P> parameter, P value) {
         if (!(parameter instanceof CriteriaParameter<?>)) {
             throw new CriteriaException("Criteria parameter was not created by this CriteriaBuilder");
+        }
+        if (parameter.getName() != null) {
+            namedParameterValues.remove(parameter.getName());
         }
         identityParameterValues.put(parameter, value);
         return this;

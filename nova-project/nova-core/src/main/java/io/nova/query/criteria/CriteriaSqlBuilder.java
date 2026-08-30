@@ -151,8 +151,11 @@ final class CriteriaSqlBuilder {
             case COMPARISON -> {
                 renderComparisonLeft(ctx, predicate);
                 ctx.sql.append(' ').append(predicate.op().symbol()).append(' ');
-                bindMarker(ctx, predicate.value(ctx.bindingsResolver), predicate.aggregate() == null
-                        ? predicate.path() : predicate.aggregate().operand());
+                if (predicate.aggregate() != null) {
+                    bindAggregateMarker(ctx, predicate.aggregate(), predicate.value(ctx.bindingsResolver));
+                } else {
+                    bindMarker(ctx, predicate.value(ctx.bindingsResolver), predicate.path());
+                }
             }
             case LIKE -> {
                 ctx.sql.append(column(predicate.path())).append(predicate.negated() ? " not like " : " like ");
@@ -317,6 +320,10 @@ final class CriteriaSqlBuilder {
 
     private void bindMarker(Ctx ctx, Object value, CriteriaColumnPath path) {
         addBinding(ctx, path.property().toColumnValue(ctx.bindingsResolver.resolve(value)));
+    }
+
+    private void bindAggregateMarker(Ctx ctx, CriteriaAggregate<?> aggregate, Object value) {
+        addBinding(ctx, aggregate.toComparisonColumnValue(value));
     }
 
     private void addBinding(Ctx ctx, Object value) {

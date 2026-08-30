@@ -29,6 +29,9 @@ final class CriteriaInPredicate<T> extends CriteriaPredicate implements Criteria
 
     @Override
     public CriteriaBuilder.In<T> value(T value) {
+        if (value instanceof CriteriaParameter<?> parameter) {
+            CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path()), parameter, "In.value");
+        }
         inValues().add(value);
         return this;
     }
@@ -38,12 +41,7 @@ final class CriteriaInPredicate<T> extends CriteriaPredicate implements Criteria
         if (!(value instanceof CriteriaParameter<?> parameter)) {
             throw new CriteriaException("CriteriaBuilder.In.value(Expression) requires a Criteria parameter");
         }
-        if (!expression.getJavaType().isAssignableFrom(parameter.getJavaType())
-                && !parameter.getJavaType().isAssignableFrom(expression.getJavaType())) {
-            throw new CriteriaException("CriteriaBuilder.In.value parameter type "
-                    + parameter.getJavaType().getSimpleName() + " is incompatible with expression type "
-                    + expression.getJavaType().getSimpleName());
-        }
+        CriteriaGuards.validateParameterType(CriteriaGuards.parameterDomain(path()), parameter, "In.value");
         inValues().add(parameter);
         return this;
     }

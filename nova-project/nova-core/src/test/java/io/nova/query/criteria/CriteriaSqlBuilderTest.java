@@ -737,6 +737,58 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void rejectsBroadParameterDeclarationsAtTheirUseSite() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        ParameterExpression<Object> broad = cb.parameter(Object.class);
+
+        CriteriaException comparison = assertThrows(CriteriaException.class,
+                () -> cb.equal(e.<String>get("name"), broad));
+        assertTrue(comparison.getMessage().contains("incompatible"));
+        CriteriaException in = assertThrows(CriteriaException.class,
+                () -> cb.in(e.<String>get("name")).value((Expression<String>) (Expression<?>) broad));
+        assertTrue(in.getMessage().contains("incompatible"));
+    }
+
+    @Test
+    void resolvesCompositeToOneParameterAsTargetEntityComponents() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> child =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        ParameterExpression<io.nova.support.fixtures.FixtureEntities.CompositeJoinParent> parent =
+                cb.parameter(io.nova.support.fixtures.FixtureEntities.CompositeJoinParent.class);
+        io.nova.support.fixtures.FixtureEntities.CompositeJoinParent reference =
+                new io.nova.support.fixtures.FixtureEntities.CompositeJoinParent();
+        reference.setId(new io.nova.support.fixtures.FixtureEntities.CompositeJoinKey(5L, "x"));
+        cq.multiselect(child.<Long>get("id")).where(cb.equal(child.get("parent"), parent));
+
+        CriteriaSql translated = aliased(cq, Map.of(parent, reference), Map.of());
+
+        assertEquals(List.of(5L, "x"), translated.bindings());
+        assertTrue(translated.sql().contains("\"p_k1\" = ? and \"t0\".\"p_k2\" = ?"));
+    }
+
+    @Test
+    void latestNamedAndIdentityBindingWinsAcrossSetterOverloads() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<String> name = cb.parameter(String.class, "name");
+        cq.multiselect(e.<String>get("name")).where(cb.equal(e.<String>get("name"), name));
+        CapturingOperations operations = new CapturingOperations();
+        ReactiveCriteriaQuery<Object> reactive = new ReactiveCriteriaQuery<>(
+                (CriteriaQueryImpl<Object>) cq, operations, builder, aliasedBuilder);
+
+        reactive.setParameter("name", "named").setParameter(name, "identity");
+        StepVerifier.create(reactive.getResultList()).verifyComplete();
+        reactive.setParameter(name, "identity-again").setParameter("name", "named-again");
+        StepVerifier.create(reactive.getResultList()).verifyComplete();
+
+        assertEquals(List.of("identity"), operations.nativeQueries.get(0).bindings());
+        assertEquals(List.of("named-again"), operations.nativeQueries.get(1).bindings());
+    }
+
+    @Test
     void failsFastOnManyToManyJoin() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);

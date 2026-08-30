@@ -31,4 +31,35 @@ final class CriteriaGuards {
         }
         rejectExpressionValue(element, op);
     }
+
+    static Class<?> parameterDomain(CriteriaColumnPath path) {
+        return path.property().isCompositeToOne()
+                ? path.property().manyToOneTargetType()
+                : path.property().javaType();
+    }
+
+    static void validateParameterType(Class<?> domainType, CriteriaParameter<?> parameter, String operation) {
+        Class<?> expected = boxed(domainType);
+        Class<?> declared = boxed(parameter.getJavaType());
+        if (!expected.isAssignableFrom(declared)) {
+            throw new CriteriaException("CriteriaBuilder." + operation + " parameter type "
+                    + parameter.getJavaType().getSimpleName() + " is incompatible with expression type "
+                    + domainType.getSimpleName());
+        }
+    }
+
+    private static Class<?> boxed(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == boolean.class) return Boolean.class;
+        if (type == byte.class) return Byte.class;
+        if (type == short.class) return Short.class;
+        if (type == int.class) return Integer.class;
+        if (type == long.class) return Long.class;
+        if (type == float.class) return Float.class;
+        if (type == double.class) return Double.class;
+        if (type == char.class) return Character.class;
+        throw new CriteriaException("Unsupported primitive Criteria parameter type " + type.getName());
+    }
 }
