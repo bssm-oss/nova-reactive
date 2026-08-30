@@ -727,7 +727,8 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         String rootDrop = options.ifNotExists()
                 ? generator.dropTableIfExists(rootMetadata)
                 : generator.dropTable(rootMetadata);
-        return dropSubtypes.then(operations.executeNative(NativeQuery.of(rootDrop)).then());
+        return dropSubtypes.then(Mono.defer(
+                () -> operations.executeNative(NativeQuery.of(rootDrop)).then()));
     }
 
     /**

@@ -129,8 +129,9 @@ class AbstractSchemaGeneratorTest {
 
         assertTrue(root.contains("check (root_value >= 0)"));
         assertEquals(
-                "create table joined_ddl_child (id bigint not null primary key, child_value integer,"
-                        + " foreign key (id) references joined_ddl_root (id), check (child_value >= 0))",
+                "create table joined_ddl_child (id bigint not null primary key,"
+                        + " child_value integer check (child_value >= 0),"
+                        + " foreign key (id) references joined_ddl_root (id))",
                 child);
         assertTrue(secondary.contains("check (secondary_value >= 0)"));
         assertEquals(List.of("comment on column joined_ddl_child.child_value is 'child'"),
@@ -159,7 +160,8 @@ class AbstractSchemaGeneratorTest {
                 .filter(subtype -> subtype.metadata().entityType() == JoinedDdlChild.class)
                 .findFirst().orElseThrow();
         assertEquals(
-                "create table joined_ddl_child (id bigint not null primary key, child_value integer,"
+                "create table joined_ddl_child (id bigint not null primary key,"
+                        + " child_value integer check (child_value >= 0),"
                         + " foreign key (id) references joined_ddl_root (id))",
                 dialect.schemaGenerator().createJoinedSubtypeTable(blankSchemaLayout, blankSchemaChild, false));
     }
