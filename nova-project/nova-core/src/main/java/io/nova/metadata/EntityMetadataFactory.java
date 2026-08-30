@@ -887,7 +887,7 @@ public final class EntityMetadataFactory {
                 uniqueConstraints,
                 inheritance,
                 collectEntityListeners(entityType),
-                entityType.isAnnotationPresent(ExcludeDefaultListeners.class),
+                hasExcludeDefaultListeners(entityType),
                 secondaryTables,
                 tableDdlDefinition(table, entityType)
         );
@@ -1221,24 +1221,47 @@ public final class EntityMetadataFactory {
 
     /**
      * 엔티티 자신과 매핑에 기여하는 조상({@link MappedSuperclass} / 상위 {@link Entity})의 선언 메서드를
-     * 서브클래스-우선(most-derived first) 순서로 반환한다. override 판별은 호출부에서 시그니처 dedupe로
-     * 처리하므로, 더 하위에 선언된 override가 먼저 보이도록 entityType부터 위로 올라가며 수집한다.
+     * root-우선 순서로 반환한다. override 판별은 먼저 서브클래스-우선으로 수행해 가장 하위 정의만 남긴 뒤,
+     * 살아남은 콜백을 root-to-child로 정렬한다.
      */
     private static List<Method> mappedMethods(Class<?> entityType) {
-        List<Method> methods = new ArrayList<>();
+        List<List<Method>> declaredByType = new ArrayList<>();
+        Set<String> overriddenSignatures = new LinkedHashSet<>();
         Class<?> current = entityType;
         while (current != null && current != Object.class
                 && (current == entityType
                 || current.isAnnotationPresent(MappedSuperclass.class)
                 || current.isAnnotationPresent(Entity.class))) {
-            // getDeclaredMethods()는 클래스 내 순서가 JVM 비결정이므로, 같은 phase의 콜백이 여럿일 때
-            // 호출 순서가 들쭉날쭉하지 않도록 클래스별로 안정 정렬한다(클래스 계층 순서=derived→base는 유지).
             List<Method> declared = new ArrayList<>(Arrays.asList(current.getDeclaredMethods()));
             declared.sort(STABLE_METHOD_ORDER);
-            methods.addAll(declared);
+            List<Method> surviving = new ArrayList<>();
+            for (Method method : declared) {
+                if (overriddenSignatures.add(callbackSignature(method))) {
+                    surviving.add(method);
+                }
+            }
+            declaredByType.add(surviving);
             current = current.getSuperclass();
         }
+        List<Method> methods = new ArrayList<>();
+        for (int i = declaredByType.size() - 1; i >= 0; i--) {
+            methods.addAll(declaredByType.get(i));
+        }
         return methods;
+    }
+
+    private static boolean hasExcludeDefaultListeners(Class<?> entityType) {
+        Class<?> current = entityType;
+        while (current != null && current != Object.class
+                && (current == entityType
+                || current.isAnnotationPresent(MappedSuperclass.class)
+                || current.isAnnotationPresent(Entity.class))) {
+            if (current.isAnnotationPresent(ExcludeDefaultListeners.class)) {
+                return true;
+            }
+            current = current.getSuperclass();
+        }
+        return false;
     }
 
     /**

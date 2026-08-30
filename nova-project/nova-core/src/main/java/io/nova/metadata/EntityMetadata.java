@@ -284,9 +284,9 @@ public final class EntityMetadata<T> {
     }
 
     /**
-     * {@code @ExcludeDefaultListeners}(jakarta.persistence)가 entity에 선언되었는지 여부.
-     * {@code true}이면 entity 자체의 lifecycle 콜백(no-arg {@code @PrePersist} 등)을 스킵한다.
-     * 외부 {@code @EntityListeners} 콜백은 영향을 받지 않는다.
+     * entity 또는 매핑 superclass에서 유효한 {@code @ExcludeDefaultListeners}(jakarta.persistence) marker 여부.
+     * Nova는 XML default listener를 지원하지 않으므로 현재 marker는 no-op이며, 명시적
+     * {@code @EntityListeners}와 entity lifecycle callback은 계속 호출된다.
      */
     public boolean excludeDefaultListeners() {
         return excludeDefaultListeners;

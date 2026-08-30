@@ -1275,9 +1275,9 @@ class EntityMetadataFactoryTest {
         assertEquals(List.of(IntermediateListener.class, ChildListener.class),
                 intermediate.listenerCallbacks().prePersist().stream()
                         .map(callback -> callback.listener().getClass()).toList());
-        assertEquals(List.of("directCallback", "baseCallback"), direct.prePersistCallbacks().stream()
+        assertEquals(List.of("baseCallback", "directCallback"), direct.prePersistCallbacks().stream()
                 .map(java.lang.reflect.Method::getName).toList());
-        assertEquals(List.of("childCallback", "intermediateCallback", "baseCallback"),
+        assertEquals(List.of("baseCallback", "intermediateCallback", "childCallback"),
                 intermediate.prePersistCallbacks().stream().map(java.lang.reflect.Method::getName).toList());
     }
 
@@ -1461,13 +1461,16 @@ class EntityMetadataFactoryTest {
         }
     }
 
-    @Entity
     @ExcludeDefaultListeners
-    @EntityListeners(ExplicitListener.class)
-    static class ExcludeDefaultListenersEntity {
+    @MappedSuperclass
+    static class DefaultListenersExcludedBase {
         @Id
         private Long id;
+    }
 
+    @Entity
+    @EntityListeners(ExplicitListener.class)
+    static class ExcludeDefaultListenersEntity extends DefaultListenersExcludedBase {
         @PrePersist
         void entityCallback() {
         }

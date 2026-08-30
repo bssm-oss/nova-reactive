@@ -39,7 +39,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@Inheritance`    | TYPE-level marker on a hierarchy root. Only `strategy = SINGLE_TABLE` is supported (the JPA default); `JOINED` / `TABLE_PER_CLASS` are rejected fail-fast. Optional — an `@Entity` extending another `@Entity` defaults to SINGLE_TABLE. |
 | `@DiscriminatorColumn` | On the hierarchy root, names the discriminator column (default `dtype`) and its type (`STRING` default, `CHAR`, `INTEGER`). |
 | `@DiscriminatorValue`  | On each concrete subtype, the value stored in the discriminator column. For `STRING` it defaults to the entity name; `CHAR` / `INTEGER` require it explicitly. |
-| `@Transient`      | Excludes a field from mapping entirely (same effect as the Java `transient` keyword). |
+| `@Transient`      | Excludes a field from mapping entirely (same effect as the Java `transient` keyword). Under effective `@Access(PROPERTY)`, a getter annotation also excludes that property; getter annotations do not affect FIELD access. |
 | `@Index`          | Table-level secondary index, declared in `@Table(indexes = ...)` with a comma-separated `columnList`. Without `name`, generated as `ix_{table}_{cols}`. |
 | `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
@@ -408,9 +408,11 @@ Rules, matching JPA:
   `@PostLoad`, `@PreRemove`, `@PostRemove`). A checked exception thrown from a listener is
   rewrapped as `IllegalStateException` preserving the original cause, exactly like in-entity callbacks.
 
-> Listener *inheritance* (lifecycle methods inherited by a listener class from its own
-> superclass) and `@ExcludeDefaultListeners` / `@ExcludeSuperclassListeners` are not supported;
-> declare callbacks directly on each registered listener class.
+Listener callback methods are inherited from listener superclasses; an overriding subclass method
+fires once. `@ExcludeSuperclassListeners` on an entity or mapped superclass cuts off external
+listener hosts above that type while inherited entity callbacks remain active. Nova has no XML
+default listeners, so `@ExcludeDefaultListeners` is recognized (including inheritance from a
+mapped superclass) but is a no-op: explicit `@EntityListeners` and entity callbacks remain active.
 
 ---
 

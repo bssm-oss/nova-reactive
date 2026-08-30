@@ -132,6 +132,16 @@ class EntityListenerExclusionTest {
         assertEquals(List.of("recording:postLoad"), events);
     }
 
+    @Test
+    void entityCallbacksInvokeRootToChildAfterSelectingMostDerivedOverride() {
+        EntityMetadata<OrderedCallbackChild> metadata =
+                factory.getEntityMetadata(OrderedCallbackChild.class);
+
+        invoker.invokePrePersist(new OrderedCallbackChild(), metadata);
+
+        assertEquals(List.of("root", "middle", "child-override"), events);
+    }
+
     // ---- fixtures ----
 
     static class RecordingListener {
@@ -232,5 +242,39 @@ class EntityListenerExclusionTest {
     static class EntityWithInheritingListener {
         @Id
         Long id;
+    }
+
+    @MappedSuperclass
+    static class OrderedCallbackRoot {
+        @Id
+        Long id;
+
+        @PrePersist
+        void rootCallback() {
+            events.add("root");
+        }
+
+        @PrePersist
+        void overriddenCallback() {
+            events.add("root-override");
+        }
+    }
+
+    @MappedSuperclass
+    static class OrderedCallbackMiddle extends OrderedCallbackRoot {
+        @PrePersist
+        void middleCallback() {
+            events.add("middle");
+        }
+    }
+
+    @Entity
+    @Table(name = "ordered_callbacks")
+    static class OrderedCallbackChild extends OrderedCallbackMiddle {
+        @Override
+        @PrePersist
+        void overriddenCallback() {
+            events.add("child-override");
+        }
     }
 }
