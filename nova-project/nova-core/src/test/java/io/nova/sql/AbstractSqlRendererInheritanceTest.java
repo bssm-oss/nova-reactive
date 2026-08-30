@@ -41,6 +41,12 @@ class AbstractSqlRendererInheritanceTest {
         return factory.inheritanceLayout(TVehicle.class);
     }
 
+    private InheritanceLayout schemaJoinedLayout() {
+        factory.getEntityMetadata(SCar.class);
+        factory.getEntityMetadata(STruck.class);
+        return factory.inheritanceLayout(SVehicle.class);
+    }
+
     // --- JOINED ------------------------------------------------------------
 
     @Test
@@ -127,6 +133,66 @@ class AbstractSqlRendererInheritanceTest {
         assertEquals("delete from j_car where id = ?", sub.sql());
         SqlStatement root = dialect.sqlRenderer().deleteJoinedRootById(layout, 5L);
         assertEquals("delete from j_vehicle where id = ?", root.sql());
+    }
+
+    @Test
+    void joinedRootSchemaIsQualifiedAcrossDdlAndDmlWhileSubtypeUsesOwnSchema() {
+        Dialect quotedDialect = new QuotedTestDialect();
+        InheritanceLayout layout = schemaJoinedLayout();
+        EntityMetadata<SCar> car = factory.getEntityMetadata(SCar.class);
+        InheritanceLayout.ConcreteSubtype subtype = layout.subtypes().stream()
+                .filter(s -> s.metadata().entityType() == SCar.class).findFirst().orElseThrow();
+        SCar entity = new SCar();
+        entity.id = 3L;
+        entity.name = "bob";
+        entity.doors = 2;
+
+        assertEquals(
+                "create table \"root_schema\".\"s_vehicle\" (\"id\" bigint primary key, \"name\" varchar(255),"
+                        + " \"kind\" varchar(31) not null)",
+                quotedDialect.schemaGenerator().createJoinedRootTable(layout, false));
+        assertEquals(
+                "insert into \"root_schema\".\"s_vehicle\" (\"name\", \"kind\") values (?, ?)",
+                quotedDialect.sqlRenderer().insertJoinedRoot(car, "s_vehicle", layout.rootTableColumns(), entity).sql());
+        assertEquals(
+                "insert into \"car_schema\".\"s_car\" (\"id\", \"doors\") values (?, ?)",
+                quotedDialect.sqlRenderer().insertJoinedSubtype(car, subtype.ownTableColumns(), entity).sql());
+        assertEquals(
+                "select * from (select \"root_schema\".\"s_vehicle\".\"id\" as \"id\","
+                        + " \"root_schema\".\"s_vehicle\".\"name\" as \"name\","
+                        + " \"car_schema\".\"s_car\".\"doors\" as \"doors\","
+                        + " \"truck_schema\".\"s_truck\".\"payload\" as \"payload\","
+                        + " \"root_schema\".\"s_vehicle\".\"kind\" as \"kind\""
+                        + " from \"root_schema\".\"s_vehicle\" left join \"car_schema\".\"s_car\""
+                        + " on \"root_schema\".\"s_vehicle\".\"id\" = \"car_schema\".\"s_car\".\"id\""
+                        + " left join \"truck_schema\".\"s_truck\""
+                        + " on \"root_schema\".\"s_vehicle\".\"id\" = \"truck_schema\".\"s_truck\".\"id\")"
+                        + " as \"nova_joined\"",
+                quotedDialect.sqlRenderer().selectJoinedPolymorphic(layout, QuerySpec.empty()).sql());
+        assertEquals(
+                "select \"root_schema\".\"s_vehicle\".\"id\" as \"id\","
+                        + " \"root_schema\".\"s_vehicle\".\"name\" as \"name\","
+                        + " \"car_schema\".\"s_car\".\"doors\" as \"doors\","
+                        + " \"truck_schema\".\"s_truck\".\"payload\" as \"payload\","
+                        + " \"root_schema\".\"s_vehicle\".\"kind\" as \"kind\""
+                        + " from \"root_schema\".\"s_vehicle\" left join \"car_schema\".\"s_car\""
+                        + " on \"root_schema\".\"s_vehicle\".\"id\" = \"car_schema\".\"s_car\".\"id\""
+                        + " left join \"truck_schema\".\"s_truck\""
+                        + " on \"root_schema\".\"s_vehicle\".\"id\" = \"truck_schema\".\"s_truck\".\"id\""
+                        + " where \"root_schema\".\"s_vehicle\".\"id\" = ?",
+                quotedDialect.sqlRenderer().selectJoinedById(layout, 3L).sql());
+        assertEquals(
+                "update \"root_schema\".\"s_vehicle\" set \"name\" = ? where \"id\" = ?",
+                quotedDialect.sqlRenderer().updateJoinedRoot(car, "s_vehicle", layout.rootTableColumns(), entity).sql());
+        assertEquals(
+                "update \"car_schema\".\"s_car\" set \"doors\" = ? where \"id\" = ?",
+                quotedDialect.sqlRenderer().updateJoinedSubtype(car, subtype.ownTableColumns(), entity).sql());
+        assertEquals(
+                "delete from \"car_schema\".\"s_car\" where \"id\" = ?",
+                quotedDialect.sqlRenderer().deleteJoinedSubtypeById(car, 3L).sql());
+        assertEquals(
+                "delete from \"root_schema\".\"s_vehicle\" where \"id\" = ?",
+                quotedDialect.sqlRenderer().deleteJoinedRootById(layout, 3L).sql());
     }
 
     // --- TABLE_PER_CLASS ---------------------------------------------------
@@ -234,6 +300,31 @@ class AbstractSqlRendererInheritanceTest {
     }
 
     @Entity
+    @Table(name = "s_vehicle", schema = "root_schema")
+    @Inheritance(strategy = InheritanceType.JOINED)
+    @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
+    abstract static class SVehicle {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        Long id;
+        String name;
+    }
+
+    @Entity
+    @Table(name = "s_car", schema = "car_schema")
+    @DiscriminatorValue("CAR")
+    static class SCar extends SVehicle {
+        int doors;
+    }
+
+    @Entity
+    @Table(name = "s_truck", schema = "truck_schema")
+    @DiscriminatorValue("TRUCK")
+    static class STruck extends SVehicle {
+        double payload;
+    }
+
+    @Entity
     @Table(name = "t_vehicle")
     @Inheritance(strategy = InheritanceType.TABLE_PER_CLASS)
     @DiscriminatorColumn(name = "kind", discriminatorType = DiscriminatorType.STRING)
@@ -257,7 +348,7 @@ class AbstractSqlRendererInheritanceTest {
         double payload;
     }
 
-    private static final class TestDialect implements Dialect {
+    private static class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
         private final SqlRenderer renderer = new AbstractSqlRenderer(this) {
         };
@@ -287,6 +378,13 @@ class AbstractSqlRendererInheritanceTest {
         @Override
         public SchemaGenerator schemaGenerator() {
             return schemaGenerator;
+        }
+    }
+
+    private static final class QuotedTestDialect extends TestDialect {
+        @Override
+        public String quote(String identifier) {
+            return "\"" + identifier + "\"";
         }
     }
 }

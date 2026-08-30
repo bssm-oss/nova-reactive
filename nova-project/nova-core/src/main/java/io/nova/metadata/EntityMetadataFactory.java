@@ -1036,6 +1036,7 @@ public final class EntityMetadataFactory {
         String discriminatorValue = resolveDiscriminatorValue(
                 entityType, entityName, discriminatorType, abstractType, strategy);
         String rootTableName = "";
+        String rootTableSchema = "";
         String rootIdColumn = "";
         if (strategy == InheritanceType.JOINED) {
             // JOINED: 루트 물리 테이블과 루트 PK 컬럼은 모든 서브타입이 FK로 공유한다. 루트의 @Table/naming과
@@ -1044,12 +1045,13 @@ public final class EntityMetadataFactory {
             rootTableName = rootTable != null && !rootTable.name().isBlank()
                     ? rootTable.name()
                     : namingStrategy.tableName(root);
+            rootTableSchema = rootTable != null ? rootTable.schema() : "";
             rootIdColumn = joinedRootIdColumn(root);
         }
         return new InheritanceInfo(
                 root, strategy, root == entityType, abstractType,
                 columnName, discriminatorType, discriminatorLength, discriminatorValue,
-                rootTableName, rootIdColumn);
+                rootTableName, rootTableSchema, rootIdColumn);
     }
 
     /**

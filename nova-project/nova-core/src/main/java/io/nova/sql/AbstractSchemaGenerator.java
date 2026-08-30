@@ -286,7 +286,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         columns.add(discriminatorColumnDefinition(layout.rootMetadata()));
         appendTableChecks(layout.rootMetadata().tableDdlDefinition().checks(), layout.rootTableColumns(), columns);
         return "create table " + (ifNotExists ? "if not exists " : "")
-                + dialect.quote(info.rootTableName())
+                + qualifiedRootTable(info)
                 + " (" + String.join(", ", columns) + ")" + options(layout.rootMetadata().tableDdlDefinition().options());
     }
 
@@ -513,6 +513,13 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         return metadata.schema().isBlank()
                 ? quotedTable
                 : dialect.quote(metadata.schema()) + "." + quotedTable;
+    }
+
+    private String qualifiedRootTable(InheritanceInfo info) {
+        String quotedTable = dialect.quote(info.rootTableName());
+        return info.rootTableSchema().isBlank()
+                ? quotedTable
+                : dialect.quote(info.rootTableSchema()) + "." + quotedTable;
     }
 
     protected String columnDefinition(PersistentProperty property) {

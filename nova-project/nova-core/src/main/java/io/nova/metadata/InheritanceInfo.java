@@ -17,7 +17,7 @@ import java.util.Objects;
  * <ul>
  *   <li><b>SINGLE_TABLE</b>: 루트 테이블 하나에 전 서브타입 컬럼을 union하고 discriminator로 구분한다.</li>
  *   <li><b>JOINED</b>: 루트 테이블(공통 컬럼 + discriminator) + 서브타입별 테이블(서브타입 컬럼 + 루트 PK를 FK로
- *       공유)을 둔다. {@link #rootTableName()}이 루트 물리 테이블, 각 멤버의 {@link EntityMetadata#tableName()}이
+ *       공유)을 둔다. {@link #rootTableSchema()}/{@link #rootTableName()}이 루트 물리 테이블, 각 멤버의 {@link EntityMetadata#tableName()}이
  *       자기 테이블이다.</li>
  *   <li><b>TABLE_PER_CLASS</b>: 각 구체 서브타입이 모든 상속 컬럼을 독립 테이블에 담는다. 공유 테이블이 없고
  *       discriminator는 다형 UNION 쿼리에서 합성 상수 컬럼으로만 등장한다.</li>
@@ -32,6 +32,7 @@ import java.util.Objects;
  * @param discriminatorLength STRING discriminator 컬럼의 varchar 길이
  * @param discriminatorValue 이 구체 타입을 식별하는 discriminator 값(abstract 루트는 빈 문자열일 수 있음)
  * @param rootTableName     JOINED에서 루트 물리 테이블 이름(SINGLE_TABLE/TPC에서는 빈 문자열일 수 있음)
+ * @param rootTableSchema   JOINED에서 루트 물리 테이블 schema(SINGLE_TABLE/TPC 또는 schema 미지정 시 빈 문자열)
  * @param rootIdColumn      JOINED에서 루트 PK 컬럼 이름(서브타입 테이블이 FK로 공유). SINGLE_TABLE/TPC는 빈 문자열.
  */
 public record InheritanceInfo(
@@ -44,6 +45,7 @@ public record InheritanceInfo(
         int discriminatorLength,
         String discriminatorValue,
         String rootTableName,
+        String rootTableSchema,
         String rootIdColumn
 ) {
     /**
@@ -51,13 +53,14 @@ public record InheritanceInfo(
      */
     public static final InheritanceInfo NONE =
             new InheritanceInfo(null, InheritanceType.SINGLE_TABLE, false, false,
-                    "", null, 0, "", "", "");
+                    "", null, 0, "", "", "", "");
 
     public InheritanceInfo {
         strategy = strategy == null ? InheritanceType.SINGLE_TABLE : strategy;
         discriminatorColumn = discriminatorColumn == null ? "" : discriminatorColumn;
         discriminatorValue = discriminatorValue == null ? "" : discriminatorValue;
         rootTableName = rootTableName == null ? "" : rootTableName;
+        rootTableSchema = rootTableSchema == null ? "" : rootTableSchema;
         rootIdColumn = rootIdColumn == null ? "" : rootIdColumn;
     }
 
@@ -74,7 +77,7 @@ public record InheritanceInfo(
             String discriminatorValue
     ) {
         this(root, InheritanceType.SINGLE_TABLE, isRoot, abstractType,
-                discriminatorColumn, discriminatorType, discriminatorLength, discriminatorValue, "", "");
+                discriminatorColumn, discriminatorType, discriminatorLength, discriminatorValue, "", "", "");
     }
 
     /**
