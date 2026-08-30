@@ -2223,15 +2223,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (property.orphanRemoval()) {
             handleOrphans = (haveBaseline && trueOrphanIds.isEmpty())
                     ? Mono.empty()
+                    : haveBaseline
+                    ? deleteChildrenByIds(session, childMetadata, trueOrphanIds)
                     : Mono.defer(() -> removeOrphans(
                             childMetadata, mappedByProperty, ownerId, currentChildren, movedElsewhere)
-                            .doOnSuccess(affected -> {
-                                // With a baseline the DML predicate's deleted identity set is exactly the
-                                // removed ids excluding explicit reparenting. Do not inspect mutable child.owner.
-                                if (haveBaseline) {
-                                    trueOrphanIds.forEach(id -> session.markRemovedById(childMetadata, id));
-                                }
-                            })
                             .then());
         } else if (haveBaseline) {
             handleOrphans = trueOrphanIds.isEmpty()
@@ -2815,7 +2810,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             ? ensurePrimaryVersionPresent(metadata, entity, id, metadata.versionProperty().get())
                             : Mono.empty();
             return versionGuard
-                    .then(cascadeRemoveOneToManyChildren(metadata, id))
+                    .then(cascadeRemoveOneToManyChildren(metadata, entity, id))
                     .then(ownedCollectionCleanup)
                     .then(performDelete(metadata, entity, id))
                     .doOnNext(affected -> currentSession(ctx).ifPresent(session -> session.markRemoved(metadata, entity)))
@@ -2870,7 +2865,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * mappedBy FK 컬럼으로 일괄 삭제한다. cascade-remove 관계가 없으면 무비용. parentId가 null이면 호출자가 이미
      * 가드했으므로 여기서는 비어 있지 않다고 가정한다.
      */
-    private <T> Mono<Void> cascadeRemoveOneToManyChildren(EntityMetadata<T> metadata, Object parentId) {
+    private <T> Mono<Void> cascadeRemoveOneToManyChildren(EntityMetadata<T> metadata, T parent, Object parentId) {
         List<PersistentProperty> removing = metadata.oneToManyProperties().stream()
                 .filter(property -> property.cascadeRemoveChildren() || property.orphanRemoval())
                 .toList();
@@ -2892,12 +2887,81 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             QuerySpec spec = QuerySpec.empty()
                                     .where(Criteria.eq(mappedByProperty.propertyName(), parentId));
                             Optional<PersistenceSession> session = currentSession(ctx);
-                            return findAllInternal(childMetadata, spec)
-                                    .map(child -> manage(session, child))
-                                    .concatMap(this::delete)
-                                    .then();
+                            if (session.isEmpty()) {
+                                return findAllInternal(childMetadata, spec).concatMap(this::delete).then();
+                            }
+                            List<Object> persistedIds = knownChildIdsForParent(
+                                    session.get(), metadata, parent, property, childMetadata, mappedByProperty, parentId);
+                            return persistedIds.isEmpty()
+                                    ? findAllInternal(childMetadata, spec)
+                                            .map(child -> manage(session, child))
+                                            .concatMap(this::delete)
+                                            .then()
+                                    : deleteChildrenByIds(session.get(), childMetadata, persistedIds);
                         })
                         .then());
+    }
+
+    private List<Object> knownChildIdsForParent(
+            PersistenceSession session, EntityMetadata<?> parentMetadata, Object parent, PersistentProperty property,
+            EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty, Object parentId) {
+        List<Object> ids = new ArrayList<>();
+        PersistenceSession.ManagedEntry parentEntry = session.managedEntry(parentMetadata, parent);
+        if (parentEntry != null && parentEntry.hasCollectionSnapshot(property.propertyName())) {
+            Object snapshot = parentEntry.collectionSnapshot(property.propertyName());
+            if (snapshot instanceof List<?> values) {
+                ids.addAll(values);
+            }
+        }
+        EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(mappedByProperty.manyToOneTargetType());
+        Object storedParentId = targetMetadata.idProperty().toColumnValue(parentId);
+        for (PersistenceSession.ManagedEntry entry : session.managedEntries()) {
+            if (childMetadata.entityType().isAssignableFrom(entry.metadata().entityType())
+                    && Objects.equals(entry.snapshotColumnValue(mappedByProperty.columnName()), storedParentId)) {
+                Object id = entry.metadata().readIdValue(entry.entity());
+                if (id != null && !ids.contains(id)) {
+                    ids.add(id);
+                }
+            }
+        }
+        return ids;
+    }
+
+    private Mono<Void> deleteChildrenByIds(
+            PersistenceSession session, EntityMetadata<?> childMetadata, List<Object> ids) {
+        if (ids.isEmpty()) {
+            return Mono.empty();
+        }
+        List<Object> unresolved = new ArrayList<>();
+        List<Object> managed = new ArrayList<>();
+        for (Object id : ids) {
+            PersistenceSession.ManagedEntry entry = null;
+            for (PersistenceSession.ManagedEntry candidate : session.managedEntries()) {
+                if (childMetadata.entityType().isAssignableFrom(candidate.metadata().entityType())
+                        && sameIdentifier(childMetadata, candidate.metadata().readIdValue(candidate.entity()), id)) {
+                    entry = candidate;
+                    break;
+                }
+            }
+            if (entry == null) {
+                unresolved.add(id);
+            } else {
+                managed.add(entry.entity());
+            }
+        }
+        Mono<Void> deleteManaged = Flux.fromIterable(managed).concatMap(this::delete).then();
+        if (unresolved.isEmpty()) {
+            return deleteManaged;
+        }
+        if (childMetadata.hasCompositeId()) {
+            return deleteManaged.thenMany(Flux.fromIterable(unresolved)
+                    .concatMap(id -> findByIdInternal(childMetadata, id).flatMap(this::delete))).then();
+        }
+        return deleteManaged.thenMany(findAllInternal(childMetadata,
+                        QuerySpec.empty().where(Criteria.in(
+                                childMetadata.idProperty().propertyName(), unresolved)))
+                .map(child -> manage(Optional.of(session), child))
+                .concatMap(this::delete)).then();
     }
 
     private void markChildrenRemoved(
