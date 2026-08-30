@@ -53,6 +53,8 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderColumn;
+import jakarta.persistence.PostRemove;
+import jakarta.persistence.PreRemove;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import org.junit.jupiter.api.Test;
@@ -2860,6 +2862,51 @@ class SimpleReactiveEntityOperationsTest {
                 statement.sql().startsWith("update versioned_removal_children")));
     }
 
+    @Test
+    void cascadeRemoveInvokesToOneCallbacksAfterOwnerDelete() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackTarget target = new CallbackTarget(2L);
+        CallbackOwner owner = new CallbackOwner(1L, target);
+
+        StepVerifier.create(operations.delete(owner)).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("owner-pre", "owner-post", "target-pre", "target-post"), RemovalCallbacks.events);
+    }
+
+    @Test
+    void cascadeRemoveInvokesOneToManyCallbacksBeforeParentCallbacks() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(new MapRowAccessor(Map.of("id", 2L, "parent_id", 1L))));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.delete(new CallbackChildrenOwner(1L))).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("children-owner-pre", "child-pre", "child-post", "children-owner-post"),
+                RemovalCallbacks.events);
+    }
+
+    @Test
+    void orphanRemovalInvokesChildCallbacks() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(new MapRowAccessor(Map.of("id", 2L, "parent_id", 1L))));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackChildrenOwner owner = new CallbackChildrenOwner(1L);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CallbackChildrenOwner.class), owner);
+        session.managedEntry(metadata(CallbackChildrenOwner.class), owner)
+                .putCollectionSnapshot("children", List.of(2L));
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(List.of("child-pre", "child-post"), RemovalCallbacks.events);
+    }
+
     private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
         PersistenceSession session = new PersistenceSession();
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
@@ -3303,6 +3350,115 @@ class SimpleReactiveEntityOperationsTest {
             this.id = id;
             this.name = name;
             this.version = version;
+        }
+    }
+
+    private static final class RemovalCallbacks {
+        private static final List<String> events = new ArrayList<>();
+    }
+
+    @Entity
+    @Table(name = "callback_targets")
+    private static final class CallbackTarget {
+        @Id
+        private Long id;
+
+        private CallbackTarget() {
+        }
+
+        private CallbackTarget(Long id) {
+            this.id = id;
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("target-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("target-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "callback_owners")
+    private static final class CallbackOwner {
+        @Id
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumn(name = "target_id")
+        private CallbackTarget target;
+
+        private CallbackOwner() {
+        }
+
+        private CallbackOwner(Long id, CallbackTarget target) {
+            this.id = id;
+            this.target = target;
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("owner-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("owner-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "callback_children_owners")
+    private static final class CallbackChildrenOwner {
+        @Id
+        private Long id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = CallbackChild.class,
+                cascade = CascadeType.REMOVE, orphanRemoval = true)
+        private List<CallbackChild> children = new ArrayList<>();
+
+        private CallbackChildrenOwner() {
+        }
+
+        private CallbackChildrenOwner(Long id) {
+            this.id = id;
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("children-owner-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("children-owner-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "callback_children")
+    private static final class CallbackChild {
+        @Id
+        private Long id;
+
+        @ManyToOne
+        @JoinColumn(name = "parent_id")
+        private CallbackChildrenOwner parent;
+
+        private CallbackChild() {
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("child-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("child-post");
         }
     }
 
