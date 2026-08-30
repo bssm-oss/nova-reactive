@@ -2865,23 +2865,26 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (removing.isEmpty()) {
             return Mono.empty();
         }
-        return Flux.fromIterable(removing)
-                .concatMap(property -> {
-                    if (property.oneToManyTargetType() == null) {
-                        return Mono.error(new IllegalStateException(
-                                metadata.entityType().getName() + "." + property.propertyName()
-                                        + " @OneToMany(cascade=REMOVE/orphanRemoval) requires targetEntity to be specified"));
-                    }
-                    EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
-                    PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
-                    QuerySpec spec = QuerySpec.empty()
-                            .where(Criteria.eq(mappedByProperty.propertyName(), parentId));
-                    return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec))
-                            .doOnNext(affected -> currentSession(ctx).ifPresent(
-                                    session -> markChildrenRemoved(session, childMetadata, mappedByProperty, parentId,
-                                            List.of())));
-                })
-                .then();
+        return Mono.deferContextual(ctx -> Flux.fromIterable(removing)
+                        .concatMap(property -> {
+                            if (property.oneToManyTargetType() == null) {
+                                return Mono.error(new IllegalStateException(
+                                        metadata.entityType().getName() + "." + property.propertyName()
+                                                + " @OneToMany(cascade=REMOVE/orphanRemoval) requires targetEntity"
+                                                + " to be specified"));
+                            }
+                            EntityMetadata<?> childMetadata =
+                                    metadataFactory.getEntityMetadata(property.oneToManyTargetType());
+                            PersistentProperty mappedByProperty =
+                                    resolveMappedByProperty(metadata, property, childMetadata);
+                            QuerySpec spec = QuerySpec.empty()
+                                    .where(Criteria.eq(mappedByProperty.propertyName(), parentId));
+                            return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec))
+                                    .doOnNext(affected -> currentSession(ctx).ifPresent(
+                                            session -> markChildrenRemoved(session, childMetadata, mappedByProperty,
+                                                    parentId, List.of())));
+                        })
+                        .then());
     }
 
     private void markChildrenRemoved(
