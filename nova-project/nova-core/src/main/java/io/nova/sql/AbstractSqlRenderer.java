@@ -25,6 +25,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -1021,6 +1022,7 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         if (spec.aggregations().isEmpty()) {
             throw new IllegalArgumentException("aggregate requires at least one Aggregation");
         }
+        validateAggregateAliasesAgainstGroupColumns(metadata, spec);
         RenderContext context = new RenderContext();
         List<String> selectItems = new ArrayList<>(spec.aggregations().size() + spec.groupBy().size());
         for (String groupProperty : spec.groupBy()) {
@@ -1049,6 +1051,22 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
         }
         appendOrderBy(sql, metadata, spec.sort(), spec);
         return new SqlStatement(sql.toString(), context.bindings());
+    }
+
+    private void validateAggregateAliasesAgainstGroupColumns(EntityMetadata<?> metadata, AggregateSpec spec) {
+        Set<String> groupColumnLabels = new LinkedHashSet<>();
+        for (String groupProperty : spec.groupBy()) {
+            groupColumnLabels.add(findProperty(metadata, groupProperty).columnName().toLowerCase(Locale.ROOT));
+        }
+        for (Aggregation aggregation : spec.aggregations()) {
+            String alias = aggregation.resolvedAlias();
+            if (groupColumnLabels.contains(alias.toLowerCase(Locale.ROOT))) {
+                throw new IllegalArgumentException(
+                        "Aggregate alias '" + alias
+                                + "' collides with a selected group-column label; call .as(...) to assign a unique alias"
+                );
+            }
+        }
     }
 
     private String renderAggregate(Aggregation aggregation, PersistentProperty property) {

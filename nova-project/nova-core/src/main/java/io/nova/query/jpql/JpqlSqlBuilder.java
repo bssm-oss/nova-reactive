@@ -178,8 +178,9 @@ public final class JpqlSqlBuilder {
                 ctx.sql.append(", ");
             }
             Assignment a = assignments.get(i);
-            ctx.sql.append(columnOnly(a.target(), metadata)).append(" = ");
-            renderExpression(ctx, a.value());
+            PersistentProperty target = propertyOnly(a.target(), metadata);
+            ctx.sql.append(dialect.quote(target.columnName())).append(" = ");
+            renderExpressionForProperty(ctx, a.value(), target);
         }
         if (update.where() != null) {
             ctx.sql.append(" where ");
@@ -361,7 +362,9 @@ public final class JpqlSqlBuilder {
                                 + "SELECT NEW constructor argument in v1 (its foreign key spans multiple columns); "
                                 + "select its @Id components explicitly instead");
                     }
+                    int start = columns[0];
                     renderColumn(ctx, arg, columns);
+                    slots.add(new TranslatedSql.ResultSlot(start, 1, null, mappedProjectionProperty(ctx, arg)));
                 }
             } else {
                 renderPlainSelectItem(ctx, item.expression(), columns, slots);
@@ -383,7 +386,7 @@ public final class JpqlSqlBuilder {
         }
         int start = columns[0];
         renderColumn(ctx, expr, columns);
-        slots.add(new TranslatedSql.ResultSlot(start, 1, null));
+        slots.add(new TranslatedSql.ResultSlot(start, 1, null, mappedProjectionProperty(ctx, expr)));
     }
 
     /**
@@ -404,7 +407,21 @@ public final class JpqlSqlBuilder {
             ctx.sql.append(" as ").append(dialect.quote(JpqlQuery.columnLabel(columns[0])));
             columns[0]++;
         }
-        slots.add(new TranslatedSql.ResultSlot(start, fkColumns.size(), ref.property().toOneForeignKey()));
+        slots.add(new TranslatedSql.ResultSlot(start, fkColumns.size(), ref.property().toOneForeignKey(), null));
+    }
+
+    /** Direct paths and conversion-preserving MIN/MAX operands retain mapping for scalar result decoding. */
+    private PersistentProperty mappedProjectionProperty(Ctx ctx, Expression expression) {
+        if (expression instanceof Expression.Path path) {
+            PersistentProperty property = resolvePath(ctx, path).property();
+            return property.manyToOne() ? null : property;
+        }
+        if (expression instanceof Expression.Aggregate aggregate
+                && (aggregate.op() == io.nova.query.jpql.ast.AggregateOp.MIN
+                        || aggregate.op() == io.nova.query.jpql.ast.AggregateOp.MAX)) {
+            return mappedProjectionProperty(ctx, aggregate.argument());
+        }
+        return null;
     }
 
     private void renderColumn(Ctx ctx, Expression expr, int[] columns) {
@@ -546,9 +563,11 @@ public final class JpqlSqlBuilder {
             renderCompositeComparison(ctx, ref, flipOperand(c.op()), c.left());
             return;
         }
-        renderExpression(ctx, c.left());
+        PersistentProperty leftProperty = mappedProperty(ctx, c.left());
+        PersistentProperty rightProperty = mappedProperty(ctx, c.right());
+        renderExpressionForProperty(ctx, c.left(), rightProperty);
         ctx.sql.append(' ').append(c.op().symbol()).append(' ');
-        renderExpression(ctx, c.right());
+        renderExpressionForProperty(ctx, c.right(), leftProperty);
     }
 
     /** 복합키 to-one 참조가 비교의 우변에 올 때 좌우를 바꾸기 위한 연산자 방향 반전(등치/부등은 대칭). */
@@ -603,11 +622,12 @@ public final class JpqlSqlBuilder {
             ctx.sql.append(')');
             return;
         }
+        PersistentProperty property = mappedProperty(ctx, b.value());
         renderExpression(ctx, b.value());
         ctx.sql.append(b.negated() ? " not between " : " between ");
-        renderExpression(ctx, b.low());
+        renderExpressionForProperty(ctx, b.low(), property);
         ctx.sql.append(" and ");
-        renderExpression(ctx, b.high());
+        renderExpressionForProperty(ctx, b.high(), property);
     }
 
     /**
@@ -638,13 +658,14 @@ public final class JpqlSqlBuilder {
             ctx.sql.append(')');
             return;
         }
+        PersistentProperty property = mappedProperty(ctx, in.value());
         renderExpression(ctx, in.value());
         ctx.sql.append(in.negated() ? " not in (" : " in (");
         for (int i = 0; i < items.size(); i++) {
             if (i > 0) {
                 ctx.sql.append(", ");
             }
-            renderExpression(ctx, items.get(i));
+            renderExpressionForProperty(ctx, items.get(i), property);
         }
         ctx.sql.append(')');
     }
@@ -750,6 +771,35 @@ public final class JpqlSqlBuilder {
     // ----------------------------------------------------------------------------------------
     // Expression
     // ----------------------------------------------------------------------------------------
+
+    /** Renders a direct parameter against a mapped property using its storage conversion. */
+    private void renderExpressionForProperty(Ctx ctx, Expression expression, PersistentProperty property) {
+        if (property != null && expression instanceof Expression.NamedParameter named) {
+            ctx.bind(new JpqlBinding.Converted(new JpqlBinding.Named(named.name()), property));
+            ctx.sql.append(marker(ctx));
+            return;
+        }
+        if (property != null && expression instanceof Expression.PositionalParameter positional) {
+            ctx.bind(new JpqlBinding.Converted(new JpqlBinding.Positional(positional.position()), property));
+            ctx.sql.append(marker(ctx));
+            return;
+        }
+        renderExpression(ctx, expression);
+    }
+
+    /** Direct path expressions alone provide scalar conversion context; function and literal expressions remain raw. */
+    private PersistentProperty mappedProperty(Ctx ctx, Expression expression) {
+        if (expression instanceof Expression.Path path) {
+            PersistentProperty property = resolvePath(ctx, path).property();
+            return property.manyToOne() ? null : property;
+        }
+        if (expression instanceof Expression.Aggregate aggregate
+                && (aggregate.op() == io.nova.query.jpql.ast.AggregateOp.MIN
+                        || aggregate.op() == io.nova.query.jpql.ast.AggregateOp.MAX)) {
+            return mappedProperty(ctx, aggregate.argument());
+        }
+        return null;
+    }
 
     private void renderExpression(Ctx ctx, Expression expression) {
         if (expression instanceof Expression.Literal lit) {
@@ -1240,8 +1290,7 @@ public final class JpqlSqlBuilder {
         return alias;
     }
 
-    /** UPDATE SET 대상용: 별칭 없이 컬럼만. */
-    private String columnOnly(Expression.Path target, EntityMetadata<?> metadata) {
+    private PersistentProperty propertyOnly(Expression.Path target, EntityMetadata<?> metadata) {
         if (target.segments().size() != 1) {
             throw new JpqlException("UPDATE SET target must be a single field, got '" + target.alias()
                     + (target.segments().isEmpty() ? "" : "." + String.join(".", target.segments())) + "'");
@@ -1253,7 +1302,7 @@ public final class JpqlSqlBuilder {
         if (property.id()) {
             throw new JpqlException("Cannot assign the @Id field '" + field + "' in a bulk UPDATE");
         }
-        return dialect.quote(property.columnName());
+        return property;
     }
 
     // ----------------------------------------------------------------------------------------

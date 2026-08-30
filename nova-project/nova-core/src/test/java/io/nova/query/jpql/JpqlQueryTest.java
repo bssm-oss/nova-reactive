@@ -140,6 +140,7 @@ class JpqlQueryTest {
                 .setMaxResults(1);
 
         StepVerifier.create(query.getResultList())
+                // The selected row's Integer storage value is coerced to Employee.id's Long before DTO coercion.
                 .assertNext(result -> assertEquals(7, ((IntDto) result).id()))
                 .verifyComplete();
     }

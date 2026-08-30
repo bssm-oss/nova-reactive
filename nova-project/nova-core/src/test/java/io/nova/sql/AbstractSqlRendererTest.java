@@ -951,6 +951,38 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void aggregateRejectsAliasCollidingWithSelectedGroupColumnLabel() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().aggregate(
+                        metadata,
+                        AggregateSpec.of(Aggregation.count("id").as("active")).groupBy("active")
+                )
+        );
+
+        assertEquals(
+                "Aggregate alias 'active' collides with a selected group-column label; call .as(...) to assign a unique alias",
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void aggregateRejectsCaseOnlyAliasCollidingWithSelectedGroupColumnLabel() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> dialect.sqlRenderer().aggregate(
+                        metadata,
+                        AggregateSpec.of(Aggregation.count("id").as("ACTIVE")).groupBy("active")
+                )
+        );
+
+        assertEquals(
+                "Aggregate alias 'ACTIVE' collides with a selected group-column label; call .as(...) to assign a unique alias",
+                exception.getMessage()
+        );
+    }
+
+    @Test
     void aggregateRendersWhereAndGroupByInExpectedOrder() {
         SqlStatement statement = dialect.sqlRenderer().aggregate(
                 metadata,
@@ -964,6 +996,25 @@ class AbstractSqlRendererTest {
                 statement.sql()
         );
         assertEquals(java.util.List.of(true), statement.bindings());
+    }
+
+    @Test
+    void aggregatePreservesUniqueAliasSqlAndBindingOrder() {
+        SqlStatement statement = dialect.sqlRenderer().aggregate(
+                metadata,
+                AggregateSpec.of(
+                        Aggregation.sum("id").as("total"),
+                        Aggregation.count("id").as("entries")
+                )
+                        .where(Criteria.eq("email", "a@nova.io"))
+                        .having(Criteria.gt("total", 3L))
+        );
+
+        assertEquals(
+                "select sum(id) as total, count(id) as entries from accounts where email_address = ? having sum(id) > ?",
+                statement.sql()
+        );
+        assertEquals(java.util.List.of("a@nova.io", 3L), statement.bindings());
     }
 
     @Test

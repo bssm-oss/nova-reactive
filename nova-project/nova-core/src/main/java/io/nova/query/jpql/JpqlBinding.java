@@ -5,7 +5,7 @@ package io.nova.query.jpql;
  * 시점에 사용자가 채우는 named/positional 파라미터를 구분한다. 실제 값 채우기는 {@link JpqlQuery}가 한다.
  */
 public sealed interface JpqlBinding
-        permits JpqlBinding.Literal, JpqlBinding.Named, JpqlBinding.Positional, JpqlBinding.Component {
+        permits JpqlBinding.Literal, JpqlBinding.Named, JpqlBinding.Positional, JpqlBinding.Component, JpqlBinding.Converted {
 
     /** 파싱 시점에 값이 확정된 리터럴 바인딩. */
     record Literal(Object value) implements JpqlBinding {
@@ -17,6 +17,13 @@ public sealed interface JpqlBinding
 
     /** {@code ?n} positional 파라미터 슬롯(1-기반). */
     record Positional(int position) implements JpqlBinding {
+    }
+
+    /**
+     * Mapped scalar property와 비교하거나 그 property에 대입되는 파라미터 슬롯. 실행 시 도메인 값을
+     * property의 저장 표현으로 정확히 한 번 변환한다.
+     */
+    record Converted(JpqlBinding source, io.nova.metadata.PersistentProperty property) implements JpqlBinding {
     }
 
     /**

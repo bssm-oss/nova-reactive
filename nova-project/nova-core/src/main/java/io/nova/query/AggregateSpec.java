@@ -1,8 +1,11 @@
 package io.nova.query;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Aggregations DSL의 immutable builder다. {@code SELECT count(distinct col), sum(col2)
@@ -28,6 +31,7 @@ public final class AggregateSpec {
             Predicate having,
             Sort sort
     ) {
+        validateAggregateAliases(aggregations);
         this.aggregations = aggregations;
         this.groupBy = groupBy;
         this.where = where;
@@ -116,5 +120,17 @@ public final class AggregateSpec {
 
     public Sort sort() {
         return sort;
+    }
+
+    private static void validateAggregateAliases(List<Aggregation> aggregations) {
+        Set<String> aliases = new LinkedHashSet<>();
+        for (Aggregation aggregation : aggregations) {
+            String alias = aggregation.resolvedAlias();
+            if (!aliases.add(alias.toLowerCase(Locale.ROOT))) {
+                throw new IllegalArgumentException(
+                        "Duplicate aggregate alias '" + alias + "'; call .as(...) to assign unique aliases"
+                );
+            }
+        }
     }
 }

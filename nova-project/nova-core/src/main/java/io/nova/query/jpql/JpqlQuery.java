@@ -160,13 +160,14 @@ public final class JpqlQuery<T> {
             ConstructorCall ctor = constructorProjection(select);
             List<TranslatedSql.ResultSlot> slots = translated.slots();
             mapper = ctor != null
-                    ? constructorMapper(ctor, columns)
+                    ? constructorMapper(ctor, slots)
                     : row -> (T) mapSlots(row, slots);
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
+        // Preserve raw driver values until pagination excludes skipped rows; conversion and DTO coercion happen afterward.
         Flux<RawRow> rows = operations.queryNative(
-                toNativeQuery(translated), row -> snapshot(row, translated.slots(), translated.selectionCount()));
+                toNativeQuery(translated), row -> snapshot(row, translated.selectionCount()));
         return pageResults(rows).map(mapper);
     }
 
@@ -224,7 +225,7 @@ public final class JpqlQuery<T> {
         }
 
         Class<Object> entityType = (Class<Object>) metadata.entityType();
-        Function<RowAccessor, Object> idMapper = row -> row.get(JpqlQuery.columnLabel(0), Object.class);
+        Function<RowAccessor, Object> idMapper = row -> readSlot(row, idProjection.slots().get(0));
         int chunkSize = maxResults == null ? 256 : Math.min(maxResults, 256);
         return pageResults(operations.queryNative(toNativeQuery(idProjection), idMapper))
                 .buffer(chunkSize)
@@ -321,14 +322,14 @@ public final class JpqlQuery<T> {
     // SELECT NEW ... DTO projection
     // ----------------------------------------------------------------------------------------
 
-    private Function<RowAccessor, T> constructorMapper(ConstructorCall call, int columns) {
-        Constructor<?> ctor = resolveConstructor(call, columns);
+    private Function<RowAccessor, T> constructorMapper(ConstructorCall call, List<TranslatedSql.ResultSlot> slots) {
+        Constructor<?> ctor = resolveConstructor(call, slots.size());
         Class<?>[] paramTypes = ctor.getParameterTypes();
         return row -> {
-            Object[] args = new Object[columns];
-            for (int i = 0; i < columns; i++) {
-                Object raw = row.get(columnLabel(i), Object.class);
-                args[i] = coerce(raw, paramTypes[i], call.className(), i);
+            Object[] args = new Object[slots.size()];
+            for (int i = 0; i < slots.size(); i++) {
+                Object raw = readSlot(row, slots.get(i));
+                args[i] = coerce(raw, paramTypes[i], "SELECT NEW " + call.className(), i);
             }
             try {
                 @SuppressWarnings("unchecked")
@@ -371,11 +372,11 @@ public final class JpqlQuery<T> {
     }
 
     /** 스칼라 컬럼 값을 생성자 파라미터 타입으로 강제 변환한다. 변환 불가면 fail-fast. */
-    private static Object coerce(Object value, Class<?> target, String className, int index) {
+    private static Object coerce(Object value, Class<?> target, String context, int index) {
         if (value == null) {
             if (target.isPrimitive()) {
-                throw new JpqlException("SELECT NEW " + className + ": null cannot be assigned to primitive "
-                        + "parameter " + index + " of type " + target.getName());
+                throw new JpqlException(context + ": null cannot be assigned to primitive value at position "
+                        + index + " of type " + target.getName());
             }
             return null;
         }
@@ -414,8 +415,8 @@ public final class JpqlQuery<T> {
         if (target == String.class) {
             return value.toString();
         }
-        throw new JpqlException("SELECT NEW " + className + ": cannot convert value of type "
-                + value.getClass().getName() + " to constructor parameter " + index + " of type "
+        throw new JpqlException(context + ": cannot convert value of type "
+                + value.getClass().getName() + " at position " + index + " to type "
                 + target.getName());
     }
 
@@ -445,13 +446,21 @@ public final class JpqlQuery<T> {
      */
     private Object readSlot(RowAccessor row, TranslatedSql.ResultSlot slot) {
         if (slot.compositeFk() == null) {
-            return row.get(columnLabel(slot.firstColumn()), Object.class);
+            if (slot.property() == null) {
+                return row.get(columnLabel(slot.firstColumn()), Object.class);
+            }
+            Object raw = row.get(columnLabel(slot.firstColumn()), Object.class);
+            Object stored = coerce(
+                    raw, boxed(slot.property().columnType()), "JPQL scalar result", slot.firstColumn());
+            return slot.property().toPropertyValue(stored);
         }
         List<ToOneForeignKeyColumn> fkColumns = slot.compositeFk().columns();
         List<Object> decoded = new ArrayList<>(fkColumns.size());
         for (int i = 0; i < fkColumns.size(); i++) {
             ToOneForeignKeyColumn fkColumn = fkColumns.get(i);
-            Object stored = row.get(columnLabel(slot.firstColumn() + i), fkColumn.columnType());
+            int column = slot.firstColumn() + i;
+            Object raw = row.get(columnLabel(column), Object.class);
+            Object stored = coerce(raw, boxed(fkColumn.columnType()), "JPQL scalar result", column);
             decoded.add(fkColumn.toPropertyValue(stored));
         }
         return slot.compositeFk().assembleStub(decoded);
@@ -472,22 +481,29 @@ public final class JpqlQuery<T> {
     }
 
     /** Captures a row before reactive pagination so skipped rows never reach DTO coercion. */
-    private static RawRow snapshot(
-            RowAccessor row, List<TranslatedSql.ResultSlot> slots, int columns) {
+    private static RawRow snapshot(RowAccessor row, int columns) {
         Object[] values = new Object[columns];
         for (int index = 0; index < columns; index++) {
-            Class<?> type = Object.class;
-            for (TranslatedSql.ResultSlot slot : slots) {
-                if (slot.compositeFk() != null
-                        && index >= slot.firstColumn()
-                        && index < slot.firstColumn() + slot.columnCount()) {
-                    type = slot.compositeFk().columns().get(index - slot.firstColumn()).columnType();
-                    break;
-                }
-            }
-            values[index] = row.get(columnLabel(index), type);
+            values[index] = row.get(columnLabel(index), Object.class);
         }
         return new RawRow(values);
+    }
+
+    private static Class<?> boxed(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        return switch (type.getName()) {
+            case "boolean" -> Boolean.class;
+            case "byte" -> Byte.class;
+            case "short" -> Short.class;
+            case "int" -> Integer.class;
+            case "long" -> Long.class;
+            case "float" -> Float.class;
+            case "double" -> Double.class;
+            case "char" -> Character.class;
+            default -> throw new IllegalArgumentException("Unknown primitive type: " + type);
+        };
     }
 
     private record RawRow(Object[] values) implements RowAccessor {

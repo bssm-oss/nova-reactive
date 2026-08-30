@@ -2,6 +2,7 @@ package io.nova.query.jpql;
 
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
+import jakarta.persistence.AttributeConverter;
 import io.nova.query.jpql.ast.JpqlStatement;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
@@ -11,7 +12,11 @@ import jakarta.persistence.Column;
 import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.DiscriminatorValue;
+import jakarta.persistence.Convert;
+import jakarta.persistence.Converter;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.EnumType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Inheritance;
 import jakarta.persistence.InheritanceType;
@@ -38,7 +43,7 @@ class JpqlSqlBuilderTest {
     private final EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
     private final JpqlEntityResolver resolver =
             new JpqlEntityResolver(metadataFactory, List.of(Employee.class, Department.class, Company.class,
-                    Vehicle.class, Car.class, Truck.class));
+                    Vehicle.class, Car.class, Truck.class, ConvertedEntity.class));
     private final JpqlSqlBuilder builder = new JpqlSqlBuilder(dialect, resolver);
 
     private TranslatedSql scalar(String jpql) {
@@ -54,7 +59,7 @@ class JpqlSqlBuilderTest {
                 t.sql());
         assertEquals(1, t.selectionCount());
         assertEquals(1, t.bindings().size());
-        assertEquals(new JpqlBinding.Named("min"), t.bindings().get(0));
+        assertConverted(t.bindings().get(0), "min", "salary");
     }
 
     @Test
@@ -63,7 +68,8 @@ class JpqlSqlBuilderTest {
         assertEquals(
                 "select e.\"name\" as \"c0\" from \"employee\" e where (e.\"age\" = ? and e.\"name\" = ?)",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Literal(30L), new JpqlBinding.Named("n")), t.bindings());
+        assertEquals(new JpqlBinding.Literal(30L), t.bindings().get(0));
+        assertConverted(t.bindings().get(1), "n", "name");
     }
 
     @Test
@@ -136,9 +142,47 @@ class JpqlSqlBuilderTest {
         assertEquals(
                 "update \"employee\" set \"name\" = ?, \"age\" = (\"age\" + ?) where \"id\" = ?",
                 t.sql());
-        assertEquals(
-                List.of(new JpqlBinding.Named("n"), new JpqlBinding.Literal(1L), new JpqlBinding.Named("id")),
-                t.bindings());
+        assertConverted(t.bindings().get(0), "n", "name");
+        assertEquals(new JpqlBinding.Literal(1L), t.bindings().get(1));
+        assertConverted(t.bindings().get(2), "id", "id");
+    }
+
+    @Test
+    void convertsDirectScalarAndBulkParametersUsingMappedProperty() {
+        TranslatedSql scalar = scalar("SELECT c.id FROM ConvertedEntity c WHERE c.stringStatus = :s "
+                + "AND c.ordinalStatus IN (?1, :o) AND c.code BETWEEN :low AND ?2");
+        assertEquals(5, scalar.bindings().size());
+        assertConverted(scalar.bindings().get(0), "s", "stringStatus");
+        assertConverted(scalar.bindings().get(1), 1, "ordinalStatus");
+        assertConverted(scalar.bindings().get(2), "o", "ordinalStatus");
+        assertConverted(scalar.bindings().get(3), "low", "code");
+        assertConverted(scalar.bindings().get(4), 2, "code");
+
+        JpqlParameters parameters = new JpqlParameters();
+        parameters.setNamed("s", Status.ACTIVE);
+        parameters.setPositional(1, Status.INACTIVE);
+        parameters.setNamed("o", Status.ACTIVE);
+        parameters.setNamed("low", new Code("a"));
+        parameters.setPositional(2, new Code("z"));
+        assertEquals("ACTIVE", parameters.resolve(scalar.bindings().get(0)));
+        assertEquals(1, parameters.resolve(scalar.bindings().get(1)));
+        assertEquals(0, parameters.resolve(scalar.bindings().get(2)));
+        assertEquals("a", parameters.resolve(scalar.bindings().get(3)));
+        assertEquals("z", parameters.resolve(scalar.bindings().get(4)));
+
+        JpqlStatement.Update update = (JpqlStatement.Update) new JpqlParser(
+                "UPDATE ConvertedEntity c SET c.code = :code WHERE :status = c.stringStatus").parse();
+        TranslatedSql bulk = builder.buildUpdate(update);
+        assertConverted(bulk.bindings().get(0), "code", "code");
+        assertConverted(bulk.bindings().get(1), "status", "stringStatus");
+    }
+
+    private static void assertConverted(JpqlBinding binding, Object source, String propertyName) {
+        assertTrue(binding instanceof JpqlBinding.Converted, "expected converted binding, got " + binding);
+        JpqlBinding.Converted converted = (JpqlBinding.Converted) binding;
+        assertEquals(source instanceof String ? new JpqlBinding.Named((String) source)
+                : new JpqlBinding.Positional((Integer) source), converted.source());
+        assertEquals(propertyName, converted.property().propertyName());
     }
 
     @Test
@@ -159,7 +203,7 @@ class JpqlSqlBuilderTest {
                         + "join \"department\" j0 on e.\"dept_id\" = j0.\"id\" "
                         + "where j0.\"name\" = ? order by j0.\"name\" asc",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Named("n")), t.bindings());
+        assertConverted(t.bindings().get(0), "n", "name");
     }
 
     @Test
@@ -204,6 +248,19 @@ class JpqlSqlBuilderTest {
                         + "from \"employee\" e group by e.\"name\", e.\"age\"",
                 t.sql());
         assertEquals(3, t.selectionCount());
+        assertEquals("name", t.slots().get(0).property().propertyName());
+        assertEquals("age", t.slots().get(1).property().propertyName());
+        assertEquals(null, t.slots().get(2).property());
+    }
+
+    @Test
+    void retainsMinMaxPathConversionContextButLeavesCountRaw() {
+        TranslatedSql t = scalar("SELECT MIN(c.stringStatus), MAX(c.code), COUNT(c) FROM ConvertedEntity c "
+                + "HAVING MIN(c.stringStatus) = :status");
+        assertEquals("stringStatus", t.slots().get(0).property().propertyName());
+        assertEquals("code", t.slots().get(1).property().propertyName());
+        assertEquals(null, t.slots().get(2).property());
+        assertConverted(t.bindings().get(0), "status", "stringStatus");
     }
 
     // ------------------------------------------------------------------------------------
@@ -228,7 +285,7 @@ class JpqlSqlBuilderTest {
                 "select e.\"id\" as \"c0\" from \"employee\" e where e.\"salary\" > all ("
                         + "select m.\"salary\" from \"employee\" m where m.\"age\" < ?)",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Named("a")), t.bindings());
+        assertConverted(t.bindings().get(0), "a", "age");
     }
 
     @Test
@@ -311,8 +368,10 @@ class JpqlSqlBuilderTest {
 
     @Test
     void rendersCoalesceAndNullif() {
-        assertEquals("select coalesce(e.\"name\", ?) as \"c0\" from \"employee\" e",
-                scalar("SELECT COALESCE(e.name, :d) FROM Employee e").sql());
+        TranslatedSql coalesce = scalar("SELECT COALESCE(e.name, :d) FROM Employee e");
+        assertEquals("select coalesce(e.\"name\", ?) as \"c0\" from \"employee\" e", coalesce.sql());
+        // Function arguments have no direct property binding context and therefore remain raw.
+        assertEquals(new JpqlBinding.Named("d"), coalesce.bindings().get(0));
         assertEquals("select nullif(e.\"age\", ?) as \"c0\" from \"employee\" e",
                 scalar("SELECT NULLIF(e.age, 0) FROM Employee e").sql());
     }
@@ -972,6 +1031,40 @@ class JpqlSqlBuilderTest {
     public static class ShTruck extends ShVehicle {
         @Column(name = "tag")
         private String tag;
+    }
+
+    enum Status { ACTIVE, INACTIVE }
+
+    record Code(String value) { }
+
+    @Converter
+    public static class CodeConverter implements AttributeConverter<Code, String> {
+        @Override
+        public String convertToDatabaseColumn(Code value) {
+            return value == null ? null : value.value();
+        }
+
+        @Override
+        public Code convertToEntityAttribute(String value) {
+            return value == null ? null : new Code(value);
+        }
+    }
+
+    @Entity
+    @Table(name = "converted_entity")
+    public static class ConvertedEntity {
+        @Id
+        @Column(name = "id")
+        private Long id;
+        @Enumerated(EnumType.STRING)
+        @Column(name = "string_status")
+        private Status stringStatus;
+        @Enumerated(EnumType.ORDINAL)
+        @Column(name = "ordinal_status")
+        private Status ordinalStatus;
+        @Convert(converter = CodeConverter.class)
+        @Column(name = "code")
+        private Code code;
     }
 
     @Entity

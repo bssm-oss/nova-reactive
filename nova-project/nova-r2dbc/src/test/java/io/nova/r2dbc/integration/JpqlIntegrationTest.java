@@ -1,10 +1,15 @@
 package io.nova.r2dbc.integration;
 
+import jakarta.persistence.AttributeConverter;
 import io.nova.query.jpql.JpqlExecutor;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
+import jakarta.persistence.Converter;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.EnumType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -37,14 +42,70 @@ class JpqlIntegrationTest {
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
         schema.create(Department.class).block();
         schema.create(Employee.class).block();
+        schema.create(ConversionEntity.class).block();
         jpql = new JpqlExecutor(support.operations(), support.dialect(), support.metadataFactory(),
-                Employee.class, Department.class);
+                Employee.class, Department.class, ConversionEntity.class);
 
         Department engineering = support.operations().save(new Department("Engineering")).block();
         Department sales = support.operations().save(new Department("Sales")).block();
         support.operations().save(new Employee("Ada", new BigDecimal("150"), 40, engineering)).block();
         support.operations().save(new Employee("Bob", new BigDecimal("90"), 25, engineering)).block();
         support.operations().save(new Employee("Cara", new BigDecimal("120"), 35, sales)).block();
+    }
+
+    @Test
+    void scalarAndBulkParametersUseMappedStorageConversions() {
+        support.operations().save(new ConversionEntity(Status.ACTIVE, Status.INACTIVE, new Code("a"))).block();
+        support.operations().save(new ConversionEntity(Status.INACTIVE, Status.ACTIVE, new Code("z"))).block();
+
+        StepVerifier.create(jpql.createQuery("SELECT e.id FROM ConversionEntity e "
+                        + "WHERE e.stringStatus = :status AND e.ordinalStatus IN (?1, :other) "
+                        + "AND e.code BETWEEN :low AND :high", Long.class)
+                .setParameter("status", Status.ACTIVE)
+                .setParameter(1, Status.INACTIVE)
+                .setParameter("other", Status.ACTIVE)
+                .setParameter("low", new Code("a"))
+                .setParameter("high", new Code("m"))
+                .getResultList())
+                .expectNextCount(1)
+                .verifyComplete();
+
+        StepVerifier.create(jpql.createQuery("UPDATE ConversionEntity e SET e.code = :code "
+                        + "WHERE e.stringStatus = :status AND e.ordinalStatus = ?1", Long.class)
+                .setParameter("code", new Code("updated"))
+                .setParameter("status", Status.ACTIVE)
+                .setParameter(1, Status.INACTIVE)
+                .executeUpdate())
+                .expectNext(1L)
+                .verifyComplete();
+
+        StepVerifier.create(jpql.createQuery("SELECT e.code FROM ConversionEntity e WHERE e.code = :code", Code.class)
+                        .setParameter("code", new Code("updated"))
+                        .getResultList())
+                .expectNext(new Code("updated"))
+                .verifyComplete();
+
+        StepVerifier.create(jpql.createQuery("SELECT e.stringStatus FROM ConversionEntity e "
+                        + "WHERE e.stringStatus = :status", Status.class)
+                .setParameter("status", Status.ACTIVE)
+                .getResultList())
+                .expectNext(Status.ACTIVE)
+                .verifyComplete();
+
+        StepVerifier.create(jpql.createQuery("SELECT e.ordinalStatus FROM ConversionEntity e "
+                        + "WHERE e.ordinalStatus = :status", Status.class)
+                .setParameter("status", Status.INACTIVE)
+                .getResultList())
+                .expectNext(Status.INACTIVE)
+                .verifyComplete();
+
+        String dtoQuery = "SELECT NEW " + ConversionDto.class.getName()
+                + "(e.code, e.stringStatus) FROM ConversionEntity e WHERE e.code = :code";
+        StepVerifier.create(jpql.createQuery(dtoQuery, ConversionDto.class)
+                        .setParameter("code", new Code("updated"))
+                        .getResultList())
+                .expectNext(new ConversionDto(new Code("updated"), Status.ACTIVE))
+                .verifyComplete();
     }
 
     @Test
@@ -382,6 +443,50 @@ class JpqlIntegrationTest {
     // ------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------
+
+    enum Status { ACTIVE, INACTIVE }
+
+    record Code(String value) { }
+
+    public record ConversionDto(Code code, Status status) { }
+
+    @Converter
+    public static class CodeConverter implements AttributeConverter<Code, String> {
+        @Override
+        public String convertToDatabaseColumn(Code value) {
+            return value == null ? null : value.value();
+        }
+
+        @Override
+        public Code convertToEntityAttribute(String value) {
+            return value == null ? null : new Code(value);
+        }
+    }
+
+    @Entity
+    @Table(name = "conversion_entity")
+    public static class ConversionEntity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        @Enumerated(EnumType.STRING)
+        @Column(name = "string_status")
+        private Status stringStatus;
+        @Enumerated(EnumType.ORDINAL)
+        @Column(name = "ordinal_status")
+        private Status ordinalStatus;
+        @Convert(converter = CodeConverter.class)
+        @Column(name = "code")
+        private Code code;
+
+        public ConversionEntity() { }
+
+        ConversionEntity(Status stringStatus, Status ordinalStatus, Code code) {
+            this.stringStatus = stringStatus;
+            this.ordinalStatus = ordinalStatus;
+            this.code = code;
+        }
+    }
 
     @Entity
     @Table(name = "jpql_department")
