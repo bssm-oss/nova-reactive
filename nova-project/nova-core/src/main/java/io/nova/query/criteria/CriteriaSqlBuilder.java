@@ -100,7 +100,8 @@ final class CriteriaSqlBuilder {
                 if (i > 0) {
                     ctx.sql.append(", ");
                 }
-                ctx.sql.append(column(orders.get(i).path())).append(orders.get(i).isAscending() ? " asc" : " desc");
+                renderOrderExpression(ctx, orders.get(i));
+                ctx.sql.append(orders.get(i).isAscending() ? " asc" : " desc");
             }
         }
 
@@ -148,7 +149,8 @@ final class CriteriaSqlBuilder {
                 ctx.sql.append(')');
             }
             case COMPARISON -> {
-                ctx.sql.append(column(predicate.path())).append(' ').append(predicate.op().symbol()).append(' ');
+                renderComparisonLeft(ctx, predicate);
+                ctx.sql.append(' ').append(predicate.op().symbol()).append(' ');
                 bindMarker(ctx, predicate.value());
             }
             case LIKE -> {
@@ -166,6 +168,22 @@ final class CriteriaSqlBuilder {
                     .append(predicate.negated() ? " is not null" : " is null");
             case EXISTS, IN_SUBQUERY, COMPARISON_SUBQUERY, COMPARISON_COLUMN -> throw new CriteriaException(
                     "Subquery/column-to-column predicates require the aliased Criteria SQL path");
+        }
+    }
+
+    private void renderComparisonLeft(Ctx ctx, CriteriaPredicate predicate) {
+        if (predicate.aggregate() != null) {
+            renderAggregate(ctx, predicate.aggregate());
+        } else {
+            ctx.sql.append(column(predicate.path()));
+        }
+    }
+
+    private void renderOrderExpression(Ctx ctx, CriteriaOrder order) {
+        if (order.getExpression() instanceof CriteriaAggregate<?> aggregate) {
+            renderAggregate(ctx, aggregate);
+        } else {
+            ctx.sql.append(column(order.path()));
         }
     }
 
@@ -312,6 +330,13 @@ final class CriteriaSqlBuilder {
         for (Selection<?> selection : query.selections()) {
             addTreatFromSelection(byKey, selection);
         }
+        for (CriteriaOrder order : query.orders()) {
+            if (order.getExpression() instanceof CriteriaAggregate<?> aggregate) {
+                addTreatFromColumn(byKey, aggregate.operand());
+            } else {
+                addTreatFromColumn(byKey, order.path());
+            }
+        }
         addTreatFromPredicate(byKey, query.restriction());
         addTreatFromPredicate(byKey, query.havingPredicate());
         return new ArrayList<>(byKey.values());
@@ -336,7 +361,9 @@ final class CriteriaSqlBuilder {
                 }
             }
             case NOT -> addTreatFromPredicate(byKey, p.inner());
-            case COMPARISON, LIKE, BETWEEN, IN, NULL -> addTreatFromColumn(byKey, p.path());
+            case COMPARISON -> addTreatFromColumn(byKey,
+                    p.aggregate() == null ? p.path() : p.aggregate().operand());
+            case LIKE, BETWEEN, IN, NULL -> addTreatFromColumn(byKey, p.path());
             default -> {
                 // 서브쿼리/컬럼 대 컬럼 술어는 이 스칼라 빌더가 처리하지 않는다.
             }

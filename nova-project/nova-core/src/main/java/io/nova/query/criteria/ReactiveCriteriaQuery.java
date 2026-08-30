@@ -91,12 +91,16 @@ public final class ReactiveCriteriaQuery<T> {
 
     private Flux<T> execute() {
         try {
+            boolean entitySelect = isEntitySelect();
+            if (entitySelect) {
+                rejectAggregateOrderingForEntitySelect();
+            }
             if (query.requiresAliasedSql()) {
                 // join/서브쿼리를 포함하면 alias 한정 SQL 경로로 실행한다. 엔티티 반환은 루트 id를
                 // 순서대로 투영한 뒤 기존 하이드레이션에 위임하는 2단계, 스칼라/집계는 native SQL이다.
-                return isEntitySelect() ? executeEntityWithJoins() : executeScalarAliased();
+                return entitySelect ? executeEntityWithJoins() : executeScalarAliased();
             }
-            if (isEntitySelect()) {
+            if (entitySelect) {
                 return executeEntity();
             }
             return executeScalar();
@@ -114,6 +118,14 @@ public final class ReactiveCriteriaQuery<T> {
             return true;
         }
         return selections.size() == 1 && selections.get(0) instanceof CriteriaRoot<?>;
+    }
+
+    private void rejectAggregateOrderingForEntitySelect() {
+        for (CriteriaOrder order : query.orders()) {
+            if (order.getExpression() instanceof CriteriaAggregate<?>) {
+                throw new CriteriaException("Aggregate ordering is not supported for entity-returning Criteria queries");
+            }
+        }
     }
 
     @SuppressWarnings("unchecked")

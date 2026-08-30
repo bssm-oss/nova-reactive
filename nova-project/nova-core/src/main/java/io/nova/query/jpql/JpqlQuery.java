@@ -74,7 +74,7 @@ public final class JpqlQuery<T> {
         return this;
     }
 
-    /** JPA {@code setFirstResult} 등가(0-기반 offset). 엔티티 반환 SELECT에서만 지원. */
+    /** JPA {@code setFirstResult} 등가(0-기반 offset). */
     public JpqlQuery<T> setFirstResult(int firstResult) {
         if (firstResult < 0) {
             throw new JpqlException("firstResult must be >= 0");
@@ -83,7 +83,7 @@ public final class JpqlQuery<T> {
         return this;
     }
 
-    /** JPA {@code setMaxResults} 등가(limit). 엔티티 반환 SELECT에서만 지원. */
+    /** JPA {@code setMaxResults} 등가(limit). */
     public JpqlQuery<T> setMaxResults(int maxResults) {
         if (maxResults < 0) {
             throw new JpqlException("maxResults must be >= 0");
@@ -143,16 +143,14 @@ public final class JpqlQuery<T> {
 
     @SuppressWarnings("unchecked")
     private Flux<T> execute(JpqlStatement.Select select) {
+        if (maxResults != null && maxResults == 0) {
+            return Flux.empty();
+        }
         if (entityPlanner.isEntitySelect(select) && !isForcedScalar()) {
             return executeEntity(select);
         }
         if (entityPlanner.isJoinedEntitySelect(select) && joinedEntityMatches(select)) {
             return executeJoinedEntity(select);
-        }
-        // 스칼라/집계/DTO 투영 경로는 페이지 창을 v1에서 지원하지 않는다.
-        if (firstResult != null || maxResults != null) {
-            return Flux.error(new JpqlException(
-                    "setFirstResult/setMaxResults is only supported for entity-returning SELECT queries in v1"));
         }
         TranslatedSql translated;
         Function<RowAccessor, T> mapper;
@@ -167,7 +165,9 @@ public final class JpqlQuery<T> {
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
-        return operations.queryNative(toNativeQuery(translated), mapper);
+        Flux<RawRow> rows = operations.queryNative(
+                toNativeQuery(translated), row -> snapshot(row, translated.slots(), translated.selectionCount()));
+        return pageResults(rows).map(mapper);
     }
 
     /** {@code SELECT NEW ...} 단일 생성자 프로젝션이면 그 {@link ConstructorCall}, 아니면 {@code null}. */
@@ -212,36 +212,26 @@ public final class JpqlQuery<T> {
                     "Entity-returning JPQL with a filtering JOIN is not supported for composite-id entity "
                             + metadata.entityType().getSimpleName()));
         }
-        if (maxResults != null && maxResults == 0) {
-            return Flux.empty();
-        }
         String idProperty = metadata.idProperty().propertyName();
 
         TranslatedSql idProjection;
         Sort sort;
-        Pageable page;
         try {
             idProjection = sqlBuilder.buildScalarSelect(rootIdProjection(select, idProperty));
             sort = entityPlanner.translateRootOrderBy(select.orderBy(), select.rootAlias(), metadata);
-            page = pageWindow();
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
 
         Class<Object> entityType = (Class<Object>) metadata.entityType();
         Function<RowAccessor, Object> idMapper = row -> row.get(JpqlQuery.columnLabel(0), Object.class);
-        return operations.queryNative(toNativeQuery(idProjection), idMapper)
-                .collectList()
-                .flatMapMany(ids -> {
-                    if (ids.isEmpty()) {
-                        return Flux.<Object>empty();
-                    }
+        int chunkSize = maxResults == null ? 256 : Math.min(maxResults, 256);
+        return pageResults(operations.queryNative(toNativeQuery(idProjection), idMapper))
+                .buffer(chunkSize)
+                .concatMap(ids -> {
                     QuerySpec spec = QuerySpec.empty().where(Criteria.in(idProperty, ids));
                     if (sort != null) {
                         spec = spec.orderBy(sort);
-                    }
-                    if (page != null) {
-                        spec = spec.page(page);
                     }
                     return operations.findAll(entityType, spec);
                 })
@@ -262,31 +252,32 @@ public final class JpqlQuery<T> {
                 filterJoins.add(join);
             }
         }
-        SelectItem idItem = SelectItem.of(
-                new Expression.Path(select.rootAlias(), List.of(idProperty)), null);
+        List<SelectItem> selections = new ArrayList<>();
+        selections.add(SelectItem.of(new Expression.Path(select.rootAlias(), List.of(idProperty)), null));
+        // PostgreSQL requires every ORDER BY expression of a DISTINCT query to be selected. The id remains c0,
+        // so hydration always maps the intended root id; extra columns exist only to make this SQL portable.
+        for (io.nova.query.jpql.ast.OrderItem order : select.orderBy()) {
+            selections.add(SelectItem.of(order.expression(), null));
+        }
         return new JpqlStatement.Select(
                 true,
-                List.of(idItem),
+                selections,
                 select.rootEntity(),
                 select.rootAlias(),
                 filterJoins,
                 select.where(),
                 List.of(),
                 null,
-                List.of());
+                select.orderBy());
     }
 
     /** {@code firstResult}/{@code maxResults}를 {@link Pageable}로. 둘 다 없으면 {@code null}. */
     private Pageable pageWindow() {
-        if (maxResults == null) {
-            if (firstResult != null) {
-                throw new JpqlException(
-                        "setFirstResult without setMaxResults is not supported; provide a page size");
-            }
+        if (maxResults == null && firstResult == null) {
             return null;
         }
         long offset = firstResult == null ? 0L : firstResult.longValue();
-        return Pageable.of(maxResults.intValue(), offset);
+        return Pageable.of(maxResults == null ? Integer.MAX_VALUE : maxResults, offset);
     }
 
     /** {@code resultType}이 엔티티 타입이 아니면(스칼라 강제) 엔티티 경로를 우회한다. */
@@ -318,15 +309,9 @@ public final class JpqlQuery<T> {
                     + " which is not assignable to requested result type " + resultType.getName()));
         }
         QuerySpec spec = plan.spec();
-        if (maxResults != null) {
-            if (maxResults == 0) {
-                return Flux.empty();
-            }
-            long offset = firstResult == null ? 0L : firstResult.longValue();
-            spec = spec.page(Pageable.of(maxResults.intValue(), offset));
-        } else if (firstResult != null) {
-            return Flux.error(new JpqlException(
-                    "setFirstResult without setMaxResults is not supported; provide a page size"));
+        Pageable page = pageWindow();
+        if (page != null) {
+            spec = spec.page(page);
         }
         Class<Object> entityType = (Class<Object>) metadata.entityType();
         return (Flux<T>) operations.findAll(entityType, spec);
@@ -478,5 +463,38 @@ public final class JpqlQuery<T> {
             values.add(parameters.resolve(binding));
         }
         return new NativeQuery(translated.sql(), values);
+    }
+
+    /** Arbitrary projection SQL has no public dialect pagination hook, so page its reactive result stream. */
+    private <R> Flux<R> pageResults(Flux<R> results) {
+        Flux<R> paged = firstResult == null ? results : results.skip(firstResult.longValue());
+        return maxResults == null ? paged : paged.take(maxResults.longValue());
+    }
+
+    /** Captures a row before reactive pagination so skipped rows never reach DTO coercion. */
+    private static RawRow snapshot(
+            RowAccessor row, List<TranslatedSql.ResultSlot> slots, int columns) {
+        Object[] values = new Object[columns];
+        for (int index = 0; index < columns; index++) {
+            Class<?> type = Object.class;
+            for (TranslatedSql.ResultSlot slot : slots) {
+                if (slot.compositeFk() != null
+                        && index >= slot.firstColumn()
+                        && index < slot.firstColumn() + slot.columnCount()) {
+                    type = slot.compositeFk().columns().get(index - slot.firstColumn()).columnType();
+                    break;
+                }
+            }
+            values[index] = row.get(columnLabel(index), type);
+        }
+        return new RawRow(values);
+    }
+
+    private record RawRow(Object[] values) implements RowAccessor {
+        @Override
+        public <R> R get(String columnName, Class<R> type) {
+            int index = Integer.parseInt(columnName.substring(1));
+            return type.cast(values[index]);
+        }
     }
 }

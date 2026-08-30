@@ -2,6 +2,8 @@ package io.nova.query.criteria;
 
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.core.ReactiveEntityOperations;
+import io.nova.query.QuerySpec;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
@@ -16,9 +18,13 @@ import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -47,6 +53,15 @@ class CriteriaSqlBuilderTest {
 
     private CriteriaSql aliased(CriteriaQuery<?> query) {
         return aliasedBuilder.buildScalar((CriteriaQueryImpl<?>) query);
+    }
+
+    private void assertAggregateEntityOrderRejected(CriteriaQuery<Employee> query) {
+        ReactiveCriteriaQuery<Employee> reactive = new ReactiveCriteriaQuery<>(
+                (CriteriaQueryImpl<Employee>) query, new RejectingOperations(), builder, aliasedBuilder);
+        StepVerifier.create(reactive.getResultList())
+                .expectErrorMatches(error -> error instanceof CriteriaException
+                        && error.getMessage().contains("Aggregate ordering"))
+                .verify();
     }
 
     @Test
@@ -84,6 +99,189 @@ class CriteriaSqlBuilderTest {
         CriteriaSql t = scalar(cq);
         assertEquals("select \"age\" as \"c0\", avg(\"salary\") as \"c1\" from \"employee\" group by \"age\"", t.sql());
         assertEquals(2, t.selectionCount());
+    }
+
+    @Test
+    void rendersAllAggregateFunctionsInHavingWithoutSelectionAliases() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Expression<Long> count = cb.count(e);
+        Expression<Long> countDistinct = cb.countDistinct(e.<Long>get("id"));
+        Expression<BigDecimal> sum = cb.sum(e.<BigDecimal>get("salary"));
+        Expression<Double> average = cb.avg(e.<BigDecimal>get("salary"));
+        Expression<BigDecimal> minimum = cb.min(e.<BigDecimal>get("salary"));
+        Expression<BigDecimal> maximum = cb.max(e.<BigDecimal>get("salary"));
+        cq.multiselect(count.alias("age"), countDistinct, sum, average, minimum, maximum)
+                .groupBy(e.<Integer>get("age"))
+                .having(cb.and(
+                        cb.gt(count, 1L),
+                        cb.ge(sum, new BigDecimal("100")),
+                        cb.lt(average, 200.0),
+                        cb.le(minimum, new BigDecimal("50")),
+                        cb.ge(maximum, new BigDecimal("150"))))
+                .orderBy(cb.desc(count));
+
+        CriteriaSql t = scalar(cq);
+        assertEquals(
+                "select count(\"id\") as \"c0\", count(distinct \"id\") as \"c1\", sum(\"salary\") as \"c2\", "
+                        + "avg(\"salary\") as \"c3\", min(\"salary\") as \"c4\", max(\"salary\") as \"c5\" "
+                        + "from \"employee\" group by \"age\" having (count(\"id\") > ? and sum(\"salary\") >= ? "
+                        + "and avg(\"salary\") < ? and min(\"salary\") <= ? and max(\"salary\") >= ?) "
+                        + "order by count(\"id\") desc",
+                t.sql());
+        assertEquals(List.of(1L, new BigDecimal("100"), 200.0, new BigDecimal("50"), new BigDecimal("150")),
+                t.bindings());
+    }
+
+    @Test
+    void combinesAggregateAndGroupingColumnHavingPredicates() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Expression<Long> count = cb.count(e);
+        cq.multiselect(e.<Integer>get("age"), count)
+                .groupBy(e.<Integer>get("age"))
+                .having(cb.and(cb.gt(count, 1L), cb.ge(e.<Integer>get("age"), 21)));
+
+        CriteriaSql t = scalar(cq);
+        assertEquals(
+                "select \"age\" as \"c0\", count(\"id\") as \"c1\" from \"employee\" group by \"age\" "
+                        + "having (count(\"id\") > ? and \"age\" >= ?)",
+                t.sql());
+        assertEquals(List.of(1L, 21), t.bindings());
+    }
+
+    @Test
+    void rendersAggregateHavingAndOrderingWithJoins() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        Expression<Long> count = cb.count(e);
+        cq.multiselect(e.<Integer>get("age"), count.alias("age"))
+                .groupBy(e.<Integer>get("age"))
+                .having(cb.gt(count, 1L))
+                .orderBy(cb.desc(count));
+
+        CriteriaSql t = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"age\" as \"c0\", count(\"t0\".\"id\") as \"c1\" from \"employee\" \"t0\" "
+                        + "inner join \"department\" \"t1\" on \"t0\".\"dept_id\" = \"t1\".\"id\" "
+                        + "group by \"t0\".\"age\" having count(\"t0\".\"id\") > ? "
+                        + "order by count(\"t0\".\"id\") desc",
+                t.sql());
+        assertEquals(List.of(1L), t.bindings());
+    }
+
+    @Test
+    void supportsPrimitiveNumericAggregateOperandsAndBoxedResults() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Expression<Integer> sum = cb.sum(e.<Integer>get("age"));
+        Expression<Double> average = cb.avg(e.<Integer>get("age"));
+        Expression<Integer> maximum = cb.max(e.<Integer>get("age"));
+        cq.multiselect(sum, average, maximum)
+                .having(cb.and(cb.gt(sum, 10), cb.lt(average, 20.0), cb.le(maximum, 30)));
+
+        CriteriaSql t = scalar(cq);
+        assertEquals(Integer.class, sum.getJavaType());
+        assertEquals(
+                "select sum(\"age\") as \"c0\", avg(\"age\") as \"c1\", max(\"age\") as \"c2\" "
+                        + "from \"employee\" having (sum(\"age\") > ? and avg(\"age\") < ? and max(\"age\") <= ?)",
+                t.sql());
+        assertEquals(List.of(10, 20.0, 30), t.bindings());
+    }
+
+    @Test
+    void rejectsAggregateComparisonsInWhereIncludingNestedAndSubqueryPredicates() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Expression<Long> count = cb.count(e);
+        assertThrows(CriteriaException.class,
+                () -> cq.where(cb.and(cb.equal(e.<String>get("name"), "x"), cb.gt(count, 1L))));
+
+        CriteriaQuery<Object> outer = cb.createQuery(Object.class);
+        Root<Employee> outerEmployee = outer.from(Employee.class);
+        jakarta.persistence.criteria.Subquery<Long> subquery = outer.subquery(Long.class);
+        Root<Employee> innerEmployee = subquery.from(Employee.class);
+        assertThrows(CriteriaException.class,
+                () -> subquery.where(cb.not(cb.gt(cb.count(innerEmployee), 1L))));
+        outer.multiselect(outerEmployee.<Long>get("id"));
+    }
+
+    @Test
+    void rejectsAggregateOrderingForEntityQueryTranslationWithoutNullPathFailure() {
+        CriteriaQuery<Employee> cq = cb.createQuery(Employee.class);
+        Root<Employee> e = cq.from(Employee.class);
+        CriteriaOrder order = (CriteriaOrder) cb.desc(cb.count(e));
+        cq.orderBy(order);
+
+        CriteriaException exception = assertThrows(CriteriaException.class,
+                () -> CriteriaEntityTranslator.toSort(List.of((CriteriaOrder) order.reverse())));
+        assertTrue(exception.getMessage().contains("Aggregate ordering"));
+    }
+
+    @Test
+    void rejectsAggregateOrderingBeforeEveryEntityExecutionRoute() {
+        CriteriaQuery<Employee> plain = cb.createQuery(Employee.class);
+        Root<Employee> plainEmployee = plain.from(Employee.class);
+        plain.orderBy(cb.desc(cb.count(plainEmployee)));
+        assertAggregateEntityOrderRejected(plain);
+
+        CriteriaQuery<Employee> joined = cb.createQuery(Employee.class);
+        Root<Employee> joinedEmployee = joined.from(Employee.class);
+        joinedEmployee.join("department");
+        joined.orderBy(cb.desc(cb.count(joinedEmployee)));
+        assertAggregateEntityOrderRejected(joined);
+
+        CriteriaQuery<Employee> subqueryQuery = cb.createQuery(Employee.class);
+        Root<Employee> employee = subqueryQuery.from(Employee.class);
+        jakarta.persistence.criteria.Subquery<Long> subquery = subqueryQuery.subquery(Long.class);
+        Root<Department> department = subquery.from(Department.class);
+        subquery.select(department.<Long>get("id"));
+        subqueryQuery.where(cb.exists(subquery));
+        subqueryQuery.orderBy(cb.desc(cb.count(employee)));
+        assertAggregateEntityOrderRejected(subqueryQuery);
+
+        CriteriaQuery<Employee> reversed = cb.createQuery(Employee.class);
+        Root<Employee> reversedEmployee = reversed.from(Employee.class);
+        reversed.orderBy(cb.desc(cb.count(reversedEmployee)).reverse());
+        assertAggregateEntityOrderRejected(reversed);
+    }
+
+    @Test
+    void collectsTreatFromAggregateOrderBeforeWhereAndHavingBindings() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Vehicle> vehicle = cq.from(Vehicle.class);
+        Root<Car> car = cb.treat(vehicle, Car.class);
+        Expression<Long> count = cb.count(vehicle);
+        cq.multiselect(count)
+                .where(cb.equal(vehicle.<String>get("name"), "coupe"))
+                .having(cb.gt(count, 1L))
+                .orderBy(cb.desc(cb.count(car.<Integer>get("doors"))));
+
+        CriteriaSql t = scalar(cq);
+        assertEquals(
+                "select count(\"id\") as \"c0\" from \"vehicle\" where \"kind\" = ? and \"name\" = ? "
+                        + "having count(\"id\") > ? order by count(\"doors\") desc",
+                t.sql());
+        assertEquals(List.of("CAR", "coupe", 1L), t.bindings());
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void rejectsInvalidAggregateOperandsAndComparisonValues() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Expression<Long> count = cb.count(e);
+
+        assertThrows(CriteriaException.class, () -> cq.having(cb.equal(count, null)));
+        assertThrows(CriteriaException.class, () -> cq.having(cb.equal(count, 1)));
+        assertThrows(CriteriaException.class, () -> cb.sum((Expression) e));
+        assertThrows(CriteriaException.class, () -> cb.count(e.get("department")));
+
+        CriteriaQuery<Object> compositeQuery = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> child =
+                compositeQuery.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        assertThrows(CriteriaException.class, () -> cb.count(child.get("parent")));
     }
 
     @Test
@@ -817,6 +1015,49 @@ class CriteriaSqlBuilderTest {
         @OneToOne(targetEntity = User.class)
         @JoinColumn(name = "user_id")
         private User user;
+    }
+
+    private static final class RejectingOperations implements ReactiveEntityOperations {
+        @Override
+        public <T> Mono<T> save(T entity) {
+            return Mono.error(new AssertionError("entity operations must not be called"));
+        }
+
+        @Override
+        public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
+            return Mono.error(new AssertionError("entity operations must not be called"));
+        }
+
+        @Override
+        public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
+            return Flux.error(new AssertionError("entity operations must not be called"));
+        }
+
+        @Override
+        public <T> Mono<Long> delete(T entity) {
+            return Mono.error(new AssertionError("entity operations must not be called"));
+        }
+
+        @Override
+        public <T, ID> Mono<Long> deleteById(Class<T> entityType, ID id) {
+            return Mono.error(new AssertionError("entity operations must not be called"));
+        }
+
+        @Override
+        public <T> Mono<Long> count(Class<T> entityType, QuerySpec querySpec) {
+            return Mono.error(new AssertionError("entity operations must not be called"));
+        }
+
+        @Override
+        public <T> Mono<Boolean> exists(Class<T> entityType, QuerySpec querySpec) {
+            return Mono.error(new AssertionError("entity operations must not be called"));
+        }
+
+        @Override
+        public <R> Mono<R> inTransaction(
+                java.util.function.Function<ReactiveEntityOperations, Mono<R>> callback) {
+            return Mono.error(new AssertionError("entity operations must not be called"));
+        }
     }
 
     private static final class TestDialect implements Dialect {

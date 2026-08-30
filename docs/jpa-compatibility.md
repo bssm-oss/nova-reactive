@@ -94,6 +94,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 |---|---|---|
 | JPQL (`ReactiveEntityManager.createQuery`) | ⟳ | Hand-written lexer/parser/AST → SQL; injection-safe |
 | JPQL `SELECT NEW` DTO, implicit joins, `LOCATE` / `CAST` / `FUNCTION` / `SIZE`, subqueries, bulk | ✅ | |
+| JPQL `setFirstResult` / `setMaxResults` | ✅ | Negative values are rejected; zero max results completes without querying. Simple entity SELECTs use the dialect renderer, including offset-only requests as `Integer.MAX_VALUE` limits. Filtering-join entity SELECTs use SQL `DISTINCT` root IDs and page them reactively before incremental bounded (256-id) hydration chunks. Scalar, aggregate, and `SELECT NEW` projections preserve their SQL bindings and apply the window with reactive `skip` / `take` before result mapping because arbitrary JPQL SQL has no public dialect pagination hook. These client-side paths may read skipped rows from the database. |
 | JPQL / Criteria `TREAT()` / `TYPE()` polymorphism | ✅ | `SINGLE_TABLE` / `JOINED` / `TABLE_PER_CLASS` (JOINED/TPC via the polymorphic derived table); discriminator-aware, shadowed-subtype-column fail-fast. Subquery positions fail-fast |
 | Criteria API (`jakarta.persistence.criteria`) | ⟳ | Joins (M2O/O2O/O2M/inverse), subqueries (`EXISTS`/`IN`/correlate) |
 | Joins over a **composite-key** to-one target | ✅ | Multi-column `ON` (`a.c1=b.c1 AND a.c2=b.c2`) |
@@ -142,9 +143,6 @@ These declare cleanly but are rejected with a message until implemented — Nova
 - Under a session, removing a child from a non-`orphanRemoval` `@OneToMany` collection when the child's
   owning `@ManyToOne` foreign key is non-nullable (`optional = false` / `@JoinColumn(nullable = false)`) —
   nulling it would violate the column constraint. Use `orphanRemoval = true` or reparent explicitly instead.
-- Under a session, `@OneToMany(mappedBy = ...)` combined with `@OrderColumn` — the session's diff-at-flush
-  collection sync does not reindex order yet. Use it outside a session (stateless save), where reindexing
-  already works.
 - Nested `@EmbeddedId` values and `@MapsId` targeting a record `@EmbeddedId` are rejected explicitly; flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported.
 - JPA 3.2 physical DDL members outside the supported `@Table`/`@Column` set (for example provider-specific schema-generation controls) remain unsupported and are rejected where Nova can detect them.
 

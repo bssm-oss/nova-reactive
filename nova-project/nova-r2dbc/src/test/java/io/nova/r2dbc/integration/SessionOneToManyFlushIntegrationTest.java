@@ -15,7 +15,6 @@ import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
 import io.nova.sql.SqlStatement;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
@@ -48,7 +47,7 @@ class SessionOneToManyFlushIntegrationTest {
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
         schema.create(Owner.class, Item.class, LooseOwner.class, LooseItem.class,
-                OrderedOwner.class, OrderedItem.class).block();
+                OrderedOwner.class, OrderedItem.class, OrderedNoCascadeOwner.class, OrderedNoCascadeItem.class).block();
     }
 
     private Owner seedOwnerWithTwoItems() {
@@ -191,7 +190,6 @@ class SessionOneToManyFlushIntegrationTest {
     }
 
     @Test
-    @Disabled("S2: @OrderColumn 재인덱싱은 이 트랙에서 다루지 않는다")
     void reorderOnlyReindexesOrderColumn() {
         OrderedOwner owner = new OrderedOwner();
         owner.add(new OrderedItem("gamma"));
@@ -245,21 +243,60 @@ class SessionOneToManyFlushIntegrationTest {
     }
 
     @Test
-    void orderedOneToManyStillFailsFastOnActualMembershipChange() {
-        // LOW-1이 게이트를 느슨하게 하되 실제 멤버십 변경(add/remove)에서는 여전히 S2 미지원으로 거부해야 한다.
+    void orderedOneToManyAddRemoveReindexesAndReloadsInListOrder() {
         OrderedOwner owner = new OrderedOwner();
-        owner.add(new OrderedItem("gamma"));
         owner.add(new OrderedItem("alpha"));
+        owner.add(new OrderedItem("beta"));
+        owner.add(new OrderedItem("gamma"));
         Long id = support.operations().save(owner).map(OrderedOwner::getId).block();
 
         StepVerifier.create(support.operations().inTransaction(ops ->
                         ops.findById(OrderedOwner.class, id)
-                                .doOnNext(loaded -> loaded.getItems().add(new OrderedItem("beta")))
+                                .doOnNext(loaded -> {
+                                    loaded.getItems().removeIf(item -> "beta".equals(item.getTitle()));
+                                    loaded.getItems().add(new OrderedItem("delta"));
+                                })
+                                .then()))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(OrderedOwner.class, id))
+                .assertNext(reloaded -> assertEquals(List.of("alpha", "gamma", "delta"), titles(reloaded)))
+                .verifyComplete();
+    }
+
+    @Test
+    void orderedOneToManyPureAddReindexesAndReloadsInListOrder() {
+        OrderedOwner owner = new OrderedOwner();
+        owner.add(new OrderedItem("alpha"));
+        owner.add(new OrderedItem("gamma"));
+        Long id = support.operations().save(owner).map(OrderedOwner::getId).block();
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(OrderedOwner.class, id)
+                                .doOnNext(loaded -> loaded.getItems().add(1, new OrderedItem("beta")))
+                                .then()))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(OrderedOwner.class, id))
+                .assertNext(reloaded -> assertEquals(List.of("alpha", "beta", "gamma"), titles(reloaded)))
+                .verifyComplete();
+    }
+
+    @Test
+    void orderedOneToManyWithoutCascadeRejectsTransientChildBeforeSql() {
+        OrderedNoCascadeOwner owner = support.operations().save(new OrderedNoCascadeOwner()).block();
+        listener.clear();
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(OrderedNoCascadeOwner.class, owner.getId())
+                                .doOnNext(loaded -> loaded.getItems().add(new OrderedNoCascadeItem("new")))
                                 .then()))
                 .expectErrorMatches(error -> error instanceof IllegalStateException
-                        && error.getMessage().contains("@OrderColumn")
-                        && error.getMessage().contains("membership"))
+                        && error.getMessage().contains("cascade=PERSIST"))
                 .verify();
+
+        assertEquals(0, listener.count("ordered_no_cascade_item", "insert"),
+                "no-cascade transient child must fail before child SQL: " + listener.statements());
     }
 
     @Test
@@ -470,6 +507,49 @@ class SessionOneToManyFlushIntegrationTest {
 
         public void add(OrderedItem item) {
             items.add(item);
+        }
+    }
+
+    @Entity
+    @Table(name = "ordered_no_cascade_owner")
+    public static class OrderedNoCascadeOwner {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @OneToMany(targetEntity = OrderedNoCascadeItem.class, mappedBy = "owner")
+        @OrderColumn(name = "items_order")
+        private List<OrderedNoCascadeItem> items = new ArrayList<>();
+
+        public OrderedNoCascadeOwner() {
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public List<OrderedNoCascadeItem> getItems() {
+            return items;
+        }
+    }
+
+    @Entity
+    @Table(name = "ordered_no_cascade_item")
+    public static class OrderedNoCascadeItem {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String title;
+
+        @ManyToOne(targetEntity = OrderedNoCascadeOwner.class)
+        @JoinColumn(name = "owner_id")
+        private OrderedNoCascadeOwner owner;
+
+        public OrderedNoCascadeItem() {
+        }
+
+        public OrderedNoCascadeItem(String title) {
+            this.title = title;
         }
     }
 

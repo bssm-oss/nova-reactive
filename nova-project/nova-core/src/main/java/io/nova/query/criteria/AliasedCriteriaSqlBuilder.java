@@ -107,7 +107,8 @@ final class AliasedCriteriaSqlBuilder {
                 if (i > 0) {
                     ctx.sql.append(", ");
                 }
-                ctx.sql.append(column(orders.get(i).path())).append(orders.get(i).isAscending() ? " asc" : " desc");
+                renderOrderExpression(ctx, orders.get(i));
+                ctx.sql.append(orders.get(i).isAscending() ? " asc" : " desc");
             }
         }
     }
@@ -174,6 +175,12 @@ final class AliasedCriteriaSqlBuilder {
                 ctx.sql.append(')');
             }
             case COMPARISON -> {
+                if (predicate.aggregate() != null) {
+                    renderAggregate(ctx, predicate.aggregate());
+                    ctx.sql.append(' ').append(predicate.op().symbol()).append(' ');
+                    bindMarker(ctx, predicate.value());
+                    break;
+                }
                 if (isCompositeToOne(predicate.path())) {
                     renderCompositeToOneComparison(ctx, predicate.path(), predicate.op(), predicate.value());
                     break;
@@ -226,6 +233,22 @@ final class AliasedCriteriaSqlBuilder {
             }
             case COMPARISON_COLUMN -> ctx.sql.append(column(predicate.path())).append(' ')
                     .append(predicate.op().symbol()).append(' ').append(column(predicate.rightPath()));
+        }
+    }
+
+    private void renderAggregate(Ctx ctx, CriteriaAggregate<?> aggregate) {
+        ctx.sql.append(aggregate.function().sqlName()).append('(');
+        if (aggregate.function().distinct()) {
+            ctx.sql.append("distinct ");
+        }
+        ctx.sql.append(column(aggregate.operand())).append(')');
+    }
+
+    private void renderOrderExpression(Ctx ctx, CriteriaOrder order) {
+        if (order.getExpression() instanceof CriteriaAggregate<?> aggregate) {
+            renderAggregate(ctx, aggregate);
+        } else {
+            ctx.sql.append(column(order.path()));
         }
     }
 

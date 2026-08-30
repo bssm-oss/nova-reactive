@@ -989,7 +989,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 재인덱싱된다. cascade 여부와 무관하게 실행되지만, child는 이미 영속(non-null id)이어야 한다(cascade=PERSIST가
      * 있으면 직전 단계가 보장하고, 없으면 사용자가 먼저 저장했어야 한다). 정렬 {@code @OneToMany}가 없으면 무비용이다.
      */
-    private <T> Mono<Void> reindexOrderedOneToManyChildren(EntityMetadata<T> metadata, T parent) {
+    private Mono<Void> reindexOrderedOneToManyChildren(EntityMetadata<?> metadata, Object parent) {
         List<PersistentProperty> ordered = metadata.oneToManyProperties().stream()
                 .filter(property -> property.oneToManyOrderColumn() != null)
                 .toList();
@@ -1001,8 +1001,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 .then();
     }
 
-    private <T> Mono<Void> reindexOneToManyProperty(
-            EntityMetadata<T> metadata, PersistentProperty property, T parent) {
+    private Mono<Void> reindexOneToManyProperty(
+            EntityMetadata<?> metadata, PersistentProperty property, Object parent) {
         if (property.oneToManyTargetType() == null) {
             return Mono.error(new IllegalStateException(
                     metadata.entityType().getName() + "." + property.propertyName()
@@ -2078,7 +2078,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * 없으면(detached parent를 세션에 직접 편입한 경우) 전체 current child를 persist하고(신규만 실제 INSERT),
      * orphanRemoval이면 정리한다 — 현행 eager cascade와 동등한 의미의 flush-safe 버전이다. 복합키 child는
      * {@link #resolveMappedByProperty}가 이미 fail-fast로 거부한다(단일 {@code @Id}만 지원). {@code @OrderColumn}이
-     * 있으면 재인덱싱을 하지 않고 fail-fast한다(S2 전까지 세션 미지원, 아래 참고). 이미 관리 중인(non-null id) child가
+     * 있으면 현재 List 순서대로 child 행의 순서 컬럼을 재인덱싱한다. 이미 관리 중인(non-null id) child가
      * baseline에 없는 상태로 나타나면(다른 parent 컬렉션에서 옮겨온 reparenting) — child의 owning {@code @ManyToOne}이
      * 갱신되지 않았으면(inverse-only 이동) 조용히 orphan 처리/무시하는 대신 fail-fast하고(gaining side, 실제
      * 지원은 후속), owning-side가 정식으로 갱신됐으면(정식 reparent) 통과시킨다. 그 정식 reparent가 안전하려면
@@ -2119,11 +2119,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
         Object baseline = entry.collectionSnapshot(property.propertyName());
         boolean haveBaseline = baseline instanceof List<?> && baseline != PersistenceSession.FORCE_FULL;
+        boolean orderChanged = property.oneToManyOrderColumn() != null
+                && (!haveBaseline || !newChildren.isEmpty() || !currentIds.equals(baseline));
         if (haveBaseline && newChildren.isEmpty()
-                && frequencies(currentIds).equals(frequencies((List<?>) baseline))) {
+                && frequencies(currentIds).equals(frequencies((List<?>) baseline))
+                && !orderChanged) {
             // Stage 1: 신규 child 없음 + id 멀티셋 불변 → 컬렉션 멤버십 SQL 없음(스칼라만 바뀐 잔존 child는 자기
-            // flushEntry가 처리) — @OrderColumn 게이트보다 먼저 평가해, 멤버십이 실제로 안 바뀐 ordered 컬렉션도
-            // 무해하게 통과시킨다(LOW-1).
+            // flushEntry가 처리) — 순서도 불변이면 @OrderColumn도 SQL을 내지 않는다.
             return Mono.empty();
         }
 
@@ -2131,28 +2133,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // 재사용). baseline이 없으면(detached) 무엇이 제거됐는지 알 수 없으므로 null로 둔다 — 아래 각 사용처가
         // haveBaseline으로 분기한다.
         List<Object> removedIds = haveBaseline ? removedKeys((List<?>) baseline, currentIds) : null;
-
-        if (property.oneToManyOrderColumn() != null) {
-            // LOW-1: Stage 1이 이미 "완전 무변경"을 걸러냈으므로, 여기 도달했다는 것은 최소한 baseline이 없거나
-            // (haveBaseline=false) 뭔가 다르다는 뜻이다. 하지만 "다르다"에는 (a) 진짜 멤버십 변경(추가/제거)과
-            // (b) 잔존 child의 스칼라 변경만 있고 멤버십은 그대로인 경우가 섞여 있다 — (b)는 세션 flush의
-            // 컬렉션 동기화(diffOneToMany)가 전혀 손댈 필요가 없는 케이스라 fail-fast 대상이 아니다. 실제로
-            // 신규 child가 있거나(newChildren) 사라진 id가 있을 때만(haveBaseline && !removedIds.isEmpty(), 또는
-            // baseline 자체가 없어 무엇이 바뀌었는지 판단 불가) S2 미지원으로 거부한다. 신규 child는
-            // persistChildInFlush로 INSERT까지 도달 가능해 order 컬럼이 조용히 NULL로 남을 수 있고, 제거도
-            // 재인덱싱 없이는 순서에 구멍이 생기므로 계속 막는다. 세션 밖 stateless 경로(reindexOrderedOneToManyChildren)는
-            // 영향 없다.
-            boolean membershipChanged = !newChildren.isEmpty() || !haveBaseline || !removedIds.isEmpty();
-            if (membershipChanged) {
-                return Mono.error(new IllegalStateException(
-                        metadata.entityType().getName() + "." + property.propertyName()
-                                + " @OneToMany with @OrderColumn is not supported under a persistence session yet"
-                                + " when its membership changes (child added/removed)"
-                                + " (order-column reindexing at flush is planned for a later track); use it without"
-                                + " an active session, or drop @OrderColumn for now. Scalar-only changes on"
-                                + " retained children are unaffected."));
-            }
-        }
 
         // D2/M2: baseline에 없다가 이번에 나타난(non-null id) child = reparenting 의심. 이 child의 own mappedBy
         // 참조(@ManyToOne 필드 — row 디코딩이 심어둔 id-only stub이거나 사용자가 명시적으로 set한 실제 참조)가
@@ -2187,6 +2167,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
         }
 
+        if (property.oneToManyOrderColumn() != null && !newChildren.isEmpty()
+                && !property.cascadePersistChildren()) {
+            return Mono.error(new IllegalStateException(
+                    metadata.entityType().getName() + "." + property.propertyName()
+                            + " @OneToMany with @OrderColumn cannot persist transient children without"
+                            + " cascade=PERSIST; save the children first"));
+        }
         Mono<Void> persistNew = Flux.fromIterable(newChildren)
                 .concatMap(child -> {
                     bindParentReference(mappedByProperty, child, owner);
@@ -2231,10 +2218,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             handleOrphans = Mono.empty();
         }
 
-        return persistNew.then(handleOrphans).then(Mono.defer(() -> {
-            List<Object> updatedIds = new ArrayList<>(currentIds);
-            for (Object child : newChildren) {
-                updatedIds.add(childMetadata.idProperty().read(child));
+        Mono<Void> reindexOrder = orderChanged
+                ? Mono.defer(() -> reindexOneToManyProperty(metadata, property, owner))
+                : Mono.empty();
+        return persistNew.then(handleOrphans).then(reindexOrder).then(Mono.defer(() -> {
+            List<Object> updatedIds = new ArrayList<>(currentChildren.size());
+            for (Object child : currentChildren) {
+                Object childId = childMetadata.idProperty().read(child);
+                if (childId != null) {
+                    updatedIds.add(childId);
+                }
             }
             entry.putCollectionSnapshot(property.propertyName(), updatedIds);
             return Mono.<Void>empty();
@@ -2432,9 +2425,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     /**
      * 세션 flush가 지연 동기화하는 컬렉션 property들 — owning {@code @ManyToMany} + {@code @ElementCollection} +
-     * cascade-persist 또는 orphanRemoval이 지정된 {@code @OneToMany}. marker-only {@code @OneToMany}(cascade도
-     * orphanRemoval도 없음)는 제외한다 — 아무 것도 전파하지 않는 관계까지 baseline을 캡처/비교하면 zero-SQL 불변식이
-     * 깨진다.
+     * cascade-persist 또는 orphanRemoval 또는 {@code @OrderColumn}이 지정된 {@code @OneToMany}. marker-only
+     * {@code @OneToMany}는 제외한다 — 순서 컬럼은 parent가 inverse side여도 child 행에 기록해야 하므로,
+     * 정렬 관계는 cascade/orphan 설정과 무관하게 flush baseline을 캡처한다.
      */
     private List<PersistentProperty> collectionSyncProperties(EntityMetadata<?> metadata) {
         List<PersistentProperty> properties = new ArrayList<>();
@@ -2445,7 +2438,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         properties.addAll(metadata.elementCollectionProperties());
         for (PersistentProperty property : metadata.oneToManyProperties()) {
-            if (property.cascadePersistChildren() || property.orphanRemoval()) {
+            if (property.cascadePersistChildren() || property.orphanRemoval()
+                    || property.oneToManyOrderColumn() != null) {
                 properties.add(property);
             }
         }
