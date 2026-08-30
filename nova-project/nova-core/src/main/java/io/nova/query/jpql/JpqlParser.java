@@ -839,12 +839,19 @@ public final class JpqlParser {
                 case "D" -> finiteDouble(value, text);
                 case "BI" -> new BigInteger(value);
                 case "BD" -> new BigDecimal(value);
-                case "" -> approximate ? finiteDouble(value, text) : Integer.valueOf(value);
+                case "" -> defaultNumericValue(value, text, approximate);
                 default -> throw new JpqlSyntaxException("Unsupported numeric literal suffix in " + text);
             };
         } catch (NumberFormatException e) {
             throw new JpqlSyntaxException("Numeric literal is out of range or malformed: " + text);
         }
+    }
+
+    private static Object defaultNumericValue(String value, String text, boolean approximate) {
+        if (approximate) {
+            return finiteDouble(value, text);
+        }
+        return Integer.valueOf(value);
     }
 
     private static Float finiteFloat(String value, String text) {
