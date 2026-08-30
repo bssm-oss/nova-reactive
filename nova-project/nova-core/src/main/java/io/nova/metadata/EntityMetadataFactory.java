@@ -1157,10 +1157,18 @@ public final class EntityMetadataFactory {
             }
         }
         List<IndexDefinition> result = new ArrayList<>(declarations.length);
+        Map<String, Integer> emittedNames = new LinkedHashMap<>();
         for (UnboundIndexDefinition definition : definitions) {
             String name = definition.name();
             if (definition.generatedName() && generatedNameCounts.get(name) > 1) {
                 name = disambiguateGeneratedIndexName(name, definition);
+            }
+            int occurrence = emittedNames.merge(name, 1, Integer::sum);
+            if (definition.generatedName() && occurrence > 1) {
+                String ordinal = "_" + occurrence;
+                int prefixLength = Math.min(name.length(), MAX_AUTO_GENERATED_NAME_LENGTH - ordinal.length());
+                name = name.substring(0, prefixLength) + ordinal;
+                emittedNames.put(name, 1);
             }
             result.add(new IndexDefinition(name, definition.columns(), definition.unique(), definition.options()));
         }

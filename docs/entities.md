@@ -36,7 +36,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; columns flatten into the host entity's table. Mutable classes and Java records are supported; records hydrate through their canonical constructor. |
 | `@Embedded`       | FIELD-level marker indicating that an entity field is an `@Embeddable` flattened into host columns. Nested ordinary record values are supported; nested `@EmbeddedId` remains fail-fast. |
 | `@MappedSuperclass` | TYPE-level marker on a non-entity base class. Its fields (e.g. an inherited id / audit columns) are mapped into every entity that extends it. |
-| `@Inheritance`    | TYPE-level marker on a hierarchy root. Only `strategy = SINGLE_TABLE` is supported (the JPA default); `JOINED` / `TABLE_PER_CLASS` are rejected fail-fast. Optional — an `@Entity` extending another `@Entity` defaults to SINGLE_TABLE. |
+| `@Inheritance`    | TYPE-level marker on a hierarchy root. `SINGLE_TABLE` (the JPA default), `JOINED`, and `TABLE_PER_CLASS` are supported for single-level hierarchies. Optional — an `@Entity` extending another `@Entity` defaults to SINGLE_TABLE. |
 | `@DiscriminatorColumn` | On the hierarchy root, names the discriminator column (default `dtype`) and its type (`STRING` default, `CHAR`, `INTEGER`). |
 | `@DiscriminatorValue`  | On each concrete subtype, the value stored in the discriminator column. For `STRING` it defaults to the entity name; `CHAR` / `INTEGER` require it explicitly. |
 | `@Transient`      | Excludes a field from mapping entirely (same effect as the Java `transient` keyword). Under effective `@Access(PROPERTY)`, a getter annotation also excludes that property; getter annotations do not affect FIELD access. |
@@ -310,11 +310,11 @@ class Person {
 
 ---
 
-## Inheritance (`SINGLE_TABLE`)
+## Inheritance
 
-Map an entity hierarchy onto one table with a discriminator column, exactly like JPA's
-`InheritanceType.SINGLE_TABLE` (the only strategy Nova supports — `JOINED` and
-`TABLE_PER_CLASS` are rejected fail-fast).
+Nova supports JPA's `SINGLE_TABLE`, `JOINED`, and `TABLE_PER_CLASS` strategies for
+single-level hierarchies. `SINGLE_TABLE` maps the hierarchy onto one table with a
+discriminator column:
 
 ```java
 @Entity
@@ -363,9 +363,13 @@ startup (regardless of `nova.ddl-auto`). In standalone use, build each subtype's
 (e.g. via `schemaInitializer.create(...)` or a `findAll`/`save` on it) before querying the
 root polymorphically.
 
-> Single-level leaves are the common case. Querying a non-leaf mid-hierarchy type restricts
-> to that type's own discriminator value (not its descendants); `JOINED`,
-> `TABLE_PER_CLASS`, and `@DiscriminatorFormula` are not supported.
+`JOINED` stores root fields in the root table and subtype fields in subtype tables linked by
+the inherited primary key; root and subtype schemas are honored independently.
+`TABLE_PER_CLASS` stores each concrete type in its own table and uses polymorphic unions for
+root reads.
+
+> Only single-level `JOINED` and `TABLE_PER_CLASS` hierarchies are supported. Querying a
+> non-leaf mid-hierarchy type is not supported, and `@DiscriminatorFormula` remains unsupported.
 
 ---
 
@@ -429,7 +433,9 @@ Declare table-level secondary indexes and unique constraints as members of `@Tab
 @Table(name = "accounts",
         indexes = {
                 @Index(columnList = "email"),                              // auto-named ix_accounts_email
-                @Index(name = "ix_active_created", columnList = "active, created_at")
+                @Index(name = "ix_active_created", columnList = "active DESC, created_at ASC"),
+                @Index(name = "ux_tenant_email", columnList = "tenant_id, email",
+                        unique = true, options = "using btree")
         },
         uniqueConstraints = @UniqueConstraint(columnNames = {"tenant_id", "email"}))  // uk_accounts_tenant_id_email
 public class Account {
@@ -454,7 +460,9 @@ public class Account {
 
 - When `name` is blank, names are generated as `ix_{table}_{col1}_{col2}_...` / `uk_{table}_{col1}_{col2}_...`.
 - If an auto-generated name exceeds the dialect's identifier-length limit, it is truncated with a short hash suffix.
-- `@Index#columnList()` is a comma-separated list (JPA style); `@UniqueConstraint#columnNames()` is a string array. Both require at least one entry and must use the actual column names (the `@Column(name)` value or the snake_case-converted name). Names that do not exist in the entity metadata are rejected fail-fast.
+- `@Index#columnList()` is a comma-separated list (JPA style) whose terms may end in `ASC` or `DESC`; `@UniqueConstraint#columnNames()` is a string array. Both require at least one entry and must use the actual column names (the `@Column(name)` value or the snake_case-converted name). Names that do not exist in the entity metadata are rejected fail-fast.
+- `unique = true` emits `CREATE UNIQUE INDEX`. JPA 3.2 `options` are appended after the column list for vendor-specific clauses.
+- Malformed directions and unsafe option fragments (control characters, unquoted statement delimiters/comments, or unbalanced quotes/parentheses) are rejected while metadata is built.
 
 Emit the DDL with `createIndexes(...)` — see [Dialects & Schema](dialects.md).
 
