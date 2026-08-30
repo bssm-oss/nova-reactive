@@ -449,14 +449,18 @@ public final class JpqlQuery<T> {
             if (slot.property() == null) {
                 return row.get(columnLabel(slot.firstColumn()), Object.class);
             }
-            Object stored = row.get(columnLabel(slot.firstColumn()), boxed(slot.property().columnType()));
+            Object raw = row.get(columnLabel(slot.firstColumn()), Object.class);
+            Object stored = coerce(
+                    raw, boxed(slot.property().columnType()), "JPQL scalar result", slot.firstColumn());
             return slot.property().toPropertyValue(stored);
         }
         List<ToOneForeignKeyColumn> fkColumns = slot.compositeFk().columns();
         List<Object> decoded = new ArrayList<>(fkColumns.size());
         for (int i = 0; i < fkColumns.size(); i++) {
             ToOneForeignKeyColumn fkColumn = fkColumns.get(i);
-            Object stored = row.get(columnLabel(slot.firstColumn() + i), boxed(fkColumn.columnType()));
+            int column = slot.firstColumn() + i;
+            Object raw = row.get(columnLabel(column), Object.class);
+            Object stored = coerce(raw, boxed(fkColumn.columnType()), "JPQL scalar result", column);
             decoded.add(fkColumn.toPropertyValue(stored));
         }
         return slot.compositeFk().assembleStub(decoded);
