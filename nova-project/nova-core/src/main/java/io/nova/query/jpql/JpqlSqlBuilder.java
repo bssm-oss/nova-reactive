@@ -410,13 +410,18 @@ public final class JpqlSqlBuilder {
         slots.add(new TranslatedSql.ResultSlot(start, fkColumns.size(), ref.property().toOneForeignKey(), null));
     }
 
-    /** Direct non-relation paths retain their mapping so scalar rows can be decoded from storage values. */
+    /** Direct paths and conversion-preserving MIN/MAX operands retain mapping for scalar result decoding. */
     private PersistentProperty mappedProjectionProperty(Ctx ctx, Expression expression) {
-        if (!(expression instanceof Expression.Path path)) {
-            return null;
+        if (expression instanceof Expression.Path path) {
+            PersistentProperty property = resolvePath(ctx, path).property();
+            return property.manyToOne() ? null : property;
         }
-        PersistentProperty property = resolvePath(ctx, path).property();
-        return property.manyToOne() ? null : property;
+        if (expression instanceof Expression.Aggregate aggregate
+                && (aggregate.op() == io.nova.query.jpql.ast.AggregateOp.MIN
+                        || aggregate.op() == io.nova.query.jpql.ast.AggregateOp.MAX)) {
+            return mappedProjectionProperty(ctx, aggregate.argument());
+        }
+        return null;
     }
 
     private void renderColumn(Ctx ctx, Expression expr, int[] columns) {
