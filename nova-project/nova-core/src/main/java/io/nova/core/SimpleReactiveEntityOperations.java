@@ -184,6 +184,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
             Optional<PersistenceSession> session = currentSession(ctx);
+            if (session.isPresent() && session.get().isRemoved(metadata, entity)) {
+                return Mono.error(new IllegalStateException("Cannot persist removed entity "
+                        + metadata.entityType().getName()
+                        + " in the same persistence session; clear the session before persisting it again"));
+            }
             // @ManyToOne/@OneToOne(cascade=PERSIST/MERGE/ALL) 참조 엔티티를 owner INSERT/UPDATE 전에 먼저
             // 저장해 generated id를 확보한다 — owner row를 쓸 때 read()가 그 참조의 @Id를 FK 컬럼으로 추출하므로,
             // 참조가 먼저 저장돼 있어야 FK가 null이 아닌 값으로 바인딩된다(@OneToMany child-after-parent와 반대 순서).
@@ -980,7 +985,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 : QuerySpec.empty().where(Criteria.and(
                         fkMatches,
                         Criteria.notIn(childMetadata.idProperty().propertyName(), retainedIds)));
-        return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec));
+        return Mono.deferContextual(ctx -> sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec))
+                .doOnNext(affected -> currentSession(ctx).ifPresent(
+                        session -> markChildrenRemoved(session, childMetadata, mappedByProperty, parentId, retainedIds))));
     }
 
     /**
@@ -2869,9 +2876,43 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
                     QuerySpec spec = QuerySpec.empty()
                             .where(Criteria.eq(mappedByProperty.propertyName(), parentId));
-                    return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec));
+                    return sqlExecutor.execute(dialect.sqlRenderer().deleteByQuery(childMetadata, spec))
+                            .doOnNext(affected -> currentSession(ctx).ifPresent(
+                                    session -> markChildrenRemoved(session, childMetadata, mappedByProperty, parentId,
+                                            List.of())));
                 })
                 .then();
+    }
+
+    private void markChildrenRemoved(
+            PersistenceSession session, EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty,
+            Object parentId, List<Object> retainedIds) {
+        for (PersistenceSession.ManagedEntry entry : session.managedEntries()) {
+            if (!childMetadata.entityType().isAssignableFrom(entry.metadata().entityType())) {
+                continue;
+            }
+            Object childId = entry.metadata().readIdValue(entry.entity());
+            if (retainedIds.stream().anyMatch(id -> sameIdentifier(childMetadata, id, childId))) {
+                continue;
+            }
+            Object parent = mappedByProperty.readReferenceInstance(entry.entity());
+            if (parent != null && sameIdentifier(
+                    metadataFactory.getEntityMetadata(parent.getClass()), parentId,
+                    metadataFactory.getEntityMetadata(parent.getClass()).readIdValue(parent))) {
+                entry.markRemoved();
+            }
+        }
+    }
+
+    private static boolean sameIdentifier(EntityMetadata<?> metadata, Object left, Object right) {
+        for (PersistentProperty property : metadata.idProperties()) {
+            if (!Objects.equals(
+                    property.toColumnValue(metadata.idColumnValue(property, left)),
+                    property.toColumnValue(metadata.idColumnValue(property, right)))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -3307,17 +3348,23 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                 .concatMap(this::delete)
                                 .reduce(0L, Long::sum);
                     }
-                    // entity 인스턴스가 있는 batch 경로에서는 @PreRemove를 SQL 발화 직전에 entity 순서대로 호출한다.
-                    for (T entity : entitiesByType.get(entry.getKey())) {
-                        listenerInvoker.invokePreRemove(entity, metadata);
-                    }
-                    if (softDelete.isPresent()) {
-                        Object deletedAt = currentTimeFor(softDelete.get());
+                    // Entity batch lifecycle callbacks are subscription-bound just like single-entity delete.
+                    Mono<Void> preRemove = Mono.fromRunnable(() -> {
                         for (T entity : entitiesByType.get(entry.getKey())) {
-                            softDelete.get().write(entity, deletedAt);
+                            listenerInvoker.invokePreRemove(entity, metadata);
                         }
-                        return sqlExecutor.execute(
-                                dialect.sqlRenderer().softDeleteByIds(metadata, entry.getValue(), deletedAt));
+                    });
+                    if (softDelete.isPresent()) {
+                        return Mono.deferContextual(ctx -> preRemove.then(Mono.defer(() -> {
+                            Object deletedAt = currentTimeFor(softDelete.get());
+                            for (T entity : entitiesByType.get(entry.getKey())) {
+                                softDelete.get().write(entity, deletedAt);
+                            }
+                            return sqlExecutor.execute(
+                                            dialect.sqlRenderer().softDeleteByIds(metadata, entry.getValue(), deletedAt))
+                                    .doOnNext(affected -> completeBatchDelete(ctx, metadata, entry.getValue(),
+                                            entitiesByType.get(entry.getKey())));
+                        })));
                     }
                     // hard batch delete: 소유 컬렉션이 있으면 각 owner의 collection/link 행을 batch delete 앞에서 정리한다.
                     Mono<Void> ownedCleanup = hasOwnedCollectionTables(metadata)
@@ -3325,10 +3372,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                     .concatMap(ownerId -> removeOwnedCollectionRows(metadata, ownerId))
                                     .then()
                             : Mono.empty();
-                    return ownedCleanup.then(
-                            sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, entry.getValue())));
+                    return Mono.deferContextual(ctx -> preRemove.then(ownedCleanup).then(
+                                    sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, entry.getValue())))
+                            .doOnNext(affected -> completeBatchDelete(ctx, metadata, entry.getValue(),
+                                    entitiesByType.get(entry.getKey()))));
                 })
                 .reduce(0L, Long::sum);
+    }
+
+    private void completeBatchDelete(
+            reactor.util.context.ContextView ctx, EntityMetadata<?> metadata, List<Object> ids, List<?> entities) {
+        currentSession(ctx).ifPresent(session -> ids.forEach(id -> session.markRemovedById(metadata, id)));
+        for (Object entity : entities) {
+            listenerInvoker.invokePostRemove(entity, metadata);
+        }
     }
 
     @Override
@@ -4471,7 +4528,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
         if (softDelete.isPresent()) {
             Object deletedAt = currentTimeFor(softDelete.get());
-            return sqlExecutor.execute(dialect.sqlRenderer().softDeleteByIds(metadata, idValues, deletedAt));
+            return Mono.deferContextual(ctx -> sqlExecutor.execute(
+                            dialect.sqlRenderer().softDeleteByIds(metadata, idValues, deletedAt))
+                    .doOnNext(affected -> completeBatchDelete(ctx, metadata, idValues, List.of())));
         }
         // hard batch delete: 소유 컬렉션이 있으면 각 owner의 collection/link 행을 batch delete 앞에서 정리한다.
         Mono<Void> ownedCleanup = hasOwnedCollectionTables(metadata)
@@ -4479,7 +4538,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         .concatMap(ownerId -> removeOwnedCollectionRows(metadata, ownerId))
                         .then()
                 : Mono.empty();
-        return ownedCleanup.then(sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, idValues)));
+        return Mono.deferContextual(ctx -> ownedCleanup.then(
+                        sqlExecutor.execute(dialect.sqlRenderer().deleteByIds(metadata, idValues)))
+                .doOnNext(affected -> completeBatchDelete(ctx, metadata, idValues, List.of())));
     }
 
     /**

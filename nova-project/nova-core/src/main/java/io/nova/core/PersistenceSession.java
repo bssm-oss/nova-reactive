@@ -204,6 +204,11 @@ final class PersistenceSession {
         return key == null ? null : identityMap.get(key);
     }
 
+    boolean isRemoved(EntityMetadata<?> metadata, Object entity) {
+        ManagedEntry entry = managedEntry(metadata, entity);
+        return entry != null && entry.isRemoved();
+    }
+
     /**
      * 성공한 DELETE/soft-delete DML 뒤에 엔티티를 tombstone으로 전환한다. 엔트리는 identity map에 남아
      * 같은 세션 안에서의 재-persist를 명확히 거부하지만, flush/contains/lock에서는 미관리로 취급된다.
