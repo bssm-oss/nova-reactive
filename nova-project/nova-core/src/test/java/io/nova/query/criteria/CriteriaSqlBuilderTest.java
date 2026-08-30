@@ -3,6 +3,8 @@ package io.nova.query.criteria;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.core.RowAccessor;
+import io.nova.query.NativeQuery;
 import io.nova.query.QuerySpec;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
@@ -19,6 +21,7 @@ import jakarta.persistence.Table;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Expression;
+import jakarta.persistence.criteria.ParameterExpression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import org.junit.jupiter.api.Test;
@@ -27,7 +30,10 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -48,11 +54,33 @@ class CriteriaSqlBuilderTest {
     private final CriteriaBuilder cb = new SimpleCriteriaBuilder(metamodel);
 
     private CriteriaSql scalar(CriteriaQuery<?> query) {
-        return builder.build((CriteriaQueryImpl<?>) query);
+        return builder.build((CriteriaQueryImpl<?>) query, bindings(query, Map.of(), Map.of()));
     }
 
     private CriteriaSql aliased(CriteriaQuery<?> query) {
-        return aliasedBuilder.buildScalar((CriteriaQueryImpl<?>) query);
+        return aliased(query, Map.of(), Map.of());
+    }
+
+    private CriteriaSql aliased(
+            CriteriaQuery<?> query,
+            Map<? extends ParameterExpression<?>, ?> identityValues,
+            Map<String, ?> namedValues) {
+        CriteriaQueryImpl<?> impl = (CriteriaQueryImpl<?>) query;
+        return aliasedBuilder.buildScalar(impl, bindings(impl, identityValues, namedValues));
+    }
+
+    private CriteriaParameterBindings bindings(
+            CriteriaQuery<?> query,
+            Map<? extends ParameterExpression<?>, ?> identityValues,
+            Map<String, ?> namedValues) {
+        return bindings((CriteriaQueryImpl<?>) query, identityValues, namedValues);
+    }
+
+    private CriteriaParameterBindings bindings(
+            CriteriaQueryImpl<?> query,
+            Map<? extends ParameterExpression<?>, ?> identityValues,
+            Map<String, ?> namedValues) {
+        return CriteriaParameterBindings.resolve(query.getParameters(), identityValues, namedValues);
     }
 
     private void assertAggregateEntityOrderRejected(CriteriaQuery<Employee> query) {
@@ -639,6 +667,76 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void resolvesAliasedParametersInWhereSubqueryAndHavingTraversalOrder() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<BigDecimal> minimumSalary = cb.parameter(BigDecimal.class);
+        ParameterExpression<String> departmentName = cb.parameter(String.class, "department");
+        ParameterExpression<Long> minimumCount = cb.parameter(Long.class);
+        jakarta.persistence.criteria.Subquery<Long> sub = cq.subquery(Long.class);
+        Root<Department> d = sub.from(Department.class);
+        sub.select(d.<Long>get("id")).where(cb.equal(d.<String>get("name"), departmentName));
+        Expression<Long> count = cb.count(e);
+        cq.multiselect(e.<Integer>get("age"), count)
+                .where(cb.and(cb.gt(e.<BigDecimal>get("salary"), minimumSalary), cb.exists(sub)))
+                .groupBy(e.<Integer>get("age"))
+                .having(cb.gt(count, minimumCount));
+
+        CriteriaSql translated = aliased(cq, Map.of(minimumSalary, new BigDecimal("100"),
+                minimumCount, 2L), Map.of("department", "Sales"));
+
+        assertEquals(
+                "select \"t0\".\"age\" as \"c0\", count(\"t0\".\"id\") as \"c1\" from \"employee\" \"t0\" "
+                        + "inner join \"department\" \"t1\" on \"t0\".\"dept_id\" = \"t1\".\"id\" "
+                        + "where (\"t0\".\"salary\" > ? and exists (select 1 from \"department\" \"t2\" "
+                        + "where \"t2\".\"name\" = ?)) group by \"t0\".\"age\" having count(\"t0\".\"id\") > ?",
+                translated.sql());
+        assertEquals(List.of(new BigDecimal("100"), "Sales", 2L), translated.bindings());
+    }
+
+    @Test
+    void resolvesRepeatedAliasedParameterAsRepeatedBindMarkersWithoutInterpolation() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<String> name = cb.parameter(String.class, "name");
+        cq.multiselect(e.<Long>get("id"))
+                .where(cb.or(cb.equal(e.<String>get("name"), name), cb.equal(e.<String>get("name"), name)));
+
+        CriteriaSql translated = aliased(cq, Map.of(), Map.of("name", "x' or 1 = 1 --"));
+
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"employee\" \"t0\" "
+                        + "inner join \"department\" \"t1\" on \"t0\".\"dept_id\" = \"t1\".\"id\" "
+                        + "where (\"t0\".\"name\" = ? or \"t0\".\"name\" = ?)",
+                translated.sql());
+        assertEquals(List.of("x' or 1 = 1 --", "x' or 1 = 1 --"), translated.bindings());
+        assertTrue(!translated.sql().contains("x' or 1 = 1 --"));
+    }
+
+    @Test
+    void rebindsAliasedScalarParametersForEachSubscription() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<String> name = cb.parameter(String.class, "name");
+        cq.multiselect(e.<String>get("name")).where(cb.equal(e.<String>get("name"), name));
+        CapturingOperations operations = new CapturingOperations();
+        ReactiveCriteriaQuery<Object> reactive = new ReactiveCriteriaQuery<>(
+                (CriteriaQueryImpl<Object>) cq, operations, builder, aliasedBuilder);
+
+        reactive.setParameter("name", "first");
+        StepVerifier.create(reactive.getResultList()).verifyComplete();
+        reactive.setParameter("name", "second");
+        StepVerifier.create(reactive.getResultList()).verifyComplete();
+
+        assertEquals(2, operations.nativeQueries.size());
+        assertEquals(List.of("first"), operations.nativeQueries.get(0).bindings());
+        assertEquals(List.of("second"), operations.nativeQueries.get(1).bindings());
+    }
+
+    @Test
     void failsFastOnManyToManyJoin() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);
@@ -1017,7 +1115,7 @@ class CriteriaSqlBuilderTest {
         private User user;
     }
 
-    private static final class RejectingOperations implements ReactiveEntityOperations {
+    private static class RejectingOperations implements ReactiveEntityOperations {
         @Override
         public <T> Mono<T> save(T entity) {
             return Mono.error(new AssertionError("entity operations must not be called"));
@@ -1057,6 +1155,16 @@ class CriteriaSqlBuilderTest {
         public <R> Mono<R> inTransaction(
                 java.util.function.Function<ReactiveEntityOperations, Mono<R>> callback) {
             return Mono.error(new AssertionError("entity operations must not be called"));
+        }
+    }
+
+    private static final class CapturingOperations extends RejectingOperations {
+        private final List<NativeQuery> nativeQueries = new ArrayList<>();
+
+        @Override
+        public <T> Flux<T> queryNative(NativeQuery query, Function<RowAccessor, T> mapper) {
+            nativeQueries.add(query);
+            return Flux.empty();
         }
     }
 

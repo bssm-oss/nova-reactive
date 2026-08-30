@@ -126,12 +126,9 @@ public final class ReactiveCriteriaQuery<T> {
                 rejectAggregateOrderingForEntitySelect();
             }
             if (query.requiresAliasedSql()) {
-                if (!query.getParameters().isEmpty()) {
-                    throw new CriteriaException("Criteria parameters are not supported for aliased Criteria SQL queries yet");
-                }
                 // join/서브쿼리를 포함하면 alias 한정 SQL 경로로 실행한다. 엔티티 반환은 루트 id를
                 // 순서대로 투영한 뒤 기존 하이드레이션에 위임하는 2단계, 스칼라/집계는 native SQL이다.
-                return entitySelect ? executeEntityWithJoins() : executeScalarAliased();
+                return entitySelect ? executeEntityWithJoins(bindings) : executeScalarAliased(bindings);
             }
             if (entitySelect) {
                 return executeEntity(bindings);
@@ -282,12 +279,12 @@ public final class ReactiveCriteriaQuery<T> {
     }
 
     /** join/서브쿼리를 포함한 스칼라/집계 SELECT: alias 한정 SQL을 native로 실행한다. */
-    private Flux<T> executeScalarAliased() {
+    private Flux<T> executeScalarAliased(CriteriaParameterBindings bindings) {
         if (firstResult != null || maxResults != null) {
             return Flux.error(new CriteriaException(
                     "setFirstResult/setMaxResults is only supported for entity-returning Criteria queries in v1"));
         }
-        CriteriaSql translated = aliasedSqlBuilder.buildScalar(query);
+        CriteriaSql translated = aliasedSqlBuilder.buildScalar(query, bindings);
         int columns = translated.selectionCount();
         Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
         return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);
@@ -306,7 +303,7 @@ public final class ReactiveCriteriaQuery<T> {
      * 것을 권장한다(청크 분할은 v1 범위 밖).
      */
     @SuppressWarnings("unchecked")
-    private Flux<T> executeEntityWithJoins() {
+    private Flux<T> executeEntityWithJoins(CriteriaParameterBindings bindings) {
         CriteriaRoot<?> root = query.root();
         EntityMetadata<?> metadata = root.ownerMetadata();
         if (query.isDistinct()) {
@@ -328,7 +325,7 @@ public final class ReactiveCriteriaQuery<T> {
                     "setFirstResult without setMaxResults is not supported; provide a page size"));
         }
 
-        CriteriaSql idSql = aliasedSqlBuilder.buildRootIdProjection(query);
+        CriteriaSql idSql = aliasedSqlBuilder.buildRootIdProjection(query, bindings);
         String idColumn = CriteriaSqlBuilder.columnLabel(0);
         Class<Object> entityType = (Class<Object>) metadata.entityType();
         String idPropertyName = metadata.idProperty().propertyName();
