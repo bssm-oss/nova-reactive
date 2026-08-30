@@ -111,13 +111,13 @@ subprojects {
                 // Sonatype Central Portal. The legacy OSSRH host (s01.oss.sonatype.org)
                 // reached end of life on 2025-06-30, so publishing now targets the
                 // Central Portal OSSRH Staging API for releases and the Central
-                // snapshots repository for SNAPSHOT versions.
+                // snapshots repository only for the exact Maven -SNAPSHOT suffix.
                 name = "central"
                 val centralReleasesUrl =
                     uri("https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/")
                 val centralSnapshotsUrl =
                     uri("https://central.sonatype.com/repository/maven-snapshots/")
-                url = if (version.toString().endsWith("SNAPSHOT")) centralSnapshotsUrl else centralReleasesUrl
+                url = if (version.toString().endsWith("-SNAPSHOT")) centralSnapshotsUrl else centralReleasesUrl
                 credentials {
                     // Treat blank values as absent so an exported-but-empty env var
                     // (e.g. `export CENTRAL_USERNAME=`) does not authenticate with "".
