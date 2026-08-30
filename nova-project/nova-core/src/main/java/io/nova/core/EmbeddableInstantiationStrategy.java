@@ -5,7 +5,6 @@ import io.nova.metadata.PersistentProperty;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -28,7 +27,7 @@ final class EmbeddableInstantiationStrategy {
         }
         for (Map.Entry<Field, List<DecodedLeaf>> entry : byRoot.entrySet()) {
             Object value = constructHost(entry.getKey(), 0, entry.getValue(), true);
-            setField(entity, entry.getKey(), value, "embedded host");
+            entry.getValue().get(0).property().writeEmbeddedHost(entity, 0, value);
         }
     }
 
@@ -39,30 +38,13 @@ final class EmbeddableInstantiationStrategy {
         }
         Map<String, Object> valuesByName = new LinkedHashMap<>();
         for (int i = 0; i < columns.size(); i++) {
-            valuesByName.put(columns.get(i).field().getName(), values.get(i));
+            valuesByName.put(columns.get(i).propertyName(), values.get(i));
         }
         return instantiateRecord(type, valuesByName, "@ElementCollection record " + type.getName());
     }
 
     static Object readCollectionValue(Object value, ElementCollectionInfo.EmbeddableColumn column) {
-        Field field = column.field();
-        if (value.getClass().isRecord()) {
-            try {
-                Method accessor = value.getClass().getDeclaredMethod(field.getName());
-                accessor.setAccessible(true);
-                return accessor.invoke(value);
-            } catch (ReflectiveOperationException exception) {
-                throw new IllegalStateException("Cannot read record embeddable component "
-                        + value.getClass().getName() + "." + field.getName(), exception);
-            }
-        }
-        try {
-            field.setAccessible(true);
-            return field.get(value);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read @Embeddable @ElementCollection field "
-                    + field.getName(), exception);
-        }
+        return column.read(value);
     }
 
     private static Object constructHost(Field hostField, int depth, List<DecodedLeaf> leaves, boolean nullableHost) {
@@ -83,7 +65,7 @@ final class EmbeddableInstantiationStrategy {
         }
         Map<String, Object> values = new LinkedHashMap<>();
         for (DecodedLeaf leaf : direct) {
-            values.put(leaf.property().field().getName(), leaf.value());
+            values.put(leaf.property().leafName(), leaf.value());
         }
         for (Map.Entry<Field, List<DecodedLeaf>> entry : nested.entrySet()) {
             values.put(entry.getKey().getName(), constructHost(entry.getKey(), depth + 1, entry.getValue(), true));
@@ -96,7 +78,8 @@ final class EmbeddableInstantiationStrategy {
             writeMutableLeaf(instance, leaf.property(), leaf.value());
         }
         for (Map.Entry<Field, List<DecodedLeaf>> entry : nested.entrySet()) {
-            setField(instance, entry.getKey(), values.get(entry.getKey().getName()), "nested embedded host");
+            entry.getValue().get(0).property().writeEmbeddedHost(
+                    instance, depth + 1, values.get(entry.getKey().getName()));
         }
         return instance;
     }
@@ -153,31 +136,7 @@ final class EmbeddableInstantiationStrategy {
     }
 
     private static void writeMutableLeaf(Object holder, PersistentProperty property, Object value) {
-        if (property.propertyAccess()) {
-            Method setter = property.propertyAccessSetter();
-            if (setter == null) {
-                throw new IllegalStateException("Cannot write immutable PROPERTY-access component "
-                        + property.propertyName() + " outside canonical record construction");
-            }
-            try {
-                setter.invoke(holder, value);
-                return;
-            } catch (ReflectiveOperationException exception) {
-                throw new IllegalStateException("Cannot write PROPERTY-access embedded component "
-                        + property.propertyName(), exception);
-            }
-        }
-        setField(holder, property.field(), value, "embedded component");
-    }
-
-    private static void setField(Object target, Field field, Object value, String label) {
-        try {
-            field.setAccessible(true);
-            field.set(target, value);
-        } catch (IllegalAccessException | IllegalArgumentException exception) {
-            throw new IllegalStateException("Cannot write " + label + " "
-                    + field.getDeclaringClass().getName() + "." + field.getName(), exception);
-        }
+        property.writeReference(holder, value);
     }
 
     record DecodedLeaf(PersistentProperty property, Object value) {

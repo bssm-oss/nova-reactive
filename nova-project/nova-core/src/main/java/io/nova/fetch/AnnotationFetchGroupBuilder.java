@@ -6,8 +6,8 @@ import io.nova.metadata.PersistentProperty;
 import io.nova.query.Sort;
 import jakarta.persistence.OrderBy;
 
-import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.BiConsumer;
@@ -18,11 +18,8 @@ import java.util.function.Function;
  * {@link FetchGroup}을 자동으로 만들어낸다. 결과 FetchGroup은 사용자가 명시한 group과 그대로 merge
  * 가능한 형태이므로 hydration 진입점에서 dedupe만 처리하면 된다.
  *
- * <p>core production code 의존성을 늘리지 않기 위해 reflection 직접 read/write로만 setter를 합성한다 —
- * setter method 이름을 추론하거나 별도 SPI를 끌어들이지 않는다.
- *
- * <p>parent property를 setter로 주입할 때 entity 인스턴스에 해당 필드가 없으면(예: relation 필드가 final이거나
- * static, transient는 metadata 단계에서 이미 제외됨) {@link IllegalStateException}이 hydration 시점에 발화된다.
+ * <p>관계 상태 접근은 metadata가 미리 해석해 둔 {@link PersistentProperty}에만 위임한다. 따라서 PROPERTY
+ * access mapping도 hydration과 일반 row mapping에서 같은 getter/setter를 사용한다.
  *
  * <p>builder는 stateless하므로 {@link EntityMetadataFactory} 한 개만 받아 모든 entity 타입에 재사용한다.
  */
@@ -118,8 +115,9 @@ public final class AnnotationFetchGroupBuilder {
         }
         String fkColumn = resolveOneToManyForeignKeyColumn(parentType, oneToMany, childType);
         Function<P, Object> parentIdExtractor = parent -> idProperty.read(parent);
+        boolean usesSet = java.util.Set.class.isAssignableFrom(oneToMany.javaType());
         BiConsumer<P, java.util.List<Object>> setter = (parent, children) ->
-                writeField(parent, oneToMany.field(), children);
+                oneToMany.writeReference(parent, usesSet ? new LinkedHashSet<>(children) : new ArrayList<>(children));
         // @OrderColumn(child 테이블의 물리 순서 컬럼)과 @OrderBy(child property 정렬)는 상호 배타(factory에서 거부)다.
         String orderColumn = oneToMany.oneToManyOrderColumn() != null
                 ? oneToMany.oneToManyOrderColumn().columnName()
@@ -129,7 +127,7 @@ public final class AnnotationFetchGroupBuilder {
                 fkColumn,
                 parentIdExtractor,
                 setter,
-                resolveOrderBy(oneToMany.field(), childType),
+                resolveOrderBy(oneToMany, childType),
                 orderColumn
         );
     }
@@ -206,8 +204,8 @@ public final class AnnotationFetchGroupBuilder {
      * {@code null}(정렬 없음). 값이 비어 있으면 JPA 규약대로 child PK 오름차순. 그 외에는 {@code "prop ASC,
      * prop2 DESC"} 형식을 파싱한다 — 프로퍼티 이름은 child 엔티티 기준이며 SQL 렌더링 단계에서 컬럼으로 매핑된다.
      */
-    private Sort resolveOrderBy(Field oneToManyField, Class<?> childType) {
-        OrderBy orderBy = oneToManyField.getAnnotation(OrderBy.class);
+    private Sort resolveOrderBy(PersistentProperty oneToMany, Class<?> childType) {
+        OrderBy orderBy = oneToMany.annotation(OrderBy.class);
         if (orderBy == null) {
             return null;
         }
@@ -248,14 +246,4 @@ public final class AnnotationFetchGroupBuilder {
         return owning.columnName();
     }
 
-    private static void writeField(Object instance, Field field, Object value) {
-        field.setAccessible(true);
-        try {
-            field.set(instance, value);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write relation field " + field.getDeclaringClass().getName() + "." + field.getName(),
-                    exception);
-        }
-    }
 }

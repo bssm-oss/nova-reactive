@@ -522,6 +522,16 @@ public final class PersistentProperty {
         return propertyName;
     }
 
+    /** Java member name used for metadata-only record component matching. */
+    public String leafName() {
+        return field.getName();
+    }
+
+    /** Returns a mapping annotation from the resolved persistent member. */
+    public <A extends java.lang.annotation.Annotation> A annotation(Class<A> annotationType) {
+        return field.getAnnotation(annotationType);
+    }
+
     public String columnName() {
         return columnName;
     }
@@ -617,6 +627,23 @@ public final class PersistentProperty {
      */
     public List<Field> embeddedHostPath() {
         return embeddedHostPath;
+    }
+
+    /**
+     * Hydration helper for a materialized embedded host. Runtime mappers keep host-field access inside the cached
+     * descriptor instead of rediscovering a field from the entity type.
+     */
+    public void writeEmbeddedHost(Object instance, int pathIndex, Object value) {
+        if (pathIndex < 0 || pathIndex >= embeddedHostPath.size()) {
+            throw new IllegalArgumentException("Invalid embedded host path index " + pathIndex
+                    + " for " + propertyName);
+        }
+        Field hostField = embeddedHostPath.get(pathIndex);
+        try {
+            hostField.set(instance, value);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException("Cannot write embedded host " + hostField.getName(), exception);
+        }
     }
 
     /**

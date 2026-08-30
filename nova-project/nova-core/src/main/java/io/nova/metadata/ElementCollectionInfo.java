@@ -221,6 +221,10 @@ public record ElementCollectionInfo(
             AttributeConverter<Object, Object> converter,
             boolean json) {
 
+        public EmbeddableColumn {
+            field.setAccessible(true);
+        }
+
         public EmbeddableColumn(Field field, String columnName, Class<?> columnType) {
             this(field, columnName, columnType, null, false);
         }
@@ -231,6 +235,26 @@ public record ElementCollectionInfo(
 
         public Object decode(Object value) {
             return value == null || converter == null ? value : converter.read(value);
+        }
+
+        public String propertyName() {
+            return field.getName();
+        }
+
+        public Object read(Object instance) {
+            try {
+                return field.get(instance);
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException("Cannot read @ElementCollection component " + field.getName(), exception);
+            }
+        }
+
+        public void write(Object instance, Object value) {
+            try {
+                field.set(instance, value);
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException("Cannot write @ElementCollection component " + field.getName(), exception);
+            }
         }
 
         @Override
