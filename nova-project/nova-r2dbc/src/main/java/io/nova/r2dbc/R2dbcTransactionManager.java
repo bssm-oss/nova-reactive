@@ -123,7 +123,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         return Mono.usingWhen(
                 begin(definition),
                 ctx -> Mono.defer(() -> callback.apply(ctx))
-                        .contextWrite(Context.of(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection()),
+                        .contextWrite(Context.of(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())),
                 ctx -> commit(ctx).onErrorMap(CleanupFailure::new),
                 this::rollbackAfterError,
                 this::rollback)
