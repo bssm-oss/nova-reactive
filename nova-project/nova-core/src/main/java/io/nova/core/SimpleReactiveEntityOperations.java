@@ -2221,13 +2221,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
         Mono<Void> handleOrphans;
         if (property.orphanRemoval()) {
-            handleOrphans = (haveBaseline && trueOrphanIds.isEmpty())
-                    ? Mono.empty()
-                    : haveBaseline
-                    ? deleteChildrenByIds(session, childMetadata, trueOrphanIds)
-                    : Mono.defer(() -> removeOrphans(
-                            childMetadata, mappedByProperty, ownerId, currentChildren, movedElsewhere)
-                            .then());
+            // A session entry without a collection baseline has no proven orphan identities. Do not
+            // query/delete arbitrary rows (and fire callbacks) merely to discover them; this flush can only
+            // delete identities explicitly removed from a captured baseline.
+            List<Object> orphanIds = haveBaseline ? trueOrphanIds : List.of();
+            handleOrphans = deleteChildrenByIds(session, childMetadata, orphanIds);
         } else if (haveBaseline) {
             handleOrphans = trueOrphanIds.isEmpty()
                     ? Mono.empty()
