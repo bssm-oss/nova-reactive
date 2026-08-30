@@ -5,6 +5,7 @@ import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Order;
+import jakarta.persistence.criteria.ParameterExpression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Subquery;
@@ -48,6 +49,16 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     @Override
     public <T> CriteriaQuery<T> createQuery(Class<T> resultClass) {
         return new CriteriaQueryImpl<>(resultClass, metamodel);
+    }
+
+    @Override
+    public <T> ParameterExpression<T> parameter(Class<T> paramClass) {
+        return CriteriaParameter.unnamed(paramClass);
+    }
+
+    @Override
+    public <T> ParameterExpression<T> parameter(Class<T> paramClass, String name) {
+        return CriteriaParameter.named(paramClass, name);
     }
 
     // --- ordering -------------------------------------------------------------------------------
@@ -219,6 +230,18 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         return CriteriaPredicate.between(path(expression, "between"), low, high);
     }
 
+    @Override
+    public <Y extends Comparable<? super Y>> Predicate between(
+            Expression<? extends Y> expression, Expression<? extends Y> low, Expression<? extends Y> high) {
+        if (!(low instanceof CriteriaParameter<?> lowParameter) || !(high instanceof CriteriaParameter<?> highParameter)) {
+            throw new CriteriaException("CriteriaBuilder.between expression bounds must be Criteria parameters");
+        }
+        CriteriaColumnPath path = path(expression, "between");
+        validateParameterType(path.getJavaType(), lowParameter, "between");
+        validateParameterType(path.getJavaType(), highParameter, "between");
+        return CriteriaPredicate.between(path, lowParameter, highParameter);
+    }
+
     // --- numeric ordering -----------------------------------------------------------------------
 
     @Override
@@ -318,6 +341,15 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     }
 
     private static Predicate subqueryCompare(Expression<?> left, Expression<?> right, CompareOp op, String name) {
+        if (right instanceof CriteriaParameter<?> parameter) {
+            if (left instanceof CriteriaAggregate<?> aggregate) {
+                validateParameterType(aggregate.getJavaType(), parameter, name);
+                return CriteriaPredicate.comparison(aggregate, op, parameter);
+            }
+            CriteriaColumnPath leftPath = path(left, name);
+            validateParameterType(leftPath.getJavaType(), parameter, name);
+            return CriteriaPredicate.comparison(leftPath, op, parameter);
+        }
         CriteriaColumnPath leftPath = path(left, name);
         if (right instanceof CriteriaSubquery<?> subquery) {
             return CriteriaPredicate.comparisonSubquery(leftPath, op, subquery);
@@ -379,6 +411,13 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     // --- helpers --------------------------------------------------------------------------------
 
     private Predicate compare(Expression<?> expression, CompareOp op, Object value, String op2) {
+        if (value instanceof CriteriaParameter<?> parameter) {
+            validateParameterType(expression.getJavaType(), parameter, op2);
+            if (expression instanceof CriteriaAggregate<?> aggregate) {
+                return CriteriaPredicate.comparison(aggregate, op, parameter);
+            }
+            return CriteriaPredicate.comparison(path(expression, op2), op, parameter);
+        }
         if (expression instanceof CriteriaAggregate<?> aggregate) {
             CriteriaAggregate.validateComparison(aggregate, value, "CriteriaBuilder." + op2);
             return CriteriaPredicate.comparison(aggregate, op, value);
@@ -386,6 +425,15 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         Objects.requireNonNull(value, op2 + " value must not be null");
         CriteriaGuards.rejectExpressionValue(value, "CriteriaBuilder." + op2);
         return CriteriaPredicate.comparison(path(expression, op2), op, value);
+    }
+
+    private static void validateParameterType(Class<?> expressionType, CriteriaParameter<?> parameter, String operation) {
+        if (!expressionType.isAssignableFrom(parameter.getJavaType())
+                && !parameter.getJavaType().isAssignableFrom(expressionType)) {
+            throw new CriteriaException("CriteriaBuilder." + operation + " parameter type "
+                    + parameter.getJavaType().getSimpleName() + " is incompatible with expression type "
+                    + expressionType.getSimpleName());
+        }
     }
 
     private CriteriaPredicate junction(CriteriaPredicate.Kind kind, List<Predicate> parts, String op) {
