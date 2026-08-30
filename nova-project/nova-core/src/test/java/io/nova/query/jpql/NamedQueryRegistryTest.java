@@ -13,6 +13,7 @@ import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.NamedNativeQuery;
 import jakarta.persistence.NamedQuery;
 import org.junit.jupiter.api.Test;
@@ -73,6 +74,45 @@ class NamedQueryRegistryTest {
         NamedQueryException ex =
                 assertThrows(NamedQueryException.class, () -> registry(Person.class, Clash.class));
         assertTrue(ex.getMessage().contains("Duplicate named query"));
+    }
+
+    @Test
+    void rediscoveringSiblingMappedSuperclassDeclarationsDeduplicatesJpqlAndNativeQueries() {
+        NamedQueryRegistry registry = registry(SharedQueryFirst.class, SharedQuerySecond.class);
+
+        assertTrue(registry.contains("Shared.jpql"));
+        assertTrue(registry.contains("Shared.native"));
+    }
+
+    @Test
+    void identicalQueryDefinitionsFromDistinctOriginsAreRejectedWithBothClassesAndKinds() {
+        NamedQueryException ex = assertThrows(NamedQueryException.class,
+                () -> registry(IdenticalQueryFirst.class, IdenticalQuerySecond.class));
+
+        assertTrue(ex.getMessage().contains(IdenticalQueryFirst.class.getName()));
+        assertTrue(ex.getMessage().contains(IdenticalQuerySecond.class.getName()));
+        assertTrue(ex.getMessage().contains("@NamedQuery"));
+    }
+
+    @Test
+    void differentQueryDefinitionsFromDistinctOriginsAreRejectedInReverseOrderWithBothClassesAndKinds() {
+        NamedQueryException ex = assertThrows(NamedQueryException.class,
+                () -> registry(DifferentQuerySecond.class, DifferentQueryFirst.class));
+
+        assertTrue(ex.getMessage().contains(DifferentQueryFirst.class.getName()));
+        assertTrue(ex.getMessage().contains(DifferentQuerySecond.class.getName()));
+        assertTrue(ex.getMessage().contains("@NamedQuery"));
+    }
+
+    @Test
+    void crossKindDefinitionsFromDistinctOriginsAreRejectedInReverseOrderWithBothClassesAndKinds() {
+        NamedQueryException ex = assertThrows(NamedQueryException.class,
+                () -> registry(CrossKindNative.class, CrossKindJpql.class));
+
+        assertTrue(ex.getMessage().contains(CrossKindNative.class.getName()));
+        assertTrue(ex.getMessage().contains(CrossKindJpql.class.getName()));
+        assertTrue(ex.getMessage().contains("@NamedNativeQuery"));
+        assertTrue(ex.getMessage().contains("@NamedQuery"));
     }
 
     @Test
@@ -216,6 +256,64 @@ class NamedQueryRegistryTest {
     @Entity
     @NamedQuery(name = "Person.byName", query = "SELECT c FROM Clash c")
     static class Clash {
+        @Id
+        Long id;
+    }
+
+    @MappedSuperclass
+    @NamedQuery(name = "Shared.jpql", query = "SELECT s FROM SharedQueryFirst s")
+    @NamedNativeQuery(name = "Shared.native", query = "SELECT * FROM shared_query")
+    static class SharedQueryBase {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    static class SharedQueryFirst extends SharedQueryBase {
+    }
+
+    @Entity
+    static class SharedQuerySecond extends SharedQueryBase {
+    }
+
+    @Entity
+    @NamedQuery(name = "Duplicate.identical", query = "SELECT q FROM IdenticalQueryFirst q")
+    static class IdenticalQueryFirst {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @NamedQuery(name = "Duplicate.identical", query = "SELECT q FROM IdenticalQueryFirst q")
+    static class IdenticalQuerySecond {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @NamedQuery(name = "Duplicate.different", query = "SELECT q FROM DifferentQueryFirst q")
+    static class DifferentQueryFirst {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @NamedQuery(name = "Duplicate.different", query = "SELECT q FROM DifferentQuerySecond q")
+    static class DifferentQuerySecond {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @NamedQuery(name = "Duplicate.crossKind", query = "SELECT q FROM CrossKindJpql q")
+    static class CrossKindJpql {
+        @Id
+        Long id;
+    }
+
+    @Entity
+    @NamedNativeQuery(name = "Duplicate.crossKind", query = "SELECT * FROM cross_kind")
+    static class CrossKindNative {
         @Id
         Long id;
     }

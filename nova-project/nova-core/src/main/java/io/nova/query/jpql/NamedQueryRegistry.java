@@ -4,11 +4,13 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
+import io.nova.metadata.NamedQueryDeclaration;
 import io.nova.metadata.NamedQueryDefinition;
 import io.nova.metadata.PersistentProperty;
 import io.nova.sql.Dialect;
 
 import java.lang.reflect.Constructor;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +30,7 @@ import java.util.function.Function;
 public final class NamedQueryRegistry {
 
     private final Map<String, NamedQueryDefinition> definitions;
+    private final Map<String, NamedQueryDeclaration> declarations;
     private final JpqlExecutor jpqlExecutor;
     private final ReactiveEntityOperations operations;
     private final Dialect dialect;
@@ -43,18 +46,42 @@ public final class NamedQueryRegistry {
         this.dialect = Objects.requireNonNull(dialect, "dialect must not be null");
         this.metadataFactory = Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
         Objects.requireNonNull(entityClasses, "entityClasses must not be null");
-        this.jpqlExecutor = new JpqlExecutor(operations, dialect, metadataFactory, entityClasses);
+        List<Class<?>> managedTypes = new ArrayList<>();
+        entityClasses.forEach(managedTypes::add);
+        this.jpqlExecutor = new JpqlExecutor(operations, dialect, metadataFactory, managedTypes);
         this.definitions = new LinkedHashMap<>();
-        for (Class<?> type : entityClasses) {
-            for (NamedQueryDefinition definition : metadataFactory.namedQueryDefinitions(type)) {
-                NamedQueryDefinition existing = definitions.putIfAbsent(definition.name(), definition);
-                if (existing != null && !existing.equals(definition)) {
+        this.declarations = new LinkedHashMap<>();
+        for (Class<?> type : managedTypes) {
+            for (NamedQueryDeclaration declaration : metadataFactory.namedQueryDeclarations(type)) {
+                NamedQueryDefinition definition = declaration.definition();
+                NamedQueryDefinition existing = definitions.get(definition.name());
+                if (existing == null) {
+                    definitions.put(definition.name(), definition);
+                    declarations.put(definition.name(), declaration);
+                } else if (!isSameDeclaration(declarations.get(definition.name()), declaration)) {
                     throw new NamedQueryException("Duplicate named query '" + definition.name()
-                            + "' declared on " + type.getName()
-                            + "; named queries must have globally unique names");
+                            + "' declared by " + declaration.declaringType().getName()
+                            + " (" + annotationKind(definition) + ") conflicts with "
+                            + declarationSource(definition.name()).getName()
+                            + " (" + annotationKind(existing) + "); named queries must have globally unique names");
                 }
             }
         }
+    }
+
+    private Class<?> declarationSource(String name) {
+        return declarations.get(name).declaringType();
+    }
+
+    private static boolean isSameDeclaration(
+            NamedQueryDeclaration first, NamedQueryDeclaration second) {
+        return first.declaringType() == second.declaringType()
+                && first.definition().nativeQuery() == second.definition().nativeQuery()
+                && first.declarationIndex() == second.declarationIndex();
+    }
+
+    private static String annotationKind(NamedQueryDefinition definition) {
+        return definition.nativeQuery() ? "@NamedNativeQuery" : "@NamedQuery";
     }
 
     public NamedQueryRegistry(
