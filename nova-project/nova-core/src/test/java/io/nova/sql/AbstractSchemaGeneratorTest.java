@@ -128,7 +128,10 @@ class AbstractSchemaGeneratorTest {
                 factory.getEntityMetadata(SecondaryDdlEntity.class).secondaryTables().get(0));
 
         assertTrue(root.contains("check (root_value >= 0)"));
-        assertTrue(child.contains("check (child_value >= 0)"));
+        assertEquals(
+                "create table joined_ddl_child (id bigint not null primary key, child_value integer,"
+                        + " foreign key (id) references joined_ddl_root (id), check (child_value >= 0))",
+                child);
         assertTrue(secondary.contains("check (secondary_value >= 0)"));
         assertEquals(List.of("comment on column joined_ddl_child.child_value is 'child'"),
                 dialect.schemaGenerator().createComments(factory.getEntityMetadata(JoinedDdlChild.class),

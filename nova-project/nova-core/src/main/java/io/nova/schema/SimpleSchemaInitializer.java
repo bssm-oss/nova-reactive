@@ -703,7 +703,12 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     private Mono<Void> dropMultiTableHierarchy(Class<?> entityType, SchemaOptions options) {
         io.nova.metadata.InheritanceLayout layout = metadataFactory.inheritanceLayout(schemaRootClass(entityType));
         SchemaGenerator generator = dialect.schemaGenerator();
-        Mono<Void> dropSubtypes = Flux.fromIterable(layout.subtypes())
+        List<io.nova.metadata.InheritanceLayout.ConcreteSubtype> subtypes = new ArrayList<>(layout.subtypes());
+        if (layout.info().joined()) {
+            // Most-derived tables can depend on their ancestor subtype tables; drop in reverse hierarchy order.
+            java.util.Collections.reverse(subtypes);
+        }
+        Mono<Void> dropSubtypes = Flux.fromIterable(subtypes)
                 .filter(subtype -> !(layout.info().joined()
                         && subtype.metadata().entityType() == layout.info().root()))
                 .concatMap(subtype -> {
