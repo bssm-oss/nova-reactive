@@ -46,10 +46,13 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@Convert` + `jakarta.persistence.AttributeConverter` | ✅ | Storage-type driven read/write; managed converter classes support `autoApply`, explicit override, and disable semantics |
 | Scalar types | ✅ | `UUID`, `Float`, `Short`, `BigDecimal`, `BigInteger`(driver-permitting), … — driver-verified |
 | `@Version` optimistic locking | ✅ | `Long` / `Integer` / `Short` / `LocalDateTime`; surfaces `OptimisticLockingFailureException` |
+| `@Transient` | ✅ | Field annotations are excluded; under effective `@Access(PROPERTY)`, getter annotations are also excluded |
 | `@Access(FIELD)` | ✅ | Default |
 | `@Access(PROPERTY)` | ✅ | Basic **and** `@ManyToOne` / `@OneToOne` relations (JavaBean getter/setter) |
 | `@SecondaryTable` / `@PrimaryKeyJoinColumn` | ✅ | |
 | Auditing (`@CreatedAt` / `@UpdatedAt`), lifecycle callbacks, `@EntityListeners` | ✅ | 7 lifecycle phases; listener + superclass inheritance |
+| `@ExcludeSuperclassListeners` | ✅ | Excludes external listener hosts above the annotated entity or mapped-superclass host; entity callbacks remain inherited |
+| `@ExcludeDefaultListeners` | ✅ | No-op without XML default listeners; explicit `@EntityListeners` and entity callbacks remain active |
 
 ## Inheritance
 

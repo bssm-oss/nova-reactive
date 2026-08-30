@@ -1263,13 +1263,17 @@ public final class EntityMetadataFactory {
 
     /**
      * 영속 대상이 아닌 필드인지 판정한다. synthetic / static / Java {@code transient} 키워드뿐 아니라
-     * JPA {@link Transient} 애너테이션이 붙은 필드도 매핑에서 제외한다.
+     * JPA {@link Transient} 애너테이션이 붙은 필드도 매핑에서 제외한다. effective PROPERTY access에서는
+     * JavaBean getter에 선언된 {@code @Transient}도 해당 property를 제외한다. FIELD access는 getter
+     * 애너테이션을 매핑 신호로 사용하지 않는다.
      */
     private static boolean isNotPersistable(Field field) {
         return field.isSynthetic()
                 || Modifier.isStatic(field.getModifiers())
                 || Modifier.isTransient(field.getModifiers())
-                || field.isAnnotationPresent(Transient.class);
+                || field.isAnnotationPresent(Transient.class)
+                || (resolvePropertyAccess(field)
+                && resolvePropertyGetter(field).isAnnotationPresent(Transient.class));
     }
 
     /**
@@ -1805,13 +1809,12 @@ public final class EntityMetadataFactory {
      * {@code @EntityListeners}를 선언할 수 있는 호스트 체인(자신 + {@code @MappedSuperclass}/상속 상위
      * {@code @Entity})을 루트-우선 순서로 반환한다 — 슈퍼클래스 리스너가 먼저 invoke되도록.
      *
-     * <p>entity에 {@code @ExcludeSuperclassListeners}(jakarta.persistence)가 선언되면 상위 호스트가
-     * 기여하는 리스너를 제외하고 entity 자신만 호스트로 남긴다.
+     * <p>호스트에 {@code @ExcludeSuperclassListeners}(jakarta.persistence)가 선언되면, 그 호스트보다
+     * 상위가 기여하는 리스너를 제외한다. 따라서 중간 {@code @MappedSuperclass}의 선언도 그 아래 entity에
+     * 적용되는 listener-host hierarchy cutoff가 된다. entity 자체 lifecycle callback 상속은 이 체인과
+     * 독립적으로 {@link #mappedMethods(Class)}가 처리한다.
      */
     private static List<Class<?>> listenerHostChain(Class<?> entityType) {
-        if (entityType.isAnnotationPresent(ExcludeSuperclassListeners.class)) {
-            return List.of(entityType);
-        }
         List<Class<?>> chain = new ArrayList<>();
         Class<?> current = entityType;
         while (current != null && current != Object.class
@@ -1819,6 +1822,9 @@ public final class EntityMetadataFactory {
                 || current.isAnnotationPresent(MappedSuperclass.class)
                 || current.isAnnotationPresent(Entity.class))) {
             chain.add(current);
+            if (current.isAnnotationPresent(ExcludeSuperclassListeners.class)) {
+                break;
+            }
             current = current.getSuperclass();
         }
         Collections.reverse(chain);

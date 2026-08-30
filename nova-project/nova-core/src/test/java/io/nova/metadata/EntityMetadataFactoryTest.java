@@ -91,8 +91,19 @@ import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedSoftDeletableAccount;
 import org.junit.jupiter.api.Test;
 
-import jakarta.persistence.GenerationType;
+import java.util.List;
 
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EntityListeners;
+import jakarta.persistence.ExcludeDefaultListeners;
+import jakarta.persistence.ExcludeSuperclassListeners;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.MappedSuperclass;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.Transient;
 import jakarta.persistence.EnumType;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -1239,6 +1250,50 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
+    void excludesGetterTransientPropertyOnlyUnderPropertyAccess() {
+        EntityMetadata<GetterTransientPropertyEntity> propertyMetadata =
+                factory.getEntityMetadata(GetterTransientPropertyEntity.class);
+        EntityMetadata<GetterTransientFieldEntity> fieldMetadata =
+                factory.getEntityMetadata(GetterTransientFieldEntity.class);
+
+        assertTrue(propertyMetadata.findProperty("persisted").isPresent());
+        assertTrue(propertyMetadata.findProperty("cached").isEmpty(),
+                "@Transient getter must exclude an effective PROPERTY-access property");
+        assertTrue(fieldMetadata.findProperty("cached").isPresent(),
+                "@Transient getter must not alter FIELD-access mapping");
+    }
+
+    @Test
+    void excludesSuperclassListenersAtDirectAndIntermediateHostsWithoutExcludingEntityCallbacks() {
+        EntityMetadata<DirectExcludedListenersEntity> direct =
+                factory.getEntityMetadata(DirectExcludedListenersEntity.class);
+        EntityMetadata<IntermediateExcludedListenersEntity> intermediate =
+                factory.getEntityMetadata(IntermediateExcludedListenersEntity.class);
+
+        assertEquals(List.of(DirectListener.class), direct.listenerCallbacks().prePersist().stream()
+                .map(callback -> callback.listener().getClass()).toList());
+        assertEquals(List.of(IntermediateListener.class, ChildListener.class),
+                intermediate.listenerCallbacks().prePersist().stream()
+                        .map(callback -> callback.listener().getClass()).toList());
+        assertEquals(List.of("directCallback", "baseCallback"), direct.prePersistCallbacks().stream()
+                .map(java.lang.reflect.Method::getName).toList());
+        assertEquals(List.of("childCallback", "intermediateCallback", "baseCallback"),
+                intermediate.prePersistCallbacks().stream().map(java.lang.reflect.Method::getName).toList());
+    }
+
+    @Test
+    void excludeDefaultListenersKeepsExplicitListenersAndEntityCallbacksWithoutXmlDefaults() {
+        EntityMetadata<ExcludeDefaultListenersEntity> metadata =
+                factory.getEntityMetadata(ExcludeDefaultListenersEntity.class);
+
+        assertTrue(metadata.excludeDefaultListeners());
+        assertEquals(List.of(ExplicitListener.class), metadata.listenerCallbacks().prePersist().stream()
+                .map(callback -> callback.listener().getClass()).toList());
+        assertEquals(List.of("entityCallback"), metadata.prePersistCallbacks().stream()
+                .map(java.lang.reflect.Method::getName).toList());
+    }
+
+    @Test
     void mapsInheritedFieldsFromMappedSuperclass() {
         EntityMetadata<MappedSubEntity> metadata = factory.getEntityMetadata(MappedSubEntity.class);
 
@@ -1321,5 +1376,130 @@ class EntityMetadataFactoryTest {
         );
         assertTrue(exception.getMessage().contains("Unsupported @GeneratedValue(TABLE) id type"));
         assertTrue(exception.getMessage().contains("java.lang.String"));
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class GetterTransientPropertyEntity {
+        @Id
+        private Long id;
+        private String persisted;
+        private String cached;
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public String getPersisted() {
+            return persisted;
+        }
+
+        public void setPersisted(String persisted) {
+            this.persisted = persisted;
+        }
+
+        @Transient
+        public String getCached() {
+            return cached;
+        }
+
+        public void setCached(String cached) {
+            this.cached = cached;
+        }
+    }
+
+    @Entity
+    static class GetterTransientFieldEntity {
+        @Id
+        private Long id;
+        private String cached;
+
+        @Transient
+        public String getCached() {
+            return cached;
+        }
+    }
+
+    @MappedSuperclass
+    @EntityListeners(BaseListener.class)
+    static class ListenerBase {
+        @Id
+        private Long id;
+
+        @PrePersist
+        void baseCallback() {
+        }
+    }
+
+    @Entity
+    @ExcludeSuperclassListeners
+    @EntityListeners(DirectListener.class)
+    static class DirectExcludedListenersEntity extends ListenerBase {
+        @PrePersist
+        void directCallback() {
+        }
+    }
+
+    @MappedSuperclass
+    @ExcludeSuperclassListeners
+    @EntityListeners(IntermediateListener.class)
+    static class ExcludedListenerIntermediate extends ListenerBase {
+        @PrePersist
+        void intermediateCallback() {
+        }
+    }
+
+    @Entity
+    @EntityListeners(ChildListener.class)
+    static class IntermediateExcludedListenersEntity extends ExcludedListenerIntermediate {
+        @PrePersist
+        void childCallback() {
+        }
+    }
+
+    @Entity
+    @ExcludeDefaultListeners
+    @EntityListeners(ExplicitListener.class)
+    static class ExcludeDefaultListenersEntity {
+        @Id
+        private Long id;
+
+        @PrePersist
+        void entityCallback() {
+        }
+    }
+
+    static class BaseListener {
+        @PrePersist
+        void beforePersist(Object entity) {
+        }
+    }
+
+    static class DirectListener {
+        @PrePersist
+        void beforePersist(Object entity) {
+        }
+    }
+
+    static class IntermediateListener {
+        @PrePersist
+        void beforePersist(Object entity) {
+        }
+    }
+
+    static class ChildListener {
+        @PrePersist
+        void beforePersist(Object entity) {
+        }
+    }
+
+    static class ExplicitListener {
+        @PrePersist
+        void beforePersist(Object entity) {
+        }
     }
 }
