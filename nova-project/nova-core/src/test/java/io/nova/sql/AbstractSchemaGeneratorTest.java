@@ -137,6 +137,31 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void joinedSubtypeForeignKeyUsesSeparatelyQuotedRootSchema() {
+        Dialect quotedDialect = new QuotedTestDialect();
+        factory.getEntityMetadata(SchemaJoinedChild.class);
+        var layout = factory.inheritanceLayout(SchemaJoinedRoot.class);
+        var child = layout.subtypes().stream()
+                .filter(subtype -> subtype.metadata().entityType() == SchemaJoinedChild.class)
+                .findFirst().orElseThrow();
+
+        assertEquals(
+                "create table \"child_schema\".\"schema_joined_child\" (\"id\" bigint not null primary key,"
+                        + " \"child_value\" integer, foreign key (\"id\") references \"root_schema\".\"schema_joined_root\" (\"id\"))",
+                quotedDialect.schemaGenerator().createJoinedSubtypeTable(layout, child, false));
+
+        factory.getEntityMetadata(JoinedDdlChild.class);
+        var blankSchemaLayout = factory.inheritanceLayout(JoinedDdlRoot.class);
+        var blankSchemaChild = blankSchemaLayout.subtypes().stream()
+                .filter(subtype -> subtype.metadata().entityType() == JoinedDdlChild.class)
+                .findFirst().orElseThrow();
+        assertEquals(
+                "create table joined_ddl_child (id bigint not null primary key, child_value integer,"
+                        + " foreign key (id) references joined_ddl_root (id))",
+                dialect.schemaGenerator().createJoinedSubtypeTable(blankSchemaLayout, blankSchemaChild, false));
+    }
+
+    @Test
     void createTableSkipsOneToManyInverseSideAndIncludesManyToOneFkColumn() {
         // OneToMany inverse 필드(List<Book> books)는 부모 테이블에 컬럼을 만들지 않아야 한다.
         // raw properties()를 사용하던 시절에는 List 타입을 sqlType에 넘겨 IllegalArgumentException이 났다.
@@ -693,12 +718,37 @@ class AbstractSchemaGeneratorTest {
     }
 
     @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "schema_joined_root", schema = "root_schema")
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    static class SchemaJoinedRoot {
+        @jakarta.persistence.Id Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "schema_joined_child", schema = "child_schema")
+    static class SchemaJoinedChild extends SchemaJoinedRoot {
+        Integer childValue;
+    }
+
+    @jakarta.persistence.Entity
     @jakarta.persistence.SecondaryTable(name = "secondary_ddl")
     static class SecondaryDdlEntity {
         @jakarta.persistence.Id Long id;
         @jakarta.persistence.Column(table = "secondary_ddl", check = @jakarta.persistence.CheckConstraint(
                 constraint = "secondary_value >= 0"), comment = "secondary")
         Integer secondaryValue;
+    }
+
+    private static final class QuotedTestDialect implements Dialect {
+        private final BindMarkerStrategy bindMarkers = index -> "?";
+        private final SqlRenderer renderer = new AbstractSqlRenderer(this) {};
+        private final SchemaGenerator schemaGenerator = new AbstractSchemaGenerator(this) {};
+
+        @Override public String name() { return "quoted-test"; }
+        @Override public String quote(String identifier) { return "\"" + identifier + "\""; }
+        @Override public BindMarkerStrategy bindMarkers() { return bindMarkers; }
+        @Override public SqlRenderer sqlRenderer() { return renderer; }
+        @Override public SchemaGenerator schemaGenerator() { return schemaGenerator; }
     }
 
     /**

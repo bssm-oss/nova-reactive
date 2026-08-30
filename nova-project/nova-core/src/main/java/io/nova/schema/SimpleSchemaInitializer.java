@@ -718,10 +718,10 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
             return dropSubtypes;
         }
         // JOINED 루트 테이블은 서브타입 테이블 드롭 이후 마지막에 드롭한다.
-        String rootTable = layout.info().rootTableName();
+        EntityMetadata<?> rootMetadata = layout.rootMetadata();
         String rootDrop = options.ifNotExists()
-                ? "drop table if exists " + dialect.quote(rootTable)
-                : "drop table " + dialect.quote(rootTable);
+                ? generator.dropTableIfExists(rootMetadata)
+                : generator.dropTable(rootMetadata);
         return dropSubtypes.then(operations.executeNative(NativeQuery.of(rootDrop)).then());
     }
 

@@ -165,6 +165,38 @@ class SimpleSchemaInitializerTest {
     }
 
     @Test
+    void recreateJoinedHierarchyDropsAndCreatesCrossSchemaTablesWithQuotedForeignKey() {
+        EntityMetadataFactory quotedFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        RecordingExecutor quotedExecutor = new RecordingExecutor();
+        Dialect quotedDialect = new QuotedTestDialect();
+        SchemaInitializer quotedInitializer = new SimpleSchemaInitializer(
+                new SimpleReactiveEntityOperations(quotedFactory, quotedDialect, quotedExecutor,
+                        new EntityStateDetector(), new NoopTransactions()),
+                quotedFactory, quotedDialect);
+
+        StepVerifier.create(quotedInitializer.recreate(SchemaJoinedChild.class)).verifyComplete();
+
+        assertEquals(List.of(
+                "drop table if exists \"child_schema\".\"schema_joined_child\"",
+                "drop table if exists \"root_schema\".\"schema_joined_root\"",
+                "create table \"root_schema\".\"schema_joined_root\" (\"id\" bigint primary key, \"dtype\" varchar(31) not null)",
+                "create table \"child_schema\".\"schema_joined_child\" (\"id\" bigint not null primary key, \"child_value\" integer, foreign key (\"id\") references \"root_schema\".\"schema_joined_root\" (\"id\"))"),
+                quotedExecutor.executed);
+    }
+
+    @Test
+    void recreateJoinedHierarchyRetainsUnqualifiedRootAndForeignKeyWhenSchemaBlank() {
+        StepVerifier.create(initializer.recreate(BlankSchemaJoinedChild.class)).verifyComplete();
+
+        assertEquals(List.of(
+                "drop table if exists blank_schema_joined_child",
+                "drop table if exists blank_schema_joined_root",
+                "create table blank_schema_joined_root (id bigint primary key, dtype varchar(31) not null)",
+                "create table blank_schema_joined_child (id bigint not null primary key, child_value integer, foreign key (id) references blank_schema_joined_root (id))"),
+                executor.executed);
+    }
+
+    @Test
     void emptyBatchIsRejected() {
         // 빈 입력은 의도 모호 — caller bug일 가능성이 높으므로 fail-fast.
         assertThrows(IllegalArgumentException.class, () ->
@@ -178,6 +210,32 @@ class SimpleSchemaInitializerTest {
         assertEquals(0, executor.executed.size());
         StepVerifier.create(create).verifyComplete();
         assertEquals(1, executor.executed.size());
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "schema_joined_root", schema = "root_schema")
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    static class SchemaJoinedRoot {
+        @jakarta.persistence.Id Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "schema_joined_child", schema = "child_schema")
+    static class SchemaJoinedChild extends SchemaJoinedRoot {
+        Integer childValue;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "blank_schema_joined_root")
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    static class BlankSchemaJoinedRoot {
+        @jakarta.persistence.Id Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "blank_schema_joined_child")
+    static class BlankSchemaJoinedChild extends BlankSchemaJoinedRoot {
+        Integer childValue;
     }
 
     private static final class RecordingExecutor implements SqlExecutor {
@@ -214,7 +272,7 @@ class SimpleSchemaInitializerTest {
     /**
      * 최소 dialect — quote는 no-op이고 schemaGenerator는 base AbstractSchemaGenerator를 그대로 사용한다.
      */
-    private static final class TestDialect implements Dialect {
+    private static class TestDialect implements Dialect {
         private final BindMarkerStrategy bindMarkers = index -> "?";
         private final SqlRenderer renderer = new AbstractSqlRenderer(this) {};
         private final SchemaGenerator schemaGenerator = new AbstractSchemaGenerator(this) {};
@@ -242,6 +300,13 @@ class SimpleSchemaInitializerTest {
         @Override
         public SchemaGenerator schemaGenerator() {
             return schemaGenerator;
+        }
+    }
+
+    private static final class QuotedTestDialect extends TestDialect {
+        @Override
+        public String quote(String identifier) {
+            return "\"" + identifier + "\"";
         }
     }
 }

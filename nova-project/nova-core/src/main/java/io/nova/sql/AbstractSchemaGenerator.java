@@ -304,6 +304,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
                 columns.add(columnDefinition(property, false));
             }
         }
+        String subtypeIdColumn = dialect.quote(metadata.idProperty().columnName());
+        columns.add("foreign key (" + subtypeIdColumn + ") references "
+                + qualifiedRootTable(layout.info()) + " (" + dialect.quote(layout.info().rootIdColumn()) + ")");
         appendTableChecks(metadata.tableDdlDefinition().checks(), subtype.ownTableColumns(), columns);
         return "create table " + (ifNotExists ? "if not exists " : "")
                 + qualifiedTable(metadata)

@@ -241,7 +241,7 @@ class AbstractSqlRendererInheritanceTest {
         String ddl = dialect.schemaGenerator().createJoinedSubtypeTable(layout, car, false);
         // FK PK는 IDENTITY가 아니라 plain bigint primary key여야 한다(값을 루트에서 받는다).
         // primitive int(doors)는 @Column(nullable=false)이 없으면 Nova 관례상 nullable이다(not null 아님).
-        assertEquals("create table j_car (id bigint not null primary key, doors integer)", ddl);
+        assertEquals("create table j_car (id bigint not null primary key, doors integer, foreign key (id) references j_vehicle (id))", ddl);
     }
 
     @Test
