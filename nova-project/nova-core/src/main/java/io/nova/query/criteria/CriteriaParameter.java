@@ -12,10 +12,12 @@ import java.util.Objects;
  */
 final class CriteriaParameter<T> extends AbstractCriteriaExpression<T> implements ParameterExpression<T> {
 
+    private final Class<T> parameterType;
     private final String name;
 
     private CriteriaParameter(Class<T> javaType, String name) {
         super(validateType(javaType));
+        this.parameterType = javaType;
         this.name = name;
     }
 
@@ -32,7 +34,7 @@ final class CriteriaParameter<T> extends AbstractCriteriaExpression<T> implement
 
     @Override
     public Class<T> getParameterType() {
-        return getJavaType();
+        return parameterType;
     }
 
     @Override
