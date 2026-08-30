@@ -380,12 +380,7 @@ public final class EntityMetadata<T> {
         Class<?> idClass = requireIdClass();
         Object instance = instantiateIdClass(idClass);
         for (PersistentProperty idProperty : idProperties) {
-            java.lang.reflect.Field target = idClassField(idClass, idProperty.propertyName());
-            try {
-                target.set(instance, idProperty.read(entity));
-            } catch (IllegalAccessException exception) {
-                throw new IllegalStateException("Cannot write @IdClass field " + target.getName(), exception);
-            }
+            idClassAttribute(idClass, idProperty).write(instance, idProperty.read(entity));
         }
         return instance;
     }
@@ -402,12 +397,7 @@ public final class EntityMetadata<T> {
         if (idProperty.embedded()) {
             return idProperty.readFromIdHolder(idObject);
         }
-        java.lang.reflect.Field source = idClassField(idObject.getClass(), idProperty.propertyName());
-        try {
-            return source.get(idObject);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read @IdClass field " + source.getName(), exception);
-        }
+        return idClassAttribute(idObject.getClass(), idProperty).read(idObject);
     }
 
     private Class<?> requireIdClass() {
@@ -429,15 +419,26 @@ public final class EntityMetadata<T> {
         }
     }
 
-    private static java.lang.reflect.Field idClassField(Class<?> idClass, String fieldName) {
-        try {
-            java.lang.reflect.Field field = idClass.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            return field;
-        } catch (NoSuchFieldException exception) {
-            throw new IllegalStateException(
-                    "@IdClass " + idClass.getName() + " has no field '" + fieldName + "'", exception);
+    /**
+     * Resolves an IdClass component by logical property name using the same access side as
+     * its entity identifier. This deliberately does not rediscover declared fields: an
+     * IdClass is legal with JavaBean-only components under PROPERTY access.
+     */
+    private static PersistentAttributeAccess idClassAttribute(Class<?> idClass, PersistentProperty entityId) {
+        jakarta.persistence.AccessType access = entityId.propertyAccess()
+                ? jakarta.persistence.AccessType.PROPERTY : jakarta.persistence.AccessType.FIELD;
+        PersistentAttributeAccess attribute = new PersistentAccessResolver()
+                .resolve(idClass, access).attribute(entityId.propertyName());
+        if (attribute == null) {
+            throw new IllegalStateException("@IdClass " + idClass.getName()
+                    + " has no " + access + " property '" + entityId.propertyName() + "'");
         }
+        if (!attribute.javaType().equals(entityId.javaType())) {
+            throw new IllegalStateException("@IdClass " + idClass.getName() + "." + entityId.propertyName()
+                    + " type " + attribute.javaType().getName() + " does not match entity id type "
+                    + entityId.javaType().getName());
+        }
+        return attribute;
     }
 
     public Optional<PersistentProperty> softDeleteProperty() {

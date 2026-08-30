@@ -218,8 +218,10 @@ public final class PersistentProperty {
             ColumnDdlDefinition columnDdlDefinition
     ) {
         this.field = field;
-        this.field.setAccessible(true);
-        this.fieldHandle = resolveFieldHandle(field);
+        if (field != null) {
+            this.field.setAccessible(true);
+        }
+        this.fieldHandle = field == null ? null : resolveFieldHandle(field);
         this.access = propertyAccess
                 ? new PersistentAttributeAccess(propertyName, propertyAccessGetter, propertyAccessSetter)
                 : new PersistentAttributeAccess(propertyName, field);
@@ -269,7 +271,7 @@ public final class PersistentProperty {
         this.propertyAccessGetter = propertyAccessGetter;
         this.propertyAccessSetter = propertyAccessSetter;
         if (propertyAccess) {
-            boolean immutableRecordComponent = field.getDeclaringClass().isRecord();
+            boolean immutableRecordComponent = propertyAccessGetter.getDeclaringClass().isRecord();
             if (propertyAccessGetter == null || (propertyAccessSetter == null && !immutableRecordComponent)) {
                 throw new IllegalStateException(
                         "PROPERTY access property " + propertyName
@@ -524,12 +526,17 @@ public final class PersistentProperty {
 
     /** Java member name used for metadata-only record component matching. */
     public String leafName() {
-        return field.getName();
+        return access.name();
     }
 
-    /** Returns a mapping annotation from the resolved persistent member. */
+    /** Returns a mapping annotation from the selected state carrier. */
     public <A extends java.lang.annotation.Annotation> A annotation(Class<A> annotationType) {
-        return field.getAnnotation(annotationType);
+        return access.annotation(annotationType);
+    }
+
+    /** Generic Java type from the selected state carrier. */
+    public java.lang.reflect.Type genericType() {
+        return access.genericType();
     }
 
     public String columnName() {
@@ -757,7 +764,7 @@ public final class PersistentProperty {
                     return null;
                 }
             }
-            return fieldHandle != null ? fieldHandle.get(current) : field.get(current);
+            return propertyAccess ? invokeGetter(current) : (fieldHandle != null ? fieldHandle.get(current) : field.get(current));
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot read @ManyToOne/@OneToOne reference field " + field.getName(), exception);
         }
@@ -782,7 +789,9 @@ public final class PersistentProperty {
                 }
                 current = next;
             }
-            if (fieldHandle != null) {
+            if (propertyAccess) {
+                invokeSetter(current, reference);
+            } else if (fieldHandle != null) {
                 fieldHandle.set(current, reference);
             } else {
                 field.set(current, reference);
@@ -800,12 +809,7 @@ public final class PersistentProperty {
      */
     public void writeCompositeReference(Object instance, List<Object> decodedValues) {
         Object stub = toOneForeignKey.assembleStub(decodedValues);
-        try {
-            field.set(instance, stub);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write @ManyToOne/@OneToOne reference field " + field.getName(), exception);
-        }
+        writeReferenceInstance(instance, stub);
     }
 
     /**
@@ -1094,45 +1098,20 @@ public final class PersistentProperty {
      * 못 찾으면 {@code null}. 복합키({@code @IdClass}) 대상은 자신에 여러 {@code @Id}를 선언하므로 자신 필드에서
      * 첫 {@code @Id}를 반환해 기존 동작을 그대로 보존한다.
      */
-    private static Field findReferencedIdField(Class<?> targetType) {
-        Class<?> current = targetType;
-        while (current != null && current != Object.class) {
-            for (Field candidate : current.getDeclaredFields()) {
-                if (candidate.isAnnotationPresent(jakarta.persistence.Id.class)) {
-                    return candidate;
-                }
-            }
-            Class<?> ancestor = current.getSuperclass();
-            if (ancestor == null || ancestor == Object.class
-                    || !(ancestor.isAnnotationPresent(jakarta.persistence.MappedSuperclass.class)
-                            || ancestor.isAnnotationPresent(jakarta.persistence.Entity.class))) {
-                return null;
-            }
-            current = ancestor;
-        }
-        return null;
+    private static PersistentAttributeAccess findReferencedId(Class<?> targetType) {
+        return new PersistentAccessResolver().resolve(targetType).attributes().stream()
+                .filter(attribute -> attribute.isAnnotationPresent(jakarta.persistence.Id.class))
+                .findFirst().orElse(null);
     }
 
-    /**
-     * {@code @ManyToOne} 참조 대상 인스턴스에서 {@link jakarta.persistence.Id} 필드를 찾아 그 값을 꺼낸다.
-     * cycle-aware EntityMetadataFactory 없이도 동작하도록 직접 reflection으로 @Id를 탐색하며(상속된 단일 @Id
-     * 포함, {@link #findReferencedIdField}), target 클래스 계층에 @Id가 없으면 {@link IllegalStateException}으로
-     * 즉시 거부한다.
-     */
+    /** Reads a referenced identifier through its selected FIELD or PROPERTY descriptor. */
     private static Object extractReferencedId(Object referenced) {
-        Class<?> type = referenced.getClass();
-        Field idField = findReferencedIdField(type);
-        if (idField == null) {
+        PersistentAttributeAccess id = findReferencedId(referenced.getClass());
+        if (id == null) {
             throw new IllegalStateException(
-                    "@ManyToOne referenced entity " + type.getName() + " has no @Id field");
+                    "@ManyToOne referenced entity " + referenced.getClass().getName() + " has no @Id property");
         }
-        idField.setAccessible(true);
-        try {
-            return idField.get(referenced);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot read @Id field on referenced entity " + type.getName(), exception);
-        }
+        return id.read(referenced);
     }
 
     /**
@@ -1226,14 +1205,11 @@ public final class PersistentProperty {
         }
         Class<?> target = manyToOneTargetType != null ? manyToOneTargetType : field.getType();
         Object stub = instantiateTarget(target);
-        Field idField = findIdField(target);
-        idField.setAccessible(true);
-        try {
-            idField.set(stub, fkValue);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write @Id on @ManyToOne stub " + target.getName(), exception);
+        PersistentAttributeAccess id = findReferencedId(target);
+        if (id == null) {
+            throw new IllegalStateException("@ManyToOne target type " + target.getName() + " has no @Id property");
         }
+        id.write(stub, fkValue);
         setReferenceValue(instance, stub);
     }
 
@@ -1289,15 +1265,6 @@ public final class PersistentProperty {
             throw new IllegalStateException(
                     "@ManyToOne target type must expose a no-args constructor: " + targetType.getName(), exception);
         }
-    }
-
-    private static Field findIdField(Class<?> targetType) {
-        Field idField = findReferencedIdField(targetType);
-        if (idField == null) {
-            throw new IllegalStateException(
-                    "@ManyToOne target type " + targetType.getName() + " has no @Id field");
-        }
-        return idField;
     }
 
     private static Object instantiateEmbeddable(Class<?> embeddableType) {

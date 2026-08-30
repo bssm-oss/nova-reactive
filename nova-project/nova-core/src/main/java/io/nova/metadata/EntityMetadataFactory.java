@@ -714,7 +714,20 @@ public final class EntityMetadataFactory {
         PersistentProperty updatedAtProperty = null;
         PersistentProperty softDeleteProperty = null;
         PersistentProperty versionProperty = null;
-        for (Field field : mappedFields(entityType)) {
+        PersistentTypeAccess accessPlan = new PersistentAccessResolver().resolve(entityType);
+        for (PersistentAttributeAccess attribute : accessPlan.attributes()) {
+            Field field = attribute.field();
+            if (field == null) {
+                PersistentProperty property = createGetterOnlyProperty(attribute);
+                properties.add(property);
+                if (property.id()) {
+                    if (idProperty != null && !hasIdClass) {
+                        throw new IllegalArgumentException(entityType.getName() + " declares multiple @Id properties");
+                    }
+                    if (idProperty == null) idProperty = property;
+                }
+                continue;
+            }
             if (isNotPersistable(field)) {
                 continue;
             }
@@ -2089,6 +2102,53 @@ public final class EntityMetadataFactory {
         target.add(new ListenerCallback(listener, method));
     }
 
+    /** Builds a scalar PROPERTY mapping whose JavaBean member has no backing field. */
+    private PersistentProperty createGetterOnlyProperty(PersistentAttributeAccess attribute) {
+        ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
+        if (manyToOne != null) {
+            JoinColumn join = attribute.annotation(JoinColumn.class);
+            Class<?> target = manyToOne.targetEntity() == void.class ? attribute.javaType() : manyToOne.targetEntity();
+            ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
+            return new PersistentProperty(null, attribute.name(),
+                    join != null && !join.name().isBlank() ? join.name()
+                            : namingStrategy.columnName(attribute.name() + "_id"),
+                    storage == null ? Long.class : storage.javaType(), false, false,
+                    manyToOne.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.length(),
+                    0, 0, null, "", storage == null ? null : storage.converter(), false, false, false,
+                    false, List.of(), false, null, false, true, target,
+                    manyToOne.optional() && (join == null || join.nullable()), false, null, "",
+                    join == null || join.insertable(), join == null || join.updatable(), join != null && join.unique(),
+                    join == null ? "" : join.columnDefinition(), false,
+                    storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
+                    false, "", true, attribute.getter(), attribute.setter(),
+                    manyToOne.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(manyToOne.cascade())),
+                    "", null);
+        }
+        Column column = attribute.annotation(Column.class);
+        GeneratedValue generated = attribute.annotation(GeneratedValue.class);
+        boolean id = attribute.isAnnotationPresent(Id.class);
+        String columnName = column != null && !column.name().isBlank()
+                ? column.name() : namingStrategy.columnName(attribute.name());
+        Basic basic = attribute.annotation(Basic.class);
+        boolean nullable = (column == null || column.nullable()) && (basic == null || basic.optional());
+        if (generated != null && !id) {
+            throw new IllegalArgumentException(attribute.declaringType().getName() + "." + attribute.name()
+                    + " uses @GeneratedValue but is not annotated with @Id");
+        }
+        return new PersistentProperty(null, attribute.name(), columnName, attribute.javaType(), id,
+                attribute.isAnnotationPresent(Version.class), nullable,
+                column == null ? 255 : column.length(), column == null ? 0 : column.precision(),
+                column == null ? 0 : column.scale(), generated == null ? null : generated.strategy(),
+                generated == null ? "" : generated.generator(), converters.get(attribute.javaType()),
+                attribute.isAnnotationPresent(CreatedAt.class), attribute.isAnnotationPresent(UpdatedAt.class),
+                attribute.isAnnotationPresent(SoftDelete.class), false, List.of(), false, null, false,
+                false, null, true, false, null, "", column == null || column.insertable(),
+                column == null || column.updatable(), column != null && column.unique(),
+                column == null ? "" : column.columnDefinition(), attribute.isAnnotationPresent(Lob.class), null,
+                false, null, null, null, null, false, "", true, attribute.getter(), attribute.setter(),
+                null, column == null ? "" : column.table(), null);
+    }
+
     /**
      * 단일 field로부터 {@link PersistentProperty}를 만든다. {@code hostPath}가 비어있지 않으면
      * 이 property는 {@code @Embedded} 필드(들) 안에 있는 sub-field이며 column 이름에 prefix가 붙고
@@ -3315,23 +3375,29 @@ public final class EntityMetadataFactory {
      * 아니면(복합키 {@code @EmbeddedId}/{@code @IdClass}) {@code null}로 떨어져 {@code Long} 폴백을 유지한다.
      */
     private static ForeignKeyStorage resolveToOneForeignKeyStorage(Class<?> targetType) {
-        Field idField = null;
-        int idCount = 0;
-        // 대상 자신 + @MappedSuperclass/상위 @Entity 조상 체인(root-first)을 훑어 @Id를 센다.
-        // 상속된 단일 @Id를 찾아 FK 저장 표현에 반영하되, 복합키(idCount != 1)는 Long 폴백을 유지한다.
-        for (Field candidate : mappedFields(targetType)) {
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idCount++;
-                idField = candidate;
-            }
-        }
-        if (idCount != 1) {
-            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지 — read-path와 동일하게 단일 @Id가 아니면
-            // 단일 FK 저장 표현으로는 해석하지 않는다. 복합키 타겟은 별도로 다중컬럼 FK 모델
-            // ({@link #resolveCompositeToOneForeignKey})로 확장하고, 그마저 불가하면 호출부가 Long 기본값을 유지한다.
+        List<PersistentAttributeAccess> ids = new PersistentAccessResolver().resolve(targetType).attributes().stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
+        if (ids.size() != 1) {
             return null;
         }
-        return resolveScalarFieldStorage(targetType, idField);
+        PersistentAttributeAccess id = ids.get(0);
+        if (id.field() != null) {
+            return resolveScalarFieldStorage(targetType, id.field());
+        }
+        Class<?> domainType = wrapPrimitiveType(id.javaType());
+        Column column = id.annotation(Column.class);
+        int length = column == null ? 255 : column.length();
+        Enumerated enumerated = id.annotation(Enumerated.class);
+        if (enumerated != null || id.javaType().isEnum()) {
+            EnumType enumType = enumerated == null ? inferredEnumType(id.javaType()) : enumerated.value();
+            EnumMapping mapping = resolveEnumMapping(id.javaType(), enumType);
+            Class<?> storageType = mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ForeignKeyStorage(domainType, mapping.converter(), storageType, length);
+        }
+        ElementValueMapping basic = resolveBasicStorageMapping(domainType);
+        return new ForeignKeyStorage(domainType, basic.converter(),
+                basic.converter() == null ? null : basic.columnType(), length);
     }
 
     /**
