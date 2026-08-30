@@ -1462,6 +1462,7 @@ class EntityMetadataFactoryTest {
         private String persisted;
         private String cached;
 
+        @Id
         public Long getId() {
             return id;
         }

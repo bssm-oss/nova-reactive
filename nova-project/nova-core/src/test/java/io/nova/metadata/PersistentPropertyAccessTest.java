@@ -160,6 +160,7 @@ class PersistentPropertyAccessTest {
         transient boolean getterInvoked;
         transient boolean setterInvoked;
 
+        @Id
         public Long getId() {
             return id;
         }
@@ -189,14 +190,14 @@ class PersistentPropertyAccessTest {
         @Column(name = "field_mapped")
         private String fieldMapped;
 
-        // 멤버 레벨 override → PROPERTY.
-        @Access(AccessType.PROPERTY)
-        @Column(name = "property_mapped")
+        // Getter-level override selects PROPERTY mapping.
         private String propertyMapped;
 
         transient boolean getterInvoked;
         transient boolean setterInvoked;
 
+        @Access(AccessType.PROPERTY)
+        @Column(name = "property_mapped")
         public String getPropertyMapped() {
             getterInvoked = true;
             return propertyMapped;
@@ -216,6 +217,7 @@ class PersistentPropertyAccessTest {
         private Long id;
         private boolean active;
 
+        @Id
         public Long getId() {
             return id;
         }
@@ -241,6 +243,7 @@ class PersistentPropertyAccessTest {
         private Long id;
         private String name;
 
+        @Id
         public Long getId() {
             return id;
         }
@@ -263,6 +266,7 @@ class PersistentPropertyAccessTest {
         private Long id;
         private String name;
 
+        @Id
         public Long getId() {
             return id;
         }
@@ -285,6 +289,7 @@ class PersistentPropertyAccessTest {
         @Id
         private Long id;
 
+        @Id
         public Long getId() {
             return id;
         }
@@ -301,13 +306,12 @@ class PersistentPropertyAccessTest {
         @Id
         private Long id;
 
-        @ManyToOne
-        @JoinColumn(name = "author_id")
         private PropertyAccessAuthor author;
 
         transient boolean authorGetterInvoked;
         transient boolean authorSetterInvoked;
 
+        @Id
         public Long getId() {
             return id;
         }
@@ -316,6 +320,8 @@ class PersistentPropertyAccessTest {
             this.id = id;
         }
 
+        @ManyToOne
+        @JoinColumn(name = "author_id")
         public PropertyAccessAuthor getAuthor() {
             authorGetterInvoked = true;
             return author;
@@ -338,6 +344,7 @@ class PersistentPropertyAccessTest {
         @JoinColumn(name = "author_id")
         private PropertyAccessAuthor author;
 
+        @Id
         public Long getId() {
             return id;
         }
@@ -359,6 +366,7 @@ class PersistentPropertyAccessTest {
         @JoinColumn(name = "author_id")
         private PropertyAccessAuthor author;
 
+        @Id
         public Long getId() {
             return id;
         }
