@@ -31,6 +31,11 @@ final class CriteriaParameter<T> extends AbstractCriteriaExpression<T> implement
     }
 
     @Override
+    public Class<T> getParameterType() {
+        return getJavaType();
+    }
+
+    @Override
     public String getName() {
         return name;
     }
