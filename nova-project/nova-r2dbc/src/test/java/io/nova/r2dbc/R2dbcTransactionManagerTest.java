@@ -20,6 +20,7 @@ import reactor.test.StepVerifier;
 import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -412,6 +413,7 @@ class R2dbcTransactionManagerTest {
 
     @Test
     void rollsBackAndClosesWhenTransactionCallbackIsCancelled() {
+        AtomicBoolean callbackEntered = new AtomicBoolean();
         AtomicInteger rollbackCalls = new AtomicInteger();
         AtomicInteger closeCalls = new AtomicInteger();
         Connection connection = transactionConnection(
@@ -419,7 +421,14 @@ class R2dbcTransactionManagerTest {
                 rollbackCalls, closeCalls);
         R2dbcTransactionManager txManager = transactionManager(connection);
 
-        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, context -> Mono.never()), 1)
+        StepVerifier.create(txManager.inTransaction(
+                        TransactionDefinition.DEFAULT,
+                        context -> Mono.defer(() -> {
+                            callbackEntered.set(true);
+                            return Mono.never();
+                        })),
+                1)
+                .then(() -> assertEquals(true, callbackEntered.get()))
                 .thenCancel()
                 .verify();
 
