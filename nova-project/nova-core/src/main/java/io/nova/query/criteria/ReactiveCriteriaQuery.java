@@ -290,9 +290,9 @@ public final class ReactiveCriteriaQuery<T> {
         CriteriaSql translated = sqlBuilder.build(query, bindings);
         int columns = translated.selectionCount();
         if (isSingleAggregateSelection(columns)) {
-            return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()),
-                            row -> new AggregateValue(mapAggregateRow(row)))
-                    .flatMap(value -> value.value() == null ? Flux.empty() : Flux.just(value.value()));
+            return operations.<AggregateValue<T>>queryNative(new NativeQuery(translated.sql(), translated.bindings()),
+                            row -> new AggregateValue<>(mapAggregateRow(row)))
+                    .flatMap(this::omitNullAggregate);
         }
         Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
         return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);
@@ -307,9 +307,9 @@ public final class ReactiveCriteriaQuery<T> {
         CriteriaSql translated = aliasedSqlBuilder.buildScalar(query, bindings);
         int columns = translated.selectionCount();
         if (isSingleAggregateSelection(columns)) {
-            return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()),
-                            row -> new AggregateValue(mapAggregateRow(row)))
-                    .flatMap(value -> value.value() == null ? Flux.empty() : Flux.just(value.value()));
+            return operations.<AggregateValue<T>>queryNative(new NativeQuery(translated.sql(), translated.bindings()),
+                            row -> new AggregateValue<>(mapAggregateRow(row)))
+                    .flatMap(this::omitNullAggregate);
         }
         Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
         return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);
@@ -434,6 +434,10 @@ public final class ReactiveCriteriaQuery<T> {
     private Object mapSelectionValue(int index, Object value) {
         jakarta.persistence.criteria.Selection<?> selection = query.selections().get(index);
         return selection instanceof CriteriaAggregate<?> aggregate ? aggregate.normalizeResult(value) : value;
+    }
+
+    private Flux<T> omitNullAggregate(AggregateValue<T> value) {
+        return value.value() == null ? Flux.empty() : Flux.just(value.value());
     }
 
     private record AggregateValue<T>(T value) {
