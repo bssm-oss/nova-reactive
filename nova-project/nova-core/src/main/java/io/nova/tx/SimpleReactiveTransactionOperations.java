@@ -23,19 +23,45 @@ public final class SimpleReactiveTransactionOperations implements ReactiveTransa
         return Mono.usingWhen(
                 Mono.defer(() -> transactionManager.begin(definition)),
                 context -> Mono.defer(() -> callback.apply(context)),
-                context -> transactionManager.commit(context)
-                        .onErrorResume(error -> transactionManager.rollback(context).then(Mono.error(error))),
-                (context, error) -> transactionManager.rollback(context),
-                context -> transactionManager.rollback(context))
+                this::commit,
+                this::rollbackAfterError,
+                this::rollback)
                 .onErrorMap(SimpleReactiveTransactionOperations::unwrapCleanupFailure);
     }
 
+    private Mono<Void> commit(TransactionContext context) {
+        return Mono.defer(() -> transactionManager.commit(context))
+                .onErrorMap(CleanupFailure::new)
+                .onErrorResume(CleanupFailure.class, commitFailure -> rollback(context)
+                        .onErrorMap(rollbackFailure -> {
+                            rollbackFailure.addSuppressed(commitFailure.getCause());
+                            return new CleanupFailure(rollbackFailure);
+                        })
+                        .then(Mono.error(commitFailure)));
+    }
+
+    private Mono<Void> rollbackAfterError(TransactionContext context, Throwable error) {
+        return rollback(context)
+                .onErrorMap(rollbackFailure -> {
+                    rollbackFailure.addSuppressed(error);
+                    return new CleanupFailure(rollbackFailure);
+                });
+    }
+
+    private Mono<Void> rollback(TransactionContext context) {
+        return Mono.defer(() -> transactionManager.rollback(context));
+    }
+
     private static Throwable unwrapCleanupFailure(Throwable error) {
-        if (error.getMessage() != null
-                && error.getMessage().startsWith("Async resource cleanup failed")
-                && error.getCause() != null) {
-            return error.getCause();
+        if (error.getCause() instanceof CleanupFailure cleanupFailure) {
+            return cleanupFailure.getCause();
         }
         return error;
+    }
+
+    private static final class CleanupFailure extends RuntimeException {
+        private CleanupFailure(Throwable cause) {
+            super(cause);
+        }
     }
 }

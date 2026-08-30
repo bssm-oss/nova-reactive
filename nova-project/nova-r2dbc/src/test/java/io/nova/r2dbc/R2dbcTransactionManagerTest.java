@@ -15,8 +15,10 @@ import io.r2dbc.spi.ConnectionFactoryMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 
+import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -359,6 +361,46 @@ class R2dbcTransactionManagerTest {
                 ctx -> Mono.just(ctx.hasActiveTransaction()));
 
         StepVerifier.create(active).expectNext(true).verifyComplete();
+    }
+
+    @Test
+    void closesConnectionWhenBeginIsCancelledAfterAcquisition() {
+        AtomicInteger setAutoCommitCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        Sinks.Empty<Void> settings = Sinks.empty();
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit" -> {
+                        setAutoCommitCalls.incrementAndGet();
+                        yield settings.asMono();
+                    }
+                    case "close" -> {
+                        closeCalls.incrementAndGet();
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+        ConnectionFactory factory = new ConnectionFactory() {
+            @Override
+            public Mono<? extends Connection> create() {
+                return Mono.just(connection);
+            }
+
+            @Override
+            public ConnectionFactoryMetadata getMetadata() {
+                return () -> "test";
+            }
+        };
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(factory);
+
+        StepVerifier.create(txManager.begin())
+                .then(() -> assertEquals(1, setAutoCommitCalls.get()))
+                .thenCancel()
+                .verify();
+
+        assertEquals(1, closeCalls.get());
     }
 
     /**

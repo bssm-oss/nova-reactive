@@ -36,14 +36,20 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
     @Override
     public Mono<TransactionContext> begin(TransactionDefinition definition) {
         Objects.requireNonNull(definition, "definition");
-        return Mono.from(connectionFactory.create())
-                .flatMap(conn -> applyPreTransactionSettings(conn, definition)
+        return Mono.usingWhen(
+                Mono.from(connectionFactory.create()),
+                conn -> applyPreTransactionSettings(conn, definition)
                         .then(Mono.from(conn.beginTransaction()))
                         .then(applyReadOnly(conn, definition))
-                        .thenReturn((TransactionContext) new R2dbcTransactionContext(conn))
-                        .onErrorResume(error -> Mono.from(conn.close())
-                                .onErrorResume(closeError -> Mono.empty())
-                                .then(Mono.error(error))));
+                        .thenReturn((TransactionContext) new R2dbcTransactionContext(conn)),
+                conn -> Mono.empty(),
+                (conn, error) -> closeQuietly(conn),
+                this::closeQuietly);
+    }
+
+    private Mono<Void> closeQuietly(Connection connection) {
+        return Mono.defer(() -> Mono.from(connection.close()))
+                .onErrorResume(closeError -> Mono.empty());
     }
 
     @Override

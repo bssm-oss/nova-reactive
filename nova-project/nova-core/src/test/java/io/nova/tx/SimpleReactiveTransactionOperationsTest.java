@@ -94,11 +94,54 @@ class SimpleReactiveTransactionOperationsTest {
     }
 
     @Test
+    void preservesBeginFailureWithCleanupLikeMessage() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException cause = new IllegalStateException("cause");
+        IllegalStateException failure = new IllegalStateException("Async resource cleanup failed by application", cause);
+        manager.beginFailure = failure;
+
+        StepVerifier.create(operations.inTransaction(context -> Mono.just("ok")))
+                .expectErrorSatisfies(error -> assertSame(failure, error))
+                .verify();
+
+        assertEquals(List.of("begin"), manager.events);
+    }
+
+    @Test
+    void preservesCallbackFailureWithCleanupLikeMessage() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException cause = new IllegalStateException("cause");
+        IllegalStateException failure = new IllegalStateException("Async resource cleanup failed by application", cause);
+
+        StepVerifier.create(operations.inTransaction(context -> Mono.error(failure)))
+                .expectErrorSatisfies(error -> assertSame(failure, error))
+                .verify();
+
+        assertEquals(List.of("begin", "rollback"), manager.events);
+    }
+
+    @Test
     void rollsBackWhenCommitFails() {
         RecordingTransactionManager manager = new RecordingTransactionManager();
         SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
         IllegalStateException failure = new IllegalStateException("commit failed");
         manager.commitFailure = failure;
+
+        StepVerifier.create(operations.inTransaction(context -> Mono.just("ok")))
+                .expectErrorSatisfies(error -> assertSame(failure, error))
+                .verify();
+
+        assertEquals(List.of("begin", "commit", "rollback"), manager.events);
+    }
+
+    @Test
+    void rollsBackWhenCommitThrowsSynchronously() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException failure = new IllegalStateException("commit failed");
+        manager.commitThrow = failure;
 
         StepVerifier.create(operations.inTransaction(context -> Mono.just("ok")))
                 .expectErrorSatisfies(error -> assertSame(failure, error))
@@ -116,7 +159,10 @@ class SimpleReactiveTransactionOperationsTest {
         manager.rollbackFailure = rollbackFailure;
 
         StepVerifier.create(operations.inTransaction(context -> Mono.just("ok")))
-                .expectErrorSatisfies(error -> assertSame(rollbackFailure, error))
+                .expectErrorSatisfies(error -> {
+                    assertSame(rollbackFailure, error);
+                    assertEquals(List.of(manager.commitFailure), List.of(error.getSuppressed()));
+                })
                 .verify();
 
         assertEquals(List.of("begin", "commit", "rollback"), manager.events);
@@ -131,7 +177,28 @@ class SimpleReactiveTransactionOperationsTest {
         manager.rollbackFailure = rollbackFailure;
 
         StepVerifier.create(operations.inTransaction(context -> Mono.error(callbackFailure)))
-                .expectErrorSatisfies(error -> assertSame(rollbackFailure, error))
+                .expectErrorSatisfies(error -> {
+                    assertSame(rollbackFailure, error);
+                    assertEquals(List.of(callbackFailure), List.of(error.getSuppressed()));
+                })
+                .verify();
+
+        assertEquals(List.of("begin", "rollback"), manager.events);
+    }
+
+    @Test
+    void surfacesSynchronousRollbackFailureWithCallbackFailureSuppressed() {
+        RecordingTransactionManager manager = new RecordingTransactionManager();
+        SimpleReactiveTransactionOperations operations = new SimpleReactiveTransactionOperations(manager);
+        IllegalStateException callbackFailure = new IllegalStateException("callback failed");
+        IllegalStateException rollbackFailure = new IllegalStateException("rollback failed");
+        manager.rollbackThrow = rollbackFailure;
+
+        StepVerifier.create(operations.inTransaction(context -> Mono.error(callbackFailure)))
+                .expectErrorSatisfies(error -> {
+                    assertSame(rollbackFailure, error);
+                    assertEquals(List.of(callbackFailure), List.of(error.getSuppressed()));
+                })
                 .verify();
 
         assertEquals(List.of("begin", "rollback"), manager.events);
@@ -141,7 +208,9 @@ class SimpleReactiveTransactionOperationsTest {
         private final List<String> events = new ArrayList<>();
         private RuntimeException beginFailure;
         private RuntimeException commitFailure;
+        private RuntimeException commitThrow;
         private RuntimeException rollbackFailure;
+        private RuntimeException rollbackThrow;
 
         @Override
         public Mono<TransactionContext> begin() {
@@ -155,6 +224,9 @@ class SimpleReactiveTransactionOperationsTest {
         @Override
         public Mono<Void> commit(TransactionContext context) {
             events.add("commit");
+            if (commitThrow != null) {
+                throw commitThrow;
+            }
             if (commitFailure != null) {
                 return Mono.error(commitFailure);
             }
@@ -164,6 +236,9 @@ class SimpleReactiveTransactionOperationsTest {
         @Override
         public Mono<Void> rollback(TransactionContext context) {
             events.add("rollback");
+            if (rollbackThrow != null) {
+                throw rollbackThrow;
+            }
             if (rollbackFailure != null) {
                 return Mono.error(rollbackFailure);
             }
