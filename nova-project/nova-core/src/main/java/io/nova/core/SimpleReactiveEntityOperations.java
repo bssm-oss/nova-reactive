@@ -2863,17 +2863,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return new RemoveKey(identityMetadata.entityType(), List.copyOf(values));
     }
 
-    private RemoveKey removeKeyForId(EntityMetadata<?> metadata, Object idHolder) {
-        EntityMetadata<?> identityMetadata = metadata.hasInheritance()
-                ? metadataFactory.getEntityMetadata(metadata.inheritance().root())
-                : metadata;
-        List<Object> values = new ArrayList<>(identityMetadata.idProperties().size());
-        for (PersistentProperty property : identityMetadata.idProperties()) {
-            values.add(property.toColumnValue(identityMetadata.idColumnValue(property, idHolder)));
-        }
-        return new RemoveKey(identityMetadata.entityType(), List.copyOf(values));
-    }
-
     /**
      * {@code @ManyToOne(cascade=REMOVE/ALL)} 또는 owning {@code @OneToOne(cascade=REMOVE/ALL)}의 참조 엔티티를
      * owner 삭제 직후 삭제한다. owner row의 FK가 참조를 가리키므로 owner가 먼저 삭제돼야 참조 삭제가 FK 의존성을
