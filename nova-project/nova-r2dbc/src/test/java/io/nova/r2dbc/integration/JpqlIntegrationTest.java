@@ -1,6 +1,6 @@
 package io.nova.r2dbc.integration;
 
-import io.nova.convert.AttributeConverter;
+import jakarta.persistence.AttributeConverter;
 import io.nova.query.jpql.JpqlExecutor;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
@@ -429,12 +429,12 @@ class JpqlIntegrationTest {
     @Converter
     public static class CodeConverter implements AttributeConverter<Code, String> {
         @Override
-        public String write(Code value) {
+        public String convertToDatabaseColumn(Code value) {
             return value == null ? null : value.value();
         }
 
         @Override
-        public Code read(String value) {
+        public Code convertToEntityAttribute(String value) {
             return value == null ? null : new Code(value);
         }
     }

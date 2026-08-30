@@ -2,7 +2,7 @@ package io.nova.query.jpql;
 
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
-import io.nova.convert.AttributeConverter;
+import jakarta.persistence.AttributeConverter;
 import io.nova.query.jpql.ast.JpqlStatement;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
@@ -1023,12 +1023,12 @@ class JpqlSqlBuilderTest {
     @Converter
     public static class CodeConverter implements AttributeConverter<Code, String> {
         @Override
-        public String write(Code value) {
+        public String convertToDatabaseColumn(Code value) {
             return value == null ? null : value.value();
         }
 
         @Override
-        public Code read(String value) {
+        public Code convertToEntityAttribute(String value) {
             return value == null ? null : new Code(value);
         }
     }
