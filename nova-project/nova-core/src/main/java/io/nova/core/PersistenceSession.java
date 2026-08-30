@@ -76,6 +76,10 @@ final class PersistenceSession {
             state = State.REMOVED;
         }
 
+        Object snapshotColumnValue(String columnName) {
+            return snapshot.get(columnName);
+        }
+
         /**
          * 스냅샷 대비 변경된 updatable 컬럼의 property 이름을 declaration 순서로 반환한다. 저장형
          * ({@link PersistentProperty#toColumnValue}) 값으로 비교하므로 converter 컬럼도 저장 표현 기준으로

@@ -2220,7 +2220,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             handleOrphans = (haveBaseline && trueOrphanIds.isEmpty())
                     ? Mono.empty()
                     : Mono.defer(() -> removeOrphans(
-                            childMetadata, mappedByProperty, ownerId, currentChildren, movedElsewhere).then());
+                            childMetadata, mappedByProperty, ownerId, currentChildren, movedElsewhere)
+                            .doOnSuccess(affected -> {
+                                // With a baseline the DML predicate's deleted identity set is exactly the
+                                // removed ids excluding explicit reparenting. Do not inspect mutable child.owner.
+                                if (haveBaseline) {
+                                    trueOrphanIds.forEach(id -> session.markRemovedById(childMetadata, id));
+                                }
+                            })
+                            .then());
         } else if (haveBaseline) {
             handleOrphans = trueOrphanIds.isEmpty()
                     ? Mono.empty()
@@ -2890,6 +2898,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private void markChildrenRemoved(
             PersistenceSession session, EntityMetadata<?> childMetadata, PersistentProperty mappedByProperty,
             Object parentId, List<Object> retainedIds) {
+        EntityMetadata<?> parentMetadata = metadataFactory.getEntityMetadata(mappedByProperty.manyToOneTargetType());
+        Object storedParentId = parentMetadata.idProperty().toColumnValue(parentId);
         for (PersistenceSession.ManagedEntry entry : session.managedEntries()) {
             if (!childMetadata.entityType().isAssignableFrom(entry.metadata().entityType())) {
                 continue;
@@ -2898,10 +2908,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             if (retainedIds.stream().anyMatch(id -> sameIdentifier(childMetadata, id, childId))) {
                 continue;
             }
-            Object parent = mappedByProperty.readReferenceInstance(entry.entity());
-            if (parent != null && sameIdentifier(
-                    metadataFactory.getEntityMetadata(parent.getClass()), parentId,
-                    metadataFactory.getEntityMetadata(parent.getClass()).readIdValue(parent))) {
+            // The preceding DELETE selected persisted FK values. The current association can already be null
+            // (bidirectional orphan removal) or point at a new parent, so it must not decide tombstoning.
+            if (Objects.equals(entry.snapshotColumnValue(mappedByProperty.columnName()), storedParentId)) {
                 entry.markRemoved();
             }
         }
