@@ -141,7 +141,7 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
             BigDecimal original = canonicalDecimal(value);
             float converted = value.floatValue();
             if (!Float.isFinite(converted)
-                    || original.compareTo(BigDecimal.valueOf((double) converted)) != 0) {
+                    || original.compareTo(new BigDecimal((double) converted)) != 0) {
                 throw new ArithmeticException("outside Float range");
             }
             return converted;
@@ -149,7 +149,7 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
         if (target == Double.class) {
             BigDecimal original = canonicalDecimal(value);
             double converted = value.doubleValue();
-            if (!Double.isFinite(converted) || original.compareTo(BigDecimal.valueOf(converted)) != 0) {
+            if (!Double.isFinite(converted) || original.compareTo(new BigDecimal(converted)) != 0) {
                 throw new ArithmeticException("outside Double range");
             }
             return converted;
