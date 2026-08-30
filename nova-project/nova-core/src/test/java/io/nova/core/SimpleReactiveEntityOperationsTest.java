@@ -54,6 +54,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderColumn;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -2777,6 +2778,114 @@ class SimpleReactiveEntityOperationsTest {
                 "the third flush must be zero-SQL after retry refreshes the ordered snapshot");
     }
 
+    @Test
+    void orphanRemovalWithNullOwnerTombstonesDirtyUnversionedChildBeforeFlush() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+        OrderedSessionChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        parent.children.remove(child);
+        child.parent = null;
+        child.name = "dirty";
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertTrue(session.managedEntry(metadata(OrderedSessionChild.class), child).isRemoved());
+        assertTrue(executor.executedStatements.stream().anyMatch(statement ->
+                statement.sql().startsWith("delete from ordered_session_children")));
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                statement.sql().startsWith("update ordered_session_children set name")));
+    }
+
+    @Test
+    void parentCascadeWithChangedOwnerTombstonesDirtyUnversionedChildBeforeFlush() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+        OrderedSessionChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        child.parent = new OrderedSessionParent(200L, "other");
+        child.name = "dirty";
+
+        StepVerifier.create(operations.delete(parent)
+                        .then(operations.flush())
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertTrue(session.managedEntry(metadata(OrderedSessionChild.class), child).isRemoved());
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                statement.sql().startsWith("update ordered_session_children")));
+    }
+
+    @Test
+    void orphanRemovalWithNullOwnerTombstonesDirtyVersionedChildBeforeFlush() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedRemovalParent parent = versionedRemovalParent();
+        VersionedRemovalChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        parent.children.clear();
+        child.parent = null;
+        child.name = "dirty";
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertTrue(session.managedEntry(metadata(VersionedRemovalChild.class), child).isRemoved());
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                statement.sql().startsWith("update versioned_removal_children")));
+    }
+
+    @Test
+    void parentCascadeWithChangedOwnerTombstonesDirtyVersionedChildBeforeFlush() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedRemovalParent parent = versionedRemovalParent();
+        VersionedRemovalChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        child.parent = new VersionedRemovalParent(200L, "other");
+        child.name = "dirty";
+
+        StepVerifier.create(operations.delete(parent)
+                        .then(operations.flush())
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertTrue(session.managedEntry(metadata(VersionedRemovalChild.class), child).isRemoved());
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                statement.sql().startsWith("update versioned_removal_children")));
+    }
+
+    private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
+        PersistenceSession session = new PersistenceSession();
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        io.nova.metadata.EntityMetadata<P> parentMetadata =
+                factory.getEntityMetadata((Class<P>) parent.getClass());
+        io.nova.metadata.EntityMetadata<C> childMetadata =
+                factory.getEntityMetadata((Class<C>) child.getClass());
+        session.registerOnLoad(parentMetadata, parent);
+        session.registerOnLoad(childMetadata, child);
+        session.managedEntry(parentMetadata, parent).putCollectionSnapshot("children", List.of(
+                childMetadata.readIdValue(child)));
+        return session;
+    }
+
+    private <T> io.nova.metadata.EntityMetadata<T> metadata(Class<T> type) {
+        return new EntityMetadataFactory(new DefaultNamingStrategy()).getEntityMetadata(type);
+    }
+
+    private VersionedRemovalParent versionedRemovalParent() {
+        VersionedRemovalParent parent = new VersionedRemovalParent(100L, "parent");
+        VersionedRemovalChild child = new VersionedRemovalChild(1L, "first", 0L);
+        child.parent = parent;
+        parent.children.add(child);
+        return parent;
+    }
+
     private Mono<Void> prepareOrderedCollectionBaseline(
             ReactiveEntityOperations operations, CapturingExecutor executor, OrderedSessionParent parent) {
         return operations.save(parent)
@@ -3151,6 +3260,49 @@ class SimpleReactiveEntityOperationsTest {
         private OrderedSessionChild(Long id, String name) {
             this.id = id;
             this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "versioned_removal_parents")
+    private static final class VersionedRemovalParent {
+        @Id
+        private Long id;
+        private String name;
+
+        @OneToMany(mappedBy = "parent", targetEntity = VersionedRemovalChild.class,
+                cascade = CascadeType.REMOVE, orphanRemoval = true)
+        private List<VersionedRemovalChild> children = new ArrayList<>();
+
+        private VersionedRemovalParent() {
+        }
+
+        private VersionedRemovalParent(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "versioned_removal_children")
+    private static final class VersionedRemovalChild {
+        @Id
+        private Long id;
+        private String name;
+        @Version
+        private Long version;
+
+        @ManyToOne
+        @JoinColumn(name = "parent_id")
+        private VersionedRemovalParent parent;
+
+        private VersionedRemovalChild() {
+        }
+
+        private VersionedRemovalChild(Long id, String name, Long version) {
+            this.id = id;
+            this.name = name;
+            this.version = version;
         }
     }
 
