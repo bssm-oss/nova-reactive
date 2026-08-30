@@ -166,7 +166,7 @@ public final class JpqlQuery<T> {
             return Flux.error(e);
         }
         Flux<RawRow> rows = operations.queryNative(
-                toNativeQuery(translated), row -> snapshot(row, translated.slots(), columns));
+                toNativeQuery(translated), row -> snapshot(row, translated.slots(), translated.selectionCount()));
         return pageResults(rows).map(mapper);
     }
 
