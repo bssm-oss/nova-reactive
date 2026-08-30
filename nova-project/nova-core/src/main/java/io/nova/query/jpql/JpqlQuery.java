@@ -165,8 +165,9 @@ public final class JpqlQuery<T> {
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
+        // Preserve raw driver values until pagination excludes skipped rows; conversion and DTO coercion happen afterward.
         Flux<RawRow> rows = operations.queryNative(
-                toNativeQuery(translated), row -> snapshot(row, translated.slots(), translated.selectionCount()));
+                toNativeQuery(translated), row -> snapshot(row, translated.selectionCount()));
         return pageResults(rows).map(mapper);
     }
 
@@ -476,24 +477,10 @@ public final class JpqlQuery<T> {
     }
 
     /** Captures a row before reactive pagination so skipped rows never reach DTO coercion. */
-    private static RawRow snapshot(
-            RowAccessor row, List<TranslatedSql.ResultSlot> slots, int columns) {
+    private static RawRow snapshot(RowAccessor row, int columns) {
         Object[] values = new Object[columns];
         for (int index = 0; index < columns; index++) {
-            Class<?> type = Object.class;
-            for (TranslatedSql.ResultSlot slot : slots) {
-                if (slot.compositeFk() != null
-                        && index >= slot.firstColumn()
-                        && index < slot.firstColumn() + slot.columnCount()) {
-                    type = boxed(slot.compositeFk().columns().get(index - slot.firstColumn()).columnType());
-                    break;
-                }
-                if (slot.property() != null && index == slot.firstColumn()) {
-                    type = boxed(slot.property().columnType());
-                    break;
-                }
-            }
-            values[index] = row.get(columnLabel(index), type);
+            values[index] = row.get(columnLabel(index), Object.class);
         }
         return new RawRow(values);
     }

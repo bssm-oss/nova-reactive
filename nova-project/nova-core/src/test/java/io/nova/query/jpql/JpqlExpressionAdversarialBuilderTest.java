@@ -64,7 +64,8 @@ class JpqlExpressionAdversarialBuilderTest {
                         + "left join \"department\" d on e.\"dept_id\" = d.\"id\" "
                         + "join \"company\" c on d.\"company_id\" = c.\"id\" where c.\"name\" = ?",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Literal(3L), new JpqlBinding.Named("co")), t.bindings());
+        assertEquals(new JpqlBinding.Literal(3L), t.bindings().get(0));
+        assertConverted(t.bindings().get(1), "co", "name");
     }
 
     @Test
@@ -80,7 +81,8 @@ class JpqlExpressionAdversarialBuilderTest {
         assertEquals(
                 "select left(e.\"name\", ?) as \"c0\" from \"employee\" e where e.\"age\" > ?",
                 t.sql());
-        assertEquals(List.of(new JpqlBinding.Named("n"), new JpqlBinding.Named("a")), t.bindings());
+        assertEquals(new JpqlBinding.Named("n"), t.bindings().get(0));
+        assertConverted(t.bindings().get(1), "a", "age");
     }
 
     // ---- Edge 2: <> ALL 렌더 ----------------------------------------------------------------
@@ -257,4 +259,12 @@ class JpqlExpressionAdversarialBuilderTest {
             throw new UnsupportedOperationException("not needed for JPQL builder tests");
         }
     }
+
+    private static void assertConverted(JpqlBinding binding, String name, String propertyName) {
+        assertTrue(binding instanceof JpqlBinding.Converted, "expected converted binding, got " + binding);
+        JpqlBinding.Converted converted = (JpqlBinding.Converted) binding;
+        assertEquals(new JpqlBinding.Named(name), converted.source());
+        assertEquals(propertyName, converted.property().propertyName());
+    }
+
 }
