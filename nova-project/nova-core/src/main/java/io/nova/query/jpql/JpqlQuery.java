@@ -262,9 +262,9 @@ public final class JpqlQuery<T> {
                 select.rootAlias(),
                 filterJoins,
                 select.where(),
-                select.orderBy(),
+                List.of(),
                 null,
-                List.of());
+                select.orderBy());
     }
 
     /** {@code firstResult}/{@code maxResults}를 {@link Pageable}로. 둘 다 없으면 {@code null}. */
