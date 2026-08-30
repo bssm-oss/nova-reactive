@@ -9,6 +9,8 @@ import io.nova.query.jpql.ast.SelectItem;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -26,6 +28,12 @@ class JpqlParserTest {
 
     private static JpqlStatement.Select parseSelect(String jpql) {
         return assertInstanceOf(JpqlStatement.Select.class, parse(jpql));
+    }
+
+    private static Object literalValue(String literal) {
+        Predicate.Comparison comparison = assertInstanceOf(Predicate.Comparison.class,
+                parseSelect("SELECT e FROM Employee e WHERE e.age = " + literal).where());
+        return assertInstanceOf(Expression.Literal.class, comparison.right()).value();
     }
 
     @Test
@@ -93,15 +101,55 @@ class JpqlParserTest {
     }
 
     @Test
-    void parsesNumericLiteralsAsLongAndBigDecimal() {
+    void parsesNumericLiteralsWithJpaDefaultAndExplicitTypes() {
         Predicate.Comparison intCmp = assertInstanceOf(Predicate.Comparison.class,
                 parseSelect("SELECT e FROM Employee e WHERE e.age = 42").where());
-        assertEquals(42L, assertInstanceOf(Expression.Literal.class, intCmp.right()).value());
+        assertEquals(42, assertInstanceOf(Expression.Literal.class, intCmp.right()).value());
 
         Predicate.Comparison decCmp = assertInstanceOf(Predicate.Comparison.class,
                 parseSelect("SELECT e FROM Employee e WHERE e.salary = 1234.50").where());
-        assertEquals(new BigDecimal("1234.50"),
+        assertEquals(1234.50d,
                 assertInstanceOf(Expression.Literal.class, decCmp.right()).value());
+
+        assertEquals(42L, literalValue("42l"));
+        assertEquals(1.5f, literalValue("1.5F"));
+        assertEquals(1.5d, literalValue("1.5d"));
+        assertEquals(new BigInteger("9223372036854775808"), literalValue("9223372036854775808bi"));
+        assertEquals(new BigDecimal("1234.50"), literalValue("1234.50BD"));
+        assertEquals(1000d, literalValue("1e3"));
+        assertEquals(new BigDecimal("1E+1000"), literalValue("1e+1000bd"));
+    }
+
+    @Test
+    void rejectsInvalidOrOverflowingNumericLiterals() {
+        for (String literal : List.of("2147483648", "9223372036854775808L", "1e309", "1e", "1e+",
+                "1Lx", "1.0L", "1.0BI", "1.2.3")) {
+            assertThrows(JpqlSyntaxException.class,
+                    () -> parseSelect("SELECT e FROM Employee e WHERE e.age = " + literal), literal);
+        }
+    }
+
+    @Test
+    void parsesNegativeNumericLiteralsWithoutArithmeticPromotion() {
+        assertEquals(-1, literalValue("-1"));
+        assertEquals(-1L, literalValue("-1L"));
+        assertEquals(-1f, literalValue("-1F"));
+        assertEquals(-1d, literalValue("-1D"));
+        assertEquals(new BigInteger("-1"), literalValue("-1BI"));
+        assertEquals(new BigDecimal("-1"), literalValue("-1BD"));
+        assertEquals(Integer.MIN_VALUE, literalValue("-2147483648"));
+        assertEquals(Long.MIN_VALUE, literalValue("-9223372036854775808L"));
+    }
+
+    @Test
+    void rejectsFloatingPointUnderflowButAcceptsZeroAndSubnormalValues() {
+        for (String literal : List.of("1e-50F", "1e-400", "1e-400D")) {
+            assertThrows(JpqlSyntaxException.class, () -> literalValue(literal), literal);
+        }
+        assertEquals(0f, literalValue("0F"));
+        assertEquals(0d, literalValue("0e-400"));
+        assertEquals(Float.MIN_VALUE, literalValue("1.4e-45F"));
+        assertEquals(Double.MIN_VALUE, literalValue("4.9e-324D"));
     }
 
     @Test

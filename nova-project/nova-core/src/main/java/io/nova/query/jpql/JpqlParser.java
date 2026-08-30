@@ -15,6 +15,7 @@ import io.nova.query.jpql.ast.Subquery;
 import io.nova.query.jpql.ast.WhenClause;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -417,11 +418,17 @@ public final class JpqlParser {
     private Expression parseUnary() {
         if (isOperator("-")) {
             advance();
+            if (peek().type() == TokenType.NUMBER) {
+                return new Expression.Literal(numberValue(advance().text(), true));
+            }
             // 단항 마이너스는 0 - x 로 정규화
-            return new Expression.Arithmetic(ArithmeticOp.SUBTRACT, new Expression.Literal(0L), parseUnary());
+            return new Expression.Arithmetic(ArithmeticOp.SUBTRACT, new Expression.Literal(0), parseUnary());
         }
         if (isOperator("+")) {
             advance();
+            if (peek().type() == TokenType.NUMBER) {
+                return new Expression.Literal(numberValue(advance().text(), false));
+            }
             return parseUnary();
         }
         return parsePrimaryExpression();
@@ -811,14 +818,75 @@ public final class JpqlParser {
     }
 
     private static Object numberValue(String text) {
-        if (text.indexOf('.') >= 0) {
-            return new BigDecimal(text);
+        return numberValue(text, false);
+    }
+
+    private static Object numberValue(String text, boolean negative) {
+        String suffix = "";
+        String value = text;
+        if (text.length() >= 2) {
+            String candidate = text.substring(text.length() - 2).toUpperCase(Locale.ROOT);
+            if (candidate.equals("BI") || candidate.equals("BD")) {
+                suffix = candidate;
+                value = text.substring(0, text.length() - 2);
+            }
+        }
+        if (suffix.isEmpty() && !text.isEmpty()) {
+            char last = text.charAt(text.length() - 1);
+            if (last == 'l' || last == 'L' || last == 'f' || last == 'F' || last == 'd' || last == 'D') {
+                suffix = String.valueOf(Character.toUpperCase(last));
+                value = text.substring(0, text.length() - 1);
+            }
+        }
+        if (negative) {
+            value = "-" + value;
+        }
+        boolean approximate = value.indexOf('.') >= 0 || value.indexOf('e') >= 0 || value.indexOf('E') >= 0;
+        if ((suffix.equals("L") || suffix.equals("BI")) && approximate) {
+            throw new JpqlSyntaxException("Integral numeric literal must not contain a decimal point or exponent: " + text);
         }
         try {
-            return Long.parseLong(text);
+            return switch (suffix) {
+                case "L" -> Long.valueOf(value);
+                case "F" -> finiteFloat(value, text);
+                case "D" -> finiteDouble(value, text);
+                case "BI" -> new BigInteger(value);
+                case "BD" -> new BigDecimal(value);
+                case "" -> defaultNumericValue(value, text, approximate);
+                default -> throw new JpqlSyntaxException("Unsupported numeric literal suffix in " + text);
+            };
         } catch (NumberFormatException e) {
-            return new BigDecimal(text);
+            throw new JpqlSyntaxException("Numeric literal is out of range or malformed: " + text);
         }
+    }
+
+    private static Object defaultNumericValue(String value, String text, boolean approximate) {
+        if (approximate) {
+            return finiteDouble(value, text);
+        }
+        return Integer.valueOf(value);
+    }
+
+    private static Float finiteFloat(String value, String text) {
+        Float result = Float.valueOf(value);
+        if (!Float.isFinite(result)) {
+            throw new JpqlSyntaxException("Numeric literal is out of range: " + text);
+        }
+        if (result == 0.0f && new BigDecimal(value).signum() != 0) {
+            throw new JpqlSyntaxException("Numeric literal underflows to zero: " + text);
+        }
+        return result;
+    }
+
+    private static Double finiteDouble(String value, String text) {
+        Double result = Double.valueOf(value);
+        if (!Double.isFinite(result)) {
+            throw new JpqlSyntaxException("Numeric literal is out of range: " + text);
+        }
+        if (result == 0.0d && new BigDecimal(value).signum() != 0) {
+            throw new JpqlSyntaxException("Numeric literal underflows to zero: " + text);
+        }
+        return result;
     }
 
     private static String describe(JpqlToken t) {

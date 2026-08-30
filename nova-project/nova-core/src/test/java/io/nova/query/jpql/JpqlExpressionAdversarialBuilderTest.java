@@ -51,7 +51,7 @@ class JpqlExpressionAdversarialBuilderTest {
                         + "left join \"department\" d on e.\"dept_id\" = d.\"id\" where d.\"name\" = ?",
                 t.sql());
         // bind 순서: SELECT의 리터럴 2가 먼저, 그 다음 WHERE의 'Eng'.
-        assertEquals(List.of(new JpqlBinding.Literal(2L), new JpqlBinding.Literal("Eng")), t.bindings());
+        assertEquals(List.of(new JpqlBinding.Literal(2), new JpqlBinding.Literal("Eng")), t.bindings());
     }
 
     @Test
@@ -64,7 +64,7 @@ class JpqlExpressionAdversarialBuilderTest {
                         + "left join \"department\" d on e.\"dept_id\" = d.\"id\" "
                         + "join \"company\" c on d.\"company_id\" = c.\"id\" where c.\"name\" = ?",
                 t.sql());
-        assertEquals(new JpqlBinding.Literal(3L), t.bindings().get(0));
+        assertEquals(new JpqlBinding.Literal(3), t.bindings().get(0));
         assertConverted(t.bindings().get(1), "co", "name");
     }
 
@@ -72,7 +72,7 @@ class JpqlExpressionAdversarialBuilderTest {
     void nestedLeftOfRightRenders() {
         TranslatedSql t = scalar("SELECT LEFT(RIGHT(e.name, 3), 2) FROM Employee e");
         assertEquals("select left(right(e.\"name\", ?), ?) as \"c0\" from \"employee\" e", t.sql());
-        assertEquals(List.of(new JpqlBinding.Literal(3L), new JpqlBinding.Literal(2L)), t.bindings());
+        assertEquals(List.of(new JpqlBinding.Literal(3), new JpqlBinding.Literal(2)), t.bindings());
     }
 
     @Test
