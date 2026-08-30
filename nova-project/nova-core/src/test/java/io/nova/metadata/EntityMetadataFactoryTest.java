@@ -192,7 +192,8 @@ class EntityMetadataFactoryTest {
                 () -> factory.getEntityMetadata(MissingIdEntity.class)
         );
 
-        assertTrue(exception.getMessage().contains("must declare a field annotated with @Id"));
+        assertTrue(exception.getMessage().contains(
+                "must declare an access member annotated with @Id or @EmbeddedId"));
     }
 
     @Test
