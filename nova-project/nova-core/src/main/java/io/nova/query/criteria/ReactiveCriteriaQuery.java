@@ -289,6 +289,11 @@ public final class ReactiveCriteriaQuery<T> {
         }
         CriteriaSql translated = sqlBuilder.build(query, bindings);
         int columns = translated.selectionCount();
+        if (isSingleAggregateSelection(columns)) {
+            return operations.<AggregateValue<T>>queryNative(new NativeQuery(translated.sql(), translated.bindings()),
+                            row -> new AggregateValue<>(mapAggregateRow(row)))
+                    .flatMap(this::omitNullAggregate);
+        }
         Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
         return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);
     }
@@ -301,6 +306,11 @@ public final class ReactiveCriteriaQuery<T> {
         }
         CriteriaSql translated = aliasedSqlBuilder.buildScalar(query, bindings);
         int columns = translated.selectionCount();
+        if (isSingleAggregateSelection(columns)) {
+            return operations.<AggregateValue<T>>queryNative(new NativeQuery(translated.sql(), translated.bindings()),
+                            row -> new AggregateValue<>(mapAggregateRow(row)))
+                    .flatMap(this::omitNullAggregate);
+        }
         Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
         return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);
     }
@@ -402,12 +412,34 @@ public final class ReactiveCriteriaQuery<T> {
     @SuppressWarnings("unchecked")
     private T mapRow(RowAccessor row, int columns) {
         if (columns == 1) {
-            return (T) row.get(CriteriaSqlBuilder.columnLabel(0), Object.class);
+            return (T) mapSelectionValue(0, row.get(CriteriaSqlBuilder.columnLabel(0), Object.class));
         }
         Object[] values = new Object[columns];
         for (int i = 0; i < columns; i++) {
-            values[i] = row.get(CriteriaSqlBuilder.columnLabel(i), Object.class);
+            values[i] = mapSelectionValue(i, row.get(CriteriaSqlBuilder.columnLabel(i), Object.class));
         }
         return (T) values;
+    }
+
+    private boolean isSingleAggregateSelection(int columns) {
+        return columns == 1 && query.selections().size() == 1
+                && query.selections().get(0) instanceof CriteriaAggregate<?>;
+    }
+
+    @SuppressWarnings("unchecked")
+    private T mapAggregateRow(RowAccessor row) {
+        return (T) mapSelectionValue(0, row.get(CriteriaSqlBuilder.columnLabel(0), Object.class));
+    }
+
+    private Object mapSelectionValue(int index, Object value) {
+        jakarta.persistence.criteria.Selection<?> selection = query.selections().get(index);
+        return selection instanceof CriteriaAggregate<?> aggregate ? aggregate.normalizeResult(value) : value;
+    }
+
+    private Flux<T> omitNullAggregate(AggregateValue<T> value) {
+        return value.value() == null ? Flux.empty() : Flux.just(value.value());
+    }
+
+    private record AggregateValue<T>(T value) {
     }
 }

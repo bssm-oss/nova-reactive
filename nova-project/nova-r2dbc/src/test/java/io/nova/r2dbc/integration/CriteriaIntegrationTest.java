@@ -40,10 +40,10 @@ class CriteriaIntegrationTest {
         schema.create(Employee.class).block();
         criteria = new ReactiveCriteriaExecutor(support.operations(), support.dialect(), support.metadataFactory());
 
-        support.operations().save(new Employee("Ada", new BigDecimal("150"), 40, "ace")).block();
-        support.operations().save(new Employee("Bob", new BigDecimal("90"), 25, null)).block();
-        support.operations().save(new Employee("Cara", new BigDecimal("120"), 35, null)).block();
-        support.operations().save(new Employee("Dan", new BigDecimal("80"), 25, null)).block();
+        support.operations().save(new Employee("Ada", new BigDecimal("150"), 40, 1.5f, "ace")).block();
+        support.operations().save(new Employee("Bob", new BigDecimal("90"), 25, 2.5f, null)).block();
+        support.operations().save(new Employee("Cara", new BigDecimal("120"), 35, 3.5f, null)).block();
+        support.operations().save(new Employee("Dan", new BigDecimal("80"), 25, 4.5f, null)).block();
     }
 
     private CriteriaBuilder cb() {
@@ -162,6 +162,50 @@ class CriteriaIntegrationTest {
     }
 
     @Test
+    void genericAndWidenedSumsUseTheirDeclaredResultTypes() {
+        CriteriaBuilder cb = cb();
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        cq.multiselect(cb.sum(e.<Integer>get("age")),
+                cb.sumAsLong(e.<Integer>get("age")),
+                cb.sumAsDouble(e.<Float>get("rating")));
+
+        StepVerifier.create(criteria.createQuery(cq).getSingleResult())
+                .assertNext(row -> {
+                    Object[] values = (Object[]) row;
+                    assertEquals(Integer.class, values[0].getClass());
+                    assertEquals(125, values[0]);
+                    assertEquals(Long.class, values[1].getClass());
+                    assertEquals(125L, values[1]);
+                    assertEquals(Double.class, values[2].getClass());
+                    assertEquals(12.0, values[2]);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void emptySingleAggregateIsEmptyButMultiselectRetainsNull() {
+        CriteriaBuilder cb = cb();
+        CriteriaQuery<Object> single = cb.createQuery(Object.class);
+        Root<Employee> singleEmployee = single.from(Employee.class);
+        single.select(cb.sum(singleEmployee.<Integer>get("age")))
+                .where(cb.equal(singleEmployee.<String>get("name"), "nobody"));
+        StepVerifier.create(criteria.createQuery(single).getResultList()).verifyComplete();
+
+        CriteriaQuery<Object> multi = cb.createQuery(Object.class);
+        Root<Employee> multiEmployee = multi.from(Employee.class);
+        multi.multiselect(cb.sum(multiEmployee.<Integer>get("age")), cb.count(multiEmployee))
+                .where(cb.equal(multiEmployee.<String>get("name"), "nobody"));
+        StepVerifier.create(criteria.createQuery(multi).getSingleResult())
+                .assertNext(row -> {
+                    Object[] values = (Object[]) row;
+                    assertEquals(null, values[0]);
+                    assertEquals(0L, values[1]);
+                })
+                .verifyComplete();
+    }
+
+    @Test
     void groupByReturnsObjectArrays() {
         CriteriaBuilder cb = cb();
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
@@ -239,16 +283,19 @@ class CriteriaIntegrationTest {
         private BigDecimal salary;
         @Column(name = "age")
         private int age;
+        @Column(name = "rating")
+        private Float rating;
         @Column(name = "nickname")
         private String nickname;
 
         public Employee() {
         }
 
-        public Employee(String name, BigDecimal salary, int age, String nickname) {
+        public Employee(String name, BigDecimal salary, int age, Float rating, String nickname) {
             this.name = name;
             this.salary = salary;
             this.age = age;
+            this.rating = rating;
             this.nickname = nickname;
         }
 

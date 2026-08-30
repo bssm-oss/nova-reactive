@@ -10,7 +10,10 @@ import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
+import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
+import jakarta.persistence.Converter;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
@@ -31,6 +34,7 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -221,6 +225,130 @@ class CriteriaSqlBuilderTest {
                         + "from \"employee\" having (sum(\"age\") > ? and avg(\"age\") < ? and max(\"age\") <= ?)",
                 t.sql());
         assertEquals(List.of(10, 20.0, 30), t.bindings());
+    }
+
+    @Test
+    void supportsWidenedSumResultTypesAndBindsTheirResultDomains() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Expression<Long> integerSum = cb.sumAsLong(e.<Integer>get("age"));
+        Expression<Double> floatSum = cb.sumAsDouble(e.<Float>get("rating"));
+        cq.multiselect(integerSum, floatSum)
+                .having(cb.and(cb.ge(integerSum, 10L), cb.lt(floatSum, 20.0)));
+
+        CriteriaSql t = scalar(cq);
+        assertEquals(Long.class, integerSum.getJavaType());
+        assertEquals(Double.class, floatSum.getJavaType());
+        assertEquals(
+                "select sum(\"age\") as \"c0\", sum(\"rating\") as \"c1\" from \"employee\" "
+                        + "having (sum(\"age\") >= ? and sum(\"rating\") < ?)",
+                t.sql());
+        assertEquals(List.of(10L, 20.0), t.bindings());
+    }
+
+    @Test
+    void widenedSumHavingDoesNotApplyTheOperandConverter() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Expression<Integer> genericSum = cb.sum(e.<Integer>get("convertedAge"));
+        Expression<Long> widenedSum = cb.sumAsLong(e.<Integer>get("convertedAge"));
+        cq.multiselect(genericSum, widenedSum)
+                .having(cb.and(cb.ge(genericSum, 10), cb.ge(widenedSum, 10L)));
+
+        CriteriaSql t = scalar(cq);
+        assertEquals(List.of(110L, 10L), t.bindings());
+    }
+
+    @Test
+    void convertedAggregateHavingUsesResultDomainsInBothSqlBuilders() {
+        CriteriaQuery<Object> plain = cb.createQuery(Object.class);
+        Root<Employee> plainEmployee = plain.from(Employee.class);
+        Expression<Long> plainCount = cb.count(plainEmployee.<Integer>get("convertedAge"));
+        Expression<Double> plainAverage = cb.avg(plainEmployee.<Integer>get("convertedAge"));
+        Expression<Integer> plainSum = cb.sum(plainEmployee.<Integer>get("convertedAge"));
+        plain.multiselect(plainCount, plainAverage, plainSum)
+                .having(cb.and(cb.ge(plainCount, 1L), cb.ge(plainAverage, 2.0), cb.ge(plainSum, 10)));
+        assertEquals(List.of(1L, 2.0, 110L), scalar(plain).bindings());
+
+        CriteriaQuery<Object> joined = cb.createQuery(Object.class);
+        Root<Employee> joinedEmployee = joined.from(Employee.class);
+        joinedEmployee.join("department");
+        Expression<Long> joinedCount = cb.count(joinedEmployee.<Integer>get("convertedAge"));
+        Expression<Double> joinedAverage = cb.avg(joinedEmployee.<Integer>get("convertedAge"));
+        Expression<Integer> joinedSum = cb.sum(joinedEmployee.<Integer>get("convertedAge"));
+        joined.multiselect(joinedCount, joinedAverage, joinedSum)
+                .having(cb.and(cb.ge(joinedCount, 1L), cb.ge(joinedAverage, 2.0), cb.ge(joinedSum, 10)));
+        assertEquals(List.of(1L, 2.0, 110L), aliased(joined).bindings());
+    }
+
+    @Test
+    void normalizesDriverAggregateNumbersOnlyWhenExactlyRepresentable() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        CriteriaAggregate<?> integerSum = (CriteriaAggregate<?>) cb.sum(e.<Integer>get("age"));
+        CriteriaAggregate<?> longSum = (CriteriaAggregate<?>) cb.sumAsLong(e.<Integer>get("age"));
+
+        assertEquals(12, integerSum.normalizeResult(new BigDecimal("12")));
+        assertEquals(12L, longSum.normalizeResult(BigInteger.valueOf(12)));
+        assertThrows(CriteriaException.class, () -> integerSum.normalizeResult(new BigDecimal("12.5")));
+        assertThrows(CriteriaException.class,
+                () -> integerSum.normalizeResult(BigInteger.valueOf(Integer.MAX_VALUE).add(BigInteger.ONE)));
+    }
+
+    @Test
+    void rejectsInexactFloatingAggregateNormalization() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        CriteriaAggregate<?> floatSum = (CriteriaAggregate<?>) cb.sum(e.<Float>get("rating"));
+        CriteriaAggregate<?> average = (CriteriaAggregate<?>) cb.avg(e.<Integer>get("age"));
+
+        assertEquals(1.5f, floatSum.normalizeResult(new BigDecimal("1.5")));
+        assertThrows(CriteriaException.class, () -> floatSum.normalizeResult(new BigDecimal("0.1")));
+        assertThrows(CriteriaException.class, () -> floatSum.normalizeResult(new BigDecimal("16777217")));
+        assertEquals(9007199254740992d, average.normalizeResult(new BigDecimal("9007199254740992")));
+        assertThrows(CriteriaException.class, () -> average.normalizeResult(new BigDecimal("0.1")));
+        assertThrows(CriteriaException.class, () -> average.normalizeResult(new BigDecimal("9007199254740993")));
+    }
+
+    @Test
+    void normalizesExactFloatingWrapperCrossovers() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        CriteriaAggregate<?> floatSum = (CriteriaAggregate<?>) cb.sum(e.<Float>get("rating"));
+        CriteriaAggregate<?> average = (CriteriaAggregate<?>) cb.avg(e.<Integer>get("age"));
+        float floatValue = 0.1f;
+
+        assertEquals((double) floatValue, average.normalizeResult(floatValue));
+        assertEquals(floatValue, floatSum.normalizeResult((double) floatValue));
+        assertThrows(CriteriaException.class, () -> floatSum.normalizeResult(0.1d));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void widenedSumsRequireExactlyIntegerAndFloatOperands() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+
+        assertThrows(CriteriaException.class, () -> cb.sumAsLong((Expression) e.get("salary")));
+        assertThrows(CriteriaException.class, () -> cb.sumAsDouble((Expression) e.get("age")));
+    }
+
+    @Test
+    void emptySingleAggregateDoesNotEmitNullInEitherSqlRoute() {
+        CriteriaQuery<Object> plain = cb.createQuery(Object.class);
+        Root<Employee> plainEmployee = plain.from(Employee.class);
+        plain.select(cb.sum(plainEmployee.<Integer>get("age")));
+        StepVerifier.create(new ReactiveCriteriaQuery<>(
+                        (CriteriaQueryImpl<Object>) plain, new NullAggregateOperations(), builder, aliasedBuilder)
+                .getResultList()).verifyComplete();
+
+        CriteriaQuery<Object> joined = cb.createQuery(Object.class);
+        Root<Employee> joinedEmployee = joined.from(Employee.class);
+        joinedEmployee.join("department");
+        joined.select(cb.sum(joinedEmployee.<Integer>get("age")));
+        StepVerifier.create(new ReactiveCriteriaQuery<>(
+                        (CriteriaQueryImpl<Object>) joined, new NullAggregateOperations(), builder, aliasedBuilder)
+                .getResultList()).verifyComplete();
     }
 
     @Test
@@ -1175,6 +1303,11 @@ class CriteriaSqlBuilderTest {
         private BigDecimal salary;
         @Column(name = "age")
         private int age;
+        @Column(name = "rating")
+        private Float rating;
+        @Column(name = "converted_age")
+        @Convert(converter = OffsetIntegerConverter.class)
+        private Integer convertedAge;
         @ManyToOne
         @JoinColumn(name = "dept_id")
         private Department department;
@@ -1190,6 +1323,19 @@ class CriteriaSqlBuilderTest {
         private String name;
         @OneToMany(targetEntity = Employee.class, mappedBy = "department")
         private List<Employee> employees;
+    }
+
+    @Converter
+    public static class OffsetIntegerConverter implements AttributeConverter<Integer, Long> {
+        @Override
+        public Long convertToDatabaseColumn(Integer attribute) {
+            return attribute == null ? null : attribute.longValue() + 100L;
+        }
+
+        @Override
+        public Integer convertToEntityAttribute(Long databaseData) {
+            return databaseData == null ? null : Math.toIntExact(databaseData - 100L);
+        }
     }
 
     @Entity
@@ -1268,6 +1414,18 @@ class CriteriaSqlBuilderTest {
         public <T> Flux<T> queryNative(NativeQuery query, Function<RowAccessor, T> mapper) {
             nativeQueries.add(query);
             return Flux.empty();
+        }
+    }
+
+    private static final class NullAggregateOperations extends RejectingOperations {
+        @Override
+        public <T> Flux<T> queryNative(NativeQuery query, Function<RowAccessor, T> mapper) {
+            return Flux.just(mapper.apply(new RowAccessor() {
+                @Override
+                public <T> T get(String columnName, Class<T> type) {
+                    return null;
+                }
+            }));
         }
     }
 
