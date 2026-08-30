@@ -3068,25 +3068,26 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     @Override
     public <T, ID> Mono<Long> deleteById(Class<T> entityType, ID id) {
-        return Mono.deferContextual(ctx -> {
+        Objects.requireNonNull(entityType, "entityType must not be null");
         Objects.requireNonNull(id, "id must not be null");
-        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+        return Mono.deferContextual(ctx -> {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
             Mono<Long> deleted;
-        if (metadata.hasInheritance() && metadata.inheritance().joined()) {
+            if (metadata.hasInheritance() && metadata.inheritance().joined()) {
                 deleted = deleteJoined(metadata, id);
             } else {
-        Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
-        if (softDelete.isPresent()) {
-            Object deletedAt = currentTimeFor(softDelete.get());
+                Optional<PersistentProperty> softDelete = metadata.softDeleteProperty();
+                if (softDelete.isPresent()) {
+                    Object deletedAt = currentTimeFor(softDelete.get());
                     deleted = sqlExecutor.execute(dialect.sqlRenderer().softDeleteById(metadata, id, deletedAt));
                 } else {
-        Mono<Void> ownedCleanup = removeOwnedCollectionRows(metadata, id);
+                    Mono<Void> ownedCleanup = removeOwnedCollectionRows(metadata, id);
                     deleted = metadata.hasSecondaryTables()
                             ? ownedCleanup.then(deleteSecondaryRows(metadata, id))
                                     .then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)))
                             : ownedCleanup.then(sqlExecutor.execute(dialect.sqlRenderer().deleteById(metadata, id)));
-        }
-        }
+                }
+            }
             return deleted.doOnNext(affected -> currentSession(ctx).ifPresent(
                     session -> session.markRemovedById(metadata, id)));
         });
