@@ -964,9 +964,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // removeOrphans가 retainedIds를 동기적으로 읽으므로 반드시 subscription 시점(=persistChildren 완료 후)에
         // 호출되도록 Mono.defer로 감싼다. 그러지 않으면 assembly 시점에 아직 save 전인 child의 id(null)를 읽어
         // retainedIds가 비고, 결국 "이 parent의 child 전부 삭제"로 붕괴해 방금 저장한 child까지 지워진다.
-        // 이 stateless 경로에는 세션-바운드 reparenting 개념이 없으므로 제외 집합은 항상 비어 있다.
+        // 이 stateless 경로에는 세션-바운드 reparenting 개념이 없으므로 제외 집합은 항상 빈 리스트를 넘긴다.
         return persistChildren.then(
-                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parentId, children, List.of())).then());
+                Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, parentId, children, List.of())
+                        // The removed child's reverse cascade may point back at this stateless save owner.
+                        // Seed its persistence identity so that back-edge cannot delete the owner.
+                        .contextWrite(context -> {
+                            java.util.Set<RemoveKey> visited = context.<java.util.Set<RemoveKey>>
+                                    getOrEmpty(REMOVE_VISITED_KEY).orElseGet(java.util.LinkedHashSet::new);
+                            visited.add(removeKey(metadata, parentId));
+                            return context.put(REMOVE_VISITED_KEY, visited);
+                        })
+                        .then()));
     }
 
     /**

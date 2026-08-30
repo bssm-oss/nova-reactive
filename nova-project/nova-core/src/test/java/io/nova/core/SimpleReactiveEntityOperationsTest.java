@@ -2985,6 +2985,22 @@ class SimpleReactiveEntityOperationsTest {
         assertEquals(2, executor.executedStatements.size());
     }
 
+    @Test
+    void statelessOrphanRemovalDoesNotCascadeBackToSavedOwner() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryManyResults.addLast(List.of(
+                new MapRowAccessor(Map.of("id", 2L, "parent_id", 1L))));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackChildrenOwner owner = new CallbackChildrenOwner(1L);
+
+        StepVerifier.create(operations.save(owner)).expectNext(owner).verifyComplete();
+
+        assertEquals(List.of("child-pre", "child-post"), RemovalCallbacks.events);
+        assertEquals(2, executor.executedStatements.size(),
+                "save updates owner once and orphan removal deletes only the child");
+    }
+
     private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
         PersistenceSession session = new PersistenceSession();
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
