@@ -43,6 +43,16 @@ import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedSoftDeletableAccount;
 import io.nova.tx.ReactiveTransactionOperations;
 import io.nova.tx.TransactionContext;
+import jakarta.persistence.CascadeType;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.OrderColumn;
+import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -53,6 +63,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -2629,6 +2640,128 @@ class SimpleReactiveEntityOperationsTest {
                 .verifyComplete();
     }
 
+    @Test
+    void sessionFlushReindexesOrderedOneToManyAfterPureReorder() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        prepareOrderedCollectionBaseline(current, executor, parent)
+                                .then(Mono.fromRunnable(() -> Collections.swap(parent.children, 0, 2)))
+                                .then(current.flush())))
+                .verifyComplete();
+
+        assertEquals(List.of(List.of(0, 3L), List.of(1, 2L), List.of(2, 1L)), orderUpdateBindings(executor));
+    }
+
+    @Test
+    void sessionFlushPersistsMembershipChangesBeforeReindexingOrderedOneToMany() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 4L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+        OrderedSessionChild added = new OrderedSessionChild(null, "fourth");
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        prepareOrderedCollectionBaseline(current, executor, parent)
+                                .then(Mono.fromRunnable(() -> {
+                                    parent.children.remove(1);
+                                    parent.children.add(added);
+                                }))
+                                .then(current.flush())))
+                .verifyComplete();
+
+        assertEquals(4L, added.id);
+        assertEquals(List.of(List.of(0, 1L), List.of(1, 3L), List.of(2, 4L)), orderUpdateBindings(executor));
+        List<String> sql = executor.chronologicalSqlCalls;
+        int firstOrderUpdate = sql.indexOf("update ordered_session_children set child_position = ? where id = ?");
+        assertTrue(sql.subList(0, firstOrderUpdate).stream()
+                .anyMatch(statement -> statement.startsWith("insert into ordered_session_children")));
+        assertTrue(sql.subList(0, firstOrderUpdate).stream()
+                .anyMatch(statement -> statement.startsWith("delete from ordered_session_children")));
+    }
+
+    @Test
+    void sessionFlushLeavesUnchangedOrderedOneToManyWithoutSql() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        prepareOrderedCollectionBaseline(current, executor, parent).then(Mono.defer(current::flush))))
+                .verifyComplete();
+
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void secondSessionFlushAfterOrderedReindexIsIdempotent() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        prepareOrderedCollectionBaseline(current, executor, parent)
+                                .then(Mono.fromRunnable(() -> Collections.swap(parent.children, 0, 1)))
+                                .then(current.flush())
+                                .then(Mono.fromRunnable(executor.executedStatements::clear))
+                                .then(Mono.defer(current::flush))))
+                .verifyComplete();
+
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void sessionFlushRetriesOrderedReindexAfterFailureWithoutAdvancingSnapshot() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OrderedSessionParent parent = orderedParent();
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        prepareOrderedCollectionBaseline(current, executor, parent)
+                                .then(Mono.fromRunnable(() -> Collections.swap(parent.children, 0, 1)))
+                                .then(Mono.fromRunnable(() ->
+                                        executor.executeErrors.addLast(new IllegalStateException("order failure"))))
+                                .then(current.flush().onErrorResume(ignored -> current.flush()))
+                                .then(Mono.fromRunnable(() -> assertEquals(4, executor.executedStatements.size(),
+                                        "retry must reissue all three order updates after the failed first update")))
+                                .then(Mono.defer(current::flush))))
+                .verifyComplete();
+
+        assertEquals(4, executor.executedStatements.size(),
+                "the third flush must be zero-SQL after retry refreshes the ordered snapshot");
+    }
+
+    private Mono<Void> prepareOrderedCollectionBaseline(
+            ReactiveEntityOperations operations, CapturingExecutor executor, OrderedSessionParent parent) {
+        return operations.save(parent)
+                .then(operations.flush())
+                .then(Mono.fromRunnable(() -> {
+                    executor.executedStatements.clear();
+                    executor.chronologicalSqlCalls.clear();
+                }));
+    }
+
+    private List<List<Object>> orderUpdateBindings(CapturingExecutor executor) {
+        return executor.executedStatements.stream()
+                .filter(statement -> statement.sql().startsWith(
+                        "update ordered_session_children set child_position"))
+                .map(SqlStatement::bindings)
+                .toList();
+    }
+
+    private OrderedSessionParent orderedParent() {
+        OrderedSessionParent parent = new OrderedSessionParent(100L, "parent");
+        parent.children.add(new OrderedSessionChild(1L, "first"));
+        parent.children.add(new OrderedSessionChild(2L, "second"));
+        parent.children.add(new OrderedSessionChild(3L, "third"));
+        for (OrderedSessionChild child : parent.children) {
+            child.parent = parent;
+        }
+        return parent;
+    }
+
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {
         return new SimpleReactiveEntityOperations(
                 new EntityMetadataFactory(new DefaultNamingStrategy()),
@@ -2788,8 +2921,10 @@ class SimpleReactiveEntityOperationsTest {
         private final Deque<RowAccessor> queryOneResults = new ArrayDeque<>();
         private final Deque<List<RowAccessor>> queryManyResults = new ArrayDeque<>();
         private final Deque<Long> executeResults = new ArrayDeque<>();
+        private final Deque<Throwable> executeErrors = new ArrayDeque<>();
         private final List<BatchCall> batchCalls = new ArrayList<>();
         private final List<SqlStatement> executedStatements = new ArrayList<>();
+        private final List<String> chronologicalSqlCalls = new ArrayList<>();
         /**
          * 배치 INSERT에 대해 반환할 생성 키 묶음. 비어 있으면
          * {@link #executeBatchAndReturnGeneratedKeys}가 entity 수만큼 {@code 1L, 2L, 3L, ...}의
@@ -2809,6 +2944,10 @@ class SimpleReactiveEntityOperationsTest {
         public Mono<Long> execute(SqlStatement statement) {
             this.lastStatement = statement;
             this.executedStatements.add(statement);
+            this.chronologicalSqlCalls.add(statement.sql());
+            if (!executeErrors.isEmpty()) {
+                return Mono.error(executeErrors.removeFirst());
+            }
             long result = executeResults.isEmpty() ? 1L : executeResults.removeFirst();
             return Mono.just(result);
         }
@@ -2833,6 +2972,7 @@ class SimpleReactiveEntityOperationsTest {
         @SuppressWarnings("unchecked")
         public <T> Mono<T> executeAndReturnGeneratedKey(SqlStatement statement, String idColumn, Class<T> idType) {
             this.lastStatement = statement;
+            this.chronologicalSqlCalls.add(statement.sql());
             this.lastGeneratedIdColumn = idColumn;
             this.lastGeneratedIdType = idType;
             this.generatedKeyCalls++;
@@ -2845,6 +2985,7 @@ class SimpleReactiveEntityOperationsTest {
         @Override
         public Mono<Long> executeBatch(String sql, List<List<Object>> bindingsList) {
             this.batchCalls.add(new BatchCall(sql, List.copyOf(bindingsList)));
+            this.chronologicalSqlCalls.add(sql);
             return Mono.just((long) bindingsList.size());
         }
 
@@ -2861,6 +3002,7 @@ class SimpleReactiveEntityOperationsTest {
         public <T> Flux<T> executeBatchAndReturnGeneratedKeys(
                 String sql, List<List<Object>> bindingsList, String idColumn, Class<T> idType) {
             this.batchCalls.add(new BatchCall(sql, List.copyOf(bindingsList)));
+            this.chronologicalSqlCalls.add(sql);
             this.batchGeneratedIdColumns.add(idColumn);
             this.batchGeneratedIdTypes.add(idType);
             List<Object> keys;
@@ -2923,6 +3065,48 @@ class SimpleReactiveEntityOperationsTest {
         @SuppressWarnings("unchecked")
         public <T> T get(String columnName, Class<T> type) {
             return (T) values.get(columnName);
+        }
+    }
+
+    @Entity
+    @Table(name = "ordered_session_parents")
+    private static final class OrderedSessionParent {
+        @Id
+        private Long id;
+        private String name;
+
+        @OneToMany(mappedBy = "parent", targetEntity = OrderedSessionChild.class,
+                cascade = CascadeType.PERSIST, orphanRemoval = true)
+        @OrderColumn(name = "child_position")
+        private List<OrderedSessionChild> children = new ArrayList<>();
+
+        private OrderedSessionParent() {
+        }
+
+        private OrderedSessionParent(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "ordered_session_children")
+    private static final class OrderedSessionChild {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+
+        @ManyToOne(optional = false)
+        @JoinColumn(name = "parent_id", nullable = false)
+        private OrderedSessionParent parent;
+
+        private OrderedSessionChild() {
+        }
+
+        private OrderedSessionChild(Long id, String name) {
+            this.id = id;
+            this.name = name;
         }
     }
 

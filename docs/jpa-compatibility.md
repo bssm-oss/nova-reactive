@@ -142,9 +142,6 @@ These declare cleanly but are rejected with a message until implemented — Nova
 - Under a session, removing a child from a non-`orphanRemoval` `@OneToMany` collection when the child's
   owning `@ManyToOne` foreign key is non-nullable (`optional = false` / `@JoinColumn(nullable = false)`) —
   nulling it would violate the column constraint. Use `orphanRemoval = true` or reparent explicitly instead.
-- Under a session, `@OneToMany(mappedBy = ...)` combined with `@OrderColumn` — the session's diff-at-flush
-  collection sync does not reindex order yet. Use it outside a session (stateless save), where reindexing
-  already works.
 - Nested `@EmbeddedId` values and `@MapsId` targeting a record `@EmbeddedId` are rejected explicitly; flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported.
 - JPA 3.2 physical DDL members outside the supported `@Table`/`@Column` set (for example provider-specific schema-generation controls) remain unsupported and are rejected where Nova can detect them.
 
