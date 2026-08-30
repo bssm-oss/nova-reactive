@@ -80,6 +80,93 @@ class JpqlIntegrationTest {
     }
 
     @Test
+    void betweenAndNotBetweenWorkForEntityAndScalarSelections() {
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e FROM Employee e WHERE e.salary BETWEEN :low AND :high ORDER BY e.name",
+                                        Employee.class)
+                                .setParameter("low", new BigDecimal("100"))
+                                .setParameter("high", new BigDecimal("150"))
+                                .getResultList())
+                .assertNext(e -> assertEquals("Ada", e.getName()))
+                .assertNext(e -> assertEquals("Cara", e.getName()))
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e FROM Employee e WHERE e.salary NOT BETWEEN :low AND :high "
+                                                + "ORDER BY e.name",
+                                        Employee.class)
+                                .setParameter("low", new BigDecimal("100"))
+                                .setParameter("high", new BigDecimal("150"))
+                                .getResultList())
+                .assertNext(e -> assertEquals("Bob", e.getName()))
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e.name FROM Employee e WHERE e.salary BETWEEN :low AND :high "
+                                                + "ORDER BY e.name",
+                                        String.class)
+                                .setParameter("low", new BigDecimal("100"))
+                                .setParameter("high", new BigDecimal("150"))
+                                .getResultList())
+                .expectNext("Ada", "Cara")
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e.name FROM Employee e WHERE e.salary NOT BETWEEN :low AND :high "
+                                                + "ORDER BY e.name",
+                                        String.class)
+                                .setParameter("low", new BigDecimal("100"))
+                                .setParameter("high", new BigDecimal("150"))
+                                .getResultList())
+                .expectNext("Bob")
+                .verifyComplete();
+    }
+
+    @Test
+    void nullBoundComparisonsUseSqlUnknownWhileExplicitNullPredicatesMatch() {
+        support.operations().save(new Employee("Null department", new BigDecimal("80"), 20, null)).block();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT e FROM Employee e WHERE e.department = :department", Employee.class)
+                                .setParameter("department", null)
+                                .getResultList())
+                .verifyComplete();
+        StepVerifier.create(
+                        jpql.createQuery("SELECT e FROM Employee e WHERE e.department <> :department", Employee.class)
+                                .setParameter("department", null)
+                                .getResultList())
+                .verifyComplete();
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e.name FROM Employee e WHERE e.department = :department", String.class)
+                                .setParameter("department", null)
+                                .getResultList())
+                .verifyComplete();
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e.name FROM Employee e WHERE e.department <> :department", String.class)
+                                .setParameter("department", null)
+                                .getResultList())
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT e FROM Employee e WHERE e.department IS NULL", Employee.class)
+                                .getResultList())
+                .assertNext(e -> assertEquals("Null department", e.getName()))
+                .verifyComplete();
+        StepVerifier.create(
+                        jpql.createQuery(
+                                        "SELECT e.name FROM Employee e WHERE e.department IS NULL", String.class)
+                                .getResultList())
+                .expectNext("Null department")
+                .verifyComplete();
+    }
+
+    @Test
     void countAggregateAsSingleResult() {
         StepVerifier.create(
                         jpql.createQuery("SELECT COUNT(e) FROM Employee e", Object.class)

@@ -42,6 +42,10 @@ class NamedQueryRegistryTest {
         return new NamedQueryRegistry(operations, dialect, factory, entities);
     }
 
+    private NamedQueryRegistry registry(Dialect dialect, Class<?>... entities) {
+        return new NamedQueryRegistry(operations, dialect, factory, entities);
+    }
+
     @Test
     void registersAndLooksUpDefinitions() {
         NamedQueryRegistry registry = registry(Person.class);
@@ -117,6 +121,55 @@ class NamedQueryRegistryTest {
     }
 
     @Test
+    void translatesRepeatedAndMixedParametersInOccurrenceOrder() {
+        NamedQueryRegistry registry = registry(Person.class);
+        registry.createNativeQuery("Person.rawRepeatedAndMixed", row -> row)
+                .setParameter("name", "Ada")
+                .setParameter(2, 40)
+                .executeUpdate()
+                .block();
+
+        NativeQuery captured = operations.lastExecute.get();
+        assertEquals("UPDATE person SET name = $1 WHERE age = $2 OR name = $3", captured.sql());
+        assertFalse(captured.sql().contains("$0"));
+        assertEquals(List.of("Ada", 40, "Ada"), captured.bindings());
+    }
+
+    @Test
+    void translatesToAnonymousMarkersWithoutChangingBindingOrder() {
+        NamedQueryRegistry registry = registry(new QuestionMarkDialect(), Person.class);
+        registry.createNativeQuery("Person.rawAnonymousMarker", row -> row)
+                .setParameter(1, "memo")
+                .setParameter("name", "Ada")
+                .executeUpdate()
+                .block();
+
+        NativeQuery captured = operations.lastExecute.get();
+        assertEquals("UPDATE person SET note = ? WHERE name = ?", captured.sql());
+        assertEquals(List.of("memo", "Ada"), captured.bindings());
+    }
+
+    @Test
+    void ignoresMarkersInsideNativeSqlLiteralsAndComments() {
+        NamedQueryRegistry registry = registry(Person.class);
+        registry.createNativeQuery("Person.rawWithOpaqueSql", row -> row)
+                .setParameter("name", "Ada")
+                .setParameter(2, 40)
+                .executeUpdate()
+                .block();
+
+        NativeQuery captured = operations.lastExecute.get();
+        assertEquals("UPDATE person SET note = ':ignored ''?1''' /* :block ?2 */ WHERE name = $1"
+                + " -- :line ?3\n AND age = $2::integer", captured.sql());
+        assertEquals(List.of("Ada", 40), captured.bindings());
+    }
+
+    @Test
+    void defaultRenderCallUsesOneBasedMarkers() {
+        assertEquals("CALL procedure($1, $2)", dialect.renderCall("procedure", 2));
+    }
+
+    @Test
     void missingBindingFailsFast() {
         NamedQueryRegistry registry = registry(Person.class);
         assertThrows(NamedQueryException.class, () -> registry.createNativeQuery("Person.rawByNameAndAge", row -> row)
@@ -144,6 +197,13 @@ class NamedQueryRegistryTest {
     @NamedNativeQuery(name = "Person.rawByNameAndAge", query = "UPDATE person SET age = :age WHERE name = :name")
     @NamedNativeQuery(name = "Person.rawPositional",
             query = "UPDATE person SET tag = ?1::text WHERE note = 'a:b' AND age = ?2")
+    @NamedNativeQuery(name = "Person.rawRepeatedAndMixed",
+            query = "UPDATE person SET name = :name WHERE age = ?2 OR name = :name")
+    @NamedNativeQuery(name = "Person.rawAnonymousMarker",
+            query = "UPDATE person SET note = ?1 WHERE name = :name")
+    @NamedNativeQuery(name = "Person.rawWithOpaqueSql",
+            query = "UPDATE person SET note = ':ignored ''?1''' /* :block ?2 */ WHERE name = :name"
+                    + " -- :line ?3\n AND age = ?2::integer")
     static class Person {
         @Id
         Long id;
@@ -165,11 +225,40 @@ class NamedQueryRegistryTest {
     // ------------------------------------------------------------------------------------
 
     private static final class NumberedDialect implements Dialect {
-        private final BindMarkerStrategy bindMarkers = index -> "$" + (index + 1);
+        private final BindMarkerStrategy bindMarkers = index -> "$" + index;
 
         @Override
         public String name() {
             return "numbered";
+        }
+
+        @Override
+        public String quote(String identifier) {
+            return "\"" + identifier + "\"";
+        }
+
+        @Override
+        public BindMarkerStrategy bindMarkers() {
+            return bindMarkers;
+        }
+
+        @Override
+        public SqlRenderer sqlRenderer() {
+            throw new UnsupportedOperationException("not needed");
+        }
+
+        @Override
+        public SchemaGenerator schemaGenerator() {
+            throw new UnsupportedOperationException("not needed");
+        }
+    }
+
+    private static final class QuestionMarkDialect implements Dialect {
+        private final BindMarkerStrategy bindMarkers = index -> "?";
+
+        @Override
+        public String name() {
+            return "question-mark";
         }
 
         @Override

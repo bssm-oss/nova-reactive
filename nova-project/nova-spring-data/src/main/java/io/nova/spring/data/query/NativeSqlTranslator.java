@@ -12,7 +12,7 @@ import java.util.Map;
  *
  * <p>같은 named 파라미터가 여러 번 등장하면 각 출현마다 별도 marker/binding을 만들어 값이 복제된다 —
  * R2DBC positional 바인딩 계약과 일치한다. {@code ::}(예: PostgreSQL cast)는 플레이스홀더가 아니라
- * 리터럴로 통과시킨다. 문자열 리터럴 안의 {@code :}/{@code ?}는 v1에서 특별 처리하지 않는다.
+ * 리터럴로 통과시킨다. 문자열 리터럴과 SQL line/block comment 안의 {@code :}/{@code ?}는 치환하지 않는다.
  */
 public final class NativeSqlTranslator {
 
@@ -31,6 +31,43 @@ public final class NativeSqlTranslator {
         int n = sql.length();
         while (i < n) {
             char c = sql.charAt(i);
+            if (c == '\'') {
+                out.append(c);
+                i++;
+                while (i < n) {
+                    char literal = sql.charAt(i);
+                    out.append(literal);
+                    i++;
+                    if (literal == '\'') {
+                        if (i < n && sql.charAt(i) == '\'') {
+                            out.append('\'');
+                            i++;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                continue;
+            }
+            if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
+                int end = i + 2;
+                while (end < n && sql.charAt(end) != '\n' && sql.charAt(end) != '\r') {
+                    end++;
+                }
+                out.append(sql, i, end);
+                i = end;
+                continue;
+            }
+            if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
+                int end = i + 2;
+                while (end + 1 < n && (sql.charAt(end) != '*' || sql.charAt(end + 1) != '/')) {
+                    end++;
+                }
+                end = end + 1 < n ? end + 2 : n;
+                out.append(sql, i, end);
+                i = end;
+                continue;
+            }
             if (c == ':' && i + 1 < n && sql.charAt(i + 1) == ':') {
                 // PostgreSQL '::' cast — 그대로 통과.
                 out.append("::");
@@ -48,7 +85,7 @@ public final class NativeSqlTranslator {
                     throw new AnnotatedQueryException(
                             "native @Query references :" + name + " but no @Param/argument binds it");
                 }
-                out.append(markers.marker(bindings.size()));
+                out.append(markers.marker(bindings.size() + 1));
                 bindings.add(named.get(name));
                 i = j;
                 continue;
@@ -64,7 +101,7 @@ public final class NativeSqlTranslator {
                     throw new AnnotatedQueryException(
                             "native @Query references ?" + position + " but there is no argument at that position");
                 }
-                out.append(markers.marker(bindings.size()));
+                out.append(markers.marker(bindings.size() + 1));
                 bindings.add(positional.get(position));
                 i = j;
                 continue;

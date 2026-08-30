@@ -273,7 +273,7 @@ class SqlResultSetMappingRegistryTest {
     // ------------------------------------------------------------------------------------
 
     private static final class NumberedDialect implements Dialect {
-        private final BindMarkerStrategy bindMarkers = index -> "$" + (index + 1);
+        private final BindMarkerStrategy bindMarkers = index -> "$" + index;
 
         @Override
         public String name() {
