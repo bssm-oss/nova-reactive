@@ -160,7 +160,7 @@ public final class JpqlQuery<T> {
             ConstructorCall ctor = constructorProjection(select);
             List<TranslatedSql.ResultSlot> slots = translated.slots();
             mapper = ctor != null
-                    ? constructorMapper(ctor, columns)
+                    ? constructorMapper(ctor, slots)
                     : row -> (T) mapSlots(row, slots);
         } catch (RuntimeException e) {
             return Flux.error(e);
@@ -224,7 +224,7 @@ public final class JpqlQuery<T> {
         }
 
         Class<Object> entityType = (Class<Object>) metadata.entityType();
-        Function<RowAccessor, Object> idMapper = row -> row.get(JpqlQuery.columnLabel(0), Object.class);
+        Function<RowAccessor, Object> idMapper = row -> readSlot(row, idProjection.slots().get(0));
         int chunkSize = maxResults == null ? 256 : Math.min(maxResults, 256);
         return pageResults(operations.queryNative(toNativeQuery(idProjection), idMapper))
                 .buffer(chunkSize)
@@ -321,13 +321,13 @@ public final class JpqlQuery<T> {
     // SELECT NEW ... DTO projection
     // ----------------------------------------------------------------------------------------
 
-    private Function<RowAccessor, T> constructorMapper(ConstructorCall call, int columns) {
-        Constructor<?> ctor = resolveConstructor(call, columns);
+    private Function<RowAccessor, T> constructorMapper(ConstructorCall call, List<TranslatedSql.ResultSlot> slots) {
+        Constructor<?> ctor = resolveConstructor(call, slots.size());
         Class<?>[] paramTypes = ctor.getParameterTypes();
         return row -> {
-            Object[] args = new Object[columns];
-            for (int i = 0; i < columns; i++) {
-                Object raw = row.get(columnLabel(i), Object.class);
+            Object[] args = new Object[slots.size()];
+            for (int i = 0; i < slots.size(); i++) {
+                Object raw = readSlot(row, slots.get(i));
                 args[i] = coerce(raw, paramTypes[i], call.className(), i);
             }
             try {
@@ -448,14 +448,14 @@ public final class JpqlQuery<T> {
             if (slot.property() == null) {
                 return row.get(columnLabel(slot.firstColumn()), Object.class);
             }
-            Object stored = row.get(columnLabel(slot.firstColumn()), slot.property().columnType());
+            Object stored = row.get(columnLabel(slot.firstColumn()), boxed(slot.property().columnType()));
             return slot.property().toPropertyValue(stored);
         }
         List<ToOneForeignKeyColumn> fkColumns = slot.compositeFk().columns();
         List<Object> decoded = new ArrayList<>(fkColumns.size());
         for (int i = 0; i < fkColumns.size(); i++) {
             ToOneForeignKeyColumn fkColumn = fkColumns.get(i);
-            Object stored = row.get(columnLabel(slot.firstColumn() + i), fkColumn.columnType());
+            Object stored = row.get(columnLabel(slot.firstColumn() + i), boxed(fkColumn.columnType()));
             decoded.add(fkColumn.toPropertyValue(stored));
         }
         return slot.compositeFk().assembleStub(decoded);
@@ -485,17 +485,34 @@ public final class JpqlQuery<T> {
                 if (slot.compositeFk() != null
                         && index >= slot.firstColumn()
                         && index < slot.firstColumn() + slot.columnCount()) {
-                    type = slot.compositeFk().columns().get(index - slot.firstColumn()).columnType();
+                    type = boxed(slot.compositeFk().columns().get(index - slot.firstColumn()).columnType());
                     break;
                 }
                 if (slot.property() != null && index == slot.firstColumn()) {
-                    type = slot.property().columnType();
+                    type = boxed(slot.property().columnType());
                     break;
                 }
             }
             values[index] = row.get(columnLabel(index), type);
         }
         return new RawRow(values);
+    }
+
+    private static Class<?> boxed(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        return switch (type.getName()) {
+            case "boolean" -> Boolean.class;
+            case "byte" -> Byte.class;
+            case "short" -> Short.class;
+            case "int" -> Integer.class;
+            case "long" -> Long.class;
+            case "float" -> Float.class;
+            case "double" -> Double.class;
+            case "char" -> Character.class;
+            default -> throw new IllegalArgumentException("Unknown primitive type: " + type);
+        };
     }
 
     private record RawRow(Object[] values) implements RowAccessor {

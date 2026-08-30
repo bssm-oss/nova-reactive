@@ -248,6 +248,19 @@ class JpqlSqlBuilderTest {
                         + "from \"employee\" e group by e.\"name\", e.\"age\"",
                 t.sql());
         assertEquals(3, t.selectionCount());
+        assertEquals("name", t.slots().get(0).property().propertyName());
+        assertEquals("age", t.slots().get(1).property().propertyName());
+        assertEquals(null, t.slots().get(2).property());
+    }
+
+    @Test
+    void retainsMinMaxPathConversionContextButLeavesCountRaw() {
+        TranslatedSql t = scalar("SELECT MIN(c.stringStatus), MAX(c.code), COUNT(c) FROM ConvertedEntity c "
+                + "HAVING MIN(c.stringStatus) = :status");
+        assertEquals("stringStatus", t.slots().get(0).property().propertyName());
+        assertEquals("code", t.slots().get(1).property().propertyName());
+        assertEquals(null, t.slots().get(2).property());
+        assertConverted(t.bindings().get(0), "status", "stringStatus");
     }
 
     // ------------------------------------------------------------------------------------

@@ -362,7 +362,9 @@ public final class JpqlSqlBuilder {
                                 + "SELECT NEW constructor argument in v1 (its foreign key spans multiple columns); "
                                 + "select its @Id components explicitly instead");
                     }
+                    int start = columns[0];
                     renderColumn(ctx, arg, columns);
+                    slots.add(new TranslatedSql.ResultSlot(start, 1, null, mappedProjectionProperty(ctx, arg)));
                 }
             } else {
                 renderPlainSelectItem(ctx, item.expression(), columns, slots);
@@ -785,6 +787,11 @@ public final class JpqlSqlBuilder {
         if (expression instanceof Expression.Path path) {
             PersistentProperty property = resolvePath(ctx, path).property();
             return property.manyToOne() ? null : property;
+        }
+        if (expression instanceof Expression.Aggregate aggregate
+                && (aggregate.op() == io.nova.query.jpql.ast.AggregateOp.MIN
+                        || aggregate.op() == io.nova.query.jpql.ast.AggregateOp.MAX)) {
+            return mappedProperty(ctx, aggregate.argument());
         }
         return null;
     }

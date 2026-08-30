@@ -98,6 +98,14 @@ class JpqlIntegrationTest {
                 .getResultList())
                 .expectNext(Status.INACTIVE)
                 .verifyComplete();
+
+        String dtoQuery = "SELECT NEW " + ConversionDto.class.getName()
+                + "(e.code, e.stringStatus) FROM ConversionEntity e WHERE e.code = :code";
+        StepVerifier.create(jpql.createQuery(dtoQuery, ConversionDto.class)
+                        .setParameter("code", new Code("updated"))
+                        .getResultList())
+                .expectNext(new ConversionDto(new Code("updated"), Status.ACTIVE))
+                .verifyComplete();
     }
 
     @Test
@@ -439,6 +447,8 @@ class JpqlIntegrationTest {
     enum Status { ACTIVE, INACTIVE }
 
     record Code(String value) { }
+
+    public record ConversionDto(Code code, Status status) { }
 
     @Converter
     public static class CodeConverter implements AttributeConverter<Code, String> {
