@@ -480,6 +480,46 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
+    void rollsBackAndClosesWhenCommitFailsDuringTransactionCompletion() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException commitFailure = new IllegalStateException("commit failed");
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.error(commitFailure), Mono.empty(), Mono.empty(),
+                rollbackCalls, closeCalls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, context -> Mono.just("ok")))
+                .expectErrorSatisfies(error -> assertSame(commitFailure, error))
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void surfacesRollbackFailureWhenCommitAndRollbackFailDuringCompletion() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException commitFailure = new IllegalStateException("commit failed");
+        IllegalStateException rollbackFailure = new IllegalStateException("rollback failed");
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.error(commitFailure), Mono.error(rollbackFailure), Mono.empty(),
+                rollbackCalls, closeCalls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, context -> Mono.just("ok")))
+                .expectErrorSatisfies(error -> {
+                    assertSame(rollbackFailure, error);
+                    assertEquals(List.of(commitFailure), List.of(error.getSuppressed()));
+                })
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
     void closesConnectionAfterCommitFailureAndPreservesCloseFailure() {
         AtomicInteger rollbackCalls = new AtomicInteger();
         AtomicInteger closeCalls = new AtomicInteger();
@@ -494,6 +534,61 @@ class R2dbcTransactionManagerTest {
                 .expectErrorSatisfies(error -> {
                     assertSame(closeFailure, error);
                     assertEquals(List.of(commitFailure), List.of(error.getSuppressed()));
+                })
+                .verify();
+
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void closesConnectionAfterRollbackFailureAndPreservesCloseFailure() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException rollbackFailure = new IllegalStateException("rollback failed");
+        IllegalStateException closeFailure = new IllegalStateException("close failed");
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.error(rollbackFailure), Mono.error(closeFailure),
+                rollbackCalls, closeCalls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.rollback(new R2dbcTransactionContext(connection)))
+                .expectErrorSatisfies(error -> {
+                    assertSame(closeFailure, error);
+                    assertEquals(List.of(rollbackFailure), List.of(error.getSuppressed()));
+                })
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void surfacesSavepointRollbackFailureWithNestedFailureSuppressed() {
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException callbackFailure = new IllegalStateException("callback failed");
+        IllegalStateException savepointFailure = new IllegalStateException("savepoint rollback failed");
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit", "beginTransaction", "commitTransaction", "rollbackTransaction" -> Mono.empty();
+                    case "createSavepoint" -> Mono.empty();
+                    case "rollbackTransactionToSavepoint" -> Mono.error(savepointFailure);
+                    case "close" -> {
+                        closeCalls.incrementAndGet();
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                inner -> Mono.error(callbackFailure))))
+                .expectErrorSatisfies(error -> {
+                    assertSame(savepointFailure, error);
+                    assertEquals(List.of(callbackFailure), List.of(error.getSuppressed()));
                 })
                 .verify();
 

@@ -124,7 +124,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                 begin(definition),
                 ctx -> Mono.defer(() -> callback.apply(ctx))
                         .contextWrite(Context.of(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())),
-                ctx -> commit(ctx).onErrorMap(CleanupFailure::new),
+                ctx -> commitAfterSuccess(ctx).onErrorMap(CleanupFailure::new),
                 this::rollbackAfterError,
                 this::rollback)
                 .onErrorMap(R2dbcTransactionManager::unwrapCleanupFailure);
@@ -157,6 +157,17 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                     rollbackFailure.addSuppressed(error);
                     return new CleanupFailure(rollbackFailure);
                 });
+    }
+
+    private Mono<Void> commitAfterSuccess(TransactionContext context) {
+        Connection connection = ((R2dbcTransactionContext) context).connection();
+        return closeAfter(connection, () -> Mono.defer(() -> Mono.from(connection.commitTransaction()))
+                .onErrorResume(commitFailure -> Mono.defer(() -> Mono.from(connection.rollbackTransaction()))
+                        .onErrorResume(rollbackFailure -> {
+                            rollbackFailure.addSuppressed(commitFailure);
+                            return Mono.error(rollbackFailure);
+                        })
+                        .then(Mono.error(commitFailure))));
     }
 
     private Mono<Void> closeAfter(Connection connection, Supplier<org.reactivestreams.Publisher<Void>> operation) {
