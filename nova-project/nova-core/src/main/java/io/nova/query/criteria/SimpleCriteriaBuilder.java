@@ -99,12 +99,14 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
 
     @Override
     public Expression<Long> sumAsLong(Expression<Integer> expression) {
-        return new CriteriaAggregate<>(AggregateFunction.SUM, path(expression, "sumAsLong"), Long.class, false);
+        return new CriteriaAggregate<>(AggregateFunction.SUM, widenedSumPath(expression, Integer.class, "sumAsLong"),
+                Long.class, false);
     }
 
     @Override
     public Expression<Double> sumAsDouble(Expression<Float> expression) {
-        return new CriteriaAggregate<>(AggregateFunction.SUM, path(expression, "sumAsDouble"), Double.class, false);
+        return new CriteriaAggregate<>(AggregateFunction.SUM, widenedSumPath(expression, Float.class, "sumAsDouble"),
+                Double.class, false);
     }
 
     @Override
@@ -493,6 +495,29 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         throw new CriteriaException("CriteriaBuilder." + op
                 + " requires a single-column attribute path (root or root.get(\"attr\")) in v1, got "
                 + (expression == null ? "null" : expression.getClass().getSimpleName()));
+    }
+
+    private static CriteriaColumnPath widenedSumPath(Expression<?> expression, Class<?> expectedType, String operation) {
+        CriteriaColumnPath path = path(expression, operation);
+        Class<?> actualType = box(path.property().javaType());
+        if (actualType != expectedType) {
+            throw new CriteriaException("CriteriaBuilder." + operation + " requires an "
+                    + expectedType.getSimpleName() + " scalar attribute, got " + actualType.getSimpleName());
+        }
+        return path;
+    }
+
+    private static Class<?> box(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == int.class) {
+            return Integer.class;
+        }
+        if (type == float.class) {
+            return Float.class;
+        }
+        return type;
     }
 
     private static CriteriaColumnPath orderPath(Expression<?> expression, String op) {

@@ -17,7 +17,8 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
     private final boolean comparisonUsesOperandConverter;
 
     CriteriaAggregate(AggregateFunction function, CriteriaColumnPath operand, Class<N> resultType) {
-        this(function, operand, resultType, true);
+        this(function, operand, resultType, function == AggregateFunction.SUM
+                || function == AggregateFunction.MIN || function == AggregateFunction.MAX);
     }
 
     CriteriaAggregate(
@@ -137,15 +138,18 @@ final class CriteriaAggregate<N> extends AbstractCriteriaExpression<N> {
             return decimal(value).longValueExact();
         }
         if (target == Float.class) {
+            BigDecimal decimal = decimal(value);
             float converted = value.floatValue();
-            if (!Float.isFinite(converted) || (converted == 0.0f && decimal(value).signum() != 0)) {
+            if (!Float.isFinite(converted)
+                    || decimal.compareTo(BigDecimal.valueOf((double) converted)) != 0) {
                 throw new ArithmeticException("outside Float range");
             }
             return converted;
         }
         if (target == Double.class) {
+            BigDecimal decimal = decimal(value);
             double converted = value.doubleValue();
-            if (!Double.isFinite(converted) || (converted == 0.0d && decimal(value).signum() != 0)) {
+            if (!Double.isFinite(converted) || decimal.compareTo(BigDecimal.valueOf(converted)) != 0) {
                 throw new ArithmeticException("outside Double range");
             }
             return converted;
