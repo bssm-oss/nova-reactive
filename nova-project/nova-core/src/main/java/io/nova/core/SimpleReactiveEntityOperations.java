@@ -134,6 +134,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private static final String REMOVE_VISITED_KEY = "io.nova.cascade.remove.visited";
 
+    private record RemoveKey(Class<?> rootType, List<Object> idValues) {
+    }
+
     /**
      * flush가 진행 중임을 표시하는 Reactor Context 플래그 키. {@link #flush(PersistenceSession)}가 진입 시
      * 심고, {@link #autoFlushIfSession}이 이 플래그를 만나면 재진입하지 않고 no-op한다. @OneToMany 신규 child의
@@ -2231,7 +2234,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // query/delete arbitrary rows (and fire callbacks) merely to discover them; this flush can only
             // delete identities explicitly removed from a captured baseline.
             List<Object> orphanIds = haveBaseline ? trueOrphanIds : List.of();
-            handleOrphans = deleteChildrenByIds(session, childMetadata, orphanIds);
+            handleOrphans = deleteChildrenByIds(session, childMetadata, orphanIds)
+                    // The orphan's current back-reference may still point at this owner and have cascade=REMOVE.
+                    // Seed the owner identity for this independently initiated remove tree so that back-edge is
+                    // skipped without suppressing the child's own callbacks.
+                    .contextWrite(context -> {
+                        java.util.Set<RemoveKey> visited = context.<java.util.Set<RemoveKey>>
+                                getOrEmpty(REMOVE_VISITED_KEY).orElseGet(java.util.LinkedHashSet::new);
+                        visited.add(removeKey(metadata, ownerId));
+                        return context.put(REMOVE_VISITED_KEY, visited);
+                    });
         } else if (haveBaseline) {
             handleOrphans = trueOrphanIds.isEmpty()
                     ? Mono.empty()
@@ -2793,15 +2805,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     public <T> Mono<Long> delete(T entity) {
         return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
-            java.util.Set<Object> visited = ctx.<java.util.Set<Object>>getOrEmpty(REMOVE_VISITED_KEY)
-                    .orElseGet(() -> java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
-            Optional<PersistenceSession> session = currentSession(ctx);
-            if (!visited.add(entity) || (session.isPresent() && session.get().isRemoved(metadata, entity))) {
-                return Mono.empty();
-            }
             Object id = metadata.readIdValue(entity);
             if (id == null) {
                 return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
+            }
+            java.util.Set<RemoveKey> visited = ctx.<java.util.Set<RemoveKey>>getOrEmpty(REMOVE_VISITED_KEY)
+                    .orElseGet(java.util.LinkedHashSet::new);
+            Optional<PersistenceSession> session = currentSession(ctx);
+            if (!visited.add(removeKey(metadata, id)) || (session.isPresent() && session.get().isRemoved(metadata, entity))) {
+                return Mono.empty();
             }
             try {
                 listenerInvoker.invokePreRemove(entity, metadata);
@@ -2828,6 +2840,17 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     .flatMap(affected -> cascadeRemoveToOneReferences(metadata, entity).thenReturn(affected))
                     .contextWrite(context -> context.put(REMOVE_VISITED_KEY, visited));
         });
+    }
+
+    private RemoveKey removeKey(EntityMetadata<?> metadata, Object id) {
+        EntityMetadata<?> identityMetadata = metadata.hasInheritance()
+                ? metadataFactory.getEntityMetadata(metadata.inheritance().root())
+                : metadata;
+        List<Object> values = new ArrayList<>(identityMetadata.idProperties().size());
+        for (PersistentProperty property : identityMetadata.idProperties()) {
+            values.add(property.toColumnValue(identityMetadata.idColumnValue(property, id)));
+        }
+        return new RemoveKey(identityMetadata.entityType(), List.copyOf(values));
     }
 
     /**
