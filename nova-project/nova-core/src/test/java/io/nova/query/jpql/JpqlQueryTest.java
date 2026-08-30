@@ -113,7 +113,7 @@ class JpqlQueryTest {
 
     @Test
     void skipsInvalidDtoRowsBeforeConstructorCoercion() {
-        RecordingOperations recorder = new RecordingOperations(List.of(null, 7));
+        RecordingOperations recorder = new RecordingOperations(java.util.Arrays.asList(null, 7));
         JpqlQuery<Object> query = query(
                 "SELECT NEW " + IntDto.class.getName() + "(e.id) FROM Employee e", recorder.operations())
                 .setFirstResult(1)
