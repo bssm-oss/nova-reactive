@@ -133,13 +133,33 @@ class EntityListenerExclusionTest {
     }
 
     @Test
-    void entityCallbacksInvokeRootToChildAfterSelectingMostDerivedOverride() {
+    void entityCallbacksInvokeRootToChild() {
         EntityMetadata<OrderedCallbackChild> metadata =
                 factory.getEntityMetadata(OrderedCallbackChild.class);
 
         invoker.invokePrePersist(new OrderedCallbackChild(), metadata);
 
-        assertEquals(List.of("root", "middle", "child-override"), events);
+        assertEquals(List.of("root", "middle", "child"), events);
+    }
+
+    @Test
+    void entityCallbackOverrideSuppressesSuperclassCallback() {
+        EntityMetadata<OverridingCallbackChild> metadata =
+                factory.getEntityMetadata(OverridingCallbackChild.class);
+
+        invoker.invokePrePersist(new OverridingCallbackChild(), metadata);
+
+        assertEquals(List.of("child-override"), events);
+    }
+
+    @Test
+    void privateSameSignatureCallbacksBothInvokeRootToChild() {
+        EntityMetadata<PrivateCallbackChild> metadata =
+                factory.getEntityMetadata(PrivateCallbackChild.class);
+
+        invoker.invokePrePersist(new PrivateCallbackChild(), metadata);
+
+        assertEquals(List.of("private-root", "private-child"), events);
     }
 
     // ---- fixtures ----
@@ -253,11 +273,6 @@ class EntityListenerExclusionTest {
         void rootCallback() {
             events.add("root");
         }
-
-        @PrePersist
-        void overriddenCallback() {
-            events.add("root-override");
-        }
     }
 
     @MappedSuperclass
@@ -271,10 +286,50 @@ class EntityListenerExclusionTest {
     @Entity
     @Table(name = "ordered_callbacks")
     static class OrderedCallbackChild extends OrderedCallbackMiddle {
+        @PrePersist
+        void childCallback() {
+            events.add("child");
+        }
+    }
+
+    @MappedSuperclass
+    static class OverridingCallbackRoot {
+        @Id
+        Long id;
+
+        @PrePersist
+        void callback() {
+            events.add("root-override");
+        }
+    }
+
+    @Entity
+    @Table(name = "overriding_callback")
+    static class OverridingCallbackChild extends OverridingCallbackRoot {
         @Override
         @PrePersist
-        void overriddenCallback() {
+        void callback() {
             events.add("child-override");
+        }
+    }
+
+    @MappedSuperclass
+    static class PrivateCallbackRoot {
+        @Id
+        Long id;
+
+        @PrePersist
+        private void callback() {
+            events.add("private-root");
+        }
+    }
+
+    @Entity
+    @Table(name = "private_callback")
+    static class PrivateCallbackChild extends PrivateCallbackRoot {
+        @PrePersist
+        private void callback() {
+            events.add("private-child");
         }
     }
 }

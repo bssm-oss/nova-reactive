@@ -816,14 +816,10 @@ public final class EntityMetadataFactory {
         List<Method> preRemoveCallbacks = new ArrayList<>();
         List<Method> postRemoveCallbacks = new ArrayList<>();
         // 콜백은 @MappedSuperclass와 SINGLE_TABLE 상속 상위 @Entity까지 포함해 수집한다 — 루트/베이스에
-        // 선언된 audit 콜백이 서브타입에서도 발화하도록. 서브클래스가 같은 메서드를 override하면 가장
-        // 하위 정의만 한 번 수집한다(중복 호출 방지).
-        Set<String> seenCallbackSignatures = new LinkedHashSet<>();
+        // 선언된 audit 콜백이 서브타입에서도 발화하도록. Java override인 경우에만 superclass callback을
+        // 가장 하위 정의로 대체한다; private/non-inherited same-signature callback은 각각 수집한다.
         for (Method method : mappedMethods(entityType)) {
             if (method.isSynthetic()) {
-                continue;
-            }
-            if (!seenCallbackSignatures.add(callbackSignature(method))) {
                 continue;
             }
             collectCallback(entityType, method, PrePersist.class, prePersistCallbacks);
@@ -1221,12 +1217,12 @@ public final class EntityMetadataFactory {
 
     /**
      * 엔티티 자신과 매핑에 기여하는 조상({@link MappedSuperclass} / 상위 {@link Entity})의 선언 메서드를
-     * root-우선 순서로 반환한다. override 판별은 먼저 서브클래스-우선으로 수행해 가장 하위 정의만 남긴 뒤,
-     * 살아남은 콜백을 root-to-child로 정렬한다.
+     * root-우선 순서로 반환한다. superclass method는 subclass가 Java language rules에 따라 실제 override한
+     * 경우에만 제외한다. private method는 상속/override되지 않으며, package-private method는 같은 package
+     * subclass만 override할 수 있다.
      */
     private static List<Method> mappedMethods(Class<?> entityType) {
         List<List<Method>> declaredByType = new ArrayList<>();
-        Set<String> overriddenSignatures = new LinkedHashSet<>();
         Class<?> current = entityType;
         while (current != null && current != Object.class
                 && (current == entityType
@@ -1234,20 +1230,49 @@ public final class EntityMetadataFactory {
                 || current.isAnnotationPresent(Entity.class))) {
             List<Method> declared = new ArrayList<>(Arrays.asList(current.getDeclaredMethods()));
             declared.sort(STABLE_METHOD_ORDER);
-            List<Method> surviving = new ArrayList<>();
-            for (Method method : declared) {
-                if (overriddenSignatures.add(callbackSignature(method))) {
-                    surviving.add(method);
-                }
-            }
-            declaredByType.add(surviving);
+            declaredByType.add(declared);
             current = current.getSuperclass();
         }
         List<Method> methods = new ArrayList<>();
         for (int i = declaredByType.size() - 1; i >= 0; i--) {
-            methods.addAll(declaredByType.get(i));
+            for (Method method : declaredByType.get(i)) {
+                if (!isOverriddenByDescendant(method, declaredByType, i)) {
+                    methods.add(method);
+                }
+            }
         }
         return methods;
+    }
+
+    private static boolean isOverriddenByDescendant(
+            Method method, List<List<Method>> declaredByType, int methodTypeIndex) {
+        for (int descendantIndex = methodTypeIndex - 1; descendantIndex >= 0; descendantIndex--) {
+            for (Method descendant : declaredByType.get(descendantIndex)) {
+                if (overrides(descendant, method)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean overrides(Method descendant, Method ancestor) {
+        int descendantModifiers = descendant.getModifiers();
+        int ancestorModifiers = ancestor.getModifiers();
+        if (Modifier.isPrivate(descendantModifiers) || Modifier.isStatic(descendantModifiers)
+                || Modifier.isPrivate(ancestorModifiers) || Modifier.isStatic(ancestorModifiers)
+                || !ancestor.getDeclaringClass().isAssignableFrom(descendant.getDeclaringClass())
+                || ancestor.getDeclaringClass() == descendant.getDeclaringClass()
+                || !ancestor.getName().equals(descendant.getName())
+                || !Arrays.equals(ancestor.getParameterTypes(), descendant.getParameterTypes())) {
+            return false;
+        }
+        if (!Modifier.isPublic(ancestorModifiers) && !Modifier.isProtected(ancestorModifiers)
+                && !ancestor.getDeclaringClass().getPackageName()
+                .equals(descendant.getDeclaringClass().getPackageName())) {
+            return false;
+        }
+        return ancestor.getReturnType().isAssignableFrom(descendant.getReturnType());
     }
 
     private static boolean hasExcludeDefaultListeners(Class<?> entityType) {
