@@ -3018,6 +3018,15 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void compositeParentIdentityIsDetectedFromTargetMetadata() {
+        io.nova.metadata.EntityMetadata<EmbeddedRemovalEntity> parentMetadata =
+                metadata(EmbeddedRemovalEntity.class);
+
+        assertEquals(2, parentMetadata.idProperties().size(),
+                "orphan FK expansion must use target identity component count, not relation marker shortcuts");
+    }
+
+    @Test
     void idClassSelfRemoveCascadeUsesAllIdentityComponents() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());

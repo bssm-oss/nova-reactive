@@ -965,9 +965,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // 호출되도록 Mono.defer로 감싼다. 그러지 않으면 assembly 시점에 아직 save 전인 child의 id(null)를 읽어
         // retainedIds가 비고, 결국 "이 parent의 child 전부 삭제"로 붕괴해 방금 저장한 child까지 지워진다.
         // 이 stateless 경로에는 세션-바운드 reparenting 개념이 없으므로 제외 집합은 항상 빈 리스트를 넘긴다.
-        // 복합 to-one FK predicate는 id holder를 단일 bind 값으로 취급하면 안 된다. parent reference를 넘겨
-        // Criteria가 target의 모든 식별자 컴포넌트로 확장하게 하고, 단일 FK는 기존 scalar id 경로를 유지한다.
-        Object orphanParentValue = mappedByProperty.isCompositeToOne() ? parent : parentId;
+        // The relation marker is not authoritative for every metadata path (notably mappedBy relations).
+        // Determine FK width from the target metadata: a composite target needs the parent reference so
+        // Criteria expands every identifier component; a single-column target keeps the scalar-id bind.
+        boolean compositeParentIdentity = metadata.idProperties().size() > 1;
+        Object orphanParentValue = compositeParentIdentity ? parent : parentId;
         return persistChildren.then(
                 Mono.defer(() -> removeOrphans(childMetadata, mappedByProperty, orphanParentValue, children, List.of())
                         // The removed child's reverse cascade may point back at this stateless save owner.
