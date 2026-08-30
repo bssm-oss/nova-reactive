@@ -664,6 +664,22 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
+    void rejectsIndexOptionsWithSqlDelimitersCommentsOrUnbalancedSyntax() {
+        assertIndexOptionsRejected(IndexWithSemicolonOptionsEntity.class);
+        assertIndexOptionsRejected(IndexWithCommentOptionsEntity.class);
+        assertIndexOptionsRejected(IndexWithUnbalancedOptionsEntity.class);
+    }
+
+    private void assertIndexOptionsRejected(Class<?> entityType) {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(entityType)
+        );
+
+        assertTrue(exception.getMessage().contains("@Index.options"));
+    }
+
+    @Test
     void recognizesRepeatedUniqueConstraintAnnotations() {
         EntityMetadata<RepeatedUniqueConstraintEntity> metadata =
                 factory.getEntityMetadata(RepeatedUniqueConstraintEntity.class);
@@ -1579,6 +1595,36 @@ class EntityMetadataFactoryTest {
     @Table(name = "unsafe_indexed_accounts",
             indexes = @Index(columnList = "email", options = "using btree\0"))
     static class IndexWithUnsafeOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
+    }
+
+    @Entity
+    @Table(name = "semicolon_option_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "using btree; drop table accounts"))
+    static class IndexWithSemicolonOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
+    }
+
+    @Entity
+    @Table(name = "comment_option_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "using btree -- ignored"))
+    static class IndexWithCommentOptionsEntity {
+        @Id
+        private Long id;
+
+        private String email;
+    }
+
+    @Entity
+    @Table(name = "unbalanced_option_indexed_accounts",
+            indexes = @Index(columnList = "email", options = "with (fillfactor = 70"))
+    static class IndexWithUnbalancedOptionsEntity {
         @Id
         private Long id;
 

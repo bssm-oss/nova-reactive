@@ -1150,7 +1150,7 @@ public final class EntityMetadataFactory {
                     : declaration.name();
             result.add(new IndexDefinition(
                     name, indexColumns, declaration.unique(),
-                    fragment(declaration.options(), "@Index.options on " + entityType.getName())));
+                    indexOptions(declaration.options(), "@Index.options on " + entityType.getName())));
         }
         return result;
     }
@@ -1220,6 +1220,58 @@ public final class EntityMetadataFactory {
             columns.add(new IndexDefinition.Column(tokens[0], direction));
         }
         return List.copyOf(columns);
+    }
+
+    private static String indexOptions(String value, String location) {
+        String options = fragment(value, location);
+        boolean singleQuoted = false;
+        boolean doubleQuoted = false;
+        int parentheses = 0;
+        for (int i = 0; i < options.length(); i++) {
+            char character = options.charAt(i);
+            if (Character.isISOControl(character)) {
+                throw new IllegalArgumentException(location + " must not contain control characters");
+            }
+            if (character == ';' || (character == '-' && i + 1 < options.length()
+                    && options.charAt(i + 1) == '-') || (character == '/' && i + 1 < options.length()
+                    && options.charAt(i + 1) == '*') || (character == '*' && i + 1 < options.length()
+                    && options.charAt(i + 1) == '/')) {
+                throw new IllegalArgumentException(location + " must not contain SQL statement delimiters or comments");
+            }
+            if (character == '\'' && !doubleQuoted) {
+                if (singleQuoted && i + 1 < options.length() && options.charAt(i + 1) == '\'') {
+                    i++;
+                } else {
+                    singleQuoted = !singleQuoted;
+                }
+                continue;
+            }
+            if (character == '"' && !singleQuoted) {
+                if (doubleQuoted && i + 1 < options.length() && options.charAt(i + 1) == '"') {
+                    i++;
+                } else {
+                    doubleQuoted = !doubleQuoted;
+                }
+                continue;
+            }
+            if (!singleQuoted && !doubleQuoted) {
+                if (character == '(') {
+                    parentheses++;
+                } else if (character == ')') {
+                    if (parentheses == 0) {
+                        throw new IllegalArgumentException(location + " has unbalanced parentheses");
+                    }
+                    parentheses--;
+                }
+            }
+        }
+        if (singleQuoted || doubleQuoted) {
+            throw new IllegalArgumentException(location + " has an unbalanced quoted value");
+        }
+        if (parentheses != 0) {
+            throw new IllegalArgumentException(location + " has unbalanced parentheses");
+        }
+        return options;
     }
 
     /**
