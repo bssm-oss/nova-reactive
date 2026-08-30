@@ -94,6 +94,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 |---|---|---|
 | JPQL (`ReactiveEntityManager.createQuery`) | ⟳ | Hand-written lexer/parser/AST → SQL; injection-safe |
 | JPQL `SELECT NEW` DTO, implicit joins, `LOCATE` / `CAST` / `FUNCTION` / `SIZE`, subqueries, bulk | ✅ | |
+| JPQL `setFirstResult` / `setMaxResults` | ⟳ | Entity-returning SELECT supports a limit plus optional offset through the existing dialect renderer (negative values are rejected). Scalar, aggregate, and `SELECT NEW` projections fail fast: the public dialect contract cannot append dialect-specific pagination SQL and bind markers to arbitrary translated SELECT SQL. Offset-only (`setFirstResult` without `setMaxResults`) fails fast for every JPQL result shape because `Pageable` requires a limit. A protected dialect pagination hook is insufficient: Oracle emits offset then limit, while limit/offset dialects emit limit then offset; a public arbitrary-SELECT pagination renderer is required before this can be portable and injection-safe. |
 | JPQL / Criteria `TREAT()` / `TYPE()` polymorphism | ✅ | `SINGLE_TABLE` / `JOINED` / `TABLE_PER_CLASS` (JOINED/TPC via the polymorphic derived table); discriminator-aware, shadowed-subtype-column fail-fast. Subquery positions fail-fast |
 | Criteria API (`jakarta.persistence.criteria`) | ⟳ | Joins (M2O/O2O/O2M/inverse), subqueries (`EXISTS`/`IN`/correlate) |
 | Joins over a **composite-key** to-one target | ✅ | Multi-column `ON` (`a.c1=b.c1 AND a.c2=b.c2`) |

@@ -74,7 +74,12 @@ public final class JpqlQuery<T> {
         return this;
     }
 
-    /** JPA {@code setFirstResult} 등가(0-기반 offset). 엔티티 반환 SELECT에서만 지원. */
+    /**
+     * JPA {@code setFirstResult} 등가(0-기반 offset).
+     *
+     * <p>현재는 dialect renderer가 arbitrary JPQL SQL에 offset 절을 붙이는 public contract를 제공하지 않아,
+     * entity-returning SELECT와 {@code setMaxResults}를 함께 쓴 경우에만 실행할 수 있다.
+     */
     public JpqlQuery<T> setFirstResult(int firstResult) {
         if (firstResult < 0) {
             throw new JpqlException("firstResult must be >= 0");
@@ -83,7 +88,12 @@ public final class JpqlQuery<T> {
         return this;
     }
 
-    /** JPA {@code setMaxResults} 등가(limit). 엔티티 반환 SELECT에서만 지원. */
+    /**
+     * JPA {@code setMaxResults} 등가(limit).
+     *
+     * <p>현재는 entity-returning SELECT에만 실행 지원한다. Scalar, aggregate, and {@code SELECT NEW} projections
+     * need a dialect-owned pagination renderer to preserve bind marker order and Oracle pagination syntax.
+     */
     public JpqlQuery<T> setMaxResults(int maxResults) {
         if (maxResults < 0) {
             throw new JpqlException("maxResults must be >= 0");
@@ -149,10 +159,13 @@ public final class JpqlQuery<T> {
         if (entityPlanner.isJoinedEntitySelect(select) && joinedEntityMatches(select)) {
             return executeJoinedEntity(select);
         }
-        // 스칼라/집계/DTO 투영 경로는 페이지 창을 v1에서 지원하지 않는다.
+        // Scalar/aggregate/DTO projection SQL cannot safely append a page window: SqlRenderer only exposes
+        // entity-metadata rendering, while its dialect-specific page hook is protected. In particular Oracle's
+        // OFFSET/FETCH marker order differs from LIMIT/OFFSET dialects. Do not interpolate or emulate in memory.
         if (firstResult != null || maxResults != null) {
             return Flux.error(new JpqlException(
-                    "setFirstResult/setMaxResults is only supported for entity-returning SELECT queries in v1"));
+                    "setFirstResult/setMaxResults for scalar, aggregate, and SELECT NEW JPQL projections "
+                            + "requires a dialect-owned arbitrary-SELECT pagination renderer"));
         }
         TranslatedSql translated;
         Function<RowAccessor, T> mapper;
@@ -281,7 +294,7 @@ public final class JpqlQuery<T> {
         if (maxResults == null) {
             if (firstResult != null) {
                 throw new JpqlException(
-                        "setFirstResult without setMaxResults is not supported; provide a page size");
+                        "setFirstResult without setMaxResults requires dialect-owned offset-only pagination");
             }
             return null;
         }
@@ -326,7 +339,7 @@ public final class JpqlQuery<T> {
             spec = spec.page(Pageable.of(maxResults.intValue(), offset));
         } else if (firstResult != null) {
             return Flux.error(new JpqlException(
-                    "setFirstResult without setMaxResults is not supported; provide a page size"));
+                    "setFirstResult without setMaxResults requires dialect-owned offset-only pagination"));
         }
         Class<Object> entityType = (Class<Object>) metadata.entityType();
         return (Flux<T>) operations.findAll(entityType, spec);
