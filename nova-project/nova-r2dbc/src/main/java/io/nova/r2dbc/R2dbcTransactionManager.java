@@ -16,6 +16,7 @@ import reactor.util.context.Context;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 public final class R2dbcTransactionManager implements ReactiveTransactionManager, ReactiveConnectionOperations {
     static final String CONNECTION_KEY = "io.nova.r2dbc.connection";
@@ -55,15 +56,13 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
     @Override
     public Mono<Void> commit(TransactionContext context) {
         Connection conn = ((R2dbcTransactionContext) context).connection();
-        return Mono.from(conn.commitTransaction())
-                .then(Mono.from(conn.close()));
+        return closeAfter(conn, conn::commitTransaction);
     }
 
     @Override
     public Mono<Void> rollback(TransactionContext context) {
         Connection conn = ((R2dbcTransactionContext) context).connection();
-        return Mono.from(conn.rollbackTransaction())
-                .then(Mono.from(conn.close()));
+        return closeAfter(conn, conn::rollbackTransaction);
     }
 
     @Override
@@ -121,17 +120,14 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
 
     private <T> Mono<T> runInNewTransaction(TransactionDefinition definition,
                                             Function<TransactionContext, Mono<T>> callback) {
-        return begin(definition).flatMap(ctx -> {
-            Connection conn = ((R2dbcTransactionContext) ctx).connection();
-            return callback.apply(ctx)
-                    .contextWrite(Context.of(CONNECTION_KEY, conn))
-                    .flatMap(result -> commit(ctx).thenReturn(result))
-                    // 콜백이 값 없이(empty) 완료돼도 commit 한다 — flatMap은 empty source에서 mapper를 호출하지
-                    // 않으므로, 부수효과(예: 세션 flush)만 있고 결과를 내지 않는 트랜잭션이 commit 없이 롤백되는 것을 막는다.
-                    .switchIfEmpty(Mono.defer(() -> commit(ctx).then(Mono.empty())))
-                    .onErrorResume(error -> rollback(ctx).onErrorResume(rb -> Mono.empty())
-                            .then(Mono.error(error)));
-        });
+        return Mono.usingWhen(
+                begin(definition),
+                ctx -> Mono.defer(() -> callback.apply(ctx))
+                        .contextWrite(Context.of(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection()),
+                ctx -> commit(ctx).onErrorMap(CleanupFailure::new),
+                this::rollbackAfterError,
+                this::rollback)
+                .onErrorMap(R2dbcTransactionManager::unwrapCleanupFailure);
     }
 
     private <T> Mono<T> joinActive(Connection active, Function<TransactionContext, Mono<T>> callback) {
@@ -147,9 +143,48 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                 .then(Mono.defer(() -> callback.apply(ctx))
                         .contextWrite(Context.of(CONNECTION_KEY, active))
                         .flatMap(result -> releaseSavepointIfSupported(active, name).thenReturn(result))
-                        .onErrorResume(error -> Mono.from(active.rollbackTransactionToSavepoint(name))
-                                .onErrorResume(rb -> Mono.empty())
+                        .onErrorResume(error -> Mono.defer(() -> Mono.from(active.rollbackTransactionToSavepoint(name)))
+                                .onErrorMap(rollbackFailure -> {
+                                    rollbackFailure.addSuppressed(error);
+                                    return rollbackFailure;
+                                })
                                 .then(Mono.error(error))));
+    }
+
+    private Mono<Void> rollbackAfterError(TransactionContext context, Throwable error) {
+        return rollback(context)
+                .onErrorMap(rollbackFailure -> {
+                    rollbackFailure.addSuppressed(error);
+                    return new CleanupFailure(rollbackFailure);
+                });
+    }
+
+    private Mono<Void> closeAfter(Connection connection, Supplier<org.reactivestreams.Publisher<Void>> operation) {
+        return Mono.defer(() -> Mono.from(operation.get()))
+                .onErrorResume(operationFailure -> close(connection)
+                        .onErrorResume(closeFailure -> {
+                            closeFailure.addSuppressed(operationFailure);
+                            return Mono.error(closeFailure);
+                        })
+                        .then(Mono.error(operationFailure)))
+                .then(close(connection));
+    }
+
+    private static Throwable unwrapCleanupFailure(Throwable error) {
+        if (error.getCause() instanceof CleanupFailure cleanupFailure) {
+            return cleanupFailure.getCause();
+        }
+        return error;
+    }
+
+    private static final class CleanupFailure extends RuntimeException {
+        private CleanupFailure(Throwable cause) {
+            super(cause);
+        }
+    }
+
+    private Mono<Void> close(Connection connection) {
+        return Mono.defer(() -> Mono.from(connection.close()));
     }
 
     private static Mono<Void> releaseSavepointIfSupported(Connection conn, String name) {

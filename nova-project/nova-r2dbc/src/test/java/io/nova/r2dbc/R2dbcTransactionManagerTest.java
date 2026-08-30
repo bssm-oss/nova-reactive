@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
  * R2dbcTransactionManager의 propagation, isolation, readOnly 동작을 H2 in-memory로 검증한다.
@@ -407,6 +408,126 @@ class R2dbcTransactionManagerTest {
                 .verify();
 
         assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void rollsBackAndClosesWhenTransactionCallbackIsCancelled() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.empty(), Mono.empty(),
+                rollbackCalls, closeCalls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, context -> Mono.never()), 1)
+                .thenCancel()
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void rollsBackAndClosesWhenTransactionCallbackThrowsSynchronously() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException failure = new IllegalStateException("callback failed");
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.empty(), Mono.empty(),
+                rollbackCalls, closeCalls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, context -> {
+                    throw failure;
+                }))
+                .expectErrorSatisfies(error -> assertSame(failure, error))
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void surfacesRollbackFailureWithCallbackFailureSuppressed() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException callbackFailure = new IllegalStateException("callback failed");
+        IllegalStateException rollbackFailure = new IllegalStateException("rollback failed");
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.error(rollbackFailure), Mono.empty(),
+                rollbackCalls, closeCalls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(
+                        TransactionDefinition.DEFAULT, context -> Mono.error(callbackFailure)))
+                .expectErrorSatisfies(error -> {
+                    assertSame(rollbackFailure, error);
+                    assertEquals(List.of(callbackFailure), List.of(error.getSuppressed()));
+                })
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void closesConnectionAfterCommitFailureAndPreservesCloseFailure() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException commitFailure = new IllegalStateException("commit failed");
+        IllegalStateException closeFailure = new IllegalStateException("close failed");
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.error(commitFailure), Mono.empty(), Mono.error(closeFailure),
+                rollbackCalls, closeCalls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.commit(new R2dbcTransactionContext(connection)))
+                .expectErrorSatisfies(error -> {
+                    assertSame(closeFailure, error);
+                    assertEquals(List.of(commitFailure), List.of(error.getSuppressed()));
+                })
+                .verify();
+
+        assertEquals(1, closeCalls.get());
+    }
+
+    private static R2dbcTransactionManager transactionManager(Connection connection) {
+        return new R2dbcTransactionManager(new ConnectionFactory() {
+            @Override
+            public Mono<? extends Connection> create() {
+                return Mono.just(connection);
+            }
+
+            @Override
+            public ConnectionFactoryMetadata getMetadata() {
+                return () -> "test";
+            }
+        });
+    }
+
+    private static Connection transactionConnection(Mono<Void> begin,
+                                                    Mono<Void> commit,
+                                                    Mono<Void> rollback,
+                                                    Mono<Void> close,
+                                                    AtomicInteger rollbackCalls,
+                                                    AtomicInteger closeCalls) {
+        return (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit" -> Mono.empty();
+                    case "beginTransaction" -> begin;
+                    case "commitTransaction" -> commit;
+                    case "rollbackTransaction" -> {
+                        rollbackCalls.incrementAndGet();
+                        yield rollback;
+                    }
+                    case "close" -> {
+                        closeCalls.incrementAndGet();
+                        yield close;
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
     }
 
     /**
