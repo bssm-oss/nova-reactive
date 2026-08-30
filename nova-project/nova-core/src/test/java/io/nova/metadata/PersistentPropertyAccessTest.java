@@ -364,7 +364,6 @@ class PersistentPropertyAccessTest {
         @JoinColumn(name = "author_id")
         private PropertyAccessAuthor author;
 
-        @Id
         public Long getId() {
             return id;
         }
