@@ -129,6 +129,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private static final String CASCADE_VISITED_KEY = "io.nova.cascade.to-one.visited";
 
     /**
+     * Identity set shared by a complete cascade-remove tree. It prevents cycles and shared targets from
+     * receiving duplicate SQL or lifecycle callbacks; it is carried solely in Reactor Context.
+     */
+    private static final String REMOVE_VISITED_KEY = "io.nova.cascade.remove.visited";
+
+    /**
      * flush가 진행 중임을 표시하는 Reactor Context 플래그 키. {@link #flush(PersistenceSession)}가 진입 시
      * 심고, {@link #autoFlushIfSession}이 이 플래그를 만나면 재진입하지 않고 no-op한다. @OneToMany 신규 child의
      * to-one cascade({@link #persistChildInFlush})가 flush 안에서 예외적으로 public {@link #save(Object)}를
@@ -2787,6 +2793,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     public <T> Mono<Long> delete(T entity) {
         return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
+            java.util.Set<Object> visited = ctx.<java.util.Set<Object>>getOrEmpty(REMOVE_VISITED_KEY)
+                    .orElseGet(() -> java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+            Optional<PersistenceSession> session = currentSession(ctx);
+            if (!visited.add(entity) || (session.isPresent() && session.get().isRemoved(metadata, entity))) {
+                return Mono.empty();
+            }
             Object id = metadata.readIdValue(entity);
             if (id == null) {
                 return Mono.error(new IllegalArgumentException("Entity id must not be null for delete"));
@@ -2811,9 +2823,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     .then(cascadeRemoveOneToManyChildren(metadata, entity, id))
                     .then(ownedCollectionCleanup)
                     .then(performDelete(metadata, entity, id))
-                    .doOnNext(affected -> currentSession(ctx).ifPresent(session -> session.markRemoved(metadata, entity)))
+                    .doOnNext(affected -> session.ifPresent(active -> active.markRemoved(metadata, entity)))
                     .doOnNext(affected -> listenerInvoker.invokePostRemove(entity, metadata))
-                    .flatMap(affected -> cascadeRemoveToOneReferences(metadata, entity).thenReturn(affected));
+                    .flatMap(affected -> cascadeRemoveToOneReferences(metadata, entity).thenReturn(affected))
+                    .contextWrite(context -> context.put(REMOVE_VISITED_KEY, visited));
         });
     }
 

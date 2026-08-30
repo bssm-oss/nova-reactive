@@ -2915,6 +2915,76 @@ class SimpleReactiveEntityOperationsTest {
         assertEquals(List.of("child-pre", "child-post"), RemovalCallbacks.events);
     }
 
+    @Test
+    void selfReferencingRemoveCascadeVisitsEntityOnce() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SelfRemovingEntity entity = new SelfRemovingEntity(1L);
+        entity.parent = entity;
+
+        StepVerifier.create(operations.delete(entity)).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("self-pre", "self-post"), RemovalCallbacks.events);
+        assertEquals(1, executor.executedStatements.size());
+    }
+
+    @Test
+    void bidirectionalRemoveCascadeVisitsEachTargetOnce() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackOwner owner = new CallbackOwner(1L, new CallbackTarget(2L));
+        owner.target.owner = owner;
+
+        StepVerifier.create(operations.delete(owner)).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("owner-pre", "owner-post", "target-pre", "target-post"), RemovalCallbacks.events);
+        assertEquals(2, executor.executedStatements.size());
+    }
+
+    @Test
+    void alreadyRemovedVersionedChildIsSkippedDuringParentCascade() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        VersionedRemovalParent parent = versionedRemovalParent();
+        VersionedRemovalChild child = parent.children.get(0);
+        PersistenceSession session = registerOneToManyBaseline(parent, child);
+        session.markRemoved(metadata(VersionedRemovalChild.class), child);
+
+        StepVerifier.create(operations.delete(parent)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size(), "removed child must not be deleted again");
+    }
+
+    @Test
+    void bidirectionalOneToManyRemoveCascadeVisitsEachEntityOnce() {
+        RemovalCallbacks.events.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CallbackChildrenOwner parent = new CallbackChildrenOwner(1L);
+        CallbackChild child = new CallbackChild();
+        child.id = 2L;
+        child.parent = parent;
+        parent.children.add(child);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CallbackChildrenOwner.class), parent);
+        session.registerOnLoad(metadata(CallbackChild.class), child);
+        session.managedEntry(metadata(CallbackChildrenOwner.class), parent).putCollectionSnapshot("children", List.of(2L));
+
+        StepVerifier.create(operations.delete(parent)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(1L)
+                .verifyComplete();
+
+        assertEquals(List.of("children-owner-pre", "child-pre", "child-post", "children-owner-post"),
+                RemovalCallbacks.events);
+        assertEquals(2, executor.executedStatements.size());
+    }
+
     private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
         PersistenceSession session = new PersistenceSession();
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
@@ -3384,6 +3454,10 @@ class SimpleReactiveEntityOperationsTest {
         @Id
         private Long id;
 
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumn(name = "owner_id")
+        private CallbackOwner owner;
+
         private CallbackTarget() {
         }
 
@@ -3399,6 +3473,34 @@ class SimpleReactiveEntityOperationsTest {
         @PostRemove
         void postRemove() {
             RemovalCallbacks.events.add("target-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "self_removing_entities")
+    private static final class SelfRemovingEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.REMOVE)
+        @JoinColumn(name = "parent_id")
+        private SelfRemovingEntity parent;
+
+        private SelfRemovingEntity() {
+        }
+
+        private SelfRemovingEntity(Long id) {
+            this.id = id;
+        }
+
+        @PreRemove
+        void preRemove() {
+            RemovalCallbacks.events.add("self-pre");
+        }
+
+        @PostRemove
+        void postRemove() {
+            RemovalCallbacks.events.add("self-post");
         }
     }
 
@@ -3465,7 +3567,7 @@ class SimpleReactiveEntityOperationsTest {
         @Id
         private Long id;
 
-        @ManyToOne
+        @ManyToOne(cascade = CascadeType.REMOVE)
         @JoinColumn(name = "parent_id")
         private CallbackChildrenOwner parent;
 
