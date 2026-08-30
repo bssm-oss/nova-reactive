@@ -25,6 +25,7 @@ import jakarta.persistence.criteria.ParameterExpression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import org.junit.jupiter.api.Test;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -33,6 +34,10 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -809,6 +814,32 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void inFlightAndSubsequentSubscriptionsCaptureCompleteIndependentBindingSnapshots() throws InterruptedException {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<String> name = cb.parameter(String.class, "name");
+        cq.multiselect(e.<String>get("name"))
+                .where(cb.and(cb.equal(e.<String>get("name"), name), cb.notEqual(e.<String>get("name"), name)));
+        BlockingCapturingOperations operations = new BlockingCapturingOperations();
+        ReactiveCriteriaQuery<Object> reactive = new ReactiveCriteriaQuery<>(
+                (CriteriaQueryImpl<Object>) cq, operations, builder, aliasedBuilder);
+
+        reactive.setParameter(name, "old");
+        Disposable first = reactive.getResultList().subscribe();
+        assertTrue(operations.firstCapture.await(5, TimeUnit.SECONDS));
+
+        reactive.setParameter(name, "new");
+        Disposable second = reactive.getResultList().subscribe();
+        assertTrue(operations.allCaptures.await(5, TimeUnit.SECONDS));
+
+        assertEquals(List.of("old", "old"), operations.nativeQueries.get(0).bindings());
+        assertEquals(List.of("new", "new"), operations.nativeQueries.get(1).bindings());
+        first.dispose();
+        second.dispose();
+    }
+
+    @Test
     void failsFastOnManyToManyJoin() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);
@@ -1237,6 +1268,23 @@ class CriteriaSqlBuilderTest {
         public <T> Flux<T> queryNative(NativeQuery query, Function<RowAccessor, T> mapper) {
             nativeQueries.add(query);
             return Flux.empty();
+        }
+    }
+
+    private static final class BlockingCapturingOperations extends RejectingOperations {
+        private final List<NativeQuery> nativeQueries = new CopyOnWriteArrayList<>();
+        private final CountDownLatch firstCapture = new CountDownLatch(1);
+        private final CountDownLatch allCaptures = new CountDownLatch(2);
+        private final AtomicInteger captures = new AtomicInteger();
+
+        @Override
+        public <T> Flux<T> queryNative(NativeQuery query, Function<RowAccessor, T> mapper) {
+            nativeQueries.add(query);
+            if (captures.incrementAndGet() == 1) {
+                firstCapture.countDown();
+            }
+            allCaptures.countDown();
+            return Flux.never();
         }
     }
 
