@@ -189,12 +189,24 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
         return requireBound(value);
     }
 
+    Object value(CriteriaParameterBindings bindings) {
+        return bindings.resolve(value);
+    }
+
     Object low() {
         return requireBound(low);
     }
 
+    Object low(CriteriaParameterBindings bindings) {
+        return bindings.resolve(low);
+    }
+
     Object high() {
         return requireBound(high);
+    }
+
+    Object high(CriteriaParameterBindings bindings) {
+        return bindings.resolve(high);
     }
 
     List<Object> inValues() {
@@ -202,6 +214,17 @@ class CriteriaPredicate extends AbstractCriteriaExpression<Boolean> implements P
             inValues.forEach(CriteriaPredicate::requireBound);
         }
         return inValues;
+    }
+
+    List<Object> inValues(CriteriaParameterBindings bindings) {
+        if (inValues == null) {
+            return null;
+        }
+        List<Object> resolved = new ArrayList<>(inValues.size());
+        for (Object value : inValues) {
+            resolved.add(bindings.resolve(value));
+        }
+        return resolved;
     }
 
     List<CriteriaPredicate> children() {

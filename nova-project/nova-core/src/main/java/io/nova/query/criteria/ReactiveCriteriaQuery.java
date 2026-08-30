@@ -8,6 +8,7 @@ import io.nova.query.NativeQuery;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Sort;
+import jakarta.persistence.criteria.ParameterExpression;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -15,6 +16,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -36,6 +38,8 @@ public final class ReactiveCriteriaQuery<T> {
 
     private Integer firstResult;
     private Integer maxResults;
+    private final Map<ParameterExpression<?>, Object> identityParameterValues = new LinkedHashMap<>();
+    private final Map<String, Object> namedParameterValues = new LinkedHashMap<>();
 
     ReactiveCriteriaQuery(
             CriteriaQueryImpl<T> query,
@@ -66,6 +70,29 @@ public final class ReactiveCriteriaQuery<T> {
         return this;
     }
 
+    /** Declared Criteria parameters, in traversal order. */
+    public Set<ParameterExpression<?>> getParameters() {
+        return query.getParameters();
+    }
+
+    /** Binds a declared named Criteria parameter. */
+    public ReactiveCriteriaQuery<T> setParameter(String name, Object value) {
+        if (name == null || name.isBlank()) {
+            throw new CriteriaException("Criteria parameter name must not be blank");
+        }
+        namedParameterValues.put(name, value);
+        return this;
+    }
+
+    /** Binds a declared Criteria parameter by its exact expression identity. */
+    public <P> ReactiveCriteriaQuery<T> setParameter(ParameterExpression<P> parameter, P value) {
+        if (!(parameter instanceof CriteriaParameter<?>)) {
+            throw new CriteriaException("Criteria parameter was not created by this CriteriaBuilder");
+        }
+        identityParameterValues.put(parameter, value);
+        return this;
+    }
+
     /** SELECT 결과 목록을 발행한다. */
     public Flux<T> getResultList() {
         return Flux.defer(this::execute);
@@ -91,19 +118,25 @@ public final class ReactiveCriteriaQuery<T> {
 
     private Flux<T> execute() {
         try {
+            CriteriaParameterBindings bindings = CriteriaParameterBindings.resolve(
+                    query.getParameters(), new LinkedHashMap<>(identityParameterValues),
+                    new LinkedHashMap<>(namedParameterValues));
             boolean entitySelect = isEntitySelect();
             if (entitySelect) {
                 rejectAggregateOrderingForEntitySelect();
             }
             if (query.requiresAliasedSql()) {
+                if (!query.getParameters().isEmpty()) {
+                    throw new CriteriaException("Criteria parameters are not supported for aliased Criteria SQL queries yet");
+                }
                 // join/서브쿼리를 포함하면 alias 한정 SQL 경로로 실행한다. 엔티티 반환은 루트 id를
                 // 순서대로 투영한 뒤 기존 하이드레이션에 위임하는 2단계, 스칼라/집계는 native SQL이다.
                 return entitySelect ? executeEntityWithJoins() : executeScalarAliased();
             }
             if (entitySelect) {
-                return executeEntity();
+                return executeEntity(bindings);
             }
-            return executeScalar();
+            return executeScalar(bindings);
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
@@ -129,7 +162,7 @@ public final class ReactiveCriteriaQuery<T> {
     }
 
     @SuppressWarnings("unchecked")
-    private Flux<T> executeEntity() {
+    private Flux<T> executeEntity(CriteriaParameterBindings bindings) {
         CriteriaRoot<?> root = query.root();
         EntityMetadata<?> metadata = root.ownerMetadata();
         if (query.isDistinct()) {
@@ -150,7 +183,7 @@ public final class ReactiveCriteriaQuery<T> {
 
         QuerySpec spec = QuerySpec.empty();
         if (narrowing.remaining() != null) {
-            spec = spec.where(CriteriaEntityTranslator.toPredicate(narrowing.remaining()));
+            spec = spec.where(CriteriaEntityTranslator.toPredicate(narrowing.remaining(), bindings));
         }
         if (!query.orders().isEmpty()) {
             Sort sort = CriteriaEntityTranslator.toSort(query.orders());
@@ -237,12 +270,12 @@ public final class ReactiveCriteriaQuery<T> {
         };
     }
 
-    private Flux<T> executeScalar() {
+    private Flux<T> executeScalar(CriteriaParameterBindings bindings) {
         if (firstResult != null || maxResults != null) {
             return Flux.error(new CriteriaException(
                     "setFirstResult/setMaxResults is only supported for entity-returning Criteria queries in v1"));
         }
-        CriteriaSql translated = sqlBuilder.build(query);
+        CriteriaSql translated = sqlBuilder.build(query, bindings);
         int columns = translated.selectionCount();
         Function<RowAccessor, T> mapper = row -> mapRow(row, columns);
         return operations.queryNative(new NativeQuery(translated.sql(), translated.bindings()), mapper);

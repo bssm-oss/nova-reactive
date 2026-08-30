@@ -167,6 +167,15 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
         if (expression instanceof CriteriaTypeExpression typeExpr) {
             return discriminatorEqual(typeExpr, value);
         }
+        if (value instanceof CriteriaParameter<?> parameter) {
+            if (expression instanceof CriteriaAggregate<?> aggregate) {
+                validateParameterType(aggregate.getJavaType(), parameter, "equal");
+                return CriteriaPredicate.comparison(aggregate, CompareOp.EQ, parameter);
+            }
+            CriteriaColumnPath path = path(expression, "equal");
+            validateParameterType(path.property().javaType(), parameter, "equal");
+            return CriteriaPredicate.comparison(path, CompareOp.EQ, parameter);
+        }
         if (value == null) {
             if (expression instanceof CriteriaAggregate<?>) {
                 throw new CriteriaException("CriteriaBuilder.equal does not accept null for an aggregate expression");
@@ -185,6 +194,15 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
 
     @Override
     public Predicate notEqual(Expression<?> expression, Object value) {
+        if (value instanceof CriteriaParameter<?> parameter) {
+            if (expression instanceof CriteriaAggregate<?> aggregate) {
+                validateParameterType(aggregate.getJavaType(), parameter, "notEqual");
+                return CriteriaPredicate.comparison(aggregate, CompareOp.NE, parameter);
+            }
+            CriteriaColumnPath path = path(expression, "notEqual");
+            validateParameterType(path.property().javaType(), parameter, "notEqual");
+            return CriteriaPredicate.comparison(path, CompareOp.NE, parameter);
+        }
         if (value == null) {
             if (expression instanceof CriteriaAggregate<?>) {
                 throw new CriteriaException("CriteriaBuilder.notEqual does not accept null for an aggregate expression");
@@ -276,6 +294,26 @@ public final class SimpleCriteriaBuilder extends AbstractCriteriaBuilder {
     public Predicate notLike(Expression<String> expression, String pattern) {
         Objects.requireNonNull(pattern, "notLike pattern must not be null");
         return CriteriaPredicate.like(path(expression, "notLike"), pattern, true);
+    }
+
+    @Override
+    public Predicate like(Expression<String> expression, Expression<String> pattern) {
+        if (!(pattern instanceof CriteriaParameter<?> parameter)) {
+            throw new CriteriaException("CriteriaBuilder.like expression pattern must be a Criteria parameter");
+        }
+        CriteriaColumnPath path = path(expression, "like");
+        validateParameterType(path.property().javaType(), parameter, "like");
+        return CriteriaPredicate.like(path, parameter, false);
+    }
+
+    @Override
+    public Predicate notLike(Expression<String> expression, Expression<String> pattern) {
+        if (!(pattern instanceof CriteriaParameter<?> parameter)) {
+            throw new CriteriaException("CriteriaBuilder.notLike expression pattern must be a Criteria parameter");
+        }
+        CriteriaColumnPath path = path(expression, "notLike");
+        validateParameterType(path.property().javaType(), parameter, "notLike");
+        return CriteriaPredicate.like(path, parameter, true);
     }
 
     @Override

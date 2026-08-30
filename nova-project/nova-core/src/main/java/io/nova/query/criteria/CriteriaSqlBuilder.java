@@ -32,7 +32,7 @@ final class CriteriaSqlBuilder {
         this.metadataFactory = Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
     }
 
-    CriteriaSql build(CriteriaQueryImpl<?> query) {
+    CriteriaSql build(CriteriaQueryImpl<?> query, CriteriaParameterBindings bindings) {
         CriteriaRoot<?> root = query.root();
         EntityMetadata<?> metadata = root.ownerMetadata();
         List<Selection<?>> selections = query.selections();
@@ -40,7 +40,7 @@ final class CriteriaSqlBuilder {
             throw new CriteriaException("Scalar Criteria query requires an explicit select()/multiselect()");
         }
 
-        Ctx ctx = new Ctx();
+        Ctx ctx = new Ctx(bindings);
         ctx.sql.append("select ");
         if (query.isDistinct()) {
             ctx.sql.append("distinct ");
@@ -151,17 +151,18 @@ final class CriteriaSqlBuilder {
             case COMPARISON -> {
                 renderComparisonLeft(ctx, predicate);
                 ctx.sql.append(' ').append(predicate.op().symbol()).append(' ');
-                bindMarker(ctx, predicate.value());
+                bindMarker(ctx, predicate.value(ctx.bindingsResolver), predicate.aggregate() == null
+                        ? predicate.path() : predicate.aggregate().operand());
             }
             case LIKE -> {
                 ctx.sql.append(column(predicate.path())).append(predicate.negated() ? " not like " : " like ");
-                bindMarker(ctx, predicate.value());
+                bindMarker(ctx, predicate.value(ctx.bindingsResolver), predicate.path());
             }
             case BETWEEN -> {
                 ctx.sql.append(column(predicate.path())).append(" between ");
-                bindMarker(ctx, predicate.low());
+                bindMarker(ctx, predicate.low(ctx.bindingsResolver), predicate.path());
                 ctx.sql.append(" and ");
-                bindMarker(ctx, predicate.high());
+                bindMarker(ctx, predicate.high(ctx.bindingsResolver), predicate.path());
             }
             case IN -> renderIn(ctx, predicate);
             case NULL -> ctx.sql.append(column(predicate.path()))
@@ -200,7 +201,7 @@ final class CriteriaSqlBuilder {
     }
 
     private void renderIn(Ctx ctx, CriteriaPredicate predicate) {
-        List<Object> values = predicate.inValues();
+        List<Object> values = predicate.inValues(ctx.bindingsResolver);
         if (values.isEmpty()) {
             // Nova Criteria와 동일한 안전 동작: 빈 IN은 항상-거짓, 빈 NOT IN은 항상-참.
             ctx.sql.append(predicate.negated() ? "1 = 1" : "1 = 0");
@@ -211,7 +212,7 @@ final class CriteriaSqlBuilder {
             if (i > 0) {
                 ctx.sql.append(", ");
             }
-            bindMarker(ctx, values.get(i));
+            bindMarker(ctx, values.get(i), predicate.path());
         }
         ctx.sql.append(')');
     }
@@ -311,6 +312,14 @@ final class CriteriaSqlBuilder {
     }
 
     private void bindMarker(Ctx ctx, Object value) {
+        addBinding(ctx, ctx.bindingsResolver.resolve(value));
+    }
+
+    private void bindMarker(Ctx ctx, Object value, CriteriaColumnPath path) {
+        addBinding(ctx, path.property().toColumnValue(ctx.bindingsResolver.resolve(value)));
+    }
+
+    private void addBinding(Ctx ctx, Object value) {
         ctx.bindings.add(value);
         ctx.sql.append(dialect.bindMarkers().marker(ctx.bindings.size()));
     }
@@ -393,5 +402,10 @@ final class CriteriaSqlBuilder {
     private static final class Ctx {
         final StringBuilder sql = new StringBuilder();
         final List<Object> bindings = new ArrayList<>();
+        final CriteriaParameterBindings bindingsResolver;
+
+        Ctx(CriteriaParameterBindings bindingsResolver) {
+            this.bindingsResolver = bindingsResolver;
+        }
     }
 }

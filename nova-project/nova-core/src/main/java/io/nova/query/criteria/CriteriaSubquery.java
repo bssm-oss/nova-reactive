@@ -242,7 +242,9 @@ final class CriteriaSubquery<U> extends AbstractCriteriaExpression<U> implements
 
     @Override
     public Set<jakarta.persistence.criteria.ParameterExpression<?>> getParameters() {
-        return Set.of();
+        LinkedHashSet<CriteriaParameter<?>> parameters = new LinkedHashSet<>();
+        CriteriaPredicate.collectParameters(restriction, parameters);
+        return Set.copyOf(parameters);
     }
 
     // --- nested subquery (unsupported) ---------------------------------------------------------

@@ -83,6 +83,13 @@ final class CriteriaParameterBindings {
         return value;
     }
 
+    Object resolve(Object value) {
+        if (value instanceof CriteriaParameter<?> parameter) {
+            return resolve(parameter);
+        }
+        return value;
+    }
+
     private static Object validateValue(CriteriaParameter<?> parameter, Object value) {
         if (value == null) {
             throw new CriteriaException("Criteria parameter values must not be null");
