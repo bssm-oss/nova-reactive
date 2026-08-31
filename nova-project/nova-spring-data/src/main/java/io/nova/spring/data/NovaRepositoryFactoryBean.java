@@ -1,6 +1,7 @@
 package io.nova.spring.data;
 
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.jpql.JpqlExecutor;
 import io.nova.sql.Dialect;
@@ -104,9 +105,11 @@ public final class NovaRepositoryFactoryBean
         }
         resolveOptionalBeansByType();
         RepositoryMetadata metadata = RepositoryMetadata.resolve(repositoryInterface);
+        EntityMetadata<?> entityMetadata = resolveEntityMetadata(metadata.entityType());
         Supplier<JpqlExecutor> jpqlExecutorSupplier = jpqlExecutorSupplier(metadata.entityType());
         SimpleReactiveRepository handler = new SimpleReactiveRepository(
-                metadata.entityType(), metadata.idType(), entityOperations, jpqlExecutorSupplier, dialect);
+                metadata.entityType(), metadata.idType(), entityOperations, jpqlExecutorSupplier, dialect,
+                entityMetadata);
         ClassLoader classLoader = repositoryInterface.getClassLoader();
         this.proxy = Proxy.newProxyInstance(classLoader, new Class<?>[]{repositoryInterface}, handler);
     }
@@ -117,11 +120,12 @@ public final class NovaRepositoryFactoryBean
      * 않는 repository(특히 엔티티가 {@code @Entity}가 아닌 경우)의 부팅을 깨지 않는다 — {@link JpqlExecutor}
      * 생성이 등록 엔티티 메타데이터를 eager 해석하기 때문이다.
      *
-     * <p>JPQL {@code @Query} 메서드가 없거나 {@link Dialect}/{@link EntityMetadataFactory}가 없으면
-     * {@code null}을 반환하고, JPQL {@code @Query} 호출 시점에 명확한 예외로 fail-fast한다.
+     * <p>JPQL {@code @Query} 메서드가 없거나 {@link Dialect}가 없으면 {@code null}을 반환하고,
+     * JPQL {@code @Query} 호출 시점에 명확한 예외로 fail-fast한다. EntityMetadataFactory는 derived
+     * query의 property 모델에도 필요하므로 repository 생성 전에 항상 해석된다.
      */
     private Supplier<JpqlExecutor> jpqlExecutorSupplier(Class<?> entityType) {
-        if (!declaresJpqlQuery() || dialect == null || entityMetadataFactory == null) {
+        if (!declaresJpqlQuery() || dialect == null) {
             return null;
         }
         Set<Class<?>> entities = new LinkedHashSet<>();
@@ -146,12 +150,9 @@ public final class NovaRepositoryFactoryBean
     }
 
     /**
-     * 명시적으로 주입되지 않은 {@link Dialect}/{@link EntityMetadataFactory}를 컨테이너에서 <b>타입 기준</b>
-     * 유일 후보로 해석한다({@code @EnableNovaRepositories} 경로에서 {@code @Query}가 별도 설정 없이도
-     * 동작하도록). 후보가 0개이거나 2개 이상이면 {@code null}로 남겨 optionality를 보존한다 — 이 경우
-     * {@code @Query} 호출 시점에만 명확한 예외로 fail-fast하고, 비-{@code @Query} repository 동작은
-     * 그대로 유지된다. 명시 ref가 필요하면 {@code @EnableNovaRepositories.dialectRef}/
-     * {@code entityMetadataFactoryRef}로 지정한다.
+     * 명시적으로 주입되지 않은 {@link Dialect}를 컨테이너에서 <b>타입 기준</b> 유일 후보로 해석한다.
+     * EntityMetadataFactory는 derived query parser와 persistence runtime이 반드시 같은 논리 property
+     * 모델을 사용해야 하므로 별도 required 경로에서 해석한다.
      */
     private void resolveOptionalBeansByType() {
         if (beanFactory == null) {
@@ -160,9 +161,20 @@ public final class NovaRepositoryFactoryBean
         if (dialect == null) {
             dialect = beanFactory.getBeanProvider(Dialect.class).getIfUnique();
         }
-        if (entityMetadataFactory == null) {
+    }
+
+    private EntityMetadata<?> resolveEntityMetadata(Class<?> entityType) {
+        if (entityMetadataFactory == null && beanFactory != null) {
             entityMetadataFactory = beanFactory.getBeanProvider(EntityMetadataFactory.class).getIfUnique();
         }
+        if (entityMetadataFactory == null) {
+            throw new IllegalStateException(
+                    "No unique EntityMetadataFactory was wired for " + repositoryInterface.getName()
+                            + "; derived query parsing requires the same EntityMetadataFactory used by runtime"
+                            + " mapping. Set entityMetadataFactoryRef or expose exactly one"
+                            + " EntityMetadataFactory bean.");
+        }
+        return entityMetadataFactory.getEntityMetadata(entityType);
     }
 
     @Override

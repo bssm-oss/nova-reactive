@@ -1,7 +1,8 @@
 package io.nova.spring.data.derived;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.PersistentProperty;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -12,9 +13,9 @@ import java.util.Optional;
  * 단일 엔티티 클래스의 top-level property 이름 인덱스. derived query parser가 method-name token에서
  * property 이름을 greedy하게 잘라낼 때 사용한다.
  *
- * <p>매칭 대상은 {@link io.nova.metadata.EntityMetadataFactory}와 동일한 규칙으로 추린 필드들이며
- * — static, transient, synthetic은 제외 — 단 derived parser는 {@code @Embedded} 평탄화를 지원하지
- * 않으므로 top-level 필드만 수집한다. embedded path 지원은 후속 작업으로 분리한다(see #12).
+ * <p>매칭 대상은 {@link EntityMetadata#properties()}의 논리 property다. 따라서 field 접근 여부와 무관하게
+ * 상속 및 PROPERTY access getter-only property를 포함하고, 메타데이터에서 제외된 inactive/transient
+ * property는 포함하지 않는다.
  *
  * <p>매칭은 PascalCase form으로 비교한다 — method-name이 {@code findByEmailAddress}일 때 {@code EmailAddress}
  * 토큰을 lowerCamelCase property {@code emailAddress}에 매핑한다.
@@ -31,15 +32,10 @@ final class EntityPropertyIndex {
         this.camelOriginal = camel;
     }
 
-    static EntityPropertyIndex of(Class<?> entityType) {
-        List<String> camel = new ArrayList<>();
-        for (Field field : entityType.getDeclaredFields()) {
-            int mods = field.getModifiers();
-            if (field.isSynthetic() || Modifier.isStatic(mods) || Modifier.isTransient(mods)) {
-                continue;
-            }
-            camel.add(field.getName());
-        }
+    static EntityPropertyIndex of(EntityMetadata<?> metadata) {
+        List<String> camel = metadata.properties().stream()
+                .map(PersistentProperty::propertyName)
+                .toList();
         List<String> pascalSorted = new ArrayList<>(camel.size());
         for (String name : camel) {
             pascalSorted.add(toPascal(name));

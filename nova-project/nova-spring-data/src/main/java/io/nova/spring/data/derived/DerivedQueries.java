@@ -1,6 +1,7 @@
 package io.nova.spring.data.derived;
 
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.metadata.EntityMetadata;
 
 import java.lang.reflect.Method;
 import java.util.Objects;
@@ -16,11 +17,11 @@ public final class DerivedQueries {
     private final DerivedQueryParser parser;
     private final DerivedQueryDispatcher dispatcher;
 
-    public DerivedQueries(Class<?> entityType, ReactiveEntityOperations operations) {
-        Objects.requireNonNull(entityType, "entityType");
+    public DerivedQueries(EntityMetadata<?> entityMetadata, ReactiveEntityOperations operations) {
+        Objects.requireNonNull(entityMetadata, "entityMetadata");
         Objects.requireNonNull(operations, "operations");
-        this.parser = new DerivedQueryParser(entityType);
-        this.dispatcher = new DerivedQueryDispatcher(entityType, operations);
+        this.parser = new DerivedQueryParser(entityMetadata);
+        this.dispatcher = new DerivedQueryDispatcher(entityMetadata.entityType(), operations);
     }
 
     /**

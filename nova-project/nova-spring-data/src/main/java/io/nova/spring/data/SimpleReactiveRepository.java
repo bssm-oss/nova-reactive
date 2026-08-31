@@ -1,6 +1,7 @@
 package io.nova.spring.data;
 
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.metadata.EntityMetadata;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.jpql.JpqlExecutor;
@@ -31,36 +32,6 @@ public final class SimpleReactiveRepository implements InvocationHandler {
     private final DerivedQueries derivedQueries;
     private final AnnotatedQueries annotatedQueries;
 
-    public SimpleReactiveRepository(
-            Class<?> entityType,
-            Class<?> idType,
-            ReactiveEntityOperations entityOperations
-    ) {
-        this(entityType, idType, entityOperations, (Supplier<JpqlExecutor>) null, null);
-    }
-
-    /**
-     * {@code @Query} 지원을 위해 {@link JpqlExecutor}(JPQL @Query 실행)와 {@link Dialect}(native @Query
-     * bind marker 렌더링)를 함께 받는 생성자다. 둘 다 nullable이며, 없으면 해당 @Query 경로는 호출
-     * 시점에 명확한 예외로 fail-fast한다(비-@Query 메서드는 영향 없음).
-     *
-     * @param entityType       repository 엔티티 타입
-     * @param idType           repository 식별자 타입
-     * @param entityOperations 위임 대상 reactive 오퍼레이션
-     * @param jpqlExecutor     JPQL {@code @Query} 실행기(nullable)
-     * @param dialect          native {@code @Query} bind marker 렌더링용 dialect(nullable)
-     */
-    public SimpleReactiveRepository(
-            Class<?> entityType,
-            Class<?> idType,
-            ReactiveEntityOperations entityOperations,
-            JpqlExecutor jpqlExecutor,
-            Dialect dialect
-    ) {
-        this(entityType, idType, entityOperations,
-                jpqlExecutor == null ? null : () -> jpqlExecutor, dialect);
-    }
-
     /**
      * {@link JpqlExecutor}를 <b>lazy</b> supplier로 받는 생성자다. {@link NovaRepositoryFactoryBean}이
      * 사용하며, {@link JpqlExecutor} 생성(등록 엔티티 메타데이터 eager 해석)을 첫 JPQL {@code @Query}
@@ -72,18 +43,26 @@ public final class SimpleReactiveRepository implements InvocationHandler {
      * @param entityOperations     위임 대상 reactive 오퍼레이션
      * @param jpqlExecutorSupplier JPQL {@code @Query} 실행기 lazy supplier(nullable)
      * @param dialect              native {@code @Query} bind marker 렌더링용 dialect(nullable)
+     * @param entityMetadata       derived query 및 runtime mapping에서 공유하는 entity metadata
      */
     public SimpleReactiveRepository(
             Class<?> entityType,
             Class<?> idType,
             ReactiveEntityOperations entityOperations,
             Supplier<JpqlExecutor> jpqlExecutorSupplier,
-            Dialect dialect
+            Dialect dialect,
+            EntityMetadata<?> entityMetadata
     ) {
         this.entityType = Objects.requireNonNull(entityType, "entityType");
         this.idType = Objects.requireNonNull(idType, "idType");
         this.entityOperations = Objects.requireNonNull(entityOperations, "entityOperations");
-        this.derivedQueries = new DerivedQueries(entityType, entityOperations);
+        EntityMetadata<?> resolvedMetadata = Objects.requireNonNull(entityMetadata, "entityMetadata");
+        if (resolvedMetadata.entityType() != entityType) {
+            throw new IllegalArgumentException(
+                    "entityMetadata type " + resolvedMetadata.entityType().getName()
+                            + " does not match repository entity type " + entityType.getName());
+        }
+        this.derivedQueries = new DerivedQueries(resolvedMetadata, entityOperations);
         this.annotatedQueries =
                 new AnnotatedQueries(entityType, entityOperations, jpqlExecutorSupplier, dialect);
     }
