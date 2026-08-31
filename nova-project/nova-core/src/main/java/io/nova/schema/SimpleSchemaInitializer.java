@@ -187,13 +187,6 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
      * 한 엔티티의 테이블 존재와 컬럼 존재를 검증해 문제 메시지(없으면 빈 문자열)를 발행한다.
      */
     private Mono<String> validateOne(Class<?> type, java.util.Set<String> existingTables) {
-        EntityMetadata<?> rootMetadata = metadataFactory.getEntityMetadata(schemaRootClass(type));
-        if (rootMetadata.hasInheritance() && rootMetadata.inheritance().joined()) {
-            return validateJoinedHierarchy(rootMetadata, existingTables);
-        }
-        if (rootMetadata.hasInheritance() && rootMetadata.inheritance().tablePerClass()) {
-            return validateTablePerClassHierarchy(rootMetadata, existingTables);
-        }
         EntityMetadata<?> metadata = schemaMetadata(type);
         String table = metadata.tableName();
         if (!existingTables.contains(table)) {
@@ -227,61 +220,6 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .collectList()
                 .map(problems -> String.join("; ", problems));
         return Mono.zip(primaryProblem, secondaryProblem, SimpleSchemaInitializer::joinProblems);
-    }
-
-    private Mono<String> validateJoinedHierarchy(
-            EntityMetadata<?> rootMetadata, java.util.Set<String> existingTables) {
-        io.nova.metadata.InheritanceLayout layout =
-                metadataFactory.inheritanceLayout(rootMetadata.inheritance().root());
-        return Flux.concat(
-                        validatePhysicalTable(layout.rootMetadata(), layout.rootTableColumns(), true, existingTables),
-                        Flux.fromIterable(layout.subtypes())
-                                .filter(subtype -> subtype.metadata().entityType() != layout.info().root())
-                                .concatMap(subtype -> validatePhysicalTable(
-                                        subtype.metadata(), subtype.ownTableColumns(), false, existingTables)))
-                .filter(problem -> !problem.isEmpty())
-                .collectList()
-                .map(problems -> String.join("; ", problems));
-    }
-
-    private Mono<String> validateTablePerClassHierarchy(
-            EntityMetadata<?> rootMetadata, java.util.Set<String> existingTables) {
-        io.nova.metadata.InheritanceLayout layout =
-                metadataFactory.inheritanceLayout(rootMetadata.inheritance().root());
-        return Flux.fromIterable(layout.subtypes())
-                .concatMap(subtype -> validatePhysicalTable(
-                        subtype.metadata(), subtype.ownTableColumns(), false, existingTables))
-                .filter(problem -> !problem.isEmpty())
-                .collectList()
-                .map(problems -> String.join("; ", problems));
-    }
-
-    private Mono<String> validatePhysicalTable(
-            EntityMetadata<?> metadata,
-            List<PersistentProperty> physicalColumns,
-            boolean hasDiscriminator,
-            java.util.Set<String> existingTables) {
-        String table = metadata.tableName();
-        if (!existingTables.contains(table)) {
-            return Mono.just("table '" + table + "' is missing");
-        }
-        List<String> expectedColumns = new ArrayList<>(physicalColumns.stream()
-                .map(PersistentProperty::columnName)
-                .toList());
-        if (hasDiscriminator) {
-            expectedColumns.add(metadata.inheritance().discriminatorColumn());
-        }
-        return operations.queryNative(
-                        NativeQuery.of(dialect.listColumnsSql(table)),
-                        row -> row.get(Dialect.COLUMN_NAME_COLUMN, String.class))
-                .collect(() -> new java.util.TreeSet<String>(String.CASE_INSENSITIVE_ORDER),
-                        java.util.TreeSet::add)
-                .map(actualColumns -> {
-                    List<String> missing = expectedColumns.stream()
-                            .filter(column -> !actualColumns.contains(column))
-                            .toList();
-                    return missing.isEmpty() ? "" : "table '" + table + "' is missing columns " + missing;
-                });
     }
 
     private static String joinProblems(String first, String second) {
@@ -419,7 +357,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                     String ddl = options.ifNotExists()
                             ? generator.createTableIfNotExists(metadata)
                             : generator.createTable(metadata);
-                    return createPhysicalTable(metadata, subtype.ownTableColumns(), ddl, generator, options);
+                    return createPhysicalTable(metadata, metadata.primaryColumnMappedProperties(), ddl, generator, options);
                 })
                 .then();
     }

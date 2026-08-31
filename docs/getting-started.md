@@ -149,8 +149,6 @@ schema.drop(Book.class, Author.class);          // drops child then parent
 schema.recreate(Author.class, Book.class);      // drop + recreate, FK-safe ordering
 ```
 
-`schema.validate(...)` checks every physical table and owned column in `JOINED` and `TABLE_PER_CLASS` inheritance hierarchies, including subtype tables.
-
 For lower-level control, the raw `dialect.schemaGenerator()` DDL strings stay available — see [Dialects & Schema](dialects.md).
 
 ## With Spring Boot
