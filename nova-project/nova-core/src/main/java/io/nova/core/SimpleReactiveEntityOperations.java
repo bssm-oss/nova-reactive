@@ -973,7 +973,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (cascading.isEmpty()) {
             return Mono.empty();
         }
-        Object parentId = metadata.idProperty().read(parent);
+        Object parentId = metadata.readIdValue(parent);
         if (parentId == null) {
             return Mono.error(new IllegalStateException(
                     "parent id must be set before cascading @OneToMany children on "
@@ -1055,7 +1055,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
         }
         retainedIds.addAll(excludeIds);
-        Condition fkMatches = Criteria.eq(mappedByProperty.propertyName(), parentId);
+        Object predicateValue = parentId;
+        if (mappedByProperty.isCompositeToOne()) {
+            EntityMetadata<?> parentMetadata =
+                    metadataFactory.getEntityMetadata(mappedByProperty.manyToOneTargetType());
+            predicateValue = mappedByProperty.toOneForeignKey().columns().stream()
+                    .map(column -> parentMetadata.idProperties().stream()
+                            .filter(idProperty -> idProperty.columnName()
+                                    .equalsIgnoreCase(column.referencedColumnName()))
+                            .findFirst()
+                            .map(idProperty -> parentMetadata.idColumnValue(idProperty, parentId))
+                            .orElseThrow(() -> new IllegalStateException(
+                                    "No id property maps referenced column "
+                                            + column.referencedColumnName())))
+                    .toList();
+        }
+        Condition fkMatches = Criteria.eq(mappedByProperty.propertyName(), predicateValue);
         QuerySpec spec = retainedIds.isEmpty()
                 ? QuerySpec.empty().where(fkMatches)
                 : QuerySpec.empty().where(Criteria.and(

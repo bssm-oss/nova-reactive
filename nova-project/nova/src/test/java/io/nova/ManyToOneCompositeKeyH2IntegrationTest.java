@@ -194,25 +194,33 @@ class ManyToOneCompositeKeyH2IntegrationTest {
     }
 
     @Test
-    void sessionFlushFailsFastWhenCompositeToOneReferenceChanged() {
-        // 세션 안에서 복합 to-one 참조를 바꾼 뒤 flush 하면 다중컬럼 FK dirty flush 미지원을 loud하게 거부해야
-        // 한다(예전 skip = silent lost-update 로의 퇴화 방지). identity 변경 감지 → IllegalStateException.
+    void sessionFlushUpdatesEveryCompositeToOneForeignKeyColumn() {
         ConnectionFactory cf = freshConnectionFactory();
         SchemaInitializer schema = Nova.schemaInitializer(cf);
         ReactiveEntityManager em = Nova.entityManager(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
 
         OrderEntity order = new OrderEntity(new OrderKey(700L, "BR"), "m");
+        OrderEntity replacement = new OrderEntity(new OrderKey(999L, "ZZ"), "z");
         Line line = new Line(order);
 
         StepVerifier.create(
                 schema.create(List.of(OrderEntity.class, Line.class))
+                        .then(operations.save(order))
+                        .then(operations.save(replacement))
                         .then(em.inTransaction(m -> m.persist(line)
                                 .flatMap(saved -> {
-                                    saved.setOrder(new OrderEntity(new OrderKey(999L, "ZZ"), "z"));
+                                    saved.setOrder(replacement);
                                     return m.flush();
                                 })))
-        ).verifyErrorMatches(error -> error instanceof IllegalStateException
-                && error.getMessage().contains("Composite-key to-one dirty flush is not supported"));
+        ).verifyComplete();
+
+        StepVerifier.create(operations.queryNativeOne(
+                        NativeQuery.of("select \"order_no_fk\" as a, \"region_fk\" as b"
+                                + " from \"mco_line\" where \"id\" = 1"),
+                        row -> row.get("a", Long.class) + "/" + row.get("b", String.class)))
+                .expectNext("999/ZZ")
+                .verifyComplete();
     }
 
     @Test
