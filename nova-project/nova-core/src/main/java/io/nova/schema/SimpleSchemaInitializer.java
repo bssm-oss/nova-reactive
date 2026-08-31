@@ -604,9 +604,9 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
             EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(type);
             for (PersistentProperty property : metadata.elementCollectionProperties()) {
                 ElementCollectionInfo info = property.elementCollectionInfo();
-                Class<?> ownerIdType = metadata.idProperty().javaType();
                 byName.putIfAbsent(info.collectionTableName(),
-                        info.toCollectionTableDefinition(ownerIdType));
+                        info.toCollectionTableDefinition(
+                                io.nova.metadata.ColumnStorage.from(metadata.idProperty())));
             }
         }
         return new ArrayList<>(byName.values());

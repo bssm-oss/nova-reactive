@@ -376,7 +376,7 @@ public final class FixtureEntities {
      *   <li>{@code shortName}은 {@code @Column(length=64)}로 {@code varchar(64)}</li>
      *   <li>{@code description}은 {@code @Column} length 미지정으로 기본 {@code varchar(255)}</li>
      *   <li>{@code price}는 {@code @Column(precision=12, scale=2)}로 {@code numeric(12, 2)}</li>
-     *   <li>{@code defaultDecimal}은 {@code @Column} precision 미지정으로 기본 {@code numeric(19, 2)}</li>
+     *   <li>{@code defaultDecimal}은 명시적 {@code @Column(precision=19, scale=2)}로 {@code numeric(19, 2)}</li>
      * </ul>
      */
     @Entity
@@ -394,7 +394,7 @@ public final class FixtureEntities {
         @Column(name = "price", precision = 12, scale = 2)
         private java.math.BigDecimal price;
 
-        @Column(name = "default_decimal")
+        @Column(name = "default_decimal", precision = 19, scale = 2)
         private java.math.BigDecimal defaultDecimal;
 
         // scale을 생략하면 numeric(precision, 0)으로 emit되어 소수부가 잘린다(JPA @Column 관례와 동일).
@@ -3305,5 +3305,168 @@ public final class FixtureEntities {
 
         public BasicOptionalEntity() {
         }
+    }
+
+    @jakarta.persistence.Converter
+    public static class DecimalStringConverter
+            implements jakarta.persistence.AttributeConverter<java.math.BigDecimal, String> {
+        @Override
+        public String convertToDatabaseColumn(java.math.BigDecimal attribute) {
+            return attribute == null ? null : attribute.toPlainString();
+        }
+
+        @Override
+        public java.math.BigDecimal convertToEntityAttribute(String dbData) {
+            return dbData == null ? null : new java.math.BigDecimal(dbData);
+        }
+    }
+
+    @Embeddable
+    public static class DecimalEmbeddable {
+        @Column(name = "amount", precision = 31, scale = 11)
+        private java.math.BigDecimal amount;
+    }
+
+    @Embeddable
+    public static class ConvertedDecimalEmbeddable {
+        @jakarta.persistence.Convert(converter = DecimalStringConverter.class)
+        @Column(name = "amount")
+        private java.math.BigDecimal amount;
+    }
+
+    @Entity
+    @Table(name = "decimal_field")
+    public static class DecimalFieldEntity {
+        @Id
+        @Column(precision = 31, scale = 11)
+        private java.math.BigDecimal id;
+
+        @Column(name = "amount", precision = 31, scale = 11)
+        private java.math.BigDecimal amount;
+    }
+
+    @Entity
+    @Table(name = "decimal_property")
+    public static class DecimalPropertyEntity {
+        private java.math.BigDecimal id;
+        private java.math.BigDecimal amount;
+
+        @Id
+        @Column(precision = 31, scale = 11)
+        public java.math.BigDecimal getId() {
+            return id;
+        }
+
+        public void setId(java.math.BigDecimal id) {
+            this.id = id;
+        }
+
+        @Column(name = "amount", precision = 31, scale = 11)
+        public java.math.BigDecimal getAmount() {
+            return amount;
+        }
+
+        public void setAmount(java.math.BigDecimal amount) {
+            this.amount = amount;
+        }
+    }
+
+    @Entity
+    @Table(name = "decimal_embedded")
+    public static class DecimalEmbeddedEntity {
+        @Id
+        private Long id;
+
+        @Embedded
+        @AttributeOverride(name = "amount", column = @Column(name = "overridden_amount", precision = 29, scale = 7))
+        private DecimalEmbeddable value;
+    }
+
+    @Entity
+    @Table(name = "decimal_converted_embedded")
+    public static class DecimalConvertedEmbeddedEntity {
+        @Id
+        private Long id;
+
+        @Embedded
+        private ConvertedDecimalEmbeddable value;
+    }
+
+    @Entity
+    @Table(name = "decimal_collections")
+    public static class DecimalCollectionEntity {
+        @Id
+        @Column(precision = 31, scale = 11)
+        private java.math.BigDecimal id;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.CollectionTable(name = "decimal_list",
+                joinColumns = @JoinColumn(name = "owner_id"))
+        @Column(name = "amount", precision = 31, scale = 11)
+        private java.util.List<java.math.BigDecimal> amounts;
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.CollectionTable(name = "decimal_map",
+                joinColumns = @JoinColumn(name = "owner_id"))
+        @jakarta.persistence.MapKeyColumn(name = "amount_key", precision = 31, scale = 11)
+        @Column(name = "amount_value", precision = 31, scale = 11)
+        private java.util.Map<java.math.BigDecimal, java.math.BigDecimal> amountsByKey;
+    }
+
+    @Entity
+    @Table(name = "decimal_target")
+    public static class DecimalTargetEntity {
+        @Id
+        @Column(precision = 31, scale = 11)
+        private java.math.BigDecimal id;
+    }
+
+    @Entity
+    @Table(name = "decimal_relations")
+    public static class DecimalRelationEntity {
+        @Id
+        private Long id;
+
+        @ManyToOne
+        @JoinColumn(name = "many_target_id")
+        private DecimalTargetEntity manyTarget;
+
+        @jakarta.persistence.OneToOne
+        @JoinColumn(name = "one_target_id")
+        private DecimalTargetEntity oneTarget;
+
+        @jakarta.persistence.ManyToMany
+        @jakarta.persistence.JoinTable(name = "decimal_relation_targets",
+                joinColumns = @JoinColumn(name = "relation_id"),
+                inverseJoinColumns = @JoinColumn(name = "target_id"))
+        private java.util.Set<DecimalTargetEntity> targets;
+    }
+
+    @Entity
+    @Table(name = "decimal_secondary")
+    @jakarta.persistence.SecondaryTable(name = "decimal_secondary_values")
+    public static class DecimalSecondaryEntity {
+        @Id
+        @Column(precision = 31, scale = 11)
+        private java.math.BigDecimal id;
+
+        @Column(table = "decimal_secondary_values", precision = 31, scale = 11)
+        private java.math.BigDecimal amount;
+    }
+
+    @Entity
+    @Inheritance(strategy = InheritanceType.JOINED)
+    @Table(name = "decimal_inheritance_root")
+    public static class DecimalInheritanceRoot {
+        @Id
+        @Column(precision = 31, scale = 11)
+        private java.math.BigDecimal id;
+    }
+
+    @Entity
+    @Table(name = "decimal_inheritance_child")
+    public static class DecimalInheritanceChild extends DecimalInheritanceRoot {
+        @Column(precision = 31, scale = 11)
+        private java.math.BigDecimal amount;
     }
 }

@@ -44,7 +44,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@Temporal` (`java.util.Date` / `Calendar`) | ✅ | `DATE` / `TIME` / `TIMESTAMP`; `java.time.*` supported natively |
 | `@Lob` | ✅ | |
 | `@Convert` + `jakarta.persistence.AttributeConverter` | ✅ | Storage-type driven read/write; managed converter classes support `autoApply`, explicit override, and disable semantics |
-| Scalar types | ✅ | `UUID`, `Float`, `Short`, `BigDecimal`, `BigInteger`(driver-permitting), … — driver-verified |
+| Scalar types | ✅ | `UUID`, `Float`, `Short`, `BigDecimal`, `BigInteger`(driver-permitting), … — driver-verified. `BigDecimal` DDL preserves declared `@Column(precision, scale)` on scalar, id/FK, join-table, and collection-table storage; `@Column(columnDefinition)` is rejected on every physical `BigDecimal` storage column. MySQL/MariaDB reject only a fully unspecified shape and normalize scale-only to `decimal(65, scale)`. |
 | `@Version` optimistic locking | ✅ | `Long` / `Integer` / `Short` / `LocalDateTime`; surfaces `OptimisticLockingFailureException` |
 | `@Transient` | ✅ | Field annotations are excluded; under effective `@Access(PROPERTY)`, getter annotations are also excluded |
 | `@Access(FIELD)` | ✅ | Default |
@@ -156,6 +156,10 @@ These declare cleanly but are rejected with a message until implemented — Nova
 
 > Composite `@Id` components should be round-trip-stable types (integers, `String`, `UUID`, enums).
 > Types whose stored form does not decode back byte-for-byte (`BigDecimal` scale drift, sub-second
-> timestamp precision) are not recommended as key components.
+> timestamp precision) are not recommended as key components. `BigDecimal.equals` is scale-sensitive
+> (`new BigDecimal("1.0")` is not equal to `new BigDecimal("1.00")`), although their numeric values
+> compare equal. A database or driver may normalize the scale during a round trip, so do not use a
+> `BigDecimal` whose scale identity matters as an id, composite-id component, or relationship key;
+> use a round-trip-stable key and `compareTo` for numeric business equality.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.12.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.28.0`).

@@ -178,7 +178,7 @@ class OracleCompositeKeyRenderingTest {
     void idempotentCollectionTableDdlUsesPlSqlBlockNotAnsiIfExists() {
         io.nova.metadata.ElementCollectionInfo info = factory.getEntityMetadata(Warehouse.class)
                 .findProperty("binNumbers").orElseThrow().elementCollectionInfo();
-        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(Long.class);
+        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0));
 
         String create = dialect.schemaGenerator().createCollectionTableIfNotExists(definition);
         assertTrue(create.startsWith("begin execute immediate '") && create.endsWith("end;"), create);
@@ -189,7 +189,7 @@ class OracleCompositeKeyRenderingTest {
     private String collectionTableDdl(Class<?> owner, String property) {
         io.nova.metadata.ElementCollectionInfo info = factory.getEntityMetadata(owner)
                 .findProperty(property).orElseThrow().elementCollectionInfo();
-        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(Long.class);
+        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0));
         return dialect.schemaGenerator().createCollectionTable(definition);
     }
 

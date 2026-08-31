@@ -1,6 +1,7 @@
 package io.nova.dialect.postgresql;
 
 import jakarta.persistence.GenerationType;
+import io.nova.metadata.ColumnStorage;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
 import io.nova.sql.AbstractSchemaGenerator;
@@ -160,6 +161,27 @@ public final class PostgresqlDialect implements Dialect {
                 case "Integer", "int" -> "\"" + property.columnName() + "\" serial primary key";
                 default -> super.identityColumn(property);
             };
+        }
+
+        @Override
+        protected String bigDecimalColumnType(ColumnStorage storage) {
+            int precision = storage.precision();
+            int scale = storage.scale();
+            if (precision < 0 || precision > 1000) {
+                throw new IllegalArgumentException("PostgreSQL numeric precision must be between 0 and 1000: "
+                        + precision);
+            }
+            if (scale < 0 || scale > 1000) {
+                throw new IllegalArgumentException("PostgreSQL numeric scale must be between 0 and 1000: " + scale);
+            }
+            if (precision == 0) {
+                return scale == 0 ? "numeric" : "numeric(1000, " + scale + ")";
+            }
+            if (scale > precision) {
+                throw new IllegalArgumentException("PostgreSQL numeric scale must not exceed precision: "
+                        + scale + " > " + precision);
+            }
+            return "numeric(" + precision + ", " + scale + ")";
         }
     }
 }

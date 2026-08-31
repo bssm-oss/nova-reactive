@@ -10,6 +10,7 @@ import io.nova.fetch.FetchGroup;
 import io.nova.graph.EntityGraph;
 import io.nova.graph.FetchNode;
 import io.nova.metadata.CollectionTableDefinition;
+import io.nova.metadata.ColumnStorage;
 import io.nova.metadata.ElementCollectionInfo;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
@@ -470,7 +471,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
             // 단순 @MapsId는 owner의 단일 @Id 전체를, @MapsId("component")는 복합 @Id의 named 컴포넌트를 채운다.
             PersistentProperty target = resolveMapsIdTarget(metadata, mapsIdProperty);
-            target.write(entity, target.toPropertyValue(associatedId));
+            Object derived = target.javaType().isInstance(associatedId)
+                    ? associatedId
+                    : target.toPropertyValue(associatedMetadata.idProperty().toColumnValue(associatedId));
+            target.write(entity, derived);
         }
     }
 
@@ -739,7 +743,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             JoinTableDefinition.ForeignKeyColumn column = columns.get(i);
             String referenced = refs.get(i).referencedColumnName();
             PersistentProperty idProperty = byColumn.get(referenced);
-            Object stored = row.get(column.columnName(), column.columnType());
+            Object stored = row.get(column.columnName(), column.storage().javaType());
             domainByReferenced.put(referenced, idProperty.toPropertyValue(stored));
         }
         List<Object> key = new ArrayList<>();
@@ -956,7 +960,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private CollectionTableDefinition collectionDefinition(EntityMetadata<?> ownerMetadata, ElementCollectionInfo info) {
         // schema 생성과 동일한 정의를 공유한다(@Embeddable 펼침 / @OrderColumn / Map key 컬럼 일괄 반영).
-        return info.toCollectionTableDefinition(wrapPrimitive(ownerMetadata.idProperty().javaType()));
+        return info.toCollectionTableDefinition(ColumnStorage.from(ownerMetadata.idProperty()));
     }
 
     /**
@@ -4545,8 +4549,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         CollectionTableDefinition definition = collectionDefinition(metadata, info);
         PersistentProperty parentIdProperty = metadata.idProperty();
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
+        boolean embeddable = info.embeddable();
         // 저장 표현 타입으로 디코딩을 요청한 뒤 도메인 값으로 복원한다(converter read-source-type 함정 회피).
-        Class<?> valueColumnType = wrapPrimitive(info.valueColumnType());
+        Class<?> valueColumnType = embeddable ? null : wrapPrimitive(info.valueStorage().javaType());
 
         LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
         for (P parent : parents) {
@@ -4561,7 +4566,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         SqlRenderer renderer = dialect.sqlRenderer();
         List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
-        boolean embeddable = info.embeddable();
         return sqlExecutor.queryMany(
                         renderer.selectCollectionRows(definition, ownerIds),
                         row -> {
@@ -4603,11 +4607,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         CollectionTableDefinition definition = collectionDefinition(metadata, info);
         PersistentProperty parentIdProperty = metadata.idProperty();
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
+        boolean embeddable = info.embeddable();
         // Map value도 저장 표현 타입으로 디코딩 요청 후 도메인으로 복원한다.
-        Class<?> valueColumnType = wrapPrimitive(info.valueColumnType());
+        Class<?> valueColumnType = embeddable ? null : wrapPrimitive(info.valueStorage().javaType());
         boolean embeddableKey = info.mapKey().embeddableKey();
         // 단일 컬럼 key의 저장 표현 타입(@Embeddable key는 각 컬럼 타입을 개별 사용하므로 여기선 쓰지 않는다).
-        Class<?> keyColumnType = embeddableKey ? null : info.mapKey().keyColumnType();
+        Class<?> keyColumnType = embeddableKey ? null : info.mapKey().keyStorage().javaType();
 
         LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
         for (P parent : parents) {
@@ -4622,7 +4627,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         SqlRenderer renderer = dialect.sqlRenderer();
         List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
-        boolean embeddable = info.embeddable();
         return sqlExecutor.queryMany(
                         renderer.selectCollectionRows(definition, ownerIds),
                         row -> {
@@ -4670,10 +4674,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         CollectionTableDefinition definition = collectionDefinition(metadata, info);
         PersistentProperty parentIdProperty = metadata.idProperty();
         Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
-        Class<?> valueColumnType = wrapPrimitive(info.valueColumnType());
-        Class<?> keyColumnType = wrapPrimitive(mapKey.keyColumnType());
-        EntityMetadata<?> keyMetadata = metadataFactory.getEntityMetadata(mapKey.keyType());
         boolean embeddable = info.embeddable();
+        Class<?> valueColumnType = embeddable ? null : wrapPrimitive(info.valueStorage().javaType());
+        Class<?> keyColumnType = wrapPrimitive(mapKey.keyStorage().javaType());
+        EntityMetadata<?> keyMetadata = metadataFactory.getEntityMetadata(mapKey.keyType());
 
         LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
         for (P parent : parents) {
@@ -4757,7 +4761,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (info.valueType().isRecord()) {
             List<Object> values = new ArrayList<>(info.embeddableColumns().size());
             for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-                values.add(column.decode(row.get(column.columnName(), column.columnType())));
+                values.add(column.decode(row.get(column.columnName(), column.storage().javaType())));
             }
             return EmbeddableInstantiationStrategy.instantiateCollectionRecord(
                     info.valueType(), info.embeddableColumns(), values);
@@ -4773,7 +4777,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + " must expose a no-args constructor", exception);
         }
         for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
-            Object value = column.decode(row.get(column.columnName(), column.columnType()));
+            Object value = column.decode(row.get(column.columnName(), column.storage().javaType()));
             column.write(element, value);
         }
         return element;
@@ -4789,7 +4793,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (mapKey.keyType().isRecord()) {
             List<Object> values = new ArrayList<>(mapKey.embeddableKeyColumns().size());
             for (ElementCollectionInfo.EmbeddableColumn column : mapKey.embeddableKeyColumns()) {
-                values.add(column.decode(row.get(column.columnName(), column.columnType())));
+                values.add(column.decode(row.get(column.columnName(), column.storage().javaType())));
             }
             return EmbeddableInstantiationStrategy.instantiateCollectionRecord(
                     mapKey.keyType(), mapKey.embeddableKeyColumns(), values);
@@ -4805,7 +4809,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + " must expose a no-args constructor", exception);
         }
         for (ElementCollectionInfo.EmbeddableColumn column : mapKey.embeddableKeyColumns()) {
-            Object value = column.decode(row.get(column.columnName(), column.columnType()));
+            Object value = column.decode(row.get(column.columnName(), column.storage().javaType()));
             column.write(key, value);
         }
         return key;
@@ -5149,7 +5153,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 // 참조 stub을 조립해 reference 필드에 세팅한다. 컬럼 순서는 write/DDL/FK와 동일(toOneForeignKey).
                 List<Object> decoded = new ArrayList<>(property.toOneForeignKey().columns().size());
                 for (ToOneForeignKeyColumn fkColumn : property.toOneForeignKey().columns()) {
-                    Object rawFk = row.get(fkColumn.columnName(), wrapPrimitive(fkColumn.columnType()));
+                    Object rawFk = row.get(fkColumn.columnName(), wrapPrimitive(fkColumn.storage().javaType()));
                     decoded.add(fkColumn.toPropertyValue(rawFk));
                 }
                 property.writeCompositeReference(instance, decoded);
