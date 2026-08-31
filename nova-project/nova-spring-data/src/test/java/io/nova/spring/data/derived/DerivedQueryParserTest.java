@@ -57,6 +57,10 @@ class DerivedQueryParserTest {
         public String getInheritedName() {
             return inheritedName;
         }
+
+        public void setInheritedName(String inheritedName) {
+            this.inheritedName = inheritedName;
+        }
     }
 
     @Entity
@@ -73,13 +77,25 @@ class DerivedQueryParserTest {
             return id;
         }
 
+        public void setId(Long id) {
+            this.id = id;
+        }
+
         public String getGetterOnly() {
             return getterOnly;
+        }
+
+        public void setGetterOnly(String getterOnly) {
+            this.getterOnly = getterOnly;
         }
 
         @Transient
         public String getTemporary() {
             return temporary;
+        }
+
+        public void setTemporary(String temporary) {
+            this.temporary = temporary;
         }
     }
 
