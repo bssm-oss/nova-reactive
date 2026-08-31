@@ -2,6 +2,7 @@ package io.nova.cache;
 
 import io.nova.core.EntityStateDetector;
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.core.SimpleReactiveEntityManager;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.core.SqlExecutionListener;
 import io.nova.cache.spi.CacheKey;
