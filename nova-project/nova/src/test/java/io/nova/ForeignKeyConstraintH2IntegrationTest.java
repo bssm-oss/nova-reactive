@@ -11,6 +11,8 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.PrimaryKeyJoinColumn;
+import jakarta.persistence.SecondaryTable;
 import jakarta.persistence.Table;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.query.NativeQuery;
@@ -186,6 +188,56 @@ class ForeignKeyConstraintH2IntegrationTest {
         ).verifyError();
     }
 
+    @Test
+    void namedSecondaryTableForeignKeyHasExactCatalogNameIsEnforcedAndIdempotent() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(
+                schema.create(java.util.List.of(SecondaryTableNamedForeignKey.class))
+                        .then(schema.create(java.util.List.of(SecondaryTableNamedForeignKey.class)))
+                        .then(operations.queryNativeOne(NativeQuery.of(
+                                        "select \"CONSTRAINT_NAME\" from INFORMATION_SCHEMA.TABLE_CONSTRAINTS"
+                                                + " where \"TABLE_NAME\" = 'fk_secondary_named'"
+                                                + " and \"CONSTRAINT_TYPE\" = 'FOREIGN KEY'"),
+                                row -> row.get("CONSTRAINT_NAME", String.class)))
+        ).expectNext("fk_secondary_named_primary").verifyComplete();
+
+        StepVerifier.create(
+                operations.executeNative(NativeQuery.of(
+                        "insert into \"fk_secondary_named\" (\"primary_id\", \"detail\") values (999, 'orphan')"))
+        ).verifyError();
+    }
+
+    @Test
+    void noConstraintSecondaryTableForeignKeyAllowsOrphanInsert() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(
+                schema.create(java.util.List.of(SecondaryTableSuppressedForeignKey.class))
+                        .then(operations.executeNative(NativeQuery.of(
+                                "insert into \"fk_secondary_suppressed\" (\"primary_id\", \"detail\")"
+                                        + " values (999, 'orphan')")))
+        ).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void providerDefaultSecondaryTableForeignKeyRejectsOrphanInsert() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(
+                schema.create(java.util.List.of(SecondaryTableDefaultForeignKey.class))
+                        .then(operations.executeNative(NativeQuery.of(
+                                "insert into \"fk_secondary_default\" (\"primary_id\", \"detail\")"
+                                        + " values (999, 'orphan')")))
+        ).verifyError();
+    }
+
     @Entity
     @Table(name = "fk_parent")
     public static class FkParent {
@@ -345,6 +397,60 @@ class ForeignKeyConstraintH2IntegrationTest {
 
         public Long getId() {
             return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_secondary_named_primary")
+    @SecondaryTable(
+            name = "fk_secondary_named",
+            pkJoinColumns = @PrimaryKeyJoinColumn(
+                    name = "primary_id",
+                    referencedColumnName = "id",
+                    foreignKey = @ForeignKey(name = "fk_secondary_named_primary")))
+    public static class SecondaryTableNamedForeignKey {
+        @Id
+        private Long id;
+
+        @Column(name = "detail", table = "fk_secondary_named")
+        private String detail;
+
+        public SecondaryTableNamedForeignKey() {
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_secondary_suppressed_primary")
+    @SecondaryTable(
+            name = "fk_secondary_suppressed",
+            pkJoinColumns = @PrimaryKeyJoinColumn(
+                    name = "primary_id",
+                    referencedColumnName = "id",
+                    foreignKey = @ForeignKey(ConstraintMode.NO_CONSTRAINT)))
+    public static class SecondaryTableSuppressedForeignKey {
+        @Id
+        private Long id;
+
+        @Column(name = "detail", table = "fk_secondary_suppressed")
+        private String detail;
+
+        public SecondaryTableSuppressedForeignKey() {
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_secondary_default_primary")
+    @SecondaryTable(
+            name = "fk_secondary_default",
+            pkJoinColumns = @PrimaryKeyJoinColumn(name = "primary_id", referencedColumnName = "id"))
+    public static class SecondaryTableDefaultForeignKey {
+        @Id
+        private Long id;
+
+        @Column(name = "detail", table = "fk_secondary_default")
+        private String detail;
+
+        public SecondaryTableDefaultForeignKey() {
         }
     }
 }
