@@ -2,6 +2,9 @@ package io.nova.spring.data;
 
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.NativeQuery;
@@ -11,6 +14,9 @@ import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
 import io.nova.fetch.FetchGroup;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -34,13 +40,30 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class SimpleReactiveRepositoryTest {
 
+    private static final EntityMetadataFactory METADATA_FACTORY =
+            new EntityMetadataFactory(new DefaultNamingStrategy());
+    private static final EntityMetadata<User> USER_METADATA =
+            METADATA_FACTORY.getEntityMetadata(User.class);
+
+    @Entity
     static final class User {
+        @Id
+        @Column(name = "id")
         final long id;
+        @Column(name = "email")
         final String email;
 
         User(long id, String email) {
             this.id = id;
             this.email = email;
+        }
+
+        long getId() {
+            return id;
+        }
+
+        String getEmail() {
+            return email;
         }
     }
 
@@ -48,7 +71,8 @@ class SimpleReactiveRepositoryTest {
     }
 
     private static UserRepository newProxy(RecordingEntityOperations operations) {
-        SimpleReactiveRepository handler = new SimpleReactiveRepository(User.class, Long.class, operations);
+        SimpleReactiveRepository handler =
+                new SimpleReactiveRepository(User.class, Long.class, operations, null, null, USER_METADATA);
         return (UserRepository) Proxy.newProxyInstance(
                 UserRepository.class.getClassLoader(),
                 new Class<?>[]{UserRepository.class},

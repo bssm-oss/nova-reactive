@@ -5,6 +5,7 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
@@ -43,6 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DerivedQueryExtendedKeywordsIntegrationTest {
 
     private AccountRepository repository;
+    private EntityMetadata<Account> entityMetadata;
 
     @BeforeEach
     void setUp() {
@@ -57,6 +59,7 @@ class DerivedQueryExtendedKeywordsIntegrationTest {
                 new SimpleReactiveTransactionOperations(transactionManager);
         SimpleReactiveEntityOperations ops = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, sqlExecutor, new EntityStateDetector(), transactionOperations);
+        this.entityMetadata = metadataFactory.getEntityMetadata(Account.class);
 
         String ddl = ops.createTableSql(Account.class);
         StepVerifier.create(sqlExecutor.execute(new SqlStatement(ddl, List.of())))
@@ -72,12 +75,13 @@ class DerivedQueryExtendedKeywordsIntegrationTest {
                 .concatMap(ops::save);
         StepVerifier.create(inserts.then()).verifyComplete();
 
-        this.repository = newProxy(ops);
+        this.repository = newProxy(ops, entityMetadata);
     }
 
-    private static AccountRepository newProxy(ReactiveEntityOperations operations) {
+    private static AccountRepository newProxy(
+            ReactiveEntityOperations operations, EntityMetadata<Account> entityMetadata) {
         SimpleReactiveRepository handler =
-                new SimpleReactiveRepository(Account.class, Long.class, operations);
+                new SimpleReactiveRepository(Account.class, Long.class, operations, null, null, entityMetadata);
         return (AccountRepository) Proxy.newProxyInstance(
                 AccountRepository.class.getClassLoader(),
                 new Class<?>[]{AccountRepository.class},
@@ -132,6 +136,14 @@ class DerivedQueryExtendedKeywordsIntegrationTest {
     @DisplayName("Like(대소문자 구분)는 대소문자가 다르면 매치하지 않는다 — IgnoreCase 대조군")
     void plainLikeStaysCaseSensitive() {
         StepVerifier.create(repository.findByEmailContaining("dan").map(Account::getName))
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("getter-only name property is available to derived queries")
+    void getterOnlyPropertyIsAvailableToDerivedQueries() {
+        StepVerifier.create(repository.findByName("Ada").map(Account::getName))
+                .expectNext("Ada")
                 .verifyComplete();
     }
 
@@ -198,6 +210,8 @@ class DerivedQueryExtendedKeywordsIntegrationTest {
         Flux<Account> findByEmailContainingIgnoreCase(String chunk);
 
         Flux<Account> findByEmailContaining(String chunk);
+
+        Flux<Account> findByName(String name);
 
         Flux<Account> findTop0ByActiveTrue();
 
