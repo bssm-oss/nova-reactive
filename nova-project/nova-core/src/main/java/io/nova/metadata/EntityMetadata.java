@@ -561,34 +561,29 @@ public final class EntityMetadata<T> {
 
         static IdClassMember mutable(Class<?> idClass, PersistentProperty property) {
             String name = property.propertyName();
-            Method getter = findGetter(idClass, name);
-            Method setter = findSetter(idClass, name);
-            Field field = findField(idClass, name);
-            Class<?> memberType = getter != null ? getter.getReturnType()
-                    : setter != null ? setter.getParameterTypes()[0] : field == null ? null : field.getType();
-            if (memberType == null) {
-                throw new IllegalArgumentException(
-                        "@IdClass " + idClass.getName() + " has no JavaBean member or field '" + name + "'");
-            }
-            requireCompatibleType(idClass, property, memberType);
-            if (getter != null) {
-                requireCompatibleType(idClass, property, getter.getReturnType());
-            }
-            if (setter != null) {
-                requireCompatibleType(idClass, property, setter.getParameterTypes()[0]);
-            }
-            if (field != null && (getter == null || setter == null)) {
+            if (!property.propertyAccess()) {
+                Field field = findField(idClass, name);
+                if (field == null) {
+                    throw new IllegalArgumentException(
+                            "@IdClass " + idClass.getName() + " is missing field '" + name + "'");
+                }
                 requireCompatibleType(idClass, property, field.getType());
+                return new IdClassMember(name, property, null, null, field, -1);
             }
-            if (getter == null && field == null) {
+
+            Method getter = findGetter(idClass, name);
+            if (getter == null) {
                 throw new IllegalArgumentException(
-                        "@IdClass " + idClass.getName() + "." + name + " must expose a getter or backing field");
+                        "@IdClass " + idClass.getName() + "." + name + " must expose a JavaBean getter");
             }
-            if (setter == null && field == null) {
+            Method setter = findSetter(idClass, name, property.javaType());
+            if (setter == null) {
                 throw new IllegalArgumentException(
-                        "@IdClass " + idClass.getName() + "." + name + " must expose a setter or backing field");
+                        "@IdClass " + idClass.getName() + "." + name + " must expose a JavaBean setter");
             }
-            return new IdClassMember(name, property, getter, setter, field, -1);
+            requireCompatibleType(idClass, property, getter.getReturnType());
+            requireCompatibleType(idClass, property, setter.getParameterTypes()[0]);
+            return new IdClassMember(name, property, getter, setter, null, -1);
         }
 
         Object read(Object idObject) {
@@ -615,27 +610,30 @@ public final class EntityMetadata<T> {
     private static Method findGetter(Class<?> type, String propertyName) {
         String suffix = Character.toUpperCase(propertyName.charAt(0)) + propertyName.substring(1);
         for (String name : List.of("get" + suffix, "is" + suffix)) {
-            try {
-                Method method = type.getMethod(name);
-                if (method.getParameterCount() == 0
-                        && (name.startsWith("get") || method.getReturnType() == boolean.class
-                        || method.getReturnType() == Boolean.class)) {
-                    method.setAccessible(true);
-                    return method;
+            for (Class<?> current = type; current != null && current != Object.class;
+                    current = current.getSuperclass()) {
+                for (Method method : current.getDeclaredMethods()) {
+                    if (method.getName().equals(name) && method.getParameterCount() == 0
+                            && (name.startsWith("get") || method.getReturnType() == boolean.class
+                            || method.getReturnType() == Boolean.class)) {
+                        method.setAccessible(true);
+                        return method;
+                    }
                 }
-            } catch (NoSuchMethodException ignored) {
-                // Fall through to the next JavaBean spelling or conventional backing field.
             }
         }
         return null;
     }
 
-    private static Method findSetter(Class<?> type, String propertyName) {
+    private static Method findSetter(Class<?> type, String propertyName, Class<?> propertyType) {
         String name = "set" + Character.toUpperCase(propertyName.charAt(0)) + propertyName.substring(1);
-        for (Method method : type.getMethods()) {
-            if (method.getName().equals(name) && method.getParameterCount() == 1) {
-                method.setAccessible(true);
-                return method;
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            for (Method method : current.getDeclaredMethods()) {
+                if (method.getName().equals(name) && method.getParameterCount() == 1
+                        && wrapPrimitive(method.getParameterTypes()[0]) == wrapPrimitive(propertyType)) {
+                    method.setAccessible(true);
+                    return method;
+                }
             }
         }
         return null;
