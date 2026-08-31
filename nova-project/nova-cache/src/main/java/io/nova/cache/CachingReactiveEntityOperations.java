@@ -497,12 +497,14 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     }
 
     private Mono<Void> invalidate(CacheKey key) {
-        Mono<Void> evict = provider.getCache(key.region()).evict(key);
-        if (evictionBuffer != null) {
-            evictionBuffer.recordKey(key);
-        }
-        // 엔티티 캐시 키 evict에 더해, 이 타입의 쿼리 결과도 통째 무효화(어떤 write든 결과 집합을 바꿀 수 있음).
-        return evict.then(invalidateQueries(key.entityType()));
+        return Mono.deferContextual(context -> {
+            TransactionEvictionBuffer buffer = activeTransactionBuffer(context);
+            if (buffer != null) {
+                buffer.recordKey(key);
+            }
+            // 엔티티 캐시 키 evict에 더해, 이 타입의 쿼리 결과도 통째 무효화(어떤 write든 결과 집합을 바꿀 수 있음).
+            return provider.getCache(key.region()).evict(key).then(invalidateQueries(key.entityType(), buffer));
+        });
     }
 
     private Mono<Void> invalidateRegion(Class<?> entityType) {
@@ -510,11 +512,13 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (!config.cacheable()) {
             return Mono.empty();
         }
-        Mono<Void> clear = provider.getCache(config.region()).clear();
-        if (evictionBuffer != null) {
-            evictionBuffer.recordRegionClear(config.region());
-        }
-        return clear.then(invalidateQueries(config.keyType()));
+        return Mono.deferContextual(context -> {
+            TransactionEvictionBuffer buffer = activeTransactionBuffer(context);
+            if (buffer != null) {
+                buffer.recordRegionClear(config.region());
+            }
+            return provider.getCache(config.region()).clear().then(invalidateQueries(config.keyType(), buffer));
+        });
     }
 
     /**
@@ -522,12 +526,16 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
      * 즉시 무효화하고 버퍼에 기록해 commit 후 재적용한다(엔티티 캐시와 동일한 정합성 패턴).
      */
     private Mono<Void> invalidateQueries(Class<?> canonicalType) {
+        return Mono.deferContextual(context -> invalidateQueries(canonicalType, activeTransactionBuffer(context)));
+    }
+
+    private Mono<Void> invalidateQueries(Class<?> canonicalType, TransactionEvictionBuffer buffer) {
         if (queryCache == null) {
             return Mono.empty();
         }
         Mono<Void> evict = queryCache.invalidate(canonicalType);
-        if (evictionBuffer != null) {
-            evictionBuffer.recordQueryInvalidate(canonicalType);
+        if (buffer != null) {
+            buffer.recordQueryInvalidate(canonicalType);
         }
         return evict;
     }
@@ -536,7 +544,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
      * 대상 타입을 특정할 수 없는 native/compiled write 후 쿼리 캐시 전역 clear. 쿼리 캐시 미배선이면 no-op.
      */
     private Mono<Void> clearQueries() {
-        return clearQueries(evictionBuffer);
+        return Mono.deferContextual(context -> clearQueries(activeTransactionBuffer(context)));
     }
 
     private Mono<Void> clearQueries(TransactionEvictionBuffer buffer) {
@@ -548,6 +556,13 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             buffer.recordQueryClearAll();
         }
         return clear;
+    }
+
+    private TransactionEvictionBuffer activeTransactionBuffer(ContextView context) {
+        if (hasActivePhysicalScope(context)) {
+            return transactionBuffer(context, evictionBuffer != null ? evictionBuffer : new TransactionEvictionBuffer());
+        }
+        return evictionBuffer;
     }
 
     @SuppressWarnings("unchecked")

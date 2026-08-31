@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -208,6 +209,57 @@ class SecondLevelCacheH2IntegrationTest {
         assertTrue(beforeReload > beforeTransaction, "captured EntityManager must bypass warm cache in a transaction");
         assertTrue(w.listener().selects() > beforeReload, "commit must replay the shared cache clear");
         assertEquals("beta", reloaded.name());
+    }
+
+    @Test
+    void originalDecoratorSaveUpdateAndDeleteReplayEvictionAfterCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        CacheKey key = new CacheKey(Widget.class.getName(), Widget.class, id);
+        Widget alpha = w.cached().findById(Widget.class, id).block();
+
+        w.cached().inTransaction(ignored -> w.cached().save(new Widget(id, "beta"))
+                .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, alpha))).block();
+        assertForcedReload(w, id, "beta");
+
+        Widget beta = w.cached().findById(Widget.class, id).block();
+        w.cached().inTransaction(ignored -> w.cached().update(new Widget(id, "gamma"), List.of("name"))
+                .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, beta))).block();
+        assertForcedReload(w, id, "gamma");
+
+        Widget gamma = w.cached().findById(Widget.class, id).block();
+        w.cached().inTransaction(ignored -> w.cached().delete(gamma)
+                .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, gamma))).block();
+        long beforeReload = w.listener().selects();
+        assertNull(w.cached().findById(Widget.class, id).block());
+        assertTrue(w.listener().selects() > beforeReload, "post-commit delete eviction must clear repopulated stale value");
+    }
+
+    @Test
+    void capturedEntityManagerWriteOnlyReplaysEvictionAfterCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+        SimpleReactiveEntityManager entityManager = new SimpleReactiveEntityManager(w.cached(), w.metadataFactory());
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        Widget alpha = w.cached().findById(Widget.class, id).block();
+        CacheKey key = new CacheKey(Widget.class.getName(), Widget.class, id);
+
+        entityManager.inTransaction(em -> em.merge(new Widget(id, "beta"))
+                .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, alpha))).block();
+
+        assertForcedReload(w, id, "beta");
+    }
+
+    private static void assertForcedReload(Wiring wiring, Long id, String expectedName) {
+        long beforeReload = wiring.listener().selects();
+        Widget reloaded = wiring.cached().findById(Widget.class, id).block();
+        assertTrue(wiring.listener().selects() > beforeReload, "post-commit eviction must clear repopulated stale value");
+        assertEquals(expectedName, reloaded.name());
     }
 
     @Test
