@@ -42,7 +42,10 @@ public final class MetamodelProcessor extends AbstractProcessor {
     private static final String EMBEDDED_ID = "jakarta.persistence.EmbeddedId";
     private static final String ID = "jakarta.persistence.Id";
     private static final String MAPPED_SUPERCLASS = "jakarta.persistence.MappedSuperclass";
+    private static final String MANY_TO_MANY = "jakarta.persistence.ManyToMany";
     private static final String ONE_TO_MANY = "jakarta.persistence.OneToMany";
+    private static final String ONE_TO_ONE = "jakarta.persistence.OneToOne";
+    private static final String ELEMENT_COLLECTION = "jakarta.persistence.ElementCollection";
     private static final String TRANSIENT = "jakarta.persistence.Transient";
     private static final int MAX_EMBEDDED_DEPTH = 8;
 
@@ -150,7 +153,9 @@ public final class MetamodelProcessor extends AbstractProcessor {
 
     private void collectSelectedProperty(TypeElement owner, Element selected, String name, String access,
             List<String> hostPath, Set<String> visited, List<Property> out) {
-        if (hasAnnotation(selected, TRANSIENT) || hasAnnotation(selected, ONE_TO_MANY)) return;
+        if (hasAnnotation(selected, TRANSIENT) || hasAnnotation(selected, ONE_TO_MANY)
+                || hasAnnotation(selected, MANY_TO_MANY) || hasAnnotation(selected, ELEMENT_COLLECTION)
+                || isInverseOneToOne(selected)) return;
         if (!hasAnnotation(selected, EMBEDDED) && !hasAnnotation(selected, EMBEDDED_ID)) {
             out.add(toProperty(hostPath, name));
             return;
@@ -163,6 +168,11 @@ public final class MetamodelProcessor extends AbstractProcessor {
         List<String> nextPath = new ArrayList<>(hostPath);
         nextPath.add(name);
         collectProperties(embeddedType, access, nextPath, visited, out);
+    }
+
+    private boolean isInverseOneToOne(Element element) {
+        String mappedBy = annotationValue(element, ONE_TO_ONE, "mappedBy");
+        return mappedBy != null && !mappedBy.trim().isEmpty();
     }
 
     private List<TypeElement> hierarchy(TypeElement type) {
@@ -346,12 +356,16 @@ public final class MetamodelProcessor extends AbstractProcessor {
     }
 
     private String accessValue(Element element) {
+        return annotationValue(element, ACCESS, "value");
+    }
+
+    private String annotationValue(Element element, String annotationName, String memberName) {
         for (AnnotationMirror mirror : element.getAnnotationMirrors()) {
             Element annotation = mirror.getAnnotationType().asElement();
-            if (!(annotation instanceof TypeElement type) || !type.getQualifiedName().contentEquals(ACCESS)) continue;
+            if (!(annotation instanceof TypeElement type) || !type.getQualifiedName().contentEquals(annotationName)) continue;
             for (Map.Entry<? extends ExecutableElement, ? extends javax.lang.model.element.AnnotationValue> value
                     : processingEnv.getElementUtils().getElementValuesWithDefaults(mirror).entrySet()) {
-                if (value.getKey().getSimpleName().contentEquals("value")) {
+                if (value.getKey().getSimpleName().contentEquals(memberName)) {
                     return value.getValue().getValue().toString();
                 }
             }
