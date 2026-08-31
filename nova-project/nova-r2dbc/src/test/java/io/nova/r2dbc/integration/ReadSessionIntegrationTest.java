@@ -16,6 +16,9 @@ import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
 import io.nova.schema.SimpleSchemaInitializer;
 import io.nova.sql.Dialect;
+import io.nova.sql.SqlStatement;
+import io.nova.tx.Propagation;
+import io.nova.tx.TransactionDefinition;
 import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
@@ -41,6 +44,8 @@ class ReadSessionIntegrationTest {
 
     private CountingConnectionFactory counting;
     private ReactiveEntityOperations operations;
+    private R2dbcSqlExecutor executor;
+    private R2dbcTransactionManager transactionManager;
 
     @BeforeEach
     void setUp() {
@@ -48,10 +53,10 @@ class ReadSessionIntegrationTest {
         this.counting = new CountingConnectionFactory(ConnectionFactories.get(url));
         Dialect dialect = new H2Dialect();
         EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
-        R2dbcSqlExecutor executor = new R2dbcSqlExecutor(counting, dialect);
-        R2dbcTransactionManager txManager = new R2dbcTransactionManager(counting);
+        this.executor = new R2dbcSqlExecutor(counting, dialect);
+        this.transactionManager = new R2dbcTransactionManager(counting);
         this.operations = new SimpleReactiveEntityOperations(
-                metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
+                metadataFactory, dialect, executor, new EntityStateDetector(), transactionManager);
         new SimpleSchemaInitializer(operations, metadataFactory, dialect).create(Person.class).block();
         // seed 3 rows
         for (int i = 0; i < 3; i++) {
@@ -101,6 +106,67 @@ class ReadSessionIntegrationTest {
                 .expectNextCount(1)
                 .verifyComplete();
         assertEquals(1, counting.creates(), "중첩 read 세션은 트랜잭션 커넥션을 재사용해야 한다");
+    }
+
+    @Test
+    void transactionPropagationDistinguishesReadSessionConnectionFromActiveTransaction() {
+        StepVerifier.create(executor.execute(new SqlStatement(
+                        "create table propagation_rows (id bigint primary key)", List.of())))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        counting.reset();
+        StepVerifier.create(transactionManager.withConnection(
+                        transactionManager.inTransaction(TransactionDefinition.DEFAULT,
+                                        ctx -> insertPropagationRow(1L))
+                                .then(transactionManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                        ctx -> insertPropagationRow(2L)))
+                                .then(transactionManager.inTransaction(TransactionDefinition.requiresNew(),
+                                        ctx -> insertPropagationRow(3L)))
+                                .then(transactionManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.SUPPORTS),
+                                        ctx -> insertPropagationRow(4L)))
+                                .then(transactionManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED),
+                                        ctx -> insertPropagationRow(5L)))
+                                .then(transactionManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NEVER),
+                                        ctx -> insertPropagationRow(6L)))))
+                .verifyComplete();
+        assertEquals(4, counting.creates(),
+                "read connection 하나와 REQUIRED/NESTED/REQUIRES_NEW의 owned transaction 세 개만 acquire해야 한다");
+
+        StepVerifier.create(executor.queryOne(
+                        new SqlStatement("select count(*) as cnt from propagation_rows", List.of()),
+                        row -> row.get("cnt", Long.class)))
+                .expectNext(6L)
+                .verifyComplete();
+
+        StepVerifier.create(transactionManager.withConnection(
+                        transactionManager.inTransaction(TransactionDefinition.DEFAULT,
+                                        ctx -> insertPropagationRow(7L)
+                                                .then(Mono.error(new IllegalStateException("rollback"))))
+                                .onErrorResume(IllegalStateException.class, ignored -> Mono.empty())))
+                .verifyComplete();
+
+        StepVerifier.create(executor.queryOne(
+                        new SqlStatement("select count(*) as cnt from propagation_rows", List.of()),
+                        row -> row.get("cnt", Long.class)))
+                .expectNext(6L)
+                .verifyComplete();
+
+        StepVerifier.create(transactionManager.withConnection(
+                        transactionManager.inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.MANDATORY),
+                                ctx -> Mono.empty())))
+                .expectError(IllegalStateException.class)
+                .verify();
+    }
+
+    private Mono<Long> insertPropagationRow(long id) {
+        return executor.execute(new SqlStatement(
+                "insert into propagation_rows (id) values (?)", List.of(id)));
     }
 
     private static final class CountingConnectionFactory implements ConnectionFactory {

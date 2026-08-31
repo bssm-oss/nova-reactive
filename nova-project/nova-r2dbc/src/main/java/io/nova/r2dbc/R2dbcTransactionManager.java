@@ -11,7 +11,6 @@ import io.r2dbc.spi.ConnectionFactory;
 import io.r2dbc.spi.R2dbcException;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
-import reactor.util.context.Context;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
@@ -20,6 +19,7 @@ import java.util.function.Supplier;
 
 public final class R2dbcTransactionManager implements ReactiveTransactionManager, ReactiveConnectionOperations {
     static final String CONNECTION_KEY = "io.nova.r2dbc.connection";
+    private static final String ACTIVE_TRANSACTION_KEY = "io.nova.r2dbc.active-transaction";
 
     private static final AtomicLong SAVEPOINT_COUNTER = new AtomicLong();
 
@@ -87,34 +87,36 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         Objects.requireNonNull(definition, "definition");
         Objects.requireNonNull(callback, "callback");
         return Mono.deferContextual(ctxView -> {
-            Connection active = ctxView.hasKey(CONNECTION_KEY) ? ctxView.get(CONNECTION_KEY) : null;
-            return runWithPropagation(definition, active, callback);
+            Connection connection = ctxView.hasKey(CONNECTION_KEY) ? ctxView.get(CONNECTION_KEY) : null;
+            boolean activeTransaction = ctxView.hasKey(ACTIVE_TRANSACTION_KEY);
+            return runWithPropagation(definition, connection, activeTransaction, callback);
         });
     }
 
     private <T> Mono<T> runWithPropagation(TransactionDefinition definition,
-                                           Connection active,
+                                           Connection connection,
+                                           boolean activeTransaction,
                                            Function<TransactionContext, Mono<T>> callback) {
         return switch (definition.propagation()) {
-            case REQUIRED -> active == null
+            case REQUIRED -> !activeTransaction
                     ? runInNewTransaction(definition, callback)
-                    : joinActive(active, callback);
+                    : joinActive(connection, callback);
             case REQUIRES_NEW -> runInNewTransaction(definition, callback);
-            case NESTED -> active == null
+            case NESTED -> !activeTransaction
                     ? runInNewTransaction(definition, callback)
-                    : runInSavepoint(active, callback);
-            case MANDATORY -> active == null
+                    : runInSavepoint(connection, callback);
+            case MANDATORY -> !activeTransaction
                     ? Mono.error(new IllegalStateException(
                             "Propagation MANDATORY requires an active transaction, but none was found"))
-                    : joinActive(active, callback);
-            case SUPPORTS -> active == null
-                    ? runWithoutTransaction(callback)
-                    : joinActive(active, callback);
-            case NOT_SUPPORTED -> runWithoutTransaction(callback);
-            case NEVER -> active != null
+                    : joinActive(connection, callback);
+            case SUPPORTS -> !activeTransaction
+                    ? runWithoutTransaction(callback, false)
+                    : joinActive(connection, callback);
+            case NOT_SUPPORTED -> runWithoutTransaction(callback, activeTransaction);
+            case NEVER -> activeTransaction
                     ? Mono.error(new IllegalStateException(
                             "Propagation NEVER forbids an active transaction, but one was found"))
-                    : runWithoutTransaction(callback);
+                    : runWithoutTransaction(callback, false);
         };
     }
 
@@ -123,7 +125,8 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         return Mono.usingWhen(
                 begin(definition),
                 ctx -> Mono.defer(() -> callback.apply(ctx))
-                        .contextWrite(Context.of(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())),
+                        .contextWrite(c -> c.put(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())
+                                .put(ACTIVE_TRANSACTION_KEY, true)),
                 ctx -> commitAfterSuccess(ctx).onErrorMap(CleanupFailure::new),
                 this::rollbackAfterError,
                 this::rollback)
@@ -132,8 +135,8 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
 
     private <T> Mono<T> joinActive(Connection active, Function<TransactionContext, Mono<T>> callback) {
         TransactionContext ctx = new R2dbcTransactionContext(active);
-        return callback.apply(ctx)
-                .contextWrite(Context.of(CONNECTION_KEY, active));
+        return Mono.defer(() -> callback.apply(ctx))
+                .contextWrite(c -> c.put(CONNECTION_KEY, active).put(ACTIVE_TRANSACTION_KEY, true));
     }
 
     private <T> Mono<T> runInSavepoint(Connection active, Function<TransactionContext, Mono<T>> callback) {
@@ -141,7 +144,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         TransactionContext ctx = new R2dbcTransactionContext(active);
         return Mono.from(active.createSavepoint(name))
                 .then(Mono.defer(() -> callback.apply(ctx))
-                        .contextWrite(Context.of(CONNECTION_KEY, active))
+                        .contextWrite(c -> c.put(CONNECTION_KEY, active).put(ACTIVE_TRANSACTION_KEY, true))
                         .flatMap(result -> releaseSavepointIfSupported(active, name).thenReturn(result))
                         .onErrorResume(error -> Mono.defer(() -> Mono.from(active.rollbackTransactionToSavepoint(name)))
                                 .onErrorMap(rollbackFailure -> {
@@ -220,13 +223,17 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
      * 전달되는 {@link TransactionContext}는 {@link R2dbcTransactionContext}이지만
      * connection은 {@code null}이고 {@link TransactionContext#hasActiveTransaction()}이
      * {@code false}이므로 callback이 resource에 접근하기 전에 반드시 확인해야 한다.
-     * Reactor context의 {@link #CONNECTION_KEY}도 함께 비워 안쪽 executor가
-     * 부모 트랜잭션 connection을 재사용하지 않고 새 auto-commit connection을 열게 한다.
+     * 실제 트랜잭션을 suspend하는 경우에만 Reactor context의 {@link #CONNECTION_KEY}를 비워
+     * 안쪽 executor가 부모 트랜잭션 connection을 재사용하지 않고 새 auto-commit connection을 열게 한다.
+     * read session처럼 connection만 바인딩된 스코프에서는 connection을 보존한다.
      */
-    private <T> Mono<T> runWithoutTransaction(Function<TransactionContext, Mono<T>> callback) {
+    private <T> Mono<T> runWithoutTransaction(Function<TransactionContext, Mono<T>> callback,
+                                              boolean suspendConnection) {
         TransactionContext ctx = new R2dbcTransactionContext(null);
-        return Mono.defer(() -> callback.apply(ctx))
-                .contextWrite(c -> c.delete(CONNECTION_KEY));
+        Mono<T> work = Mono.defer(() -> callback.apply(ctx));
+        return suspendConnection
+                ? work.contextWrite(c -> c.delete(CONNECTION_KEY).delete(ACTIVE_TRANSACTION_KEY))
+                : work;
     }
 
     private Mono<Void> applyPreTransactionSettings(Connection conn, TransactionDefinition definition) {
