@@ -2,6 +2,7 @@ package io.nova.r2dbc.integration;
 
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
+import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
@@ -14,7 +15,9 @@ import jakarta.persistence.JoinColumns;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.PostRemove;
 import jakarta.persistence.PreRemove;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Converter;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,10 +48,13 @@ class OneToOneOrphanRemovalIntegrationTest {
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
         schema.create(Target.class, Owner.class, PropertyTarget.class, PropertyOwner.class,
                 CompositeTarget.class, CompositeOwner.class, GuardOwner.class,
+                ConvertedTarget.class, ConvertedGuardOwner.class,
+                BackReferenceTarget.class, BackReferenceOwner.class,
                 CallbackTarget.class, CallbackOwner.class).block();
         CallbackTarget.failPreRemove.set(false);
         CallbackTarget.preRemoveCalls.set(0);
         CallbackTarget.postRemoveCalls.set(0);
+        CallbackOwner.introduceTransientOnUpdate.set(false);
     }
 
     @Test
@@ -162,6 +168,93 @@ class OneToOneOrphanRemovalIntegrationTest {
     }
 
     @Test
+    void ownerDeleteKeepsTargetReferencedByAnotherCompatibleOwnerProperty() {
+        Target target = save(new Target("shared"));
+        GuardOwner deleting = save(new GuardOwner(target, null));
+        save(new GuardOwner(null, target));
+
+        StepVerifier.create(support.operations().delete(deleting)).expectNextCount(1).verifyComplete();
+
+        present(Target.class, target.getId());
+    }
+
+    @Test
+    void convertedCompositeForeignKeyGuardsThenDeletesTheExactOldTarget() {
+        ConvertedTarget oldTarget = save(new ConvertedTarget(new ConvertedKey("old", 1), "old"));
+        ConvertedTarget replacement = save(new ConvertedTarget(new ConvertedKey("next", 2), "replacement"));
+        ConvertedGuardOwner first = save(new ConvertedGuardOwner(new ConvertedKey("owner", 1), oldTarget, null));
+        ConvertedGuardOwner second = save(new ConvertedGuardOwner(new ConvertedKey("owner", 2), null, oldTarget));
+
+        StepVerifier.create(support.operations().inTransaction(tx -> tx.findById(ConvertedGuardOwner.class, first.getId())
+                        .doOnNext(loaded -> loaded.setFirst(replacement))))
+                .expectNextCount(1)
+                .verifyComplete();
+        present(ConvertedTarget.class, oldTarget.getId());
+
+        StepVerifier.create(support.operations().inTransaction(tx -> tx.findById(ConvertedGuardOwner.class, second.getId())
+                        .doOnNext(loaded -> loaded.setSecond(null))))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        absent(ConvertedTarget.class, oldTarget.getId());
+        present(ConvertedTarget.class, replacement.getId());
+    }
+
+    @Test
+    void orphanTargetRemoveBackReferenceDoesNotDeleteLiveOwner() {
+        BackReferenceTarget target = save(new BackReferenceTarget());
+        BackReferenceOwner owner = save(new BackReferenceOwner(target));
+        target.setOwner(owner);
+        save(target);
+
+        StepVerifier.create(support.operations().inTransaction(tx -> tx.findById(BackReferenceOwner.class, owner.getId())
+                        .doOnNext(loaded -> loaded.setTarget(null))))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        absent(BackReferenceTarget.class, target.getId());
+        StepVerifier.create(support.operations().findById(BackReferenceOwner.class, owner.getId()))
+                .assertNext(reloaded -> assertNull(reloaded.getTarget()))
+                .verifyComplete();
+    }
+
+    @Test
+    void callbackIntroducedTransientReferenceFailsWithoutDeletingOldTarget() {
+        CallbackTarget target = save(new CallbackTarget("target"));
+        CallbackOwner owner = save(new CallbackOwner(target));
+        CallbackOwner.introduceTransientOnUpdate.set(true);
+
+        StepVerifier.create(support.operations().inTransaction(tx -> tx.findById(CallbackOwner.class, owner.getId())
+                        .doOnNext(loaded -> loaded.setTarget(null))))
+                .expectError(IllegalStateException.class)
+                .verify();
+
+        CallbackOwner.introduceTransientOnUpdate.set(false);
+        StepVerifier.create(support.operations().findById(CallbackOwner.class, owner.getId()))
+                .assertNext(reloaded -> {
+                    assertNotNull(reloaded.getTarget());
+                    assertEquals(target.getId(), reloaded.getTarget().getId());
+                })
+                .verifyComplete();
+        present(CallbackTarget.class, target.getId());
+        assertEquals(0, CallbackTarget.preRemoveCalls.get());
+        assertEquals(0, CallbackTarget.postRemoveCalls.get());
+    }
+
+    @Test
+    void zeroRowStatelessOwnerUpdateFailsWithoutDeletingReferencedTarget() {
+        Target target = save(new Target("still-live"));
+        Owner missing = new Owner("missing", target);
+        missing.setId(999L);
+
+        StepVerifier.create(support.operations().save(missing))
+                .expectErrorMatches(error -> error.getClass().getSimpleName().contains("OptimisticLockingFailure"))
+                .verify();
+
+        present(Target.class, target.getId());
+    }
+
+    @Test
     void ownerDeleteWithCascadeRemoveAndOrphanRemovalInvokesTargetCallbacksOnce() {
         CallbackTarget target = save(new CallbackTarget("target"));
         CallbackOwner owner = save(new CallbackOwner(target));
@@ -230,6 +323,7 @@ class OneToOneOrphanRemovalIntegrationTest {
         Owner(String label, Target target) { this.label = label; this.target = target; }
         Long getId() { return id; }
         Target getTarget() { return target; }
+        void setId(Long id) { this.id = id; }
         void setTarget(Target target) { this.target = target; }
     }
 
@@ -313,6 +407,82 @@ class OneToOneOrphanRemovalIntegrationTest {
         Target getSecond() { return second; }
     }
 
+    @Converter
+    static class NamespaceConverter implements AttributeConverter<String, String> {
+        @Override public String convertToDatabaseColumn(String value) {
+            return value == null ? null : "db:" + value;
+        }
+        @Override public String convertToEntityAttribute(String value) {
+            return value == null ? null : value.substring(3);
+        }
+    }
+
+    @Embeddable
+    static class ConvertedKey implements Serializable {
+        @jakarta.persistence.Convert(converter = NamespaceConverter.class) private String namespace;
+        private Integer number;
+        ConvertedKey() { }
+        ConvertedKey(String namespace, Integer number) { this.namespace = namespace; this.number = number; }
+        @Override public boolean equals(Object other) {
+            return other instanceof ConvertedKey key
+                    && Objects.equals(namespace, key.namespace) && Objects.equals(number, key.number);
+        }
+        @Override public int hashCode() { return Objects.hash(namespace, number); }
+    }
+
+    @Entity
+    @Table(name = "orphan_converted_target")
+    static class ConvertedTarget {
+        @EmbeddedId private ConvertedKey id;
+        private String label;
+        ConvertedTarget() { }
+        ConvertedTarget(ConvertedKey id, String label) { this.id = id; this.label = label; }
+        ConvertedKey getId() { return id; }
+    }
+
+    @Entity
+    @Table(name = "orphan_converted_guard_owner")
+    static class ConvertedGuardOwner {
+        @EmbeddedId private ConvertedKey id;
+        @OneToOne(orphanRemoval = true)
+        @JoinColumns({@JoinColumn(name = "first_namespace"), @JoinColumn(name = "first_number")})
+        private ConvertedTarget first;
+        @OneToOne(orphanRemoval = true)
+        @JoinColumns({@JoinColumn(name = "second_namespace"), @JoinColumn(name = "second_number")})
+        private ConvertedTarget second;
+        ConvertedGuardOwner() { }
+        ConvertedGuardOwner(ConvertedKey id, ConvertedTarget first, ConvertedTarget second) {
+            this.id = id;
+            this.first = first;
+            this.second = second;
+        }
+        ConvertedKey getId() { return id; }
+        void setFirst(ConvertedTarget first) { this.first = first; }
+        void setSecond(ConvertedTarget second) { this.second = second; }
+    }
+
+    @Entity
+    @Table(name = "orphan_back_reference_target")
+    static class BackReferenceTarget {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+        @OneToOne(cascade = CascadeType.REMOVE) @JoinColumn(name = "owner_id") private BackReferenceOwner owner;
+        BackReferenceTarget() { }
+        Long getId() { return id; }
+        void setOwner(BackReferenceOwner owner) { this.owner = owner; }
+    }
+
+    @Entity
+    @Table(name = "orphan_back_reference_owner")
+    static class BackReferenceOwner {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+        @OneToOne(orphanRemoval = true) @JoinColumn(name = "target_id") private BackReferenceTarget target;
+        BackReferenceOwner() { }
+        BackReferenceOwner(BackReferenceTarget target) { this.target = target; }
+        Long getId() { return id; }
+        BackReferenceTarget getTarget() { return target; }
+        void setTarget(BackReferenceTarget target) { this.target = target; }
+    }
+
     @Entity
     @Table(name = "orphan_callback_target")
     static class CallbackTarget {
@@ -334,6 +504,7 @@ class OneToOneOrphanRemovalIntegrationTest {
     @Entity
     @Table(name = "orphan_callback_owner")
     static class CallbackOwner {
+        static final AtomicBoolean introduceTransientOnUpdate = new AtomicBoolean();
         @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
         @OneToOne(orphanRemoval = true, cascade = CascadeType.REMOVE)
         @JoinColumn(name = "target_id") private CallbackTarget target;
@@ -342,5 +513,10 @@ class OneToOneOrphanRemovalIntegrationTest {
         Long getId() { return id; }
         CallbackTarget getTarget() { return target; }
         void setTarget(CallbackTarget target) { this.target = target; }
+        @PreUpdate void introduceTransientReference() {
+            if (introduceTransientOnUpdate.get()) {
+                target = new CallbackTarget("callback-created");
+            }
+        }
     }
 }
