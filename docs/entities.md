@@ -498,7 +498,24 @@ Nova honors the column attributes that have a clear non-blocking meaning:
 | `insertable = false` | Column is excluded from generated `INSERT` statements. |
 | `updatable = false` | Column is excluded from generated `UPDATE` statements. |
 | `unique = true` | Emits an inline `UNIQUE` constraint in the column DDL. |
-| `columnDefinition = "..."` | Used verbatim as the column's type in `CREATE TABLE`, replacing the dialect-derived type. |
+| `columnDefinition = "..."` | Used verbatim as the column's type in `CREATE TABLE`, replacing the dialect-derived type. It is raw DDL, not parsed metadata: it does not change the storage shape used for a referenced id, generated FK, join-table, or collection-table column. Keep those physical types compatible yourself, preferably in an external migration. |
+
+### `BigDecimal` precision and scale
+
+For a `BigDecimal` property, `@Column(precision, scale)` is a physical DDL contract, not
+just validation metadata. Nova carries the declared shape to every generated physical copy
+of the storage column: ordinary and embedded properties (including secondary-table
+properties), ids and identity ids, to-one and `@MapsId` foreign-key columns, both sides of
+`@ManyToMany` join tables, and `@ElementCollection` owner-FK, basic value, embeddable
+value, map-key, and map-value columns. `@AttributeOverride` supplies the shape for an
+overridden embedded component.
+
+`columnDefinition` deliberately remains an escape hatch rather than a type system. For
+example, putting `columnDefinition = "decimal(20, 6)"` on an id only changes that declared
+column; Nova cannot infer that token's precision or scale when it emits a FK to the id. Use
+`precision` and `scale` for generated related columns, or create/alter the column and its
+constraints together in your migration tool. See the dialect-specific matrix in
+[Dialects & Schema](dialects.md#bigdecimal-ddl).
 
 ## Compatibility limitations
 

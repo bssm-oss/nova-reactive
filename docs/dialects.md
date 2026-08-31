@@ -48,6 +48,41 @@ Use it directly for dev-environment bootstrap scripts and integration-test fixtu
 
 ---
 
+## BigDecimal DDL
+
+`@Column(precision = p, scale = s)` is preserved as a requested physical decimal
+shape; Nova does not silently substitute a currency default or discard a supplied scale.
+The bundled dialect matrix is:
+
+| Dialect | `precision = 0, scale = 0` | `precision > 0` | Scale only (`precision = 0, scale > 0`) | Bounds / failures |
+|---|---|---|---|---|
+| PostgreSQL | `numeric` | `numeric(p, s)` | Fail-fast | `p` 1–1000; `s` 0–`p` |
+| MySQL | Fail-fast | `decimal(p, s)` | Fail-fast | `p` 1–65; `s` 0–30 and `s ≤ p` |
+| MariaDB | Fail-fast | `decimal(p, s)` | Fail-fast | `p` 1–65; `s` 0–38 and `s ≤ p` |
+| H2 | `decfloat` | `numeric(p, s)` | `numeric(100000, s)` | `p` / `s` 0–100000; when `p > 0`, `s ≤ p` |
+| Oracle | `number` | `number(p, s)` (or `number(p, 0)`) | `number(*, s)` | `p` 0–38; `s` -84–127 |
+
+In particular, MySQL and MariaDB require an explicit positive `precision` for every
+`BigDecimal`; an unspecified shape and a scale-only declaration are rejected while DDL is
+generated. This avoids accepting a server-specific implicit `DECIMAL` shape that can round
+or truncate values. PostgreSQL likewise rejects scale without precision. H2 and Oracle have
+native unbounded/variable-scale forms, so their unspecified and scale-only forms are shown
+explicitly in the matrix.
+
+The same matrix applies wherever Nova emits a `BigDecimal` storage column: scalar and
+embedded properties (including secondary tables), primary and identity ids, to-one and
+`@MapsId` FK columns, owner and target columns in `@ManyToMany` link tables, and
+`@ElementCollection` owner-FK, basic/embedded element, map-key, and map-value columns.
+This is a no-loss propagation policy: generated related columns retain the referenced
+storage type, precision, and scale rather than falling back to a generic decimal shape.
+
+`columnDefinition` is intentionally excluded from that propagation. It replaces only the
+DDL type token of the property where it is declared; raw SQL cannot be safely interpreted to
+derive a compatible referenced or link-table type. Use `precision`/`scale` for generated
+relationships, or own every affected column and FK in an external migration.
+
+---
+
 ## Idempotent DDL
 
 `createTableIfNotExists` and `dropTableIfExists` emit idempotent variants of the standard DDL — useful when bootstrapping a dev/test schema that may already exist:
@@ -99,7 +134,7 @@ String dropSql = schema.alterTableDropColumn(metadata, "legacy_flag");
 // → alter table "accounts" drop column "legacy_flag"
 ```
 
-Run the emitted DDL via `executeNative(NativeQuery.of(ddl))` through the R2DBC adapter, or hand it off as input to a migration tool such as Flyway.
+Run the emitted DDL via `executeNative(NativeQuery.of(ddl))` through the R2DBC adapter, or hand it off as input to a migration tool such as Flyway. These helpers do not reconcile an existing table's column type, precision, scale, or FK definitions. When a decimal shape changes (or a raw `columnDefinition` is used), write an external migration that alters/rebuilds every affected column and compatible FK/link-table constraint; review existing values for rounding or range failures before applying it.
 
 - The default `createIndexes` returns an empty list, but `AbstractSchemaGenerator` (the base for every bundled dialect) generates real DDL.
 - `alterTableDropColumn` cross-checks the column name against metadata to prevent typos from emitting a bogus DROP.
