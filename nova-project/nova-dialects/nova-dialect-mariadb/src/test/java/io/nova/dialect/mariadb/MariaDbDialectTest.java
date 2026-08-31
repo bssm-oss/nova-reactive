@@ -10,6 +10,8 @@ import io.nova.sql.SqlStatement;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MariaDbDialectTest {
     private final MariaDbDialect dialect = new MariaDbDialect();
@@ -274,6 +276,43 @@ class MariaDbDialectTest {
     }
 
     @Test
+    void rendersBigDecimalShapesForScalarCollectionAndDerivedRelation() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+
+        String scalarDdl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(DecimalScalarHolder.class));
+        assertTrue(scalarDdl.contains("`explicit_amount` decimal(65, 38)"), scalarDdl);
+        assertTrue(scalarDdl.contains("`whole_amount` decimal(12, 0)"), scalarDdl);
+
+        EntityMetadata<DecimalCollectionHolder> collectionHolder =
+                factory.getEntityMetadata(DecimalCollectionHolder.class);
+        String collectionDdl = dialect.schemaGenerator().createCollectionTable(
+                collectionHolder.findProperty("amounts").orElseThrow()
+                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+        assertTrue(collectionDdl.contains("`amounts` decimal(65, 38)"), collectionDdl);
+
+        String relationDdl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(DecimalChild.class));
+        assertTrue(relationDdl.contains("`parent_id` decimal(65, 38)"), relationDdl);
+    }
+
+    @Test
+    void rejectsUnspecifiedScaleOnlyAndOutOfRangeBigDecimalShapes() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+
+        IllegalArgumentException unspecified = assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(UnspecifiedDecimal.class)));
+        assertTrue(unspecified.getMessage().contains("@Column(precision = ..., scale = ...)"),
+                unspecified.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleOnlyDecimal.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(TooPreciseDecimal.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(TooScaledDecimal.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleExceedsPrecisionDecimal.class)));
+    }
+
+    @Test
     void rendersToOneForeignKeyColumnsByReferencedIdStorageType() {
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
         String ddl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(FkChild.class));
@@ -331,6 +370,76 @@ class MariaDbDialectTest {
         java.util.UUID uid;
         Float ratio;
         Short level;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "decimal_scalar_holder")
+    static class DecimalScalarHolder {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(name = "explicit_amount", precision = 65, scale = 38)
+        java.math.BigDecimal explicitAmount;
+        @jakarta.persistence.Column(name = "whole_amount", precision = 12)
+        java.math.BigDecimal wholeAmount;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "decimal_collection_holder")
+    static class DecimalCollectionHolder {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Column(precision = 65, scale = 38)
+        java.util.Set<java.math.BigDecimal> amounts;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "decimal_parent")
+    static class DecimalParent {
+        @jakarta.persistence.Id
+        @jakarta.persistence.Column(precision = 65, scale = 38)
+        java.math.BigDecimal id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "decimal_child")
+    static class DecimalChild {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ManyToOne(targetEntity = DecimalParent.class)
+        @jakarta.persistence.JoinColumn(name = "parent_id")
+        DecimalParent parent;
+    }
+
+    @jakarta.persistence.Entity
+    static class UnspecifiedDecimal {
+        @jakarta.persistence.Id Long id;
+        java.math.BigDecimal amount;
+    }
+
+    @jakarta.persistence.Entity
+    static class ScaleOnlyDecimal {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(scale = 2)
+        java.math.BigDecimal amount;
+    }
+
+    @jakarta.persistence.Entity
+    static class TooPreciseDecimal {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(precision = 66, scale = 38)
+        java.math.BigDecimal amount;
+    }
+
+    @jakarta.persistence.Entity
+    static class TooScaledDecimal {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(precision = 65, scale = 39)
+        java.math.BigDecimal amount;
+    }
+
+    @jakarta.persistence.Entity
+    static class ScaleExceedsPrecisionDecimal {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(precision = 2, scale = 3)
+        java.math.BigDecimal amount;
     }
 
     enum Hue { RED, GREEN, BLUE }
