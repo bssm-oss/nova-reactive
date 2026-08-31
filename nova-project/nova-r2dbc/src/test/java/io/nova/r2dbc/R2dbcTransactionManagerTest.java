@@ -319,16 +319,44 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
-    void activeMandatoryAndSupportsFailuresMarkRootRollbackOnly() {
+    void activeRequiredFailureMarksRootRollbackOnly() {
+        List<String> calls = new java.util.ArrayList<>();
+        R2dbcTransactionManager txManager = transactionManager(recordingTransactionConnection(calls));
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                        required -> Mono.error(new IllegalStateException("required failed")))
+                                .onErrorResume(ignored -> Mono.empty())
+                                .thenReturn("apparent success")))
+                .expectErrorSatisfies(this::assertUnexpectedRollback)
+                .verify();
+
+        assertEquals(List.of("begin", "rollback", "close"), calls);
+    }
+
+    @Test
+    void activeMandatoryFailureMarksRootRollbackOnly() {
         List<String> calls = new java.util.ArrayList<>();
         R2dbcTransactionManager txManager = transactionManager(recordingTransactionConnection(calls));
 
         StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
                         txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.MANDATORY),
                                         mandatory -> Mono.error(new IllegalStateException("mandatory failed")))
-                                .onErrorResume(ignored -> Mono.empty())
-                                .then(txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.SUPPORTS),
-                                        supports -> Mono.error(new IllegalStateException("supports failed"))))
+                                .onErrorResume(ignored -> Mono.just("apparent success"))))
+                .expectErrorSatisfies(this::assertUnexpectedRollback)
+                .verify();
+
+        assertEquals(List.of("begin", "rollback", "close"), calls);
+    }
+
+    @Test
+    void activeSupportsFailureMarksRootRollbackOnly() {
+        List<String> calls = new java.util.ArrayList<>();
+        R2dbcTransactionManager txManager = transactionManager(recordingTransactionConnection(calls));
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.SUPPORTS),
+                                        supports -> Mono.error(new IllegalStateException("supports failed")))
                                 .onErrorResume(ignored -> Mono.just("apparent success"))))
                 .expectErrorSatisfies(this::assertUnexpectedRollback)
                 .verify();
@@ -350,6 +378,29 @@ class R2dbcTransactionManagerTest {
                                 .onErrorResume(ignored -> Mono.just("apparent success"))))
                 .expectErrorSatisfies(error -> {
                     assertSame(rollbackFailure, error);
+                    assertEquals(1, error.getSuppressed().length);
+                    assertUnexpectedRollback(error.getSuppressed()[0]);
+                })
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void closeFailureOutranksUnexpectedRollbackAndSuppressesItWithoutCommit() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException closeFailure = new IllegalStateException("close failed");
+        R2dbcTransactionManager txManager = transactionManager(transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.empty(), Mono.error(closeFailure), rollbackCalls, closeCalls));
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                        joined -> Mono.error(new IllegalStateException("joined failed")))
+                                .onErrorResume(ignored -> Mono.just("apparent success"))))
+                .expectErrorSatisfies(error -> {
+                    assertSame(closeFailure, error);
                     assertEquals(1, error.getSuppressed().length);
                     assertUnexpectedRollback(error.getSuppressed()[0]);
                 })
