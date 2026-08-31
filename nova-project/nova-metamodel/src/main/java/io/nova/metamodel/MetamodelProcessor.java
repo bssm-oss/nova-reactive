@@ -134,7 +134,8 @@ public final class MetamodelProcessor extends AbstractProcessor {
                                 throw new IllegalStateException(type.getQualifiedName() + "." + name
                                         + " has no JavaBean setter required by PROPERTY access");
                             }
-                            if (!setter.getParameters().get(0).asType().equals(getter.getReturnType())) {
+                            if (!processingEnv.getTypeUtils().isSameType(
+                                    setter.getParameters().get(0).asType(), getter.getReturnType())) {
                                 throw new IllegalStateException(type.getQualifiedName() + "." + name
                                         + " getter/setter types are incompatible");
                             }
@@ -299,11 +300,12 @@ public final class MetamodelProcessor extends AbstractProcessor {
         return regularGetters.get(0);
     }
 
-    private static ExecutableElement setter(TypeElement type, String property, ExecutableElement getter,
+    private ExecutableElement setter(TypeElement type, String property, ExecutableElement getter,
             List<ExecutableElement> candidates) {
         if (candidates == null) return null;
         List<ExecutableElement> exactMatches = candidates.stream()
-                .filter(method -> method.getParameters().get(0).asType().equals(getter.getReturnType()))
+                .filter(method -> processingEnv.getTypeUtils().isSameType(
+                        method.getParameters().get(0).asType(), getter.getReturnType()))
                 .sorted(Comparator.comparing(ExecutableElement::toString))
                 .toList();
         if (exactMatches.size() == 1) return exactMatches.get(0);
