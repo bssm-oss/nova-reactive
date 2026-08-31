@@ -44,7 +44,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@Temporal` (`java.util.Date` / `Calendar`) | ✅ | `DATE` / `TIME` / `TIMESTAMP`; `java.time.*` supported natively |
 | `@Lob` | ✅ | |
 | `@Convert` + `jakarta.persistence.AttributeConverter` | ✅ | Storage-type driven read/write; managed converter classes support `autoApply`, explicit override, and disable semantics |
-| Scalar types | ✅ | `UUID`, `Float`, `Short`, `BigDecimal`, `BigInteger`(driver-permitting), … — driver-verified. `BigDecimal` DDL preserves declared `@Column(precision, scale)` on scalar, id/FK, join-table, and collection-table storage; MySQL/MariaDB reject only a fully unspecified shape and normalize scale-only to `decimal(65, scale)`. |
+| Scalar types | ✅ | `UUID`, `Float`, `Short`, `BigDecimal`, `BigInteger`(driver-permitting), … — driver-verified. `BigDecimal` DDL preserves declared `@Column(precision, scale)` on scalar, id/FK, join-table, and collection-table storage; `@Column(columnDefinition)` is rejected on every physical `BigDecimal` storage column. MySQL/MariaDB reject only a fully unspecified shape and normalize scale-only to `decimal(65, scale)`. |
 | `@Version` optimistic locking | ✅ | `Long` / `Integer` / `Short` / `LocalDateTime`; surfaces `OptimisticLockingFailureException` |
 | `@Transient` | ✅ | Field annotations are excluded; under effective `@Access(PROPERTY)`, getter annotations are also excluded |
 | `@Access(FIELD)` | ✅ | Default |

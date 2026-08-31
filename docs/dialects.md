@@ -78,13 +78,13 @@ embedded properties (including secondary tables), primary and identity ids, to-o
 This is a no-loss propagation policy: generated related columns retain the referenced
 storage type, precision, and scale rather than falling back to a generic decimal shape.
 
-`columnDefinition` is intentionally excluded from that propagation. It replaces only the
-DDL type token of an ordinary property where it is declared; raw SQL cannot be safely
-interpreted to derive a compatible referenced or link-table type. Nova therefore rejects
-`columnDefinition` on relationship storage (`@JoinColumn`, `@JoinColumns`, and
-`@MapKeyJoinColumn`), secondary-table primary-key joins, and `BigDecimal` identifiers that
-would be referenced by generated relationships. Use `precision`/`scale` for generated
-relationships, or own every affected column and FK in an external migration.
+Nova rejects `@Column(columnDefinition = ...)` for every physical `BigDecimal` storage
+column, including an overridden embedded component. A raw SQL type cannot supply the
+precision and scale required to guarantee exact reuse by a future or derived column. Nova
+also rejects `columnDefinition` on relationship storage: `@JoinColumn`, `@JoinColumns`,
+`@MapKeyJoinColumn`, nested `@JoinTable` join/inverse join columns, and secondary-table
+primary-key joins. Use `precision`/`scale` for all generated decimal storage, or own every
+affected column and FK in an external migration.
 
 ---
 
