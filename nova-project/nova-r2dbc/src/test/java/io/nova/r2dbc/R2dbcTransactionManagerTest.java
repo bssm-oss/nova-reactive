@@ -282,6 +282,37 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
+    void recursiveNestedRollbackDoesNotDeadlockOrDiscardAncestorWork() {
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
+        R2dbcSqlExecutor txExecutor = new R2dbcSqlExecutor(connectionFactory, NOOP_DIALECT);
+
+        Mono<Void> work = txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                txExecutor.execute(new SqlStatement(
+                                "insert into accounts (id, email) values (?, ?)",
+                                List.of(10L, "outer@nova.io")))
+                        .then(txManager.inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.NESTED), middle ->
+                                        txExecutor.execute(new SqlStatement(
+                                                        "insert into accounts (id, email) values (?, ?)",
+                                                        List.of(11L, "middle@nova.io")))
+                                                .then(txManager.inTransaction(
+                                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED), inner ->
+                                                                txExecutor.execute(new SqlStatement(
+                                                                                "insert into accounts (id, email) values (?, ?)",
+                                                                                List.of(12L, "inner@nova.io")))
+                                                                        .then(Mono.error(new IllegalStateException("inner")))))
+                                                .onErrorResume(ignored -> Mono.empty()))))
+                        .then());
+
+        StepVerifier.create(work).verifyComplete();
+        StepVerifier.create(executor.queryOne(
+                        new SqlStatement("select count(*) as cnt from accounts", List.of()),
+                        row -> row.get("cnt", Long.class)))
+                .expectNext(2L)
+                .verifyComplete();
+    }
+
+    @Test
     void isolationLevelIsAppliedToConnection() {
         AtomicReference<io.r2dbc.spi.IsolationLevel> appliedIsolation = new AtomicReference<>();
         ConnectionFactory recording = recordingIsolationFactory(connectionFactory, appliedIsolation);
