@@ -717,51 +717,40 @@ public final class EntityMetadataFactory {
         PersistentTypeAccess accessPlan = new PersistentAccessResolver().resolve(entityType);
         for (PersistentAttributeAccess attribute : accessPlan.attributes()) {
             Field field = attribute.field();
-            if (field == null) {
-                PersistentProperty property = createGetterOnlyProperty(attribute);
-                properties.add(property);
-                if (property.id()) {
-                    if (idProperty != null && !hasIdClass) {
-                        throw new IllegalArgumentException(entityType.getName() + " declares multiple @Id properties");
-                    }
-                    if (idProperty == null) idProperty = property;
-                }
+            if (field != null && isNotPersistable(field)) {
                 continue;
             }
-            if (isNotPersistable(field)) {
-                continue;
-            }
-            rejectInactiveRelationAnnotations(entityType, field);
-            rejectIncompatibleRelationAnnotations(entityType, field);
-            rejectMisplacedForeignKey(entityType, field);
-            if (memberPresent(field, OneToMany.class)) {
+            rejectInactiveRelationAnnotations(entityType, attribute);
+            rejectIncompatibleRelationAnnotations(entityType, attribute);
+            rejectMisplacedForeignKey(entityType, attribute);
+            if (attribute.isAnnotationPresent(OneToMany.class)) {
                 // OneToMany는 parent 테이블 컬럼이 없는 marker-only property — column uniqueness 검증에서 제외된다.
-                properties.add(createOneToManyProperty(entityType, field));
+                properties.add(createOneToManyProperty(entityType, attribute));
                 continue;
             }
-            if (memberPresent(field, ManyToOne.class)) {
-                properties.add(createManyToOneProperty(entityType, field));
+            if (attribute.isAnnotationPresent(ManyToOne.class)) {
+                properties.add(createManyToOneProperty(entityType, attribute));
                 continue;
             }
-            if (memberPresent(field, OneToOne.class)) {
+            if (attribute.isAnnotationPresent(OneToOne.class)) {
                 // owning(@JoinColumn FK)은 컬럼이 있고, inverse(mappedBy)는 컬럼이 없는 마커다.
-                properties.add(createOneToOneProperty(entityType, field));
+                properties.add(createOneToOneProperty(entityType, attribute));
                 continue;
             }
-            if (memberPresent(field, ManyToMany.class)) {
+            if (attribute.isAnnotationPresent(ManyToMany.class)) {
                 // owning(@JoinTable) / inverse(mappedBy) 모두 컬럼이 없는 marker. link table은 별도 관리된다.
-                properties.add(createManyToManyProperty(entityType, tableName, field));
+                properties.add(createManyToManyProperty(entityType, tableName, attribute));
                 continue;
             }
-            if (memberPresent(field, ElementCollection.class)) {
+            if (attribute.isAnnotationPresent(ElementCollection.class)) {
                 // 값 컬렉션 — collection table에 별도 저장되는 컬럼 없는 marker.
-                properties.add(createElementCollectionProperty(entityType, tableName, field));
+                properties.add(createElementCollectionProperty(entityType, tableName, attribute));
                 continue;
             }
-            if (memberPresent(field, EmbeddedId.class)) {
-                if (memberPresent(field, Id.class)) {
+            if (attribute.isAnnotationPresent(EmbeddedId.class)) {
+                if (attribute.isAnnotationPresent(Id.class)) {
                     throw new IllegalArgumentException(
-                            entityType.getName() + "." + field.getName()
+                            entityType.getName() + "." + attribute.name()
                                     + " cannot declare both @Id and @EmbeddedId");
                 }
                 if (hasIdClass) {
@@ -773,7 +762,7 @@ public final class EntityMetadataFactory {
                             entityType.getName() + " declares multiple @Id/@EmbeddedId properties");
                 }
                 // @EmbeddedId는 @Embeddable holder를 컬럼들로 펼친 뒤 각 컴포넌트를 복합키 id로 표시한다.
-                List<PersistentProperty> components = createEmbeddedIdProperties(entityType, field);
+                List<PersistentProperty> components = createEmbeddedIdProperties(entityType, attribute);
                 for (PersistentProperty idComponent : components) {
                     properties.add(idComponent);
                     if (idProperty == null) {
@@ -782,13 +771,13 @@ public final class EntityMetadataFactory {
                 }
                 continue;
             }
-            if (memberPresent(field, Embedded.class)) {
+            if (attribute.isAnnotationPresent(Embedded.class)) {
                 List<PersistentProperty> expanded = createEmbeddedProperties(
-                        entityType, field, List.of(), "", new LinkedHashSet<>(), Map.of());
+                        entityType, attribute, List.of(), "", new LinkedHashSet<>(), Map.of());
                 properties.addAll(expanded);
                 continue;
             }
-            PersistentProperty property = createProperty(entityType, field, List.of(), "");
+            PersistentProperty property = createProperty(entityType, attribute, List.of(), "");
             properties.add(property);
             if (property.id()) {
                 if (idProperty != null && !hasIdClass) {
@@ -1716,6 +1705,15 @@ public final class EntityMetadataFactory {
         return result;
     }
 
+    private List<PersistentProperty> createEmbeddedIdProperties(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        if (attribute.field() == null) {
+            throw new IllegalArgumentException(entityType.getName() + "." + attribute.name()
+                    + " @EmbeddedId requires a physical backing field");
+        }
+        return createEmbeddedIdProperties(entityType, attribute.field());
+    }
+
     /**
      * {@code @IdClass} 복합키를 검증한다. 엔티티는 개별 {@code @Id} 필드를 2개 이상 선언해야 하고, IdClass는
      * 각 {@code @Id} 필드와 같은 이름·호환 타입의 필드를 가져야 하며 no-arg 생성자를 노출해야 한다. 매핑은
@@ -1857,6 +1855,22 @@ public final class EntityMetadataFactory {
             embeddableStack.remove(embeddableType);
         }
         return result;
+    }
+
+    private List<PersistentProperty> createEmbeddedProperties(
+            Class<?> entityType,
+            PersistentAttributeAccess attribute,
+            List<Field> parentHostPath,
+            String parentColumnPrefix,
+            LinkedHashSet<Class<?>> embeddableStack,
+            Map<String, Convert> inheritedConversionOverrides
+    ) {
+        if (attribute.field() == null) {
+            throw new IllegalArgumentException(entityType.getName() + "." + attribute.name()
+                    + " @Embedded requires a physical backing field");
+        }
+        return createEmbeddedProperties(entityType, attribute.field(), parentHostPath, parentColumnPrefix,
+                embeddableStack, inheritedConversionOverrides);
     }
 
     private static String describeEmbeddableStack(LinkedHashSet<Class<?>> stack, Class<?> repeated) {
@@ -2101,8 +2115,8 @@ public final class EntityMetadataFactory {
         target.add(new ListenerCallback(listener, method));
     }
 
-    /** Builds a scalar PROPERTY mapping whose JavaBean member has no backing field. */
-    private PersistentProperty createGetterOnlyProperty(PersistentAttributeAccess attribute) {
+    /** Builds a scalar descriptor mapping when no legacy physical backing field exists. */
+    private PersistentProperty createDescriptorProperty(PersistentAttributeAccess attribute) {
         ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
         if (manyToOne != null) {
             JoinColumn join = attribute.annotation(JoinColumn.class);
@@ -2148,6 +2162,21 @@ public final class EntityMetadataFactory {
                 null, column == null ? "" : column.table(), null);
     }
 
+    private static PersistentProperty requireBackingField(
+            Class<?> entityType,
+            PersistentAttributeAccess attribute,
+            Class<? extends Annotation> relation,
+            java.util.function.Function<Field, PersistentProperty> factory
+    ) {
+        Field field = attribute.field();
+        if (field == null) {
+            throw new IllegalArgumentException(entityType.getName() + "." + attribute.name()
+                    + " @" + relation.getSimpleName()
+                    + " requires a physical backing field");
+        }
+        return factory.apply(field);
+    }
+
     /**
      * 단일 field로부터 {@link PersistentProperty}를 만든다. {@code hostPath}가 비어있지 않으면
      * 이 property는 {@code @Embedded} 필드(들) 안에 있는 sub-field이며 column 이름에 prefix가 붙고
@@ -2161,6 +2190,20 @@ public final class EntityMetadataFactory {
     ) {
         return createProperty(declaringType, field, hostPath, columnPrefix, null,
                 memberPresent(field, Id.class), null);
+    }
+
+    private PersistentProperty createProperty(
+            Class<?> declaringType,
+            PersistentAttributeAccess attribute,
+            List<Field> hostPath,
+            String columnPrefix
+    ) {
+        // Fields are retained only for physical access compatibility.  The descriptor remains the
+        // sole selected access path for annotation/type decisions at the top-level dispatch.
+        if (attribute.field() == null) {
+            return createDescriptorProperty(attribute);
+        }
+        return createProperty(declaringType, attribute.field(), hostPath, columnPrefix);
     }
 
     /**
@@ -3030,6 +3073,33 @@ public final class EntityMetadataFactory {
         }
     }
 
+    private static void rejectIncompatibleRelationAnnotations(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        boolean manyToOne = attribute.isAnnotationPresent(ManyToOne.class);
+        boolean oneToMany = attribute.isAnnotationPresent(OneToMany.class);
+        boolean oneToOne = attribute.isAnnotationPresent(OneToOne.class);
+        boolean manyToMany = attribute.isAnnotationPresent(ManyToMany.class);
+        int count = (manyToOne ? 1 : 0) + (oneToMany ? 1 : 0) + (oneToOne ? 1 : 0) + (manyToMany ? 1 : 0);
+        if (count == 0) return;
+        String location = entityType.getName() + "." + attribute.name();
+        if (count > 1) throw new IllegalStateException(location + " cannot declare more than one relation annotation");
+        for (Class<? extends Annotation> incompatible : List.of(
+                Embedded.class, Id.class, Version.class, SoftDelete.class, CreatedAt.class, UpdatedAt.class,
+                Enumerated.class, Json.class)) {
+            if (attribute.isAnnotationPresent(incompatible)) {
+                throw new IllegalStateException(location + " cannot declare @" + incompatible.getSimpleName()
+                        + " together with a relation annotation");
+            }
+        }
+        if (attribute.isAnnotationPresent(MapsId.class) && (oneToMany || manyToMany)) {
+            throw new IllegalStateException(location + " @MapsId is only valid on a to-one relationship");
+        }
+        if (attribute.isAnnotationPresent(jakarta.persistence.OrderColumn.class)
+                && (manyToOne || oneToOne || manyToMany)) {
+            throw new IllegalStateException(location + " @OrderColumn is not valid on this relationship");
+        }
+    }
+
     /**
      * Relationship annotations cannot be harmlessly ignored on the inactive access side: doing so
      * would silently map an entity reference as a basic column. Basic annotations on the inactive
@@ -3048,6 +3118,11 @@ public final class EntityMetadataFactory {
                         + (resolvePropertyAccess(field) ? "field" : "getter") + " access side");
             }
         }
+    }
+
+    private static void rejectInactiveRelationAnnotations(Class<?> entityType, PersistentAttributeAccess attribute) {
+        // The resolver has already selected the active member.  Inactive members are validated while
+        // constructing that plan; this factory must not reselect a field/getter pair.
     }
 
     /**
@@ -3081,6 +3156,26 @@ public final class EntityMetadataFactory {
                 && !memberPresent(field, ElementCollection.class)) {
             throw new IllegalStateException(
                     location + " @CollectionTable(foreignKey=...) is only honored on an @ElementCollection");
+        }
+    }
+
+    private static void rejectMisplacedForeignKey(Class<?> entityType, PersistentAttributeAccess attribute) {
+        String location = entityType.getName() + "." + attribute.name();
+        boolean toOne = attribute.isAnnotationPresent(ManyToOne.class) || attribute.isAnnotationPresent(OneToOne.class);
+        JoinColumn joinColumn = attribute.annotation(JoinColumn.class);
+        if (joinColumn != null && isExplicitForeignKey(joinColumn.foreignKey()) && !toOne) {
+            throw new IllegalStateException(location + " @JoinColumn(foreignKey=...) is only honored on an owning to-one");
+        }
+        JoinTable joinTable = attribute.annotation(JoinTable.class);
+        if (joinTable != null && (isExplicitForeignKey(joinTable.foreignKey())
+                || isExplicitForeignKey(joinTable.inverseForeignKey()))
+                && !attribute.isAnnotationPresent(ManyToMany.class)) {
+            throw new IllegalStateException(location + " @JoinTable foreign key customization is only honored on @ManyToMany");
+        }
+        CollectionTable collectionTable = attribute.annotation(CollectionTable.class);
+        if (collectionTable != null && isExplicitForeignKey(collectionTable.foreignKey())
+                && !attribute.isAnnotationPresent(ElementCollection.class)) {
+            throw new IllegalStateException(location + " @CollectionTable foreign key customization is only honored on @ElementCollection");
         }
     }
 
@@ -3170,6 +3265,12 @@ public final class EntityMetadataFactory {
                 null,
                 ColumnDdlDefinition.EMPTY
         );
+    }
+
+    private PersistentProperty createOneToManyProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        return requireBackingField(entityType, attribute, OneToMany.class,
+                field -> createOneToManyProperty(entityType, field));
     }
 
     /**
@@ -3813,6 +3914,14 @@ public final class EntityMetadataFactory {
                 ColumnDdlDefinition.EMPTY);
     }
 
+    private PersistentProperty createManyToOneProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        if (attribute.field() == null) {
+            return createDescriptorProperty(attribute);
+        }
+        return createManyToOneProperty(entityType, attribute.field());
+    }
+
     /**
      * {@link OneToOne} property를 만든다. {@code mappedBy}가 없으면 owning side로 FK 컬럼을 가지며
      * {@code @ManyToOne}과 동일한 단건 참조 메커니즘({@code manyToOne=true})으로 모델링한다(FK는 unique 기본).
@@ -3975,6 +4084,12 @@ public final class EntityMetadataFactory {
                 ColumnDdlDefinition.EMPTY);
     }
 
+    private PersistentProperty createOneToOneProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        return requireBackingField(entityType, attribute, OneToOne.class,
+                field -> createOneToOneProperty(entityType, field));
+    }
+
     /**
      * {@code @ManyToMany} property를 만든다. owning({@code mappedBy} 없음, {@code @JoinTable})과
      * inverse({@code mappedBy}) 모두 컬럼 없는 marker이며 link table 매핑을 {@link ManyToManyInfo}에 담는다.
@@ -4044,6 +4159,12 @@ public final class EntityMetadataFactory {
                 false,
                 info, null, null, null, false, "", access.propertyAccess(), access.getter(), access.setter(), null, "", null,
                 ColumnDdlDefinition.EMPTY);
+    }
+
+    private PersistentProperty createManyToManyProperty(
+            Class<?> entityType, String ownerTableName, PersistentAttributeAccess attribute) {
+        return requireBackingField(entityType, attribute, ManyToMany.class,
+                field -> createManyToManyProperty(entityType, ownerTableName, field));
     }
 
     /**
@@ -4382,6 +4503,12 @@ public final class EntityMetadataFactory {
                 "",
                 null,
                 ColumnDdlDefinition.EMPTY);
+    }
+
+    private PersistentProperty createElementCollectionProperty(
+            Class<?> entityType, String ownerTableName, PersistentAttributeAccess attribute) {
+        return requireBackingField(entityType, attribute, ElementCollection.class,
+                field -> createElementCollectionProperty(entityType, ownerTableName, field));
     }
 
     /**
