@@ -629,8 +629,46 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
+    void nestedEmptySuccessReleasesSavepointBeforeOuterCommit() {
+        List<String> calls = new java.util.ArrayList<>();
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit", "beginTransaction" -> Mono.empty();
+                    case "createSavepoint" -> {
+                        calls.add("create");
+                        yield Mono.empty();
+                    }
+                    case "releaseSavepoint" -> {
+                        calls.add("release");
+                        yield Mono.empty();
+                    }
+                    case "commitTransaction" -> {
+                        calls.add("commit");
+                        yield Mono.empty();
+                    }
+                    case "close" -> {
+                        calls.add("close");
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                inner -> Mono.empty())))
+                .verifyComplete();
+
+        assertEquals(List.of("create", "release", "commit", "close"), calls);
+    }
+
+    @Test
     void surfacesSavepointRollbackFailureWithNestedFailureSuppressed() {
         AtomicInteger closeCalls = new AtomicInteger();
+        AtomicInteger releaseCalls = new AtomicInteger();
         IllegalStateException callbackFailure = new IllegalStateException("callback failed");
         IllegalStateException savepointFailure = new IllegalStateException("savepoint rollback failed");
         Connection connection = (Connection) Proxy.newProxyInstance(
@@ -640,6 +678,10 @@ class R2dbcTransactionManagerTest {
                     case "setAutoCommit", "beginTransaction", "commitTransaction", "rollbackTransaction" -> Mono.empty();
                     case "createSavepoint" -> Mono.empty();
                     case "rollbackTransactionToSavepoint" -> Mono.error(savepointFailure);
+                    case "releaseSavepoint" -> {
+                        releaseCalls.incrementAndGet();
+                        yield Mono.empty();
+                    }
                     case "close" -> {
                         closeCalls.incrementAndGet();
                         yield Mono.empty();
@@ -659,6 +701,7 @@ class R2dbcTransactionManagerTest {
                 .verify();
 
         assertEquals(1, closeCalls.get());
+        assertEquals(1, releaseCalls.get());
     }
 
     private static Mono<Void> readConnectionFromContext(AtomicReference<Connection> sink, boolean activeTransaction) {
