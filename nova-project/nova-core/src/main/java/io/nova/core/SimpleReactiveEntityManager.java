@@ -16,9 +16,11 @@ import io.nova.query.storedprocedure.StoredProcedureParameterDefinition;
 import io.nova.query.storedprocedure.StoredProcedureRowMappers;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.sql.Dialect;
+import io.nova.tx.PhysicalTransactionScope;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.FlushModeType;
 import jakarta.persistence.LockModeType;
+import jakarta.persistence.TransactionRequiredException;
 import reactor.core.publisher.Mono;
 import reactor.util.context.ContextView;
 
@@ -274,6 +276,10 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
             Optional<PersistenceSession> session = currentSession(ctx);
             LockModeTranslator.ResolvedLock resolved = LockModeTranslator.resolve(lockMode);
+            if (resolved.lockMode() != LockMode.NONE && !hasActiveTransaction(ctx)) {
+                return Mono.error(new TransactionRequiredException(
+                        "Pessimistic lock mode " + lockMode + " requires an active transaction"));
+            }
             if (resolved.versionCheck() || resolved.forceIncrement()) {
                 if (metadata.versionProperty().isEmpty()) {
                     return Mono.error(new IllegalArgumentException(
@@ -302,6 +308,10 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
             EntityMetadata<?> metadata = metadataFor(entity);
             Optional<PersistenceSession> session = currentSession(ctx);
             LockModeTranslator.ResolvedLock resolved = LockModeTranslator.resolve(lockMode);
+            if (resolved.lockMode() != LockMode.NONE && !hasActiveTransaction(ctx)) {
+                return Mono.error(new TransactionRequiredException(
+                        "Pessimistic lock mode " + lockMode + " requires an active transaction"));
+            }
             if ((resolved.versionCheck() || resolved.forceIncrement()) && metadata.versionProperty().isEmpty()) {
                 return Mono.error(new IllegalArgumentException(
                         "Lock mode " + lockMode + " requires a @Version property on "
@@ -454,6 +464,18 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
 
     private EntityMetadata<?> metadataFor(Object entity) {
         return metadataFactory.getEntityMetadata(entity.getClass());
+    }
+
+    /**
+     * A physical transaction scope, when present, is authoritative. The managed-session check preserves
+     * transaction support for legacy {@link SimpleReactiveEntityOperations.SessionBinding}-style integrations
+     * that predate physical scope propagation.
+     */
+    private static boolean hasActiveTransaction(ContextView ctx) {
+        if (ctx.hasKey(PhysicalTransactionScope.CONTEXT_KEY)) {
+            return ctx.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY).isActive();
+        }
+        return currentSession(ctx).isPresent();
     }
 
     private static Optional<PersistenceSession> currentSession(ContextView ctx) {

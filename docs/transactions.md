@@ -125,6 +125,14 @@ operations.inReadSession(ops ->
 
 Use `QuerySpec.forUpdate()` / `forShare()` to apply a pessimistic lock on the SELECT result rows. The lock clause is only meaningful **inside a transaction**, so use it within an `inTransaction(...)` callback.
 
+`ReactiveEntityManager.find(..., PESSIMISTIC_*)` and
+`ReactiveEntityManager.lock(entity, PESSIMISTIC_*)`, including
+`PESSIMISTIC_FORCE_INCREMENT`, require an active transaction. They fail
+reactively with `jakarta.persistence.TransactionRequiredException` before
+issuing a `SELECT` or version-increment `UPDATE` when no transaction is active.
+This validation applies only to the EntityManager `LockModeType` API; the raw
+`QuerySpec` lock API remains unchanged.
+
 ```java
 import io.nova.query.LockMode;
 
