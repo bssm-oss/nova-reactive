@@ -3249,7 +3249,7 @@ class SimpleReactiveEntityOperationsTest {
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         CascadingOneToOneOwner owner = new CascadingOneToOneOwner(1L, "before", null);
         PersistenceSession session = new PersistenceSession();
-        session.registerOnLoad(metadata(PreUpdateCascadingOneToOneOwner.class), owner);
+        session.registerOnLoad(metadata(CascadingOneToOneOwner.class), owner);
         owner.name = "after";
         owner.addTransientTargetInPreUpdate = true;
 
@@ -4087,6 +4087,7 @@ class SimpleReactiveEntityOperationsTest {
         @OneToOne(cascade = CascadeType.PERSIST, orphanRemoval = true)
         @JoinColumn(name = "target_id")
         private CascadingOneToOneTarget target;
+        @jakarta.persistence.Transient
         private boolean addTransientTargetInPreUpdate;
 
         private CascadingOneToOneOwner(Long id, String name, CascadingOneToOneTarget target) {

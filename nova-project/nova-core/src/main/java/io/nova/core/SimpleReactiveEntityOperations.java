@@ -1854,12 +1854,27 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 // must never reach scalar or collection/orphan/cascade flush choreography.
                 return Mono.empty();
             }
-            if (entry.dirtyPropertyNames().isEmpty()) {
+            if (entry.dirtyPropertyNames().isEmpty()
+                    && !hasTransientOwningOneToOneOrphan(metadata, entity)) {
                 // 스칼라 변경이 없어도 세션에서 지연된 컬렉션(join/collection 테이블)은 flush로 동기화한다.
                 return syncCollections(session, entry, entity, metadata);
             }
             return flushDirtyEntry(session, entry, entity, metadata);
         });
+    }
+
+    private boolean hasTransientOwningOneToOneOrphan(EntityMetadata<?> metadata, Object owner) {
+        for (PersistentProperty property : metadata.manyToOneProperties()) {
+            if (!property.oneToOneOrphanRemoval()) {
+                continue;
+            }
+            Object reference = property.readReferenceInstance(owner);
+            if (reference != null
+                    && metadataFactory.getEntityMetadata(property.manyToOneTargetType()).readIdValue(reference) == null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Mono<Void> flushDirtyEntry(
@@ -1871,17 +1886,21 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             } catch (RuntimeException exception) {
                 return Mono.error(exception);
             }
-            // audit/@PreUpdate 콜백이 추가로 더럽힌 컬럼까지 재diff로 포착(@UpdatedAt 포함).
-            LinkedHashSet<String> fields = new LinkedHashSet<>(entry.dirtyPropertyNames());
-            if (fields.isEmpty()) {
-                return Mono.empty();
-            }
-            PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
-            if (versionProperty != null) {
-                fields.add(versionProperty.propertyName());
-            }
             return prepareOwningOneToOneOrphans(metadata, entity)
-                    .then(flushPreparedDirtyEntry(session, entry, entity, metadata, fields, versionProperty));
+                    .then(Mono.defer(() -> {
+                        // Cascade-persist may assign an id to a previously null-key reference, so diff only after
+                        // preparation. This also captures audit/@PreUpdate mutations.
+                        LinkedHashSet<String> fields = new LinkedHashSet<>(entry.dirtyPropertyNames());
+                        if (fields.isEmpty()) {
+                            return Mono.empty();
+                        }
+                        PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+                        if (versionProperty != null) {
+                            fields.add(versionProperty.propertyName());
+                        }
+                        return flushPreparedDirtyEntry(
+                                session, entry, entity, metadata, fields, versionProperty);
+                    }));
         });
     }
 
