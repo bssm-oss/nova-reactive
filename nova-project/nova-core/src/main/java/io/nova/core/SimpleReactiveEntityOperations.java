@@ -1903,7 +1903,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private void canonicalizeHydratedRelation(
             PersistenceSession session, EntityMetadata<?> ownerMetadata, Object owner, PersistentProperty property) {
-        if (associationTargetType(property) == null) {
+        if (!property.manyToOne() && !property.oneToMany()
+                && !property.inverseToOne() && !property.manyToMany()) {
             return;
         }
         Object related = property.readReference(owner);
