@@ -3586,8 +3586,8 @@ public final class EntityMetadataFactory {
         }
         Class<?> targetType = annotation.targetEntity();
         if (targetType == void.class) {
-            // erasure로 컬렉션의 원소 타입을 직접 추론할 수 없으면 null로 두고 호출자가 명시할 수 있게 한다.
-            targetType = null;
+            targetType = collectionElementType(
+                    entityType, field.getName(), selectedGenericType(field), OneToMany.class);
         }
         return new PersistentProperty(
                 field,

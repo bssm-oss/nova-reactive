@@ -246,7 +246,8 @@ class PropertyAccessH2IntegrationTest {
     public static class MixedAccessAccount {
         private Long id;
 
-        // @Access 없음 → 엔티티 기본(FIELD) 접근.
+        // 멤버 레벨 override → FIELD 접근.
+        @Access(AccessType.FIELD)
         @Column(name = "field_mapped")
         private String fieldMapped;
 
@@ -267,6 +268,10 @@ class PropertyAccessH2IntegrationTest {
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         public Long getId() {
             return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
         }
 
         // FIELD-access 컬럼은 getter/setter가 없어도 동작해야 한다(테스트 검증용 reader만 둔다).
@@ -293,7 +298,6 @@ class PropertyAccessH2IntegrationTest {
     public static class Blog {
         private Long id;
 
-        @Column(name = "name")
         private String name;
 
         public Blog() {
@@ -307,6 +311,19 @@ class PropertyAccessH2IntegrationTest {
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         public Long getId() {
             return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @Column(name = "name")
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
         }
     }
 
@@ -512,7 +529,11 @@ class PropertyAccessH2IntegrationTest {
         @Override
         @SuppressWarnings("unchecked")
         public <T> T decode(String json, Class<T> type) {
-            return (T) json.substring("json:".length());
+            String normalized = json;
+            if (normalized.length() >= 2 && normalized.startsWith("\"") && normalized.endsWith("\"")) {
+                normalized = normalized.substring(1, normalized.length() - 1);
+            }
+            return (T) normalized.substring("json:".length());
         }
     }
 
