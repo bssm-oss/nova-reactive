@@ -603,6 +603,46 @@ class MetamodelProcessorTest {
         }
 
         @Test
+        @DisplayName("record component accessor와 JavaBean getter가 충돌하면 ERROR diagnostic이 보고된다")
+        void rejectsRecordAccessorCollidingWithJavaBeanGetter() {
+            Source entity = new Source(
+                    "fixtures.RecordHolder",
+                    """
+                    package fixtures;
+
+                    import jakarta.persistence.Embedded;
+                    import jakarta.persistence.Entity;
+                    import jakarta.persistence.Id;
+
+                    @Entity
+                    public class RecordHolder {
+                        @Id private Long id;
+                        @Embedded private Name name;
+                    }
+                    """);
+            Source embeddable = new Source(
+                    "fixtures.Name",
+                    """
+                    package fixtures;
+
+                    import jakarta.persistence.Embeddable;
+
+                    @Embeddable
+                    public record Name(String value) {
+                        public String getValue() { return value; }
+                    }
+                    """);
+
+            Compilation compilation = ProcessorRunner.compile(entity, embeddable);
+
+            assertFalse(compilation.success(), "record accessor and JavaBean getter must not select arbitrarily");
+            Diagnostic<? extends JavaFileObject> error = compilation.firstError();
+            assertNotNull(error);
+            assertTrue(error.getMessage(null).contains("ambiguous accessor"),
+                    () -> "expected ambiguous-accessor diagnostic, got: " + error.getMessage(null));
+        }
+
+        @Test
         @DisplayName("field와 getter에 식별자를 혼합하면 ERROR diagnostic이 보고된다")
         void rejectsMixedIdentifierAccess() {
             Source source = new Source(
