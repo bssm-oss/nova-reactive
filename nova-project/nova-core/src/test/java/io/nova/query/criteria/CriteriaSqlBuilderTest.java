@@ -521,6 +521,30 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void nestedEmptyJunctionsPreserveBoundLeafOrderInScalarAndAliasedRoutes() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        cq.multiselect(e.<String>get("name")).where(cb.and(
+                cb.equal(e.<String>get("name"), "Ada"),
+                cb.or(),
+                cb.and(),
+                cb.equal(e.<Integer>get("age"), 40)));
+
+        CriteriaSql scalarSql = scalar(cq);
+        assertEquals(
+                "select \"name\" as \"c0\" from \"employee\" where (\"name\" = ? and 1 = 0 and 1 = 1 and \"age\" = ?)",
+                scalarSql.sql());
+        assertEquals(List.of("Ada", 40), scalarSql.bindings());
+
+        CriteriaSql aliasedSql = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"name\" as \"c0\" from \"employee\" \"t0\" "
+                        + "where (\"t0\".\"name\" = ? and 1 = 0 and 1 = 1 and \"t0\".\"age\" = ?)",
+                aliasedSql.sql());
+        assertEquals(List.of("Ada", 40), aliasedSql.bindings());
+    }
+
+    @Test
     void pathLevelEqualToNullBecomesIsNull() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);
