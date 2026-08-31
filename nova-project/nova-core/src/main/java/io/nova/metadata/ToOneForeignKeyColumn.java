@@ -2,9 +2,6 @@ package io.nova.metadata;
 
 import io.nova.convert.AttributeConverter;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -28,8 +25,7 @@ public final class ToOneForeignKeyColumn {
      * {@code @IdClass}는 top-level {@code @Id} 필드 1개, {@code @EmbeddedId}는
      * {@code [holder 필드, embeddable leaf 필드]} 2개다.
      */
-    private final List<Field> referencedPath;
-    private final List<Method> referencedAccessors;
+    private final List<PersistentAttributeAccess> referencedPath;
 
     public ToOneForeignKeyColumn(
             String columnName,
@@ -38,7 +34,7 @@ public final class ToOneForeignKeyColumn {
             int length,
             boolean nullable,
             AttributeConverter<Object, Object> converter,
-            List<Field> referencedPath) {
+            List<PersistentAttributeAccess> referencedPath) {
         this.columnName = columnName;
         this.referencedColumnName = referencedColumnName;
         this.columnType = columnType;
@@ -46,23 +42,6 @@ public final class ToOneForeignKeyColumn {
         this.nullable = nullable;
         this.converter = converter;
         this.referencedPath = List.copyOf(referencedPath);
-        List<Method> accessors = new ArrayList<>(referencedPath.size());
-        for (Field field : this.referencedPath) {
-            field.setAccessible(true);
-            if (field.getDeclaringClass().isRecord()) {
-                try {
-                    Method accessor = field.getDeclaringClass().getDeclaredMethod(field.getName());
-                    accessor.setAccessible(true);
-                    accessors.add(accessor);
-                } catch (NoSuchMethodException exception) {
-                    throw new IllegalArgumentException("Record component " + field.getDeclaringClass().getName()
-                            + "." + field.getName() + " has no component accessor", exception);
-                }
-            } else {
-                accessors.add(null);
-            }
-        }
-        this.referencedAccessors = java.util.Collections.unmodifiableList(accessors);
     }
 
     public String columnName() {
@@ -90,7 +69,7 @@ public final class ToOneForeignKeyColumn {
         return nullable;
     }
 
-    List<Field> referencedPath() {
+    List<PersistentAttributeAccess> referencedPath() {
         return referencedPath;
     }
 
@@ -119,20 +98,14 @@ public final class ToOneForeignKeyColumn {
      * (예: {@code @EmbeddedId} holder 미설정) {@code null}을 반환한다.
      */
     public Object readReferencedValue(Object referenced) {
-        try {
-            Object current = referenced;
-            for (int i = 0; i < referencedPath.size(); i++) {
-                Method accessor = referencedAccessors.get(i);
-                current = accessor == null ? referencedPath.get(i).get(current) : accessor.invoke(current);
-                if (current == null) {
-                    return null;
-                }
+        Object current = referenced;
+        for (PersistentAttributeAccess attribute : referencedPath) {
+            current = attribute.read(current);
+            if (current == null) {
+                return null;
             }
-            return current;
-        } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException(
-                    "Cannot read composite foreign-key component for column " + columnName, exception);
         }
+        return current;
     }
 
     /**
@@ -140,22 +113,17 @@ public final class ToOneForeignKeyColumn {
      * ({@code @EmbeddedId}의 {@code @Embeddable})를 no-arg 생성자로 lazy 생성한다.
      */
     public void writeReferencedValue(Object stub, Object domainValue) {
-        try {
-            Object current = stub;
-            for (int i = 0; i < referencedPath.size() - 1; i++) {
-                Field hostField = referencedPath.get(i);
-                Object next = hostField.get(current);
-                if (next == null) {
-                    next = instantiate(hostField.getType());
-                    hostField.set(current, next);
-                }
-                current = next;
+        Object current = stub;
+        for (int i = 0; i < referencedPath.size() - 1; i++) {
+            PersistentAttributeAccess host = referencedPath.get(i);
+            Object next = host.read(current);
+            if (next == null) {
+                next = instantiate(host.javaType());
+                host.write(current, next);
             }
-            referencedPath.get(referencedPath.size() - 1).set(current, domainValue);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot assemble composite foreign-key component for column " + columnName, exception);
+            current = next;
         }
+        referencedPath.get(referencedPath.size() - 1).write(current, domainValue);
     }
 
     private static Object instantiate(Class<?> type) {

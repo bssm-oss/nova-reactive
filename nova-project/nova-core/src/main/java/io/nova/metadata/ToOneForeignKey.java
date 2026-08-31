@@ -56,15 +56,10 @@ public final class ToOneForeignKey {
             return null;
         }
         Object stub = instantiate(targetType);
-        List<java.lang.reflect.Field> firstPath = columns.get(0).referencedPath();
-        if (firstPath.size() > 1 && firstPath.get(0).getType().isRecord()) {
-            Object holder = assembleRecordHolder(firstPath.get(0).getType(), decodedValues);
-            try {
-                firstPath.get(0).set(stub, holder);
-            } catch (IllegalAccessException exception) {
-                throw new IllegalStateException("Cannot assign record @EmbeddedId holder on "
-                        + targetType.getName(), exception);
-            }
+        List<PersistentAttributeAccess> firstPath = columns.get(0).referencedPath();
+        if (firstPath.size() > 1 && firstPath.get(0).javaType().isRecord()) {
+            Object holder = assembleRecordHolder(firstPath.get(0).javaType(), decodedValues);
+            firstPath.get(0).write(stub, holder);
             return stub;
         }
         for (int i = 0; i < columns.size(); i++) {
@@ -76,12 +71,12 @@ public final class ToOneForeignKey {
     private Object assembleRecordHolder(Class<?> recordType, List<Object> decodedValues) {
         java.util.Map<String, Object> values = new java.util.HashMap<>();
         for (int i = 0; i < columns.size(); i++) {
-            List<java.lang.reflect.Field> path = columns.get(i).referencedPath();
-            if (path.size() != 2 || path.get(0).getType() != recordType) {
+            List<PersistentAttributeAccess> path = columns.get(i).referencedPath();
+            if (path.size() != 2 || path.get(0).javaType() != recordType) {
                 throw new IllegalStateException("Composite foreign-key record id paths are inconsistent for "
                         + targetType.getName());
             }
-            values.put(path.get(1).getName(), decodedValues.get(i));
+            values.put(path.get(1).name(), decodedValues.get(i));
         }
         java.lang.reflect.RecordComponent[] components = recordType.getRecordComponents();
         Object[] arguments = new Object[components.length];

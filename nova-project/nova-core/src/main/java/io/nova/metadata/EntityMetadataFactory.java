@@ -2299,9 +2299,15 @@ public final class EntityMetadataFactory {
             JoinColumn join = attribute.annotation(JoinColumn.class);
             Class<?> target = manyToOne.targetEntity() == void.class ? attribute.javaType() : manyToOne.targetEntity();
             ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
+            ToOneForeignKey compositeForeignKey = storage == null
+                    ? resolveCompositeToOneForeignKey(attribute.declaringType(), target, attribute) : null;
+            String columnName = compositeForeignKey != null
+                    ? compositeForeignKey.columns().get(0).columnName()
+                    : join != null && !join.name().isBlank()
+                            ? join.name()
+                            : namingStrategy.columnName(attribute.name() + "_id");
             return new PersistentProperty(attribute.field(), attribute.name(),
-                    join != null && !join.name().isBlank() ? join.name()
-                            : namingStrategy.columnName(attribute.name() + "_id"),
+                    columnName,
                     storage == null ? Long.class : storage.javaType(), false, false,
                     manyToOne.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.length(),
                     0, 0, null, "", storage == null ? null : storage.converter(), false, false, false,
@@ -2310,10 +2316,10 @@ public final class EntityMetadataFactory {
                     join == null || join.insertable(), join == null || join.updatable(), join != null && join.unique(),
                     join == null ? "" : join.columnDefinition(), false,
                     storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
-                    false, "", attribute.accessType() == AccessType.PROPERTY,
+                    attribute.accessType() == AccessType.PROPERTY,
                     attribute.getter(), attribute.setter(),
                     manyToOne.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(manyToOne.cascade())),
-                    "", null);
+                    "", compositeForeignKey);
         }
         Column column = attribute.annotation(Column.class);
         GeneratedValue generated = attribute.annotation(GeneratedValue.class);
@@ -2524,9 +2530,15 @@ public final class EntityMetadataFactory {
         }
         JoinColumn join = attribute.annotation(JoinColumn.class);
         ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
+        ToOneForeignKey compositeForeignKey = storage == null
+                ? resolveCompositeToOneForeignKey(entityType, target, attribute) : null;
+        String columnName = compositeForeignKey != null
+                ? compositeForeignKey.columns().get(0).columnName()
+                : join != null && !join.name().isBlank()
+                        ? join.name()
+                        : namingStrategy.columnName(attribute.name() + "_id");
         return new PersistentProperty(attribute.field(), attribute.name(),
-                join != null && !join.name().isBlank() ? join.name()
-                        : namingStrategy.columnName(attribute.name() + "_id"),
+                columnName,
                 storage == null ? Long.class : storage.javaType(), false, false,
                 annotation.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.length(),
                 0, 0, null, "", storage == null ? null : storage.converter(), false, false, false,
@@ -2535,10 +2547,10 @@ public final class EntityMetadataFactory {
                 join == null || join.insertable(), join == null || join.updatable(), oneToOne || (join != null && join.unique()),
                 join == null ? "" : join.columnDefinition(), false,
                 storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
-                false, "", attribute.accessType() == AccessType.PROPERTY,
+                attribute.accessType() == AccessType.PROPERTY,
                 attribute.getter(), attribute.setter(),
                 annotation.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(annotation.cascade())),
-                "", null);
+                "", compositeForeignKey);
     }
 
     private PersistentProperty createDescriptorCollectionMarker(PersistentAttributeAccess attribute) {
@@ -3828,25 +3840,18 @@ public final class EntityMetadataFactory {
         }
         String value = mapsId.value();
         // 파생 대상 @Id 구조 파악: top-level @Id 필드들과 @EmbeddedId holder를 수집한다.
-        List<Field> idFields = new ArrayList<>();
-        Field embeddedIdField = null;
-        for (Field candidate : mappedFields(entityType)) {
-            if (isNotPersistable(candidate)) {
-                continue;
-            }
-            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                embeddedIdField = candidate;
-            }
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idFields.add(candidate);
-            }
-        }
-        boolean composite = embeddedIdField != null
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(entityType);
+        PersistentAttributeAccess embeddedId = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(EmbeddedId.class))
+                .findFirst().orElse(null);
+        List<PersistentAttributeAccess> idFields = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
+        boolean composite = embeddedId != null
                 || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class)
                 || idFields.size() > 1;
-        if (embeddedIdField != null && embeddedIdField.getType().isRecord()) {
+        if (embeddedId != null && embeddedId.javaType().isRecord()) {
             throw new IllegalArgumentException(entityType.getName() + "." + field.getName()
-                    + " uses @MapsId with record @EmbeddedId " + embeddedIdField.getType().getName()
+                    + " uses @MapsId with record @EmbeddedId " + embeddedId.javaType().getName()
                     + "; immutable record identifiers cannot be derived by mutation");
         }
         if (value != null && !value.isBlank()) {
@@ -3857,13 +3862,13 @@ public final class EntityMetadataFactory {
                                 + " @MapsId(\"" + value + "\") names an id component but the entity does not declare a"
                                 + " composite @Id (@EmbeddedId/@IdClass); use a simple @MapsId to derive the single @Id");
             }
-            if (!compositeIdComponentExists(embeddedIdField, idFields, value)) {
+            if (!compositeIdComponentExists(embeddedId, idFields, value)) {
                 throw new IllegalArgumentException(
                         entityType.getName() + "." + field.getName()
                                 + " @MapsId(\"" + value + "\") does not match any component of the composite @Id of "
                                 + entityType.getName());
             }
-            if (compositeIdComponentGenerated(embeddedIdField, idFields, value)) {
+            if (compositeIdComponentGenerated(embeddedId, idFields, value)) {
                 throw new IllegalArgumentException(
                         entityType.getName() + "." + field.getName()
                                 + " @MapsId(\"" + value + "\") cannot be combined with @GeneratedValue on the id"
@@ -3912,36 +3917,28 @@ public final class EntityMetadataFactory {
         if (type.isAnnotationPresent(jakarta.persistence.IdClass.class)) {
             return true;
         }
-        int idCount = 0;
-        for (Field candidate : mappedFields(type)) {
-            if (isNotPersistable(candidate)) {
-                continue;
-            }
-            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                return true;
-            }
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idCount++;
-            }
-        }
-        return idCount > 1;
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(type);
+        return identifiers.stream().anyMatch(attribute -> attribute.isAnnotationPresent(EmbeddedId.class))
+                || identifiers.stream().filter(attribute -> attribute.isAnnotationPresent(Id.class)).count() > 1;
     }
 
     /**
      * 복합 {@code @Id}에 {@code name} 컴포넌트가 존재하는지 검사한다. {@code @EmbeddedId}는 {@code @Embeddable}의
      * leaf 필드 이름을, {@code @IdClass}(또는 top-level 다중 {@code @Id})는 top-level {@code @Id} 필드 이름을 본다.
      */
-    private static boolean compositeIdComponentExists(Field embeddedIdField, List<Field> idFields, String name) {
-        if (embeddedIdField != null) {
-            for (Field sub : embeddedIdField.getType().getDeclaredFields()) {
-                if (!isNotPersistable(sub) && sub.getName().equals(name)) {
+    private static boolean compositeIdComponentExists(
+            PersistentAttributeAccess embeddedId, List<PersistentAttributeAccess> idFields, String name) {
+        if (embeddedId != null) {
+            for (PersistentAttributeAccess component
+                    : embeddedComponentAttributes(embeddedId.javaType(), embeddedId.accessType())) {
+                if (component.name().equals(name)) {
                     return true;
                 }
             }
             return false;
         }
-        for (Field idField : idFields) {
-            if (idField.getName().equals(name)) {
+        for (PersistentAttributeAccess idField : idFields) {
+            if (idField.name().equals(name)) {
                 return true;
             }
         }
@@ -3951,17 +3948,19 @@ public final class EntityMetadataFactory {
     /**
      * 복합 {@code @Id}의 {@code name} 컴포넌트가 {@code @GeneratedValue}로 표시되어 있으면 {@code true}.
      */
-    private static boolean compositeIdComponentGenerated(Field embeddedIdField, List<Field> idFields, String name) {
-        if (embeddedIdField != null) {
-            for (Field sub : embeddedIdField.getType().getDeclaredFields()) {
-                if (sub.getName().equals(name)) {
-                    return sub.isAnnotationPresent(GeneratedValue.class);
+    private static boolean compositeIdComponentGenerated(
+            PersistentAttributeAccess embeddedId, List<PersistentAttributeAccess> idFields, String name) {
+        if (embeddedId != null) {
+            for (PersistentAttributeAccess component
+                    : embeddedComponentAttributes(embeddedId.javaType(), embeddedId.accessType())) {
+                if (component.name().equals(name)) {
+                    return component.isAnnotationPresent(GeneratedValue.class);
                 }
             }
             return false;
         }
-        for (Field idField : idFields) {
-            if (idField.getName().equals(name)) {
+        for (PersistentAttributeAccess idField : idFields) {
+            if (idField.name().equals(name)) {
                 return idField.isAnnotationPresent(GeneratedValue.class);
             }
         }
@@ -4012,18 +4011,32 @@ public final class EntityMetadataFactory {
      * 아니면(복합키 {@code @EmbeddedId}/{@code @IdClass}) {@code null}로 떨어져 {@code Long} 폴백을 유지한다.
      */
     private static ForeignKeyStorage resolveToOneForeignKeyStorage(Class<?> targetType) {
-        List<PersistentAttributeAccess> ids = new PersistentAccessResolver().resolve(targetType).attributes().stream()
+        List<PersistentAttributeAccess> ids = selectedIdentifierAttributes(targetType).stream()
                 .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
         if (ids.size() != 1) {
             return null;
         }
-        PersistentAttributeAccess id = ids.get(0);
-        if (id.field() != null) {
-            return resolveScalarFieldStorage(targetType, id.field());
-        }
+        return resolveScalarStorage(ids.get(0));
+    }
+
+    private static List<PersistentAttributeAccess> selectedIdentifierAttributes(Class<?> type) {
+        return new PersistentAccessResolver().resolve(type).attributes().stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)
+                        || attribute.isAnnotationPresent(EmbeddedId.class))
+                .toList();
+    }
+
+    private static ForeignKeyStorage resolveScalarStorage(PersistentAttributeAccess id) {
         Class<?> domainType = wrapPrimitiveType(id.javaType());
         Column column = id.annotation(Column.class);
         int length = column == null ? 255 : column.length();
+        Convert convert = id.annotation(Convert.class);
+        if (convert != null && !convert.disableConversion()) {
+            Class<?>[] attributeAndColumn = resolveJpaConverterTypeArguments(convert.converter());
+            AttributeConverter<Object, Object> converter =
+                    new JpaAttributeConverterAdapter<>(instantiateJpaConverter(convert.converter()));
+            return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1], length);
+        }
         Enumerated enumerated = id.annotation(Enumerated.class);
         if (enumerated != null || id.javaType().isEnum()) {
             EnumType enumType = enumerated == null ? inferredEnumType(id.javaType()) : enumerated.value();
@@ -4043,31 +4056,6 @@ public final class EntityMetadataFactory {
      * {@code owner}는 {@code @Convert} 제네릭 인자 해석에 쓰이는 필드 선언 타입(단일키는 target 엔티티,
      * {@code @EmbeddedId} 컴포넌트는 {@code @Embeddable} 타입)이다.
      */
-    private static ForeignKeyStorage resolveScalarFieldStorage(Class<?> owner, Field idField) {
-        Class<?> domainType = wrapPrimitiveType(idField.getType());
-        Column column = idField.getAnnotation(Column.class);
-        int length = column != null ? column.length() : 255;
-        Convert convert = idField.getAnnotation(Convert.class);
-        if (convert != null && !convert.disableConversion()) {
-            Class<?>[] attributeAndColumn =
-                    resolveJpaConverterTypeArguments(owner, idField, convert.converter());
-            AttributeConverter<Object, Object> converter =
-                    new JpaAttributeConverterAdapter<>(instantiateJpaConverter(convert.converter()));
-            return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1], length);
-        }
-        Enumerated enumerated = idField.getAnnotation(Enumerated.class);
-        if (enumerated != null || idField.getType().isEnum()) {
-            EnumType enumType = enumerated != null ? enumerated.value() : inferredEnumType(idField.getType());
-            EnumMapping mapping = resolveEnumMapping(idField.getType(), enumType);
-            Class<?> converterColumnType = mapping.customColumnType() != null ? mapping.customColumnType()
-                    : enumType == EnumType.STRING ? String.class : Integer.class;
-            return new ForeignKeyStorage(domainType, mapping.converter(), converterColumnType, length);
-        }
-        ElementValueMapping basic = resolveBasicStorageMapping(domainType);
-        return new ForeignKeyStorage(domainType, basic.converter(),
-                basic.converter() == null ? null : basic.columnType(), length);
-    }
-
     /**
      * to-one FK property의 저장 표현 해석 결과. {@code javaType}은 참조 {@code @Id}의 도메인 타입,
      * {@code converter}/{@code converterColumnType}은 저장 표현(널이면 도메인 타입을 그대로 저장), {@code length}는
@@ -4083,7 +4071,7 @@ public final class EntityMetadataFactory {
      */
     private record ReferencedIdComponent(String referencedColumnName, Class<?> domainType,
             AttributeConverter<Object, Object> converter, Class<?> converterColumnType, int length,
-            List<Field> referencedPath) {
+            List<PersistentAttributeAccess> referencedPath) {
     }
 
     /**
@@ -4096,14 +4084,15 @@ public final class EntityMetadataFactory {
      * {@code referencedColumnName} 지정 시 참조 컬럼명 매칭, 전부 미지정 시 위치 매칭), 없으면 기본
      * {@code <property>_<referencedColumn>} 규칙으로 만든다.
      */
-    private ToOneForeignKey resolveCompositeToOneForeignKey(Class<?> entityType, Class<?> targetType, Field field) {
+    private ToOneForeignKey resolveCompositeToOneForeignKey(
+            Class<?> entityType, Class<?> targetType, PersistentAttributeAccess attribute) {
         List<ReferencedIdComponent> components = resolveReferencedIdComponents(targetType);
         if (components == null || components.size() < 2) {
             return null;
         }
-        JoinColumn[] perComponent = alignJoinColumns(entityType, field, components);
-        ManyToOne manyToOne = memberAnnotation(field, ManyToOne.class);
-        OneToOne oneToOne = memberAnnotation(field, OneToOne.class);
+        JoinColumn[] perComponent = alignJoinColumns(entityType, attribute, components);
+        ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
+        OneToOne oneToOne = attribute.annotation(OneToOne.class);
         boolean relationOptional = manyToOne != null ? manyToOne.optional() : (oneToOne == null || oneToOne.optional());
         List<ToOneForeignKeyColumn> fkColumns = new ArrayList<>(components.size());
         for (int i = 0; i < components.size(); i++) {
@@ -4111,7 +4100,7 @@ public final class EntityMetadataFactory {
             JoinColumn joinColumn = perComponent[i];
             String fkColumnName = joinColumn != null && !joinColumn.name().isBlank()
                     ? joinColumn.name()
-                    : namingStrategy.columnName(field.getName() + "_" + component.referencedColumnName());
+                    : namingStrategy.columnName(attribute.name() + "_" + component.referencedColumnName());
             boolean nullable = relationOptional && (joinColumn == null || joinColumn.nullable());
             Class<?> columnType = component.converterColumnType() != null
                     ? component.converterColumnType() : component.domainType();
@@ -4136,50 +4125,42 @@ public final class EntityMetadataFactory {
      * embedded 컴포넌트 등 미지원이면 {@code null}.
      */
     private List<ReferencedIdComponent> resolveReferencedIdComponents(Class<?> targetType) {
-        Field embeddedIdField = null;
-        List<Field> topLevelIds = new ArrayList<>();
-        for (Field field : mappedFields(targetType)) {
-            if (isNotPersistable(field)) {
-                continue;
-            }
-            if (memberPresent(field, EmbeddedId.class)) {
-                embeddedIdField = field;
-            } else if (memberPresent(field, Id.class)) {
-                topLevelIds.add(field);
-            }
-        }
-        if (embeddedIdField != null) {
-            Class<?> embeddableType = embeddedIdField.getType();
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(targetType);
+        PersistentAttributeAccess embeddedId = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(EmbeddedId.class))
+                .findFirst().orElse(null);
+        List<PersistentAttributeAccess> topLevelIds = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
+        if (embeddedId != null) {
+            Class<?> embeddableType = embeddedId.javaType();
             if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
                 return null;
             }
             Map<String, String> columnOverrides = new java.util.HashMap<>();
-            for (AttributeOverride override : embeddedIdField.getAnnotationsByType(AttributeOverride.class)) {
+            for (AttributeOverride override : embeddedId.annotationsByType(AttributeOverride.class)) {
                 columnOverrides.put(override.name(), override.column().name());
             }
             List<ReferencedIdComponent> result = new ArrayList<>();
-            for (Field subField : embeddableType.getDeclaredFields()) {
-                if (isNotPersistable(subField)) {
-                    continue;
-                }
-                if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
+            for (PersistentAttributeAccess component
+                    : embeddedComponentAttributes(embeddableType, embeddedId.accessType())) {
+                if (component.isAnnotationPresent(Embedded.class) || component.isAnnotationPresent(EmbeddedId.class)) {
                     // nested embedded @EmbeddedId 컴포넌트는 미지원 — 조용한 오매핑 대신 확장하지 않는다.
                     return null;
                 }
-                String override = columnOverrides.get(subField.getName());
-                String columnName = override != null && !override.isBlank() ? override : columnNameOf(subField);
-                ForeignKeyStorage storage = resolveScalarFieldStorage(embeddableType, subField);
+                String override = columnOverrides.get(component.name());
+                String columnName = override != null && !override.isBlank() ? override : columnNameOf(component);
+                ForeignKeyStorage storage = resolveScalarStorage(component);
                 result.add(new ReferencedIdComponent(columnName, storage.javaType(), storage.converter(),
-                        storage.converterColumnType(), storage.length(), List.of(embeddedIdField, subField)));
+                        storage.converterColumnType(), storage.length(), List.of(embeddedId, component)));
             }
             return result.isEmpty() ? null : result;
         }
         if (topLevelIds.size() >= 2) {
             List<ReferencedIdComponent> result = new ArrayList<>(topLevelIds.size());
-            for (Field idField : topLevelIds) {
-                ForeignKeyStorage storage = resolveScalarFieldStorage(targetType, idField);
-                result.add(new ReferencedIdComponent(columnNameOf(idField), storage.javaType(), storage.converter(),
-                        storage.converterColumnType(), storage.length(), List.of(idField)));
+            for (PersistentAttributeAccess id : topLevelIds) {
+                ForeignKeyStorage storage = resolveScalarStorage(id);
+                result.add(new ReferencedIdComponent(columnNameOf(id), storage.javaType(), storage.converter(),
+                        storage.converterColumnType(), storage.length(), List.of(id)));
             }
             return result;
         }
@@ -4190,11 +4171,11 @@ public final class EntityMetadataFactory {
      * 스칼라 {@code @Id}/{@code @EmbeddedId} 컴포넌트 필드의 컬럼명을 해석한다({@code createProperty}와 동일 규칙:
      * {@code @Column(name)}이 있으면 그 이름, 없으면 naming strategy).
      */
-    private String columnNameOf(Field field) {
-        Column column = memberAnnotation(field, Column.class);
+    private String columnNameOf(PersistentAttributeAccess attribute) {
+        Column column = attribute.annotation(Column.class);
         return column != null && !column.name().isBlank()
                 ? column.name()
-                : namingStrategy.columnName(field.getName());
+                : namingStrategy.columnName(attribute.name());
     }
 
     /**
@@ -4202,20 +4183,21 @@ public final class EntityMetadataFactory {
      * join 컬럼이 없으면 전부 {@code null}(기본 이름 규칙 사용), 있으면 개수가 컴포넌트 수와 일치해야 하며
      * {@code referencedColumnName}은 전부 지정(참조명 매칭)하거나 전부 생략(위치 매칭)해야 한다. 위반 시 fail-fast.
      */
-    private JoinColumn[] alignJoinColumns(Class<?> entityType, Field field, List<ReferencedIdComponent> components) {
+    private JoinColumn[] alignJoinColumns(
+            Class<?> entityType, PersistentAttributeAccess attribute, List<ReferencedIdComponent> components) {
         JoinColumn[] result = new JoinColumn[components.size()];
         JoinColumn[] declared;
-        JoinColumns container = memberAnnotation(field, JoinColumns.class);
+        JoinColumns container = attribute.annotation(JoinColumns.class);
         if (container != null) {
             declared = container.value();
         } else {
-            JoinColumn single = memberAnnotation(field, JoinColumn.class);
+            JoinColumn single = attribute.annotation(JoinColumn.class);
             declared = single != null ? new JoinColumn[] {single} : new JoinColumn[0];
         }
         if (declared.length == 0) {
             return result;
         }
-        String location = entityType.getName() + "." + field.getName();
+        String location = entityType.getName() + "." + attribute.name();
         if (declared.length != components.size()) {
             throw new IllegalArgumentException(location + " references composite-key entity with "
                     + components.size() + " id columns but declares " + declared.length
@@ -4386,7 +4368,7 @@ public final class EntityMetadataFactory {
         // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
         // 기존 단일 FK 경로를 byte-identical하게 유지한다.
         ToOneForeignKey compositeForeignKey = fkStorage == null
-                ? resolveCompositeToOneForeignKey(entityType, targetType, field) : null;
+                ? resolveCompositeToOneForeignKey(entityType, targetType, selectedAttribute(field)) : null;
         if (compositeForeignKey != null) {
             columnName = compositeForeignKey.columns().get(0).columnName();
         }
@@ -4556,7 +4538,7 @@ public final class EntityMetadataFactory {
         // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
         // 기존 단일 FK 경로를 byte-identical하게 유지한다.
         ToOneForeignKey compositeForeignKey = fkStorage == null
-                ? resolveCompositeToOneForeignKey(entityType, targetType, field) : null;
+                ? resolveCompositeToOneForeignKey(entityType, targetType, selectedAttribute(field)) : null;
         if (compositeForeignKey != null) {
             columnName = compositeForeignKey.columns().get(0).columnName();
         }
@@ -4828,19 +4810,10 @@ public final class EntityMetadataFactory {
      * {@code @EmbeddedId}처럼 미지원 복합키면 fail-fast로 거부한다(조용한 오매핑 방지).
      */
     private List<String> resolveManyToManyReferencedColumns(Class<?> type, String location) {
-        List<Field> idFields = new ArrayList<>();
-        boolean hasEmbeddedId = false;
-        for (Field candidate : mappedFields(type)) {
-            if (isNotPersistable(candidate)) {
-                continue;
-            }
-            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                hasEmbeddedId = true;
-            }
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idFields.add(candidate);
-            }
-        }
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(type);
+        boolean hasEmbeddedId = identifiers.stream().anyMatch(attribute -> attribute.isAnnotationPresent(EmbeddedId.class));
+        List<PersistentAttributeAccess> idFields = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
         if (hasEmbeddedId || idFields.size() >= 2) {
             List<ReferencedIdComponent> components = resolveReferencedIdComponents(type);
             if (components == null) {
@@ -4950,29 +4923,16 @@ public final class EntityMetadataFactory {
      * fail-fast로 거부한다.
      */
     private String resolveSingleIdColumn(Class<?> type, String location) {
-        List<Field> idFields = new ArrayList<>();
-        boolean hasEmbeddedId = false;
-        for (Field candidate : mappedFields(type)) {
-            if (isNotPersistable(candidate)) {
-                continue;
-            }
-            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                hasEmbeddedId = true;
-            }
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idFields.add(candidate);
-            }
-        }
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(type);
+        boolean hasEmbeddedId = identifiers.stream().anyMatch(attribute -> attribute.isAnnotationPresent(EmbeddedId.class));
+        List<PersistentAttributeAccess> idFields = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
         if (hasEmbeddedId || idFields.size() != 1) {
             throw new IllegalArgumentException(
                     location + " @ManyToMany with composite-keyed entity " + type.getName()
                             + " is not supported");
         }
-        Field idField = idFields.get(0);
-        Column column = idField.getAnnotation(Column.class);
-        return column != null && !column.name().isBlank()
-                ? column.name()
-                : namingStrategy.columnName(idField.getName());
+        return columnNameOf(idFields.get(0));
     }
 
     private String resolveTableName(Class<?> type) {
