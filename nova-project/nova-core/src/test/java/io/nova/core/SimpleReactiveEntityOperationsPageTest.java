@@ -220,7 +220,7 @@ class SimpleReactiveEntityOperationsPageTest {
         return new MapRowAccessor(new HashMap<>(values));
     }
 
-    private static SimpleReactiveEntityOperations newOperations(PageCapturingExecutor executor) {
+    private static SimpleReactiveEntityOperations newOperations(SqlExecutor executor) {
         return new SimpleReactiveEntityOperations(
                 new EntityMetadataFactory(new DefaultNamingStrategy()),
                 new TestDialect(),

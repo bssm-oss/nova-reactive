@@ -91,6 +91,7 @@ class PageQueryIntegrationTest {
 
         StepVerifier.create(support.operations().save(first)
                         .then(support.operations().save(second)))
+                .expectNextCount(1)
                 .verifyComplete();
 
         QuerySpec activeOnly = QuerySpec.empty().where(Criteria.eq("active", true));
