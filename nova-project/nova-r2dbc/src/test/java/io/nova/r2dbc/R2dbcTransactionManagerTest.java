@@ -536,6 +536,49 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
+    void createSavepointFailureSkipsSavepointCleanupAndRollsBackOuterTransaction() {
+        List<String> calls = new java.util.concurrent.CopyOnWriteArrayList<>();
+        IllegalStateException createFailure = new IllegalStateException("create failed");
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit", "beginTransaction" -> Mono.empty();
+                    case "createSavepoint" -> {
+                        calls.add("create");
+                        yield Mono.error(createFailure);
+                    }
+                    case "rollbackTransactionToSavepoint" -> {
+                        calls.add("rollback-savepoint");
+                        yield Mono.empty();
+                    }
+                    case "releaseSavepoint" -> {
+                        calls.add("release");
+                        yield Mono.empty();
+                    }
+                    case "rollbackTransaction" -> {
+                        calls.add("rollback");
+                        yield Mono.empty();
+                    }
+                    case "close" -> {
+                        calls.add("close");
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                inner -> Mono.never())))
+                .expectErrorSatisfies(error -> assertSame(createFailure, error))
+                .verify();
+
+        assertEquals(List.of("create", "rollback", "close"), calls);
+    }
+
+    @Test
     void rollsBackAndClosesWhenTransactionCallbackThrowsSynchronously() {
         AtomicInteger rollbackCalls = new AtomicInteger();
         AtomicInteger closeCalls = new AtomicInteger();
