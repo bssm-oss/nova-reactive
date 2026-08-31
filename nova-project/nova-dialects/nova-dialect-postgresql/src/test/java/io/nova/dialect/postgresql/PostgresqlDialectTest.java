@@ -307,6 +307,32 @@ class PostgresqlDialectTest {
         assertTrue(ddl.contains("\"long_ref\" bigint"), ddl);
     }
 
+    @Test
+    void rendersBigDecimalColumnsUsingPostgresqlNumericPolicy() {
+        EntityMetadata<BigDecimalHolder> holder = new EntityMetadataFactory(new DefaultNamingStrategy())
+                .getEntityMetadata(BigDecimalHolder.class);
+
+        assertEquals(
+                "create table \"postgresql_decimal_holder\" (\"id\" bigint primary key, "
+                        + "\"fractional\" numeric(12, 4), \"whole\" numeric(12, 0), "
+                        + "\"maximum_precision\" numeric(1000, 999), \"unrestricted\" numeric)",
+                dialect.schemaGenerator().createTable(holder));
+    }
+
+    @Test
+    void rejectsPostgresqlNumericFormsUnsupportedBeforeVersion15() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleWithoutPrecision.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(PrecisionAboveMaximum.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleAbovePrecision.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(NegativeScale.class)));
+    }
+
     @jakarta.persistence.Entity
     @jakarta.persistence.Table(name = "fk_uuid_parent")
     static class FkUuidParent {
@@ -355,6 +381,60 @@ class PostgresqlDialectTest {
         java.util.UUID uid;
         Float ratio;
         Short level;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "postgresql_decimal_holder")
+    static class BigDecimalHolder {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.Column(precision = 12, scale = 4)
+        java.math.BigDecimal fractional;
+
+        @jakarta.persistence.Column(precision = 12)
+        java.math.BigDecimal whole;
+
+        @jakarta.persistence.Column(precision = 1000, scale = 999)
+        java.math.BigDecimal maximumPrecision;
+
+        java.math.BigDecimal unrestricted;
+    }
+
+    @jakarta.persistence.Entity
+    static class ScaleWithoutPrecision {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.Column(scale = 2)
+        java.math.BigDecimal value;
+    }
+
+    @jakarta.persistence.Entity
+    static class PrecisionAboveMaximum {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.Column(precision = 1001)
+        java.math.BigDecimal value;
+    }
+
+    @jakarta.persistence.Entity
+    static class ScaleAbovePrecision {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.Column(precision = 4, scale = 5)
+        java.math.BigDecimal value;
+    }
+
+    @jakarta.persistence.Entity
+    static class NegativeScale {
+        @jakarta.persistence.Id
+        Long id;
+
+        @jakarta.persistence.Column(precision = 4, scale = -1)
+        java.math.BigDecimal value;
     }
 
     enum Hue { RED, GREEN, BLUE }

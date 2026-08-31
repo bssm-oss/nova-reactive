@@ -161,5 +161,31 @@ public final class PostgresqlDialect implements Dialect {
                 default -> super.identityColumn(property);
             };
         }
+
+        @Override
+        protected String sqlType(PersistentProperty property) {
+            if (property.columnType() != java.math.BigDecimal.class) {
+                return super.sqlType(property);
+            }
+
+            int precision = property.precision();
+            int scale = property.scale();
+            if (precision == 0) {
+                if (scale != 0) {
+                    throw new IllegalArgumentException("@Column.scale=" + scale + " on " + property.propertyName()
+                            + " requires a positive precision for PostgreSQL numeric");
+                }
+                return "numeric";
+            }
+            if (precision < 1 || precision > 1000) {
+                throw new IllegalArgumentException("@Column.precision=" + precision + " on " + property.propertyName()
+                        + " must be between 1 and 1000 for PostgreSQL numeric");
+            }
+            if (scale < 0 || scale > precision) {
+                throw new IllegalArgumentException("@Column.scale=" + scale + " on " + property.propertyName()
+                        + " must be between 0 and precision for PostgreSQL numeric");
+            }
+            return "numeric(" + precision + ", " + scale + ")";
+        }
     }
 }
