@@ -89,6 +89,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SimpleReactiveEntityOperationsTest {
     private static final List<String> ORDERED_REMOVAL_TRACE = new ArrayList<>();
     private static final List<String> ONE_TO_ONE_REMOVAL_TRACE = new ArrayList<>();
+    private static final RowAccessor NO_QUERY_ROW = new MapRowAccessor(Map.of());
 
     @Test
     void saveUsesInsertWithGeneratedKeyForNewIdentityEntity() {
@@ -3136,7 +3137,7 @@ class SimpleReactiveEntityOperationsTest {
         ONE_TO_ONE_REMOVAL_TRACE.clear();
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "target_id", 10L)));
-        executor.queryOneResults.addLast(new MapRowAccessor(Map.of()));
+        executor.queryOneResults.addLast(NO_QUERY_ROW);
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 10L)));
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, null);
@@ -3405,7 +3406,10 @@ class SimpleReactiveEntityOperationsTest {
             if (emptyQueryOne) {
                 return Mono.empty();
             }
-            return Mono.fromSupplier(() -> mapper.apply(queryOneResults.removeFirst()));
+            return Mono.defer(() -> {
+                RowAccessor row = queryOneResults.removeFirst();
+                return row == NO_QUERY_ROW ? Mono.empty() : Mono.justOrEmpty(mapper.apply(row));
+            });
         }
 
         @Override
