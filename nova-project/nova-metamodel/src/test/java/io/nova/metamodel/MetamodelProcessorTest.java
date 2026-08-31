@@ -275,9 +275,210 @@ class MetamodelProcessorTest {
                 () -> "static serialVersionUID should be skipped in:\n" + generated);
     }
 
+    @Test
+    @DisplayName("PROPERTY 엔티티는 getter의 논리 이름만 metamodel에 발행한다")
+    void emitsGetterOnlyPropertyNames() {
+        Source source = new Source(
+                "fixtures.PropertyAuthor",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Column;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                import jakarta.persistence.Transient;
+
+                @Entity
+                @Access(AccessType.PROPERTY)
+                public class PropertyAuthor {
+                    private Long key;
+                    private String backingEmail;
+
+                    @Id
+                    public Long getId() { return key; }
+                    public void setId(Long id) { key = id; }
+
+                    @Column(name = "email")
+                    public String getEmail() { return backingEmail; }
+                    public void setEmail(String email) { backingEmail = email; }
+
+                    @Transient
+                    public String getComputed() { return backingEmail + "!"; }
+                }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(source);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.PropertyAuthor_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String id = \"id\";"));
+        assertTrue(generated.contains("public static final String email = \"email\";"));
+        assertFalse(generated.contains("key"));
+        assertFalse(generated.contains("backingEmail"));
+        assertFalse(generated.contains("computed"));
+    }
+
+    @Test
+    @DisplayName("상속된 PROPERTY getter와 member-level PROPERTY override는 논리 이름으로 발행된다")
+    void emitsInheritedAndMemberPropertyAccessNames() {
+        Source base = new Source(
+                "fixtures.PropertyBase",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Id;
+                import jakarta.persistence.MappedSuperclass;
+
+                @MappedSuperclass
+                @Access(AccessType.PROPERTY)
+                public class PropertyBase {
+                    private Long key;
+                    @Id public Long getId() { return key; }
+                    public void setId(Long id) { key = id; }
+                }
+                """);
+        Source entity = new Source(
+                "fixtures.InheritedPropertyEntity",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Column;
+                import jakarta.persistence.Entity;
+
+                @Entity
+                public class InheritedPropertyEntity extends PropertyBase {
+                    private String storage;
+                    @Access(AccessType.PROPERTY)
+                    @Column(name = "label")
+                    public String getLabel() { return storage; }
+                    public void setLabel(String label) { storage = label; }
+                }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(base, entity);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.InheritedPropertyEntity_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String id = \"id\";"));
+        assertTrue(generated.contains("public static final String label = \"label\";"));
+        assertFalse(generated.contains("storage"));
+    }
+
+    @Test
+    @DisplayName("PROPERTY @EmbeddedId record의 leaf는 getter 논리 경로로 평탄화된다")
+    void flattensPropertyEmbeddedIdRecordLeaves() {
+        Source entity = new Source(
+                "fixtures.PropertyOrder",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.EmbeddedId;
+                import jakarta.persistence.Entity;
+
+                @Entity
+                @Access(AccessType.PROPERTY)
+                public class PropertyOrder {
+                    private OrderKey key;
+
+                    @EmbeddedId
+                    public OrderKey getId() { return key; }
+                    public void setId(OrderKey id) { key = id; }
+                }
+                """);
+        Source key = new Source(
+                "fixtures.OrderKey",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Embeddable;
+
+                @Embeddable
+                public record OrderKey(String tenant, long number) {
+                }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(entity, key);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.PropertyOrder_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String id_tenant = \"id.tenant\";"),
+                () -> "missing EmbeddedId tenant leaf in:\n" + generated);
+        assertTrue(generated.contains("public static final String id_number = \"id.number\";"),
+                () -> "missing EmbeddedId number leaf in:\n" + generated);
+    }
+
     @Nested
     @DisplayName("오류 경로")
     class ErrorCases {
+
+        @Test
+        @DisplayName("PROPERTY getter에 setter가 없으면 ERROR diagnostic이 보고된다")
+        void rejectsPropertyWithoutSetter() {
+            Source source = new Source(
+                    "fixtures.ReadOnlyProperty",
+                    """
+                    package fixtures;
+
+                    import jakarta.persistence.Access;
+                    import jakarta.persistence.AccessType;
+                    import jakarta.persistence.Entity;
+                    import jakarta.persistence.Id;
+
+                    @Entity
+                    @Access(AccessType.PROPERTY)
+                    public class ReadOnlyProperty {
+                        @Id
+                        public Long getId() { return 1L; }
+                    }
+                    """);
+
+            Compilation compilation = ProcessorRunner.compile(source);
+
+            assertFalse(compilation.success(), "a writable PROPERTY identifier requires a setter");
+            Diagnostic<? extends JavaFileObject> error = compilation.firstError();
+            assertNotNull(error);
+            assertTrue(error.getMessage(null).contains("setter"),
+                    () -> "expected missing-setter diagnostic, got: " + error.getMessage(null));
+        }
+
+        @Test
+        @DisplayName("field와 getter에 식별자를 혼합하면 ERROR diagnostic이 보고된다")
+        void rejectsMixedIdentifierAccess() {
+            Source source = new Source(
+                    "fixtures.MixedIdentifier",
+                    """
+                    package fixtures;
+
+                    import jakarta.persistence.Entity;
+                    import jakarta.persistence.Id;
+
+                    @Entity
+                    public class MixedIdentifier {
+                        @Id private Long fieldId;
+                        @Id public Long getId() { return fieldId; }
+                        public void setId(Long id) { fieldId = id; }
+                    }
+                    """);
+
+            Compilation compilation = ProcessorRunner.compile(source);
+
+            assertFalse(compilation.success(), "identifier mapping cannot mix field and property access");
+            Diagnostic<? extends JavaFileObject> error = compilation.firstError();
+            assertNotNull(error);
+            assertTrue(error.getMessage(null).contains("mixed"),
+                    () -> "expected mixed-access diagnostic, got: " + error.getMessage(null));
+        }
 
         @Test
         @DisplayName("flatten 후 safe identifier가 충돌하면 ERROR diagnostic이 보고된다")
