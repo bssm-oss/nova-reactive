@@ -6,6 +6,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.ConstraintMode;
 import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.CheckConstraintDefinition;
+import io.nova.metadata.ColumnStorage;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.ForeignKeyDefinition;
 import io.nova.metadata.IndexDefinition;
@@ -63,12 +64,12 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         List<String> pkColumns = new ArrayList<>();
         for (JoinTableDefinition.ForeignKeyColumn column : definition.ownerForeignKeyColumns()) {
             columns.add(dialect.quote(column.columnName()) + " "
-                    + foreignKeyColumnType(column.columnType(), column.length()) + " not null");
+                    + foreignKeyColumnType(column.storage()) + " not null");
             pkColumns.add(dialect.quote(column.columnName()));
         }
         for (JoinTableDefinition.ForeignKeyColumn column : definition.targetForeignKeyColumns()) {
             columns.add(dialect.quote(column.columnName()) + " "
-                    + foreignKeyColumnType(column.columnType(), column.length()) + " not null");
+                    + foreignKeyColumnType(column.storage()) + " not null");
             pkColumns.add(dialect.quote(column.columnName()));
         }
         columns.add("primary key (" + String.join(", ", pkColumns) + ")");
@@ -81,7 +82,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         // owner FK는 not null, value 컬럼(들)은 nullable(컬렉션 원소 null 허용 가능). 복합 PK는 두지 않는다
         // (List 중복 원소 허용). owner FK 조회 성능은 후속 인덱스 단계에서 보강.
         String ownerColumn = dialect.quote(definition.ownerForeignKeyColumn())
-                + " " + fkColumnType(definition.ownerForeignKeyType()) + " not null";
+                + " " + fkColumnType(definition.ownerForeignKeyStorage()) + " not null";
         List<String> columns = new ArrayList<>();
         columns.add(ownerColumn);
         if (definition.embeddableMapKey()) {
@@ -90,21 +91,21 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             for (CollectionTableDefinition.ElementColumn keyColumn : definition.mapKeyColumns()) {
                 columns.add(dialect.quote(keyColumn.columnName())
                         + " " + (keyColumn.json() ? dialect.jsonColumnType()
-                        : elementColumnType(keyColumn.columnType())) + " not null");
+                        : elementColumnType(keyColumn.storage())) + " not null");
             }
         } else if (definition.map()) {
             // Map<K,V>: owner FK 다음에 key 컬럼을 둔다(owner FK, key, value[s]). key는 not null.
             columns.add(dialect.quote(definition.mapKey().columnName())
-                    + " " + elementColumnType(definition.mapKey().columnType()) + " not null");
+                    + " " + elementColumnType(definition.mapKey().storage()) + " not null");
         }
         if (definition.embeddable()) {
             // @Embeddable 원소: 펼친 필드마다 컬럼 1개를 emit한다(owner FK, field1, field2, ...).
             for (CollectionTableDefinition.ElementColumn column : definition.elementColumns()) {
                 columns.add(dialect.quote(column.columnName()) + " "
-                        + (column.json() ? dialect.jsonColumnType() : elementColumnType(column.columnType())));
+                        + (column.json() ? dialect.jsonColumnType() : elementColumnType(column.storage())));
             }
         } else {
-            columns.add(dialect.quote(definition.valueColumn()) + " " + elementColumnType(definition.valueType()));
+            columns.add(dialect.quote(definition.valueColumn()) + " " + elementColumnType(definition.valueStorage()));
         }
         if (definition.ordered()) {
             // @OrderColumn: List 원소의 물리 순서를 담는 정수 컬럼. reconcile이 0..n-1을 써넣고 hydration이
@@ -129,9 +130,14 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      * enum은 {@code varchar}/{@code integer}, {@code UUID}는 {@code varchar}, {@code @Convert}/{@code @Temporal}
      * 원소는 각 converter 저장타입으로 이미 해석된 뒤 여기에 도달한다. 진짜 미지원 저장타입은 fail-fast.
      */
-    protected String elementColumnType(Class<?> valueType) {
+    protected String elementColumnType(ColumnStorage storage) {
+        return storageColumnType(storage);
+    }
+
+    private String storageColumnType(ColumnStorage storage) {
+        Class<?> valueType = storage.javaType();
         if (valueType == String.class) {
-            return "varchar(255)";
+            return "varchar(" + storage.length() + ")";
         }
         if (valueType == Long.class || valueType == long.class) {
             return "bigint";
@@ -152,7 +158,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             return "smallint";
         }
         if (valueType == java.math.BigDecimal.class) {
-            return "numeric(19, 2)";
+            return bigDecimalColumnType(storage);
         }
         if (valueType == java.util.UUID.class) {
             return "varchar(36)";
@@ -184,20 +190,8 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      * {@code @ManyToMany} link table의 FK 컬럼 SQL 타입을 owner/target {@code @Id}의 Java 타입으로 결정한다.
      * {@link #sqlType(PersistentProperty)}의 스칼라 분기를 미러하되, property 없이 타입만으로 매핑한다.
      */
-    protected String fkColumnType(Class<?> idType) {
-        if (idType == Long.class || idType == long.class) {
-            return "bigint";
-        }
-        if (idType == Integer.class || idType == int.class) {
-            return "integer";
-        }
-        if (idType == java.util.UUID.class) {
-            return "varchar(36)";
-        }
-        if (idType == String.class) {
-            return "varchar(255)";
-        }
-        throw new IllegalArgumentException("Unsupported @ManyToMany id type for join column: " + idType.getName());
+    protected String fkColumnType(ColumnStorage storage) {
+        return storageColumnType(storage);
     }
 
     @Override
@@ -602,7 +596,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         StringBuilder builder = new StringBuilder()
                 .append(dialect.quote(fkColumn.columnName()))
                 .append(' ')
-                .append(foreignKeyColumnType(fkColumn.columnType(), fkColumn.length()));
+                .append(foreignKeyColumnType(fkColumn.storage()));
         if (!fkColumn.nullable()) {
             builder.append(" not null");
         }
@@ -614,45 +608,22 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      * 스칼라 분기를 property 없이 미러하되, 저장타입은 이미 {@code @Convert}/{@code @Enumerated}/UUID 해석이
      * 끝난 값(String/Integer/Long/UUID→varchar 등)이다.
      */
-    protected String foreignKeyColumnType(Class<?> columnType, int length) {
-        if (columnType == String.class) {
-            return "varchar(" + length + ")";
-        }
-        if (columnType == Long.class || columnType == long.class) {
-            return "bigint";
-        }
-        if (columnType == Integer.class || columnType == int.class) {
-            return "integer";
-        }
-        if (columnType == Short.class || columnType == short.class) {
-            return "smallint";
-        }
-        if (columnType == Boolean.class || columnType == boolean.class) {
-            return "boolean";
-        }
-        if (columnType == Double.class || columnType == double.class) {
-            return "double precision";
-        }
-        if (columnType == Float.class || columnType == float.class) {
-            return "real";
-        }
-        if (columnType == java.math.BigDecimal.class) {
-            return "numeric(19, 2)";
-        }
-        if (columnType == java.util.UUID.class) {
-            return "varchar(36)";
-        }
-        if (columnType == java.time.LocalDate.class) {
-            return dialect.dateColumnType();
-        }
-        if (columnType == java.time.LocalTime.class) {
-            return dialect.timeColumnType();
-        }
-        if (columnType == java.time.LocalDateTime.class) {
-            return dialect.timestampColumnType();
-        }
-        throw new IllegalArgumentException("Unsupported composite foreign-key column type: " + columnType.getName());
+    protected String foreignKeyColumnType(ColumnStorage storage) {
+        return storageColumnType(storage);
     }
+
+    /**
+     * Renders a precisely shaped decimal storage column. The generic generator deliberately
+     * rejects an unspecified shape: a dialect that has a documented native default must opt in
+     * by overriding this hook rather than inheriting a silent {@code numeric(19, 2)} guess.
+     */
+    protected String bigDecimalColumnType(ColumnStorage storage) {
+        if (storage.precision() <= 0) {
+            throw new IllegalArgumentException("BigDecimal column requires explicit @Column(precision, scale)");
+        }
+        return "numeric(" + storage.precision() + ", " + storage.scale() + ")";
+    }
+
 
     /**
      * 매핑된 Java 프로퍼티 타입에 대응하는 SQL 컬럼 타입을 결정한다.
@@ -666,42 +637,15 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
             return dialect.jsonColumnType();
         }
         if (property.enumerated() && property.converterColumnType() == null) {
-            return property.enumType() == EnumType.STRING ? "varchar(255)" : "integer";
+            return property.enumType() == EnumType.STRING
+                    ? storageColumnType(new ColumnStorage(String.class, property.length(), property.precision(), property.scale()))
+                    : storageColumnType(new ColumnStorage(Integer.class, property.length(), property.precision(), property.scale()));
         }
         if (property.lob()) {
             // @Lob: byte[]는 binary LOB(BLOB류), 그 외(String 등)는 character LOB(CLOB류).
             return dialect.lobType(property.javaType() == byte[].class);
         }
-        // @Convert 변환기가 있으면 도메인 타입(javaType=X)이 아니라 저장 표현 타입(columnType=Y)으로 컬럼을 만든다.
         Class<?> type = property.columnType();
-        if (type == String.class) {
-            return "varchar(" + property.length() + ")";
-        }
-        if (type == Long.class || type == long.class) {
-            return "bigint";
-        }
-        if (type == Integer.class || type == int.class) {
-            return "integer";
-        }
-        if (type == Boolean.class || type == boolean.class) {
-            return "boolean";
-        }
-        if (type == Double.class || type == double.class) {
-            return "double precision";
-        }
-        if (type == Float.class || type == float.class) {
-            return "real";
-        }
-        if (type == Short.class || type == short.class) {
-            return "smallint";
-        }
-        if (type == java.math.BigDecimal.class) {
-            // precision이 지정되면 그대로 numeric(p, s)로, 미지정(0)이면 통화/금액류에 흔히 쓰는
-            // numeric(19, 2)를 기본값으로 emit한다. row 디코딩은 columnType()=BigDecimal로 driver가 native 처리한다.
-            return property.precision() > 0
-                    ? "numeric(" + property.precision() + ", " + property.scale() + ")"
-                    : "numeric(19, 2)";
-        }
         // @Temporal(java.util.Date/Calendar)은 저장 타입(LocalDate/LocalTime/LocalDateTime)으로 columnType이
         // 노출된다. 실제 SQL 타입 토큰(date/time/timestamp, dialect별 차이 포함)은 dialect가 결정한다.
         if (type == java.time.LocalDate.class) {
@@ -713,11 +657,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (type == java.time.LocalDateTime.class) {
             return dialect.timestampColumnType(checkedSecondPrecision(property));
         }
-        // UUID 스칼라 컬럼은 여기 도달하지 않는다 — EntityMetadataFactory가 UUID property에 UuidStringConverter를
-        // 달아 columnType()을 String으로 분리하므로 위 varchar 분기로 처리된다(EC 원소와 대칭, 드라이버가
-        // varchar→UUID 직접 디코드를 못 하는 read-source-type 함정 회피). 저장타입이 String이 아닌 진짜 미지원
-        // 타입만 여기서 fail-fast 한다(broken DDL ship 금지).
-        throw new IllegalArgumentException("Unsupported column type: " + type.getName());
+        return storageColumnType(ColumnStorage.from(property));
     }
 
     private int checkedSecondPrecision(PersistentProperty property) {
