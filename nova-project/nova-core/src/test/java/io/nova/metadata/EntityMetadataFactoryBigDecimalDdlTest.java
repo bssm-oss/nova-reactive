@@ -131,6 +131,21 @@ class EntityMetadataFactoryBigDecimalDdlTest {
     }
 
     @Test
+    void rejectsRawDecimalDefinitionsForFieldAndPropertyCollectionValuesEmbeddablesAndMapKeys() {
+        assertRawDecimalDefinitionRejected(FieldRawDecimalValueCollection.class);
+        assertRawDecimalDefinitionRejected(PropertyRawDecimalValueCollection.class);
+        assertRawDecimalDefinitionRejected(FieldRawDecimalEmbeddableCollection.class);
+        assertRawDecimalDefinitionRejected(PropertyRawDecimalEmbeddableCollection.class);
+        assertRawDecimalDefinitionRejected(FieldRawDecimalMapKey.class);
+        assertRawDecimalDefinitionRejected(PropertyRawDecimalMapKey.class);
+    }
+
+    @Test
+    void rejectsRawDefinitionOnReferencedConverterToBigDecimalIdAfterStorageResolution() {
+        assertRawDecimalDefinitionRejected(ConverterToDecimalIdReference.class);
+    }
+
+    @Test
     void embeddedIdHostConverterStorageIsSharedByToOne() {
         ColumnStorage expected = new ColumnStorage(String.class, 41, 0, 0);
         EntityMetadata<ConvertedEmbeddedIdTarget> target = factory.getEntityMetadata(ConvertedEmbeddedIdTarget.class);
@@ -163,7 +178,8 @@ class EntityMetadataFactoryBigDecimalDdlTest {
     private void assertRawDecimalDefinitionRejected(Class<?> entityType) {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(entityType));
-        assertTrue(error.getMessage().contains("BigDecimal storage cannot use @Column(columnDefinition)"),
+        assertTrue(error.getMessage().contains("columnDefinition")
+                        && error.getMessage().contains("BigDecimal"),
                 error.getMessage());
     }
 
@@ -374,6 +390,134 @@ class EntityMetadataFactoryBigDecimalDdlTest {
         @jakarta.persistence.JoinTable(inverseJoinColumns =
                 @jakarta.persistence.JoinColumn(columnDefinition = "bigint"))
         List<RawJoinTableTarget> targets;
+    }
+
+    @jakarta.persistence.Entity
+    static class FieldRawDecimalValueCollection {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
+        List<BigDecimal> values;
+    }
+
+    @jakarta.persistence.Entity
+    static class PropertyRawDecimalValueCollection {
+        Long id;
+        List<BigDecimal> values;
+
+        @jakarta.persistence.Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
+        public List<BigDecimal> getValues() {
+            return values;
+        }
+
+        public void setValues(List<BigDecimal> values) {
+            this.values = values;
+        }
+    }
+
+    @jakarta.persistence.Entity
+    static class FieldRawDecimalEmbeddableCollection {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.AttributeOverride(name = "amount",
+                column = @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)"))
+        List<DecimalComponent> values;
+    }
+
+    @jakarta.persistence.Entity
+    static class PropertyRawDecimalEmbeddableCollection {
+        Long id;
+        List<PropertyDecimalComponent> values;
+
+        @jakarta.persistence.Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.AttributeOverride(name = "amount",
+                column = @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)"))
+        public List<PropertyDecimalComponent> getValues() {
+            return values;
+        }
+
+        public void setValues(List<PropertyDecimalComponent> values) {
+            this.values = values;
+        }
+    }
+
+    @jakarta.persistence.Entity
+    static class FieldRawDecimalMapKey {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.MapKeyColumn(columnDefinition = "numeric(31, 11)")
+        Map<BigDecimal, String> values;
+    }
+
+    @jakarta.persistence.Entity
+    static class PropertyRawDecimalMapKey {
+        Long id;
+        Map<BigDecimal, String> values;
+
+        @jakarta.persistence.Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.MapKeyColumn(columnDefinition = "numeric(31, 11)")
+        public Map<BigDecimal, String> getValues() {
+            return values;
+        }
+
+        public void setValues(Map<BigDecimal, String> values) {
+            this.values = values;
+        }
+    }
+
+    @jakarta.persistence.Converter
+    static class StringToDecimalConverter implements jakarta.persistence.AttributeConverter<String, BigDecimal> {
+        @Override
+        public BigDecimal convertToDatabaseColumn(String attribute) {
+            return attribute == null ? null : new BigDecimal(attribute);
+        }
+
+        @Override
+        public String convertToEntityAttribute(BigDecimal dbData) {
+            return dbData == null ? null : dbData.toPlainString();
+        }
+    }
+
+    @jakarta.persistence.Entity
+    static class ConverterToDecimalIdTarget {
+        @jakarta.persistence.Id
+        @jakarta.persistence.Convert(converter = StringToDecimalConverter.class)
+        @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
+        String id;
+    }
+
+    @jakarta.persistence.Entity
+    static class ConverterToDecimalIdReference {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ManyToOne ConverterToDecimalIdTarget target;
     }
 
     @jakarta.persistence.Embeddable
