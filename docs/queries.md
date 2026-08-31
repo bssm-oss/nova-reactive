@@ -182,3 +182,11 @@ CompiledQuery compiled = dialect.sqlRenderer().compileSelect(metadata,
 Flux<Account> a = operations.findAll(Account.class, compiled, "a@nova.io");
 Flux<Account> b = operations.findAll(Account.class, compiled, "b@nova.io");
 ```
+
+### JPQL identification aliases
+
+JPQL identification aliases are case-insensitive in every query scope. For example,
+`SELECT E.name FROM Employee e JOIN E.department D WHERE d.name = :name` is valid, as
+is a correlated subquery that refers to the outer alias with different casing. Aliases
+that differ only by case in the same scope, including `JOIN FETCH` aliases, are rejected
+as duplicates. Entity names and attribute-path segments remain case-sensitive.

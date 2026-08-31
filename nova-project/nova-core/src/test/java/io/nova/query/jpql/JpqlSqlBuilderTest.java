@@ -152,6 +152,30 @@ class JpqlSqlBuilderTest {
     }
 
     @Test
+    void resolvesMixedCaseAliasesInSelectWhereJoinAndCorrelation() {
+        TranslatedSql t = scalar("SELECT E.name FROM Employee e JOIN E.department D "
+                + "WHERE d.name = :name AND EXISTS (SELECT 1 FROM Employee M WHERE m.age > E.age)");
+
+        assertEquals(
+                "select E.\"name\" as \"c0\" from \"employee\" e join \"department\" D on E.\"dept_id\" = D.\"id\" "
+                        + "where (d.\"name\" = ? and exists (select ? from \"employee\" M where m.\"age\" > E.\"age\"))",
+                t.sql());
+        assertEquals(2, t.bindings().size());
+    }
+
+    @Test
+    void rejectsAliasesDifferingOnlyByCaseInEachScope() {
+        JpqlException rootJoin = assertThrows(JpqlException.class,
+                () -> scalar("SELECT e.name FROM Employee e JOIN e.department E"));
+        assertEquals("Duplicate alias 'E' in JPQL query", rootJoin.getMessage());
+
+        JpqlException correlatedJoin = assertThrows(JpqlException.class,
+                () -> scalar("SELECT e.name FROM Employee e WHERE EXISTS "
+                        + "(SELECT 1 FROM Employee m JOIN m.department M WHERE M.name = e.name)"));
+        assertEquals("Duplicate alias 'M' in JPQL query", correlatedJoin.getMessage());
+    }
+
+    @Test
     void rendersInSubquery() {
         TranslatedSql t = scalar("SELECT e.name FROM Employee e "
                 + "WHERE e.department IN (SELECT d.id FROM Department d WHERE d.name = :n)");

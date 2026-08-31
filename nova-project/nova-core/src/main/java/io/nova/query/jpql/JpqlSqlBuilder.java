@@ -1278,7 +1278,7 @@ public final class JpqlSqlBuilder {
     /** {@code (ownerAlias, relation)}에 대한 묵시 INNER JOIN을 만들거나 재사용하고 대상 별칭을 돌려준다. */
     private String implicitJoin(Ctx ctx, String ownerAlias, String relation,
                                 PersistentProperty prop, EntityMetadata<?> targetMeta) {
-        String key = ownerAlias + ' ' + relation;
+        String key = Scope.normalize(ownerAlias) + "\0" + relation;
         ImplicitJoin existing = ctx.block.implicitByKey.get(key);
         if (existing != null) {
             return existing.alias;
@@ -1379,7 +1379,7 @@ public final class JpqlSqlBuilder {
     }
 
     private static String constraintKey(String alias, Object value) {
-        return alias + ' ' + value;
+        return Scope.normalize(alias) + "\0" + value;
     }
 
     /** discriminator 제한(있으면)을 먼저 렌더하고 사용자 WHERE를 {@code and}로 이어 붙인다. */
@@ -1641,7 +1641,7 @@ public final class JpqlSqlBuilder {
     private record CompositeToOneRef(String alias, PersistentProperty property) {
     }
 
-    /** 별칭 → 메타데이터 스코프. 서브쿼리 상관 참조를 위해 부모 스코프로 위임한다. */
+    /** 대소문자를 구분하지 않는 별칭 → 메타데이터 스코프. 서브쿼리 상관 참조를 위해 부모 스코프로 위임한다. */
     private static final class Scope {
         private final Scope parent;
         private final Map<String, EntityMetadata<?>> aliases = new HashMap<>();
@@ -1651,20 +1651,20 @@ public final class JpqlSqlBuilder {
         }
 
         void bind(String alias, EntityMetadata<?> metadata) {
-            if (aliases.putIfAbsent(alias, metadata) != null) {
+            if (aliases.putIfAbsent(normalize(alias), metadata) != null) {
                 throw new JpqlException("Duplicate alias '" + alias + "' in JPQL query");
             }
         }
 
         boolean contains(String alias) {
-            if (aliases.containsKey(alias)) {
+            if (aliases.containsKey(normalize(alias))) {
                 return true;
             }
             return parent != null && parent.contains(alias);
         }
 
         EntityMetadata<?> resolve(String alias) {
-            EntityMetadata<?> metadata = aliases.get(alias);
+            EntityMetadata<?> metadata = aliases.get(normalize(alias));
             if (metadata != null) {
                 return metadata;
             }
@@ -1672,6 +1672,10 @@ public final class JpqlSqlBuilder {
                 return parent.resolve(alias);
             }
             throw new JpqlException("Unknown alias '" + alias + "' in JPQL query");
+        }
+
+        static String normalize(String alias) {
+            return alias.toLowerCase(Locale.ROOT);
         }
     }
 }

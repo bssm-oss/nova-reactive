@@ -96,6 +96,25 @@ class JpqlEntityQueryPlannerTest {
     }
 
     @Test
+    void resolvesMixedCaseRootAliasesInEntitySelectionWhereAndFetchJoin() {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT C FROM CompositeJoinChild c JOIN FETCH C.parent P WHERE c.label = 'x' ORDER BY C.id")
+                .parse();
+
+        assertTrue(planner.isEntitySelect(select));
+        assertDoesNotThrow(() -> planner.plan(select, new JpqlParameters()));
+    }
+
+    @Test
+    void rejectsFetchAliasDifferingOnlyByCaseFromRootAlias() {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT c FROM CompositeJoinChild c JOIN FETCH c.parent C").parse();
+
+        JpqlException ex = assertThrows(JpqlException.class, () -> planner.plan(select, new JpqlParameters()));
+        assertEquals("Duplicate alias 'C' in JPQL query", ex.getMessage());
+    }
+
+    @Test
     void preservesNotBetweenForEntityQuerySpecs() {
         Condition between = assertInstanceOf(Condition.class,
                 assertInstanceOf(NegationPredicate.class,
