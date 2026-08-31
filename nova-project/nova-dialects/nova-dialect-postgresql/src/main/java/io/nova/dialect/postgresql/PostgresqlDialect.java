@@ -1,6 +1,7 @@
 package io.nova.dialect.postgresql;
 
 import jakarta.persistence.GenerationType;
+import io.nova.metadata.ColumnStorage;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
 import io.nova.sql.AbstractSchemaGenerator;
@@ -163,27 +164,22 @@ public final class PostgresqlDialect implements Dialect {
         }
 
         @Override
-        protected String sqlType(PersistentProperty property) {
-            if (property.columnType() != java.math.BigDecimal.class) {
-                return super.sqlType(property);
+        protected String bigDecimalColumnType(ColumnStorage storage) {
+            int precision = storage.precision();
+            int scale = storage.scale();
+            if (precision < 0 || precision > 1000) {
+                throw new IllegalArgumentException("PostgreSQL numeric precision must be between 0 and 1000: "
+                        + precision);
             }
-
-            int precision = property.precision();
-            int scale = property.scale();
+            if (scale < 0 || scale > 1000) {
+                throw new IllegalArgumentException("PostgreSQL numeric scale must be between 0 and 1000: " + scale);
+            }
             if (precision == 0) {
-                if (scale != 0) {
-                    throw new IllegalArgumentException("@Column.scale=" + scale + " on " + property.propertyName()
-                            + " requires a positive precision for PostgreSQL numeric");
-                }
-                return "numeric";
+                return scale == 0 ? "numeric" : "numeric(1000, " + scale + ")";
             }
-            if (precision < 1 || precision > 1000) {
-                throw new IllegalArgumentException("@Column.precision=" + precision + " on " + property.propertyName()
-                        + " must be between 1 and 1000 for PostgreSQL numeric");
-            }
-            if (scale < 0 || scale > precision) {
-                throw new IllegalArgumentException("@Column.scale=" + scale + " on " + property.propertyName()
-                        + " must be between 0 and precision for PostgreSQL numeric");
+            if (scale > precision) {
+                throw new IllegalArgumentException("PostgreSQL numeric scale must not exceed precision: "
+                        + scale + " > " + precision);
             }
             return "numeric(" + precision + ", " + scale + ")";
         }

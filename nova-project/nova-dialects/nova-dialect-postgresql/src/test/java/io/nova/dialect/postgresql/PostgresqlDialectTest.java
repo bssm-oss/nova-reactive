@@ -311,25 +311,66 @@ class PostgresqlDialectTest {
     }
 
     @Test
-    void rendersBigDecimalColumnsUsingPostgresqlNumericPolicy() {
+    void rendersBigDecimalShapeMatrixForScalarCollectionAndRelationDdl() {
         EntityMetadata<BigDecimalHolder> holder = new EntityMetadataFactory(new DefaultNamingStrategy())
                 .getEntityMetadata(BigDecimalHolder.class);
-
         assertEquals(
                 "create table \"postgresql_decimal_holder\" (\"id\" bigint primary key, "
-                        + "\"fractional\" numeric(12, 4), \"whole\" numeric(12, 0), "
-                        + "\"maximum_precision\" numeric(1000, 999), \"unrestricted\" numeric)",
+                        + "\"explicit\" numeric(12, 4), \"precision_only\" numeric(12, 0), "
+                        + "\"scale_only\" numeric(1000, 4), \"unspecified\" numeric)",
                 dialect.schemaGenerator().createTable(holder));
+
+        io.nova.metadata.ColumnStorage explicit = new io.nova.metadata.ColumnStorage(
+                java.math.BigDecimal.class, 255, 12, 4);
+        io.nova.metadata.ColumnStorage precisionOnly = new io.nova.metadata.ColumnStorage(
+                java.math.BigDecimal.class, 255, 12, 0);
+        io.nova.metadata.ColumnStorage scaleOnly = new io.nova.metadata.ColumnStorage(
+                java.math.BigDecimal.class, 255, 0, 4);
+        io.nova.metadata.ColumnStorage unspecified = new io.nova.metadata.ColumnStorage(
+                java.math.BigDecimal.class, 255, 0, 0);
+
+        assertEquals(
+                "create table \"decimal_values\" (\"owner_id\" bigint not null, \"explicit\" numeric(12, 4), "
+                        + "\"precision_only\" numeric(12, 0), \"scale_only\" numeric(1000, 4), "
+                        + "\"unspecified\" numeric)",
+                dialect.schemaGenerator().createCollectionTable(new io.nova.metadata.CollectionTableDefinition(
+                        "decimal_values", "owner_id", new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0),
+                        null, null, java.util.List.of(
+                                new io.nova.metadata.CollectionTableDefinition.ElementColumn("explicit", explicit),
+                                new io.nova.metadata.CollectionTableDefinition.ElementColumn("precision_only", precisionOnly),
+                                new io.nova.metadata.CollectionTableDefinition.ElementColumn("scale_only", scaleOnly),
+                                new io.nova.metadata.CollectionTableDefinition.ElementColumn("unspecified", unspecified))));
+
+        assertEquals(
+                "create table \"decimal_map\" (\"owner_id\" bigint not null, \"scale_key\" numeric(1000, 4) not null, "
+                        + "\"value\" numeric(12, 0))",
+                dialect.schemaGenerator().createCollectionTable(new io.nova.metadata.CollectionTableDefinition(
+                        "decimal_map", "owner_id", new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0),
+                        "value", precisionOnly, java.util.List.of(), null,
+                        new io.nova.metadata.CollectionTableDefinition.MapKeyColumn("scale_key", scaleOnly))));
+
+        assertEquals(
+                "create table \"decimal_links\" (\"explicit_id\" numeric(12, 4) not null, "
+                        + "\"precision_only_id\" numeric(12, 0) not null, \"scale_only_id\" numeric(1000, 4) not null, "
+                        + "\"unspecified_id\" numeric not null, primary key (\"explicit_id\", \"precision_only_id\", "
+                        + "\"scale_only_id\", \"unspecified_id\"))",
+                dialect.schemaGenerator().createJoinTable(new io.nova.metadata.JoinTableDefinition(
+                        "decimal_links", java.util.List.of(
+                                new io.nova.metadata.JoinTableDefinition.ForeignKeyColumn("explicit_id", explicit),
+                                new io.nova.metadata.JoinTableDefinition.ForeignKeyColumn("precision_only_id", precisionOnly)),
+                        java.util.List.of(
+                                new io.nova.metadata.JoinTableDefinition.ForeignKeyColumn("scale_only_id", scaleOnly),
+                                new io.nova.metadata.JoinTableDefinition.ForeignKeyColumn("unspecified_id", unspecified)))));
     }
 
     @Test
-    void rejectsPostgresqlNumericFormsUnsupportedBeforeVersion15() {
+    void rejectsPostgresqlNumericFormsOutsidePreVersion15Bounds() {
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
 
         assertThrows(IllegalArgumentException.class,
-                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleWithoutPrecision.class)));
-        assertThrows(IllegalArgumentException.class,
                 () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(PrecisionAboveMaximum.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleAboveMaximum.class)));
         assertThrows(IllegalArgumentException.class,
                 () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleAbovePrecision.class)));
         assertThrows(IllegalArgumentException.class,
@@ -393,23 +434,23 @@ class PostgresqlDialectTest {
         Long id;
 
         @jakarta.persistence.Column(precision = 12, scale = 4)
-        java.math.BigDecimal fractional;
+        java.math.BigDecimal explicit;
 
         @jakarta.persistence.Column(precision = 12)
-        java.math.BigDecimal whole;
+        java.math.BigDecimal precisionOnly;
 
-        @jakarta.persistence.Column(precision = 1000, scale = 999)
-        java.math.BigDecimal maximumPrecision;
+        @jakarta.persistence.Column(scale = 4)
+        java.math.BigDecimal scaleOnly;
 
-        java.math.BigDecimal unrestricted;
+        java.math.BigDecimal unspecified;
     }
 
     @jakarta.persistence.Entity
-    static class ScaleWithoutPrecision {
+    static class ScaleAboveMaximum {
         @jakarta.persistence.Id
         Long id;
 
-        @jakarta.persistence.Column(scale = 2)
+        @jakarta.persistence.Column(scale = 1001)
         java.math.BigDecimal value;
     }
 
