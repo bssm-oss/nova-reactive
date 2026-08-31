@@ -716,7 +716,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                 .hasElements()
                 .flatMap(exists -> exists
                         ? Mono.empty()
-                        : operations.executeNative(NativeQuery.of(generator.seedTableGenerator(info))));
+                        : operations.executeNative(NativeQuery.of(generator.seedTableGenerator(info))).then());
     }
 
     private Mono<Void> dropTableGenerators(List<Class<?>> types) {
