@@ -3201,6 +3201,93 @@ class SimpleReactiveEntityOperationsTest {
         assertTrue(executor.executedStatements.isEmpty());
     }
 
+    @Test
+    void managedNullOrphanBaselineCascadesTransientReferenceThenUpdatesFkAndRefreshesSnapshot() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 20L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CascadingOneToOneOwner owner = new CascadingOneToOneOwner(1L, "unchanged", null);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CascadingOneToOneOwner.class), owner);
+        owner.target = new CascadingOneToOneTarget(null);
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(List.of(
+                "insert into cascading_one_to_one_targets (name) values (?)",
+                "update cascading_one_to_one_owners set target_id = ? where id = ?"), executor.chronologicalSqlCalls);
+        assertEquals(20L, owner.target.id);
+        executor.chronologicalSqlCalls.clear();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+        assertTrue(executor.chronologicalSqlCalls.isEmpty(), "successful FK update refreshes the owner snapshot");
+    }
+
+    @Test
+    void managedNullOrphanBaselineWithoutCascadeRejectsTransientReferenceBeforeSql() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, null);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(OneToOneOrphanOwner.class), owner);
+        owner.target = new OneToOneOrphanTarget();
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorSatisfies(error -> assertTrue(error.getMessage().contains("without cascade PERSIST")))
+                .verify();
+        assertTrue(executor.chronologicalSqlCalls.isEmpty());
+    }
+
+    @Test
+    void preUpdateTransientCascadeIsAssignedBeforeOwnerUpdateFieldsAreComputed() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 21L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CascadingOneToOneOwner owner = new CascadingOneToOneOwner(1L, "before", null);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(PreUpdateCascadingOneToOneOwner.class), owner);
+        owner.name = "after";
+        owner.addTransientTargetInPreUpdate = true;
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(List.of(
+                "insert into cascading_one_to_one_targets (name) values (?)",
+                "update cascading_one_to_one_owners set name = ?, target_id = ? where id = ?"),
+                executor.chronologicalSqlCalls);
+        assertEquals(21L, owner.target.id);
+    }
+
+    @Test
+    void failedCascadedOwnerUpdateKeepsNullBaselineRetryable() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 22L;
+        executor.executeErrors.addLast(new IllegalStateException("owner update failed"));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CascadingOneToOneOwner owner = new CascadingOneToOneOwner(1L, "unchanged", null);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CascadingOneToOneOwner.class), owner);
+        owner.target = new CascadingOneToOneTarget(null);
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorMessage("owner update failed")
+                .verify();
+        executor.chronologicalSqlCalls.clear();
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+        assertEquals(List.of("update cascading_one_to_one_owners set target_id = ? where id = ?"),
+                executor.chronologicalSqlCalls, "failed owner update must not advance its null-FK snapshot");
+    }
+
     private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
         PersistenceSession session = new PersistenceSession();
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
@@ -3974,6 +4061,45 @@ class SimpleReactiveEntityOperationsTest {
         @PreUpdate
         void preUpdate() {
             ONE_TO_ONE_REMOVAL_TRACE.add("owner-pre-update");
+        }
+    }
+
+    @Entity
+    @Table(name = "cascading_one_to_one_targets")
+    private static final class CascadingOneToOneTarget {
+        @Id
+        @GeneratedValue
+        private Long id;
+        private String name = "target";
+
+        private CascadingOneToOneTarget(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "cascading_one_to_one_owners")
+    private static class CascadingOneToOneOwner {
+        @Id
+        private Long id;
+        private String name;
+
+        @OneToOne(cascade = CascadeType.PERSIST, orphanRemoval = true)
+        @JoinColumn(name = "target_id")
+        private CascadingOneToOneTarget target;
+        private boolean addTransientTargetInPreUpdate;
+
+        private CascadingOneToOneOwner(Long id, String name, CascadingOneToOneTarget target) {
+            this.id = id;
+            this.name = name;
+            this.target = target;
+        }
+
+        @PreUpdate
+        void addTransientTarget() {
+            if (addTransientTargetInPreUpdate) {
+                target = new CascadingOneToOneTarget(null);
+            }
         }
     }
 
