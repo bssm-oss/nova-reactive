@@ -132,6 +132,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         return Mono.usingWhen(
                 begin(definition),
                 ctx -> Mono.defer(() -> callback.apply(ctx))
+                        .doOnCancel(owner::cancelQueued)
                         .contextWrite(c -> c.put(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())
                                 .put(ACTIVE_TRANSACTION_KEY, owner)),
                 ctx -> owner.seal().then(commitAfterSuccess(ctx)).onErrorMap(CleanupFailure::new),
@@ -155,7 +156,8 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                     Mono.just(scope),
                     ignored -> scope.awaitTurn()
                             .then(scope.create())
-                            .then(Mono.defer(() -> callback.apply(ctx))
+                            .then(Mono.defer(() -> scope.active() ? callback.apply(ctx) : Mono.empty())
+                                    .doOnCancel(scope.owner::cancelQueued)
                                     .contextWrite(c -> c.put(CONNECTION_KEY, active)
                                             .put(ACTIVE_TRANSACTION_KEY, scope.owner))),
                     SavepointScope::success,
@@ -215,6 +217,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
      */
     private static final class BoundaryOwner {
         private Mono<Void> tail = Mono.empty();
+        private final java.util.List<Lease> leases = new java.util.ArrayList<>();
         private boolean sealed;
 
         synchronized Lease admit() {
@@ -222,6 +225,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                 throw new IllegalStateException("Transaction boundary is already completing");
             }
             Lease lease = new Lease(tail);
+            leases.add(lease);
             tail = lease.awaitCompletion();
             return lease;
         }
@@ -230,12 +234,20 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
             sealed = true;
             return tail;
         }
+
+        synchronized void cancelQueued() {
+            sealed = true;
+            for (Lease lease : leases) {
+                lease.cancelQueued();
+            }
+        }
     }
 
     private static final class Lease {
         private final Mono<Void> predecessor;
         private final Sinks.One<Void> completion = Sinks.one();
         private final AtomicBoolean completed = new AtomicBoolean();
+        private volatile Runnable queuedCancellation = () -> {};
 
         private Lease(Mono<Void> predecessor) {
             this.predecessor = predecessor;
@@ -254,6 +266,14 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                 completion.tryEmitEmpty();
             }
         }
+
+        void onQueuedCancellation(Runnable cancellation) {
+            queuedCancellation = cancellation;
+        }
+
+        void cancelQueued() {
+            queuedCancellation.run();
+        }
     }
 
     private static final class SavepointScope {
@@ -268,6 +288,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         private SavepointScope(Connection connection, Lease lease) {
             this.connection = connection;
             this.lease = lease;
+            lease.onQueuedCancellation(this::cancelQueued);
             this.create = Mono.defer(() -> {
                         if (!state.compareAndSet(SavepointState.QUEUED, SavepointState.CREATING)) {
                             return Mono.empty();
@@ -290,8 +311,14 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
             return create;
         }
 
+        boolean active() {
+            return state.get() == SavepointState.ACTIVE;
+        }
+
         Mono<Void> success() {
-            selectTerminal(SavepointState.SUCCESS);
+            if (!selectTerminal(SavepointState.SUCCESS)) {
+                return owner.seal().doFinally(ignored -> lease.complete());
+            }
             return owner.seal()
                     .then(releaseSavepointIfSupported(connection, name))
                     .doFinally(ignored -> lease.complete())
@@ -323,9 +350,16 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                 return owner.seal().doFinally(ignored -> lease.complete());
             }
             return owner.seal()
-                    .then(create.onErrorResume(ignored -> Mono.empty()))
+                    .then(create)
                     .then(Mono.defer(() -> created.get() ? rollbackAndRelease(null) : Mono.empty()))
                     .doFinally(ignored -> lease.complete());
+        }
+
+        private void cancelQueued() {
+            if (state.compareAndSet(SavepointState.QUEUED, SavepointState.CANCEL)) {
+                owner.cancelQueued();
+                lease.complete();
+            }
         }
 
         private boolean selectTerminal(SavepointState terminal) {

@@ -291,17 +291,18 @@ class R2dbcTransactionManagerTest {
                                 "insert into accounts (id, email) values (?, ?)",
                                 List.of(10L, "outer@nova.io")))
                         .then(txManager.inTransaction(
-                                TransactionDefinition.DEFAULT.with(Propagation.NESTED), middle ->
-                                        txExecutor.execute(new SqlStatement(
-                                                        "insert into accounts (id, email) values (?, ?)",
-                                                        List.of(11L, "middle@nova.io")))
-                                                .then(txManager.inTransaction(
-                                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED), inner ->
-                                                                txExecutor.execute(new SqlStatement(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED), middle ->
+                                                txExecutor.execute(new SqlStatement(
+                                                                "insert into accounts (id, email) values (?, ?)",
+                                                                List.of(11L, "middle@nova.io")))
+                                                        .then(txManager.inTransaction(
+                                                                TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                                                inner -> txExecutor.execute(new SqlStatement(
                                                                                 "insert into accounts (id, email) values (?, ?)",
                                                                                 List.of(12L, "inner@nova.io")))
-                                                                        .then(Mono.error(new IllegalStateException("inner")))))
-                                                .onErrorResume(ignored -> Mono.empty()))))
+                                                                        .then(Mono.error(
+                                                                                new IllegalStateException("inner")))))
+                                                        .onErrorResume(ignored -> Mono.empty())))
                         .then());
 
         StepVerifier.create(work).verifyComplete();
@@ -740,10 +741,10 @@ class R2dbcTransactionManagerTest {
                                 txManager.inTransaction(
                                         TransactionDefinition.DEFAULT.with(Propagation.NESTED),
                                         inner -> Mono.never())))))
+                .then(() -> assertEquals(1, creates.get()))
                 .thenCancel()
                 .verify();
 
-        assertEquals(1, creates.get());
         assertEquals(List.of("create", "rollback-savepoint", "release", "rollback", "close"), calls);
     }
 
