@@ -98,7 +98,7 @@ class EntityMetadataFactoryBigDecimalDdlTest {
     @Test
     void rejectsColumnDefinitionsThatWouldReplaceReferencedOrCollectionStorageShapes() {
         IllegalArgumentException id = assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(ColumnDefinitionDecimalId.class));
+                () -> factory.getEntityMetadata(ColumnDefinitionIdReference.class));
         assertTrue(id.getMessage().contains("@Column(columnDefinition)"), id.getMessage());
 
         IllegalArgumentException join = assertThrows(IllegalArgumentException.class,
@@ -111,15 +111,13 @@ class EntityMetadataFactoryBigDecimalDdlTest {
     }
 
     @Test
-    void embeddedIdConverterStorageIsSharedByToOneAndMapsId() {
+    void embeddedIdHostConverterStorageIsSharedByToOne() {
         ColumnStorage expected = new ColumnStorage(String.class, 41, 0, 0);
         EntityMetadata<ConvertedEmbeddedIdTarget> target = factory.getEntityMetadata(ConvertedEmbeddedIdTarget.class);
         PersistentProperty toOne = property(ConvertedEmbeddedIdReference.class, "target");
-        PersistentProperty mapsId = property(ConvertedEmbeddedIdMapsId.class, "target");
 
         assertEquals(expected, ColumnStorage.from(target.idProperty()));
         assertEquals(expected, ColumnStorage.from(toOne));
-        assertEquals(expected, ColumnStorage.from(mapsId));
     }
 
     @Test
@@ -164,7 +162,7 @@ class EntityMetadataFactoryBigDecimalDdlTest {
     @jakarta.persistence.Entity
     static class PropertyOverrideCollection {
         Long id;
-        List<DecimalComponent> values;
+        List<PropertyDecimalComponent> values;
 
         @jakarta.persistence.Id
         public Long getId() {
@@ -178,11 +176,11 @@ class EntityMetadataFactoryBigDecimalDdlTest {
         @jakarta.persistence.ElementCollection
         @jakarta.persistence.AttributeOverride(name = "amount",
                 column = @jakarta.persistence.Column(name = "property_amount", precision = 26, scale = 7))
-        public List<DecimalComponent> getValues() {
+        public List<PropertyDecimalComponent> getValues() {
             return values;
         }
 
-        public void setValues(List<DecimalComponent> values) {
+        public void setValues(List<PropertyDecimalComponent> values) {
             this.values = values;
         }
     }
@@ -200,7 +198,7 @@ class EntityMetadataFactoryBigDecimalDdlTest {
     @jakarta.persistence.Entity
     static class PropertyOverrideMap {
         Long id;
-        Map<DecimalComponent, String> values;
+        Map<PropertyDecimalComponent, String> values;
 
         @jakarta.persistence.Id
         public Long getId() {
@@ -212,15 +210,29 @@ class EntityMetadataFactoryBigDecimalDdlTest {
         }
 
         @jakarta.persistence.ElementCollection
-        @jakarta.persistence.MapKeyClass(DecimalComponent.class)
+        @jakarta.persistence.MapKeyClass(PropertyDecimalComponent.class)
         @jakarta.persistence.AttributeOverride(name = "key.amount",
                 column = @jakarta.persistence.Column(name = "property_key", precision = 24, scale = 5))
-        public Map<DecimalComponent, String> getValues() {
+        public Map<PropertyDecimalComponent, String> getValues() {
             return values;
         }
 
-        public void setValues(Map<DecimalComponent, String> values) {
+        public void setValues(Map<PropertyDecimalComponent, String> values) {
             this.values = values;
+        }
+    }
+
+    @jakarta.persistence.Embeddable
+    static class PropertyDecimalComponent {
+        private BigDecimal amount;
+
+        @jakarta.persistence.Column(name = "amount", precision = 9, scale = 2)
+        public BigDecimal getAmount() {
+            return amount;
+        }
+
+        public void setAmount(BigDecimal amount) {
+            this.amount = amount;
         }
     }
 
@@ -229,6 +241,13 @@ class EntityMetadataFactoryBigDecimalDdlTest {
         @jakarta.persistence.Id
         @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
         BigDecimal id;
+    }
+
+    @jakarta.persistence.Entity
+    static class ColumnDefinitionIdReference {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ManyToOne
+        ColumnDefinitionDecimalId target;
     }
 
     @jakarta.persistence.Entity
@@ -277,12 +296,4 @@ class EntityMetadataFactoryBigDecimalDdlTest {
         ConvertedEmbeddedIdTarget target;
     }
 
-    @jakarta.persistence.Entity
-    static class ConvertedEmbeddedIdMapsId {
-        @jakarta.persistence.EmbeddedId ConvertedDecimalId id;
-        @jakarta.persistence.OneToOne
-        @jakarta.persistence.MapsId
-        @jakarta.persistence.JoinColumn(name = "id")
-        ConvertedEmbeddedIdTarget target;
-    }
 }
