@@ -5,6 +5,7 @@ import io.nova.sql.AbstractSqlRenderer;
 import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
+import io.nova.metadata.ColumnStorage;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.SecondaryTableInfo;
@@ -138,6 +139,30 @@ public final class MySqlDialect implements Dialect {
         @Override
         protected String identityColumn(io.nova.metadata.PersistentProperty property) {
             return "`" + property.columnName() + "` " + sqlType(property) + " primary key auto_increment";
+        }
+
+        @Override
+        protected String bigDecimalColumnType(ColumnStorage storage) {
+            int precision = storage.precision();
+            int scale = storage.scale();
+            if (precision <= 0) {
+                throw new IllegalArgumentException(
+                        "MySQL BigDecimal column requires @Column(precision = ..., scale = ...);"
+                                + " scale alone is not supported");
+            }
+            if (precision > 65) {
+                throw new IllegalArgumentException(
+                        "MySQL DECIMAL precision must be between 1 and 65: " + precision);
+            }
+            if (scale < 0 || scale > 30) {
+                throw new IllegalArgumentException(
+                        "MySQL DECIMAL scale must be between 0 and 30: " + scale);
+            }
+            if (scale > precision) {
+                throw new IllegalArgumentException(
+                        "MySQL DECIMAL scale must not exceed precision: " + scale + " > " + precision);
+            }
+            return "decimal(" + precision + ", " + scale + ")";
         }
     }
 }
