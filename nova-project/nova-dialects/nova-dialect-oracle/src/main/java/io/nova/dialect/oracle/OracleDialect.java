@@ -1,6 +1,7 @@
 package io.nova.dialect.oracle;
 
 import jakarta.persistence.EnumType;
+import io.nova.metadata.ColumnStorage;
 import io.nova.metadata.PersistentProperty;
 import io.nova.query.LockMode;
 import io.nova.query.QuerySpec;
@@ -246,11 +247,7 @@ public final class OracleDialect implements Dialect {
                 return "binary_float";
             }
             if (type == java.math.BigDecimal.class) {
-                // Oracle은 임의 정밀도 수치를 number(p, s)로 표현한다. precision 미지정(0)이면 통화류 기본값
-                // number(19, 2)를 emit한다 — base의 numeric(19, 2)와 동일 의미.
-                return property.precision() > 0
-                        ? "number(" + property.precision() + ", " + property.scale() + ")"
-                        : "number(19, 2)";
+                return bigDecimalColumnType(ColumnStorage.from(property));
             }
             // 그 외(미지원 타입 등)는 base의 IllegalArgumentException을 그대로 전파한다.
             return super.sqlType(property);
@@ -258,53 +255,54 @@ public final class OracleDialect implements Dialect {
 
         @Override
         protected String identityColumn(PersistentProperty property) {
-            // Oracle 12c+ 표준 IDENTITY 컬럼. id 타입과 무관하게 number(19)로 고정한다.
-            return dialect().quote(property.columnName())
-                    + " number(19) generated always as identity primary key";
+            // IDENTITY도 일반 컬럼과 같은 저장 타입을 써야 @Column precision/scale 및 converter 정책이 유지된다.
+            return dialect().quote(property.columnName()) + " " + sqlType(property)
+                    + " generated always as identity primary key";
         }
 
         /**
          * 복합키 타겟 to-one의 FK 컬럼과 {@code @ManyToMany} link table 컬럼의 SQL 타입을 Oracle 네이티브
-         * 토큰으로 매핑한다. base {@link AbstractSchemaGenerator#foreignKeyColumnType(Class, int)}는 ANSI
+         * 토큰으로 매핑한다. base {@link AbstractSchemaGenerator#foreignKeyColumnType(ColumnStorage)}는 ANSI
          * 토큰({@code bigint}/{@code integer}/{@code varchar}/{@code boolean})을 emit하는데, Oracle에는
          * {@code bigint}/{@code boolean} 타입이 없어 DDL이 ORA-00902로 깨지고 {@code varchar}/{@code integer}는
          * 이 dialect의 스칼라 {@link #sqlType} 매핑({@code number(19)}/{@code varchar2})과 불일치한다. 복합키
          * 관계 컬럼도 스칼라 컬럼과 동일한 Oracle 타입을 쓰도록 여기서 재매핑한다({@code oracleColumnType}).
          */
         @Override
-        protected String foreignKeyColumnType(Class<?> columnType, int length) {
-            return oracleColumnType(columnType, length);
+        protected String foreignKeyColumnType(ColumnStorage storage) {
+            return oracleColumnType(storage);
         }
 
         /**
          * {@code @ManyToMany}/{@code @ElementCollection} owner-FK 컬럼(참조 {@code @Id} 도메인 타입)의 Oracle
-         * 네이티브 타입. base {@link AbstractSchemaGenerator#fkColumnType(Class)}의 ANSI 토큰과 같은 이유로
+         * 네이티브 타입. base {@link AbstractSchemaGenerator#fkColumnType(ColumnStorage)}의 ANSI 토큰과 같은 이유로
          * 재매핑한다. base는 String을 {@code varchar(255)}로 고정하므로 Oracle은 {@code varchar2(255)}로 맞춘다.
          */
         @Override
-        protected String fkColumnType(Class<?> idType) {
-            return oracleColumnType(idType, 255);
+        protected String fkColumnType(ColumnStorage storage) {
+            return oracleColumnType(storage);
         }
 
         /**
          * {@code @ElementCollection} 값/키 컬럼(저장 표현 타입)의 Oracle 네이티브 타입. base
-         * {@link AbstractSchemaGenerator#elementColumnType(Class)}의 ANSI 토큰과 같은 이유로 재매핑한다.
+         * {@link AbstractSchemaGenerator#elementColumnType(ColumnStorage)}의 ANSI 토큰과 같은 이유로 재매핑한다.
          */
         @Override
-        protected String elementColumnType(Class<?> valueType) {
-            return oracleColumnType(valueType, 255);
+        protected String elementColumnType(ColumnStorage storage) {
+            return oracleColumnType(storage);
         }
 
         /**
          * 저장 표현 Java 타입을 Oracle 네이티브 컬럼 타입으로 매핑한다 — FK/link/element 컬럼 세 경로가 스칼라
-         * {@link #sqlType}와 동일한 토큰을 쓰도록 단일 자리에 모은다. {@code length}는 {@code varchar2} 컬럼
-         * 길이에만 쓰인다(비-문자 타입에서는 무시). {@code @Temporal} 저장타입의 실제 SQL 토큰은 dialect가
+         * {@link #sqlType}와 동일한 토큰을 쓰도록 단일 자리에 모은다. {@link ColumnStorage#length()}는
+         * {@code varchar2} 컬럼 길이에만 쓰인다(비-문자 타입에서는 무시). {@code @Temporal} 저장타입의 실제 SQL 토큰은 dialect가
          * 결정하며(Oracle은 {@code TIME}-only 타입이 없어 {@link OracleDialect#timeColumnType()}가 fail-fast),
          * 진짜 미지원 타입은 base와 동일하게 fail-fast 한다.
          */
-        private String oracleColumnType(Class<?> type, int length) {
+        private String oracleColumnType(ColumnStorage storage) {
+            Class<?> type = storage.javaType();
             if (type == String.class) {
-                return "varchar2(" + length + ")";
+                return "varchar2(" + storage.length() + ")";
             }
             if (type == Long.class || type == long.class) {
                 return "number(19)";
@@ -325,7 +323,7 @@ public final class OracleDialect implements Dialect {
                 return "binary_float";
             }
             if (type == java.math.BigDecimal.class) {
-                return "number(19, 2)";
+                return bigDecimalColumnType(storage);
             }
             if (type == java.util.UUID.class) {
                 return "varchar2(36)";
@@ -345,6 +343,26 @@ public final class OracleDialect implements Dialect {
                             + "String, Long, Integer, Short, Boolean, Double, Float, BigDecimal, UUID, LocalDate, "
                             + "LocalTime, and LocalDateTime. Use one of these as the id/element type, or add a "
                             + "@Convert to map it to a supported storage type.");
+        }
+
+        @Override
+        protected String bigDecimalColumnType(ColumnStorage storage) {
+            int precision = storage.precision();
+            int scale = storage.scale();
+            if (precision < 0 || precision > 38) {
+                throw new IllegalArgumentException(
+                        "Oracle NUMBER precision must be between 0 and 38: " + precision);
+            }
+            if (scale < -84 || scale > 127) {
+                throw new IllegalArgumentException(
+                        "Oracle NUMBER scale must be between -84 and 127: " + scale);
+            }
+            if (precision == 0) {
+                return scale == 0 ? "number" : "number(*, " + scale + ")";
+            }
+            return scale == 0
+                    ? "number(" + precision + ", 0)"
+                    : "number(" + precision + ", " + scale + ")";
         }
 
         /**

@@ -1,5 +1,6 @@
 package io.nova.dialect.h2;
 
+import io.nova.metadata.ColumnStorage;
 import io.nova.metadata.PersistentProperty;
 import io.nova.sql.AbstractSchemaGenerator;
 import io.nova.sql.Dialect;
@@ -11,6 +12,8 @@ import io.nova.sql.Dialect;
  * {@code DOUBLE PRECISION}을 모두 그대로 수용한다.
  */
 final class H2SchemaGenerator extends AbstractSchemaGenerator {
+    private static final int MAX_NUMERIC_PRECISION = 100_000;
+
     H2SchemaGenerator(Dialect dialect) {
         super(dialect);
     }
@@ -19,5 +22,27 @@ final class H2SchemaGenerator extends AbstractSchemaGenerator {
     protected String identityColumn(PersistentProperty property) {
         return dialect().quote(property.columnName()) + " " + sqlType(property)
                 + " generated always as identity primary key";
+    }
+
+    @Override
+    protected String bigDecimalColumnType(ColumnStorage storage) {
+        int precision = storage.precision();
+        int scale = storage.scale();
+        if (precision < 0 || precision > MAX_NUMERIC_PRECISION) {
+            throw new IllegalArgumentException("H2 numeric precision must be between 0 and "
+                    + MAX_NUMERIC_PRECISION + ": " + precision);
+        }
+        if (scale < 0 || scale > MAX_NUMERIC_PRECISION) {
+            throw new IllegalArgumentException("H2 numeric scale must be between 0 and "
+                    + MAX_NUMERIC_PRECISION + ": " + scale);
+        }
+        if (precision == 0) {
+            return scale == 0 ? "decfloat" : "numeric(" + MAX_NUMERIC_PRECISION + ", " + scale + ")";
+        }
+        if (scale > precision) {
+            throw new IllegalArgumentException("H2 numeric scale must not exceed precision: "
+                    + scale + " > " + precision);
+        }
+        return "numeric(" + precision + ", " + scale + ")";
     }
 }

@@ -32,73 +32,16 @@ public record ElementCollectionInfo(
         List<EmbeddableColumn> embeddableColumns,
         OrderColumnInfo orderColumn,
         MapKeyInfo mapKey,
-        Class<?> valueColumnType,
+        ColumnStorage valueStorage,
         AttributeConverter<Object, Object> valueConverter
 ) {
     public ElementCollectionInfo {
         embeddableColumns = embeddableColumns == null ? List.of() : List.copyOf(embeddableColumns);
-        // 저장 표현 컬럼 타입이 명시되지 않으면 도메인 타입을 그대로 저장타입으로 쓴다(기본 스칼라 원소).
-        valueColumnType = valueColumnType == null ? valueType : valueColumnType;
-    }
-
-    /**
-     * 기본 타입 원소용 생성자 — {@code @Embeddable} 펼침 컬럼도 순서 컬럼도 map key도 없는 단일 값 컬럼 형태.
-     */
-    public ElementCollectionInfo(
-            String collectionTableName,
-            String ownerForeignKeyColumn,
-            String valueColumn,
-            Class<?> valueType,
-            boolean usesSet) {
-        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet,
-                List.of(), null, null, null, null);
-    }
-
-    /**
-     * {@code @Embeddable} 원소용 생성자 — 펼침 컬럼은 있고 순서 컬럼/map key는 없는 형태.
-     */
-    public ElementCollectionInfo(
-            String collectionTableName,
-            String ownerForeignKeyColumn,
-            String valueColumn,
-            Class<?> valueType,
-            boolean usesSet,
-            List<EmbeddableColumn> embeddableColumns) {
-        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet,
-                embeddableColumns, null, null, null, null);
-    }
-
-    /**
-     * 정렬({@code @OrderColumn}) 정보까지 받는 생성자 — map key는 없는 형태(List/Set 값 컬렉션).
-     */
-    public ElementCollectionInfo(
-            String collectionTableName,
-            String ownerForeignKeyColumn,
-            String valueColumn,
-            Class<?> valueType,
-            boolean usesSet,
-            List<EmbeddableColumn> embeddableColumns,
-            OrderColumnInfo orderColumn) {
-        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet,
-                embeddableColumns, orderColumn, null, null, null);
-    }
-
-    /**
-     * {@code @Embeddable}/{@code @OrderColumn}/{@code Map} key까지 받는 canonical 근접 생성자에서 원소
-     * 저장타입/컨버터를 생략한 형태 — 기본 스칼라 원소용. 저장타입은 {@link #valueType()}과 같고
-     * 컨버터는 없다({@code null}).
-     */
-    public ElementCollectionInfo(
-            String collectionTableName,
-            String ownerForeignKeyColumn,
-            String valueColumn,
-            Class<?> valueType,
-            boolean usesSet,
-            List<EmbeddableColumn> embeddableColumns,
-            OrderColumnInfo orderColumn,
-            MapKeyInfo mapKey) {
-        this(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType, usesSet,
-                embeddableColumns, orderColumn, mapKey, null, null);
+        if (embeddableColumns.isEmpty()) {
+            java.util.Objects.requireNonNull(valueStorage, "valueStorage");
+        } else {
+            valueStorage = null;
+        }
     }
 
     /**
@@ -125,6 +68,10 @@ public record ElementCollectionInfo(
         return mapKey != null;
     }
 
+    public Class<?> valueColumnType() {
+        return valueStorage.javaType();
+    }
+
     /**
      * 기본 타입 원소의 도메인 값을 collection table에 바인딩할 저장 표현으로 인코딩한다 — 스칼라 프로퍼티의
      * {@link PersistentProperty#toColumnValue(Object)}와 동일한 converter 경로를 탄다. enum은 이름/ordinal로,
@@ -136,7 +83,7 @@ public record ElementCollectionInfo(
     }
 
     /**
-     * collection table에서 읽은 저장 표현({@link #valueColumnType()} 타입)을 도메인 원소 값으로 디코딩한다 —
+     * collection table에서 읽은 저장 표현({@link #valueStorage()} 타입)을 도메인 원소 값으로 디코딩한다 —
      * 스칼라 프로퍼티의 {@link PersistentProperty#toPropertyValue(Object)}와 대칭이다. 컨버터가 없으면 값을
      * 그대로 통과시킨다. {@code null}은 그대로 둔다.
      */
@@ -146,15 +93,14 @@ public record ElementCollectionInfo(
 
     /**
      * 이 매핑을 DDL/SQL 렌더링용 {@link CollectionTableDefinition}으로 변환한다 — schema 생성과 row 동기화가
-     * 같은 정의를 공유하도록 한 자리에서 만든다. {@code ownerForeignKeyType}은 owner {@code @Id}의 Java 타입(호출자가
-     * primitive wrap 여부를 결정해 넘긴다). {@code @Embeddable} 펼침 컬럼, {@code @OrderColumn}, {@code Map} key
-     * 컬럼을 모두 반영한다.
+     * 같은 정의를 공유하도록 한 자리에서 만든다. {@code ownerForeignKeyStorage}은 owner {@code @Id}의 완전한
+     * 물리 저장 특성이다. {@code @Embeddable} 펼침 컬럼, {@code @OrderColumn}, {@code Map} key 컬럼을 모두 반영한다.
      */
-    public CollectionTableDefinition toCollectionTableDefinition(Class<?> ownerForeignKeyType) {
+    public CollectionTableDefinition toCollectionTableDefinition(ColumnStorage ownerForeignKeyStorage) {
         List<CollectionTableDefinition.ElementColumn> elementColumns = new ArrayList<>();
         for (EmbeddableColumn column : embeddableColumns) {
             elementColumns.add(new CollectionTableDefinition.ElementColumn(
-                    column.columnName(), column.columnType(), column.json()));
+                    column.columnName(), column.storage(), column.json()));
         }
         // Map key 컬럼: @Embeddable key는 다중 컬럼(mapKeyColumns)으로, 그 외(기본/enum/temporal/UUID)는 단일
         // 컬럼(keyColumn)으로 표현한다. 둘 다 mapKey==null이면 map이 아니다.
@@ -164,24 +110,24 @@ public record ElementCollectionInfo(
             if (mapKey.embeddableKey()) {
                 mapKeyColumns = mapKey.embeddableKeyColumns().stream()
                         .map(column -> new CollectionTableDefinition.ElementColumn(
-                                column.columnName(), column.columnType(), column.json()))
+                                column.columnName(), column.storage(), column.json()))
                         .toList();
             } else {
-                keyColumn = new CollectionTableDefinition.MapKeyColumn(mapKey.keyColumn(), mapKey.keyColumnType());
+                keyColumn = new CollectionTableDefinition.MapKeyColumn(mapKey.keyColumn(), mapKey.keyStorage());
             }
         }
-        // DDL/SQL 컬럼 타입은 도메인 타입(valueType)이 아니라 저장 표현 타입(valueColumnType)을 따라야 한다
-        // (enum→varchar/integer, UUID→varchar 등). @Embeddable 원소는 valueColumnType이 valueType과 같아
-        // (elementColumns가 실제 컬럼을 결정하므로) 무해하다.
+        // DDL/SQL 컬럼 타입은 도메인 타입(valueType)이 아니라 저장 표현(valueStorage)을 따라야 한다
+        // (enum→varchar/integer, UUID→varchar 등). @Embeddable 원소는 elementColumns가 실제 컬럼을 결정한다.
         return new CollectionTableDefinition(
-                collectionTableName, ownerForeignKeyColumn, ownerForeignKeyType,
-                valueColumn, valueColumnType, elementColumns, orderColumn, keyColumn, mapKeyColumns);
+                collectionTableName, ownerForeignKeyColumn, ownerForeignKeyStorage,
+                valueColumn, valueStorage, elementColumns, orderColumn, keyColumn, mapKeyColumns);
     }
+
 
     /**
      * {@code valueConverter}는 저장 표현 인코딩/디코딩을 담당하는 전략 객체일 뿐 매핑 identity의 일부가 아니다.
      * 동일한 원소 매핑이라도 converter 인스턴스가 다르면 record의 기본 equality가 unequal로 판정하므로,
-     * converter를 <em>제외한</em> 나머지 매핑 컴포넌트로만 동등성을 정의한다({@code valueColumnType}은 converter와
+     * converter를 <em>제외한</em> 나머지 매핑 컴포넌트로만 동등성을 정의한다({@code valueStorage}은 converter와
      * 함께 결정되므로 포함해도 안전하고, 매핑을 구분하는 데 도움이 된다).
      */
     @Override
@@ -200,38 +146,39 @@ public record ElementCollectionInfo(
                 && java.util.Objects.equals(embeddableColumns, that.embeddableColumns)
                 && java.util.Objects.equals(orderColumn, that.orderColumn)
                 && java.util.Objects.equals(mapKey, that.mapKey)
-                && java.util.Objects.equals(valueColumnType, that.valueColumnType);
+                && java.util.Objects.equals(valueStorage, that.valueStorage);
     }
 
     @Override
     public int hashCode() {
         return java.util.Objects.hash(collectionTableName, ownerForeignKeyColumn, valueColumn, valueType,
-                usesSet, embeddableColumns, orderColumn, mapKey, valueColumnType);
+                usesSet, embeddableColumns, orderColumn, mapKey, valueStorage);
     }
 
     /**
      * {@code @Embeddable} 원소의 영속 필드 하나를 collection table 컬럼으로 매핑한 정보. {@code field}는 원소
      * 인스턴스에서 값을 읽고/쓰기 위한 reflective handle이고, {@code columnName}은 (선택적 {@code @AttributeOverride}
-     * 반영된) 물리 컬럼 이름, {@code columnType}은 저장 표현의 Java 타입(primitive는 wrapper로 정규화됨)이다.
+     * 반영된) 물리 컬럼 이름, {@code storage}는 완전한 저장 특성이다.
      */
     public record EmbeddableColumn(
             PersistentAttributeAccess attribute,
             String columnName,
-            Class<?> columnType,
+            ColumnStorage storage,
             AttributeConverter<Object, Object> converter,
             boolean json) {
 
         public EmbeddableColumn {
             java.util.Objects.requireNonNull(attribute, "attribute");
-        }
-
-        public EmbeddableColumn(Field field, String columnName, Class<?> columnType) {
-            this(new PersistentAttributeAccess(field.getName(), field), columnName, columnType, null, false);
+            java.util.Objects.requireNonNull(storage, "storage");
         }
 
         /** Backing field retained for record-constructor discovery; logical access uses {@link #attribute()}. */
         public Field field() {
             return attribute.field();
+        }
+
+        public Class<?> columnType() {
+            return storage.javaType();
         }
 
         public Object encode(Object value) {
@@ -262,13 +209,13 @@ public record ElementCollectionInfo(
             return other instanceof EmbeddableColumn that
                     && java.util.Objects.equals(attribute, that.attribute)
                     && java.util.Objects.equals(columnName, that.columnName)
-                    && java.util.Objects.equals(columnType, that.columnType)
+                    && java.util.Objects.equals(storage, that.storage)
                     && json == that.json;
         }
 
         @Override
         public int hashCode() {
-            return java.util.Objects.hash(attribute, columnName, columnType, json);
+            return java.util.Objects.hash(attribute, columnName, storage, json);
         }
     }
 
@@ -277,7 +224,7 @@ public record ElementCollectionInfo(
      * 저장 표현 타입을 담는다.
      * <ul>
      *   <li>{@code keyType} — 도메인 key 타입(enum 클래스 또는 String/Integer/Long 등 기본 타입).</li>
-     *   <li>{@code keyColumnType} — key 컬럼의 저장 표현 Java 타입. enum key는 {@code @MapKeyEnumerated}에 따라
+     *   <li>{@code keyStorage} — key 컬럼의 저장 표현 Java 타입. enum key는 {@code @MapKeyEnumerated}에 따라
      *       {@link String}(STRING) 또는 {@link Integer}(ORDINAL)로, {@code UUID} key는 {@link String}(varchar)으로,
      *       그 외 기본 타입 key는 자기 자신(wrapper 정규화)으로 저장된다. DDL/SQL 컬럼 타입 유도에 쓴다.</li>
      *   <li>{@code keyEnumType} — enum key의 저장 전략({@code STRING}/{@code ORDINAL}). enum key가 아니면 {@code null}.</li>
@@ -287,53 +234,62 @@ public record ElementCollectionInfo(
      *       {@code varchar}→{@code UUID} 직접 디코딩을 못 하는 read-source-type 함정을 EC value와 대칭으로 피한다.</li>
      * </ul>
      * {@code keyType}이 {@code @Embeddable}(다중 컬럼) key이면 {@link #embeddableKeyColumns()}에 펼친 key 컬럼들이
-     * 담기고 {@link #keyColumn()}/{@link #keyColumnType()}/{@link #keyEnumType()}/{@code keyConverter}는 의미가
+     * 담기고 {@link #keyColumn()}/{@link #keyStorage()}/{@link #keyEnumType()}/{@code keyConverter}는 의미가
      * 없다(operations가 각 컬럼을 개별 처리한다). {@code keyType}이 단일 {@code @Id} {@code @Entity} key이면
      * {@link #entityKey()}가 {@code true}이며, key 컬럼은 참조 {@code @Id}와 동일한 단일 FK 저장 규칙(단일컬럼 to-one
      * FK와 동일)을 따른다. {@code @MapKey}(엔티티 property를 key로) 및 복합 {@code @Id} entity key 클래스는 v1 범위
      * 밖이며 {@link EntityMetadataFactory}가 fail-fast로 거부한다.
      */
-    public record MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType,
+    public record MapKeyInfo(String keyColumn, Class<?> keyType, ColumnStorage keyStorage, EnumType keyEnumType,
             AttributeConverter<Object, Object> keyConverter, List<EmbeddableColumn> embeddableKeyColumns,
             boolean entityKey) {
         public MapKeyInfo {
             // @Embeddable(다중 컬럼) key의 펼침 컬럼 목록. 단일 컬럼 key(기본/enum/temporal/UUID/entity)는 빈 리스트다.
             embeddableKeyColumns = embeddableKeyColumns == null ? List.of() : List.copyOf(embeddableKeyColumns);
+            if (embeddableKeyColumns.isEmpty()) {
+                java.util.Objects.requireNonNull(keyStorage, "keyStorage");
+            } else {
+                keyStorage = null;
+            }
+        }
+
+        public Class<?> keyColumnType() {
+            return keyStorage.javaType();
         }
 
         /**
          * enum/순수 기본 타입 key용 — 저장 표현 converter 없이({@code null}) 만든다.
          */
-        public MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType) {
-            this(keyColumn, keyType, keyColumnType, keyEnumType, null, List.of(), false);
+        public MapKeyInfo(String keyColumn, Class<?> keyType, ColumnStorage keyStorage, EnumType keyEnumType) {
+            this(keyColumn, keyType, keyStorage, keyEnumType, null, List.of(), false);
         }
 
         /**
          * 저장타입 분리 단일 컬럼 key(UUID→varchar via converter, temporal 등)용 — {@code @Embeddable} 펼침 컬럼 없이
          * 단일 컬럼 + converter로 만든다.
          */
-        public MapKeyInfo(String keyColumn, Class<?> keyType, Class<?> keyColumnType, EnumType keyEnumType,
+        public MapKeyInfo(String keyColumn, Class<?> keyType, ColumnStorage keyStorage, EnumType keyEnumType,
                 AttributeConverter<Object, Object> keyConverter) {
-            this(keyColumn, keyType, keyColumnType, keyEnumType, keyConverter, List.of(), false);
+            this(keyColumn, keyType, keyStorage, keyEnumType, keyConverter, List.of(), false);
         }
 
         /**
          * {@code @MapKeyClass}가 가리키는 {@code @Embeddable} key용 — key를 다중 컬럼({@code embeddableKeyColumns})으로
-         * 펼쳐 저장한다. 단일 key 컬럼/enum/converter는 의미가 없어 각각 {@code ""}/{@code null}이며, {@code keyColumnType}은
+         * 펼쳐 저장한다. 단일 key 컬럼/enum/converter는 의미가 없어 각각 {@code ""}/{@code null}이며, {@code keyStorage}은
          * {@code @Embeddable} 타입 자신이다(실제 컬럼 타입은 {@code embeddableKeyColumns}가 결정).
          */
         public static MapKeyInfo embeddable(Class<?> keyType, List<EmbeddableColumn> embeddableKeyColumns) {
-            return new MapKeyInfo("", keyType, keyType, null, null, embeddableKeyColumns, false);
+            return new MapKeyInfo("", keyType, null, null, null, embeddableKeyColumns, false);
         }
 
         /**
          * {@code @MapKeyClass}가 가리키는 단일 {@code @Id} {@code @Entity} key용 — key 컬럼은 참조 {@code @Id}의
-         * 단일컬럼 FK 저장 표현(단일 to-one FK와 동일 규칙)을 그대로 쓴다. {@code keyColumnType}/{@code keyConverter}는
+         * 단일컬럼 FK 저장 표현(단일 to-one FK와 동일 규칙)을 그대로 쓴다. {@code keyStorage}/{@code keyConverter}는
          * 참조 {@code @Id}의 저장타입/converter이고, {@code keyEnumType}은 의미가 없어 {@code null}이다.
          */
-        public static MapKeyInfo entity(String keyColumn, Class<?> keyType, Class<?> keyColumnType,
+        public static MapKeyInfo entity(String keyColumn, Class<?> keyType, ColumnStorage keyStorage,
                 AttributeConverter<Object, Object> keyConverter) {
-            return new MapKeyInfo(keyColumn, keyType, keyColumnType, null, keyConverter, List.of(), true);
+            return new MapKeyInfo(keyColumn, keyType, keyStorage, null, keyConverter, List.of(), true);
         }
 
         /**
@@ -365,7 +321,7 @@ public record ElementCollectionInfo(
         }
 
         /**
-         * collection table에서 읽은 저장 표현({@link #keyColumnType()} 타입)을 도메인 map key로 디코딩한다 —
+         * collection table에서 읽은 저장 표현({@link #keyStorage()} 타입)을 도메인 map key로 디코딩한다 —
          * {@link #encodeKey(Object)}와 대칭. converter가 없으면 값을 그대로 통과시킨다. {@code null}은 그대로 둔다.
          */
         public Object decodeKey(Object stored) {
@@ -375,7 +331,7 @@ public record ElementCollectionInfo(
         /**
          * {@code keyConverter}는 저장 표현 인코딩/디코딩 전략일 뿐 매핑 identity의 일부가 아니다({@link ElementCollectionInfo}의
          * {@code valueConverter} 취급과 동일). 동일한 key 매핑이라도 converter 인스턴스가 다르면 record 기본 equality가
-         * unequal로 판정하므로, converter를 제외한 나머지 컴포넌트로만 동등성을 정의한다({@code keyColumnType}은 converter와
+         * unequal로 판정하므로, converter를 제외한 나머지 컴포넌트로만 동등성을 정의한다({@code keyStorage}은 converter와
          * 함께 결정되므로 포함해도 안전하다).
          */
         @Override
@@ -388,7 +344,7 @@ public record ElementCollectionInfo(
             }
             return java.util.Objects.equals(keyColumn, that.keyColumn)
                     && java.util.Objects.equals(keyType, that.keyType)
-                    && java.util.Objects.equals(keyColumnType, that.keyColumnType)
+                    && java.util.Objects.equals(keyStorage, that.keyStorage)
                     && keyEnumType == that.keyEnumType
                     && java.util.Objects.equals(embeddableKeyColumns, that.embeddableKeyColumns)
                     && entityKey == that.entityKey;
@@ -397,7 +353,7 @@ public record ElementCollectionInfo(
         @Override
         public int hashCode() {
             return java.util.Objects.hash(
-                    keyColumn, keyType, keyColumnType, keyEnumType, embeddableKeyColumns, entityKey);
+                    keyColumn, keyType, keyStorage, keyEnumType, embeddableKeyColumns, entityKey);
         }
     }
 }

@@ -184,9 +184,11 @@ class MapsIdH2IntegrationTest {
                         row -> row.get("CONSTRAINT_NAME", String.class)))
                 .expectNext("fk_maps_id_decimal_branch_company").verifyComplete();
 
-        StepVerifier.create(operations.save(company)
-                .flatMap(savedCompany -> {
-                    branch.setCompany(savedCompany);
+        StepVerifier.create(operations.executeNative(NativeQuery.of(
+                        "insert into \"maps_id_decimal_company\" (\"id\") values (12.340)"))
+                .thenReturn(company)
+                .flatMap(persistedCompany -> {
+                    branch.setCompany(persistedCompany);
                     return operations.save(branch);
                 })
                 .flatMap(savedBranch -> {

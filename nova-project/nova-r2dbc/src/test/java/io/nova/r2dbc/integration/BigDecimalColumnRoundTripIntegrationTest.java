@@ -47,11 +47,11 @@ class BigDecimalColumnRoundTripIntegrationTest {
                 .collectList())
                 .assertNext(columns -> assertEquals(List.of(
                         new NumericColumn("id", "BIGINT", 64, 0),
-                        new NumericColumn("default_amount", "DECFLOAT", 19, 2),
-                        new NumericColumn("explicit_amount", "DECFLOAT", 12, 4),
-                        new NumericColumn("precision_only_amount", "DECFLOAT", 9, 0),
-                        new NumericColumn("scale_only_amount", "DECFLOAT", 19, 2),
-                        new NumericColumn("differing_scale_amount", "DECFLOAT", 12, 6)),
+                        new NumericColumn("default_amount", "DECFLOAT", 100_000, null),
+                        new NumericColumn("explicit_amount", "NUMERIC", 12, 4),
+                        new NumericColumn("precision_only_amount", "NUMERIC", 9, 0),
+                        new NumericColumn("scale_only_amount", "NUMERIC", 100_000, 6),
+                        new NumericColumn("differing_scale_amount", "NUMERIC", 12, 6)),
                         columns,
                         "H2 catalog must expose the exact no-loss BigDecimal DDL policy"))
                 .verifyComplete();

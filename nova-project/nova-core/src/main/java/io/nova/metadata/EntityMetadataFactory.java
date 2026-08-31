@@ -1035,6 +1035,11 @@ public final class EntityMetadataFactory {
                 pkJoinColumn = primaryPkColumn;
                 referencedColumn = primaryPkColumn;
             } else if (pkJoinColumns.length == 1) {
+                if (!pkJoinColumns[0].columnDefinition().isBlank()) {
+                    throw new IllegalArgumentException(entityType.getName() + " @SecondaryTable(\"" + name
+                            + "\") @PrimaryKeyJoinColumn(columnDefinition) is not supported:"
+                            + " secondary-table storage must reuse the primary identifier shape");
+                }
                 pkJoinColumn = pkJoinColumns[0].name().isBlank() ? primaryPkColumn : pkJoinColumns[0].name();
                 referencedColumn = pkJoinColumns[0].referencedColumnName().isBlank()
                         ? primaryPkColumn : pkJoinColumns[0].referencedColumnName();
@@ -2258,6 +2263,7 @@ public final class EntityMetadataFactory {
         ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
         if (manyToOne != null) {
             JoinColumn join = attribute.annotation(JoinColumn.class);
+            rejectJoinColumnDefinition(join, attribute.declaringType().getName() + "." + attribute.name());
             Class<?> target = manyToOne.targetEntity() == void.class ? attribute.javaType() : manyToOne.targetEntity();
             ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
             ToOneForeignKey compositeForeignKey = storage == null
@@ -2270,8 +2276,8 @@ public final class EntityMetadataFactory {
             return new PersistentProperty(attribute.field(), attribute.name(),
                     columnName,
                     storage == null ? Long.class : storage.javaType(), false, false,
-                    manyToOne.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.length(),
-                    0, 0, null, "", storage == null ? null : storage.converter(), false, false, false,
+                    manyToOne.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.storage().length(),
+                    storage == null ? 0 : storage.storage().precision(), storage == null ? 0 : storage.storage().scale(), null, "", storage == null ? null : storage.converter(), false, false, false,
                     false, List.of(), false, null, false, true, target,
                     manyToOne.optional() && (join == null || join.nullable()), false, null, "",
                     join == null || join.insertable(), join == null || join.updatable(), join != null && join.unique(),
@@ -2449,6 +2455,13 @@ public final class EntityMetadataFactory {
                 converterColumnType = storage.columnType();
             }
         }
+        Class<?> storageType = converterColumnType == null ? wrapPrimitiveType(javaType) : converterColumnType;
+        if (storageType == java.math.BigDecimal.class
+                && column != null && !column.columnDefinition().isBlank()) {
+            throw new IllegalArgumentException(location
+                    + " BigDecimal storage cannot use @Column(columnDefinition):"
+                    + " derived identifier and relationship columns must reuse an exact numeric shape");
+        }
         return new PersistentProperty(attribute.field(), attribute.name(), columnName, javaType, id,
                 version, nullable,
                 column == null ? 255 : column.length(), column == null ? 0 : column.precision(),
@@ -2497,6 +2510,7 @@ public final class EntityMetadataFactory {
                     ColumnDdlDefinition.EMPTY);
         }
         JoinColumn join = attribute.annotation(JoinColumn.class);
+        rejectJoinColumnDefinition(join, entityType.getName() + "." + attribute.name());
         rejectUnsupportedOwningOneToOne(entityType, attribute.name(), annotation, join,
                 attribute.annotation(JoinColumns.class), attribute.isAnnotationPresent(MapsId.class));
         ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
@@ -2511,8 +2525,8 @@ public final class EntityMetadataFactory {
         return new PersistentProperty(attribute.field(), attribute.name(),
                 columnName,
                 storage == null ? Long.class : storage.javaType(), false, false,
-                annotation.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.length(),
-                0, 0, null, "", storage == null ? null : storage.converter(), false, false, false,
+                annotation.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.storage().length(),
+                storage == null ? 0 : storage.storage().precision(), storage == null ? 0 : storage.storage().scale(), null, "", storage == null ? null : storage.converter(), false, false, false,
                 false, List.of(), false, null, false, true, target,
                 annotation.optional() && (join == null || join.nullable()), false, null, "",
                 join == null || join.insertable(), join == null || join.updatable(), oneToOne || (join != null && join.unique()),
@@ -2906,6 +2920,13 @@ public final class EntityMetadataFactory {
         boolean updatable = column == null || column.updatable();
         boolean unique = column != null && column.unique();
         String columnDefinition = column == null ? "" : column.columnDefinition();
+        Class<?> storageType = converterColumnType == null
+                ? wrapPrimitiveType(field.getType()) : converterColumnType;
+        if (storageType == java.math.BigDecimal.class && !columnDefinition.isBlank()) {
+            throw new IllegalArgumentException(declaringType.getName() + "." + field.getName()
+                    + " BigDecimal storage cannot use @Column(columnDefinition):"
+                    + " derived identifier and relationship columns must reuse an exact numeric shape");
+        }
         boolean lob = memberPresent(field, Lob.class);
         // @Basic(optional=false)은 @Column(nullable=false)과 동일하게 NOT NULL 제약으로 반영한다. JPA에서 basic
         // 속성의 nullability는 @Column.nullable / @Basic.optional 중 하나라도 false면 NOT NULL이다. (@Basic.fetch는
@@ -3666,6 +3687,7 @@ public final class EntityMetadataFactory {
         String location = entityType.getName() + "." + field.getName();
         boolean toOne = memberPresent(field, ManyToOne.class) || memberPresent(field, OneToOne.class);
         JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
+        rejectJoinColumnDefinition(joinColumn, entityType.getName() + "." + field.getName());
         if (joinColumn != null && isExplicitForeignKey(joinColumn.foreignKey()) && !toOne) {
             throw new IllegalStateException(
                     location + " @JoinColumn(foreignKey=...) is only honored on an owning"
@@ -4052,15 +4074,26 @@ public final class EntityMetadataFactory {
     }
 
     private static ForeignKeyStorage resolveScalarStorage(PersistentAttributeAccess id) {
+        return resolveScalarStorage(id, id.annotation(Column.class), null);
+    }
+
+    private static ForeignKeyStorage resolveScalarStorage(PersistentAttributeAccess id, Column column) {
+        return resolveScalarStorage(id, column, null);
+    }
+
+    private static ForeignKeyStorage resolveScalarStorage(
+            PersistentAttributeAccess id, Column column, Convert conversionOverride) {
         Class<?> domainType = wrapPrimitiveType(id.javaType());
-        Column column = id.annotation(Column.class);
         int length = column == null ? 255 : column.length();
-        Convert convert = id.annotation(Convert.class);
+        int precision = column == null ? 0 : column.precision();
+        int scale = column == null ? 0 : column.scale();
+        Convert convert = conversionOverride != null ? conversionOverride : id.annotation(Convert.class);
         if (convert != null && !convert.disableConversion()) {
             Class<?>[] attributeAndColumn = resolveJpaConverterTypeArguments(convert.converter());
             AttributeConverter<Object, Object> converter =
                     new JpaAttributeConverterAdapter<>(instantiateJpaConverter(convert.converter()));
-            return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1], length);
+            return checkedIdentifierStorage(id, column, new ForeignKeyStorage(domainType, converter, attributeAndColumn[1],
+                    new ColumnStorage(attributeAndColumn[1], length, precision, scale)));
         }
         Enumerated enumerated = id.annotation(Enumerated.class);
         if (enumerated != null || id.javaType().isEnum()) {
@@ -4068,11 +4101,35 @@ public final class EntityMetadataFactory {
             EnumMapping mapping = resolveEnumMapping(id.javaType(), enumType);
             Class<?> storageType = mapping.customColumnType() != null ? mapping.customColumnType()
                     : enumType == EnumType.STRING ? String.class : Integer.class;
-            return new ForeignKeyStorage(domainType, mapping.converter(), storageType, length);
+            return checkedIdentifierStorage(id, column, new ForeignKeyStorage(domainType, mapping.converter(), storageType,
+                    new ColumnStorage(storageType, length, precision, scale)));
         }
         ElementValueMapping basic = resolveBasicStorageMapping(domainType);
-        return new ForeignKeyStorage(domainType, basic.converter(),
-                basic.converter() == null ? null : basic.columnType(), length);
+        Class<?> columnType = basic.converter() == null ? domainType : basic.columnType();
+        return checkedIdentifierStorage(id, column, new ForeignKeyStorage(domainType, basic.converter(),
+                basic.converter() == null ? null : basic.columnType(),
+                new ColumnStorage(columnType, length, precision, scale)));
+    }
+
+    private static ForeignKeyStorage checkedIdentifierStorage(
+            PersistentAttributeAccess id, Column column, ForeignKeyStorage storage) {
+        rejectRawBigDecimalDefinition(column, storage.storage().javaType(),
+                "BigDecimal identifier " + id.declaringType().getName() + "." + id.name());
+        return storage;
+    }
+
+    private static void rejectRawBigDecimalDefinition(Column column, Class<?> storageType, String location) {
+        if (storageType == java.math.BigDecimal.class && column != null && !column.columnDefinition().isBlank()) {
+            throw new IllegalArgumentException(location + " cannot use @Column(columnDefinition):"
+                    + " BigDecimal storage requires a reusable exact numeric shape");
+        }
+    }
+
+    private static void rejectJoinColumnDefinition(JoinColumn joinColumn, String location) {
+        if (joinColumn != null && !joinColumn.columnDefinition().isBlank()) {
+            throw new IllegalArgumentException(location + " @JoinColumn(columnDefinition) is not supported:"
+                    + " relationship storage must exactly reuse the referenced identifier shape");
+        }
     }
 
     /**
@@ -4087,7 +4144,7 @@ public final class EntityMetadataFactory {
      * varchar 계열 컬럼 길이(참조 {@code @Id}의 {@code @Column(length)}, 기본 255)다.
      */
     private record ForeignKeyStorage(Class<?> javaType, AttributeConverter<Object, Object> converter,
-            Class<?> converterColumnType, int length) {
+            Class<?> converterColumnType, ColumnStorage storage) {
     }
 
     /**
@@ -4095,7 +4152,7 @@ public final class EntityMetadataFactory {
      * DDL/read/write에 필요한 저장타입/converter/길이/참조 컬럼명/참조 경로를 담는다.
      */
     private record ReferencedIdComponent(String referencedColumnName, Class<?> domainType,
-            AttributeConverter<Object, Object> converter, Class<?> converterColumnType, int length,
+            AttributeConverter<Object, Object> converter, Class<?> converterColumnType, ColumnStorage storage,
             List<PersistentAttributeAccess> referencedPath) {
     }
 
@@ -4112,7 +4169,7 @@ public final class EntityMetadataFactory {
     private ToOneForeignKey resolveCompositeToOneForeignKey(
             Class<?> entityType, Class<?> targetType, PersistentAttributeAccess attribute) {
         List<ReferencedIdComponent> components = resolveReferencedIdComponents(targetType);
-        if (components == null || components.size() < 2) {
+        if (components == null || components.isEmpty()) {
             return null;
         }
         JoinColumn[] perComponent = alignJoinColumns(entityType, attribute, components);
@@ -4127,13 +4184,10 @@ public final class EntityMetadataFactory {
                     ? joinColumn.name()
                     : namingStrategy.columnName(attribute.name() + "_" + component.referencedColumnName());
             boolean nullable = relationOptional && (joinColumn == null || joinColumn.nullable());
-            Class<?> columnType = component.converterColumnType() != null
-                    ? component.converterColumnType() : component.domainType();
             fkColumns.add(new ToOneForeignKeyColumn(
                     fkColumnName,
                     component.referencedColumnName(),
-                    columnType,
-                    component.length(),
+                    component.storage(),
                     nullable,
                     component.converter(),
                     component.referencedPath()));
@@ -4161,9 +4215,15 @@ public final class EntityMetadataFactory {
             if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
                 return null;
             }
-            Map<String, String> columnOverrides = new java.util.HashMap<>();
+            Map<String, Column> columnOverrides = new java.util.HashMap<>();
             for (AttributeOverride override : embeddedId.annotationsByType(AttributeOverride.class)) {
-                columnOverrides.put(override.name(), override.column().name());
+                columnOverrides.put(override.name(), override.column());
+            }
+            Map<String, Convert> conversionOverrides = new java.util.HashMap<>();
+            for (Convert convert : embeddedId.annotationsByType(Convert.class)) {
+                if (!convert.attributeName().isBlank()) {
+                    conversionOverrides.put(convert.attributeName(), convert);
+                }
             }
             List<ReferencedIdComponent> result = new ArrayList<>();
             for (PersistentAttributeAccess component
@@ -4172,11 +4232,13 @@ public final class EntityMetadataFactory {
                     // nested embedded @EmbeddedId 컴포넌트는 미지원 — 조용한 오매핑 대신 확장하지 않는다.
                     return null;
                 }
-                String override = columnOverrides.get(component.name());
-                String columnName = override != null && !override.isBlank() ? override : columnNameOf(component);
-                ForeignKeyStorage storage = resolveScalarStorage(component);
+                Column override = columnOverrides.get(component.name());
+                String columnName = override != null && !override.name().isBlank() ? override.name() : columnNameOf(component);
+                ForeignKeyStorage storage = resolveScalarStorage(component,
+                        override == null ? component.annotation(Column.class) : override,
+                        conversionOverrides.get(component.name()));
                 result.add(new ReferencedIdComponent(columnName, storage.javaType(), storage.converter(),
-                        storage.converterColumnType(), storage.length(), List.of(embeddedId, component)));
+                        storage.converterColumnType(), storage.storage(), List.of(embeddedId, component)));
             }
             return result.isEmpty() ? null : result;
         }
@@ -4185,7 +4247,7 @@ public final class EntityMetadataFactory {
             for (PersistentAttributeAccess id : topLevelIds) {
                 ForeignKeyStorage storage = resolveScalarStorage(id);
                 result.add(new ReferencedIdComponent(columnNameOf(id), storage.javaType(), storage.converter(),
-                        storage.converterColumnType(), storage.length(), List.of(id)));
+                        storage.converterColumnType(), storage.storage(), List.of(id)));
             }
             return result;
         }
@@ -4223,6 +4285,9 @@ public final class EntityMetadataFactory {
             return result;
         }
         String location = entityType.getName() + "." + attribute.name();
+        for (JoinColumn joinColumn : declared) {
+            rejectJoinColumnDefinition(joinColumn, location);
+        }
         if (declared.length != components.size()) {
             throw new IllegalArgumentException(location + " references composite-key entity with "
                     + components.size() + " id columns but declares " + declared.length
@@ -4367,6 +4432,7 @@ public final class EntityMetadataFactory {
                 ? new ToOneCascadeInfo(Set.of(manyToOne.cascade()))
                 : null;
         JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
+        rejectJoinColumnDefinition(joinColumn, entityType.getName() + "." + field.getName());
         Class<?> targetType = manyToOne.targetEntity();
         if (targetType == void.class) {
             targetType = field.getType();
@@ -4387,7 +4453,7 @@ public final class EntityMetadataFactory {
         Class<?> fkJavaType = fkStorage != null ? fkStorage.javaType() : Long.class;
         AttributeConverter<Object, Object> fkConverter = fkStorage != null ? fkStorage.converter() : null;
         Class<?> fkConverterColumnType = fkStorage != null ? fkStorage.converterColumnType() : null;
-        int fkLength = fkStorage != null ? fkStorage.length() : 255;
+        int fkLength = fkStorage != null ? fkStorage.storage().length() : 255;
         // 단일 @Id 해석 불가(복합키 @EmbeddedId/@IdClass)면 다중컬럼 FK 모델로 확장한다. 복합 FK가 있으면
         // 단일 columnName 대신 그 첫 FK 컬럼명을 대표로 두고(단일컬럼 접근자/uniqueness 표기 결정성 유지),
         // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
@@ -4406,8 +4472,8 @@ public final class EntityMetadataFactory {
                 false,
                 nullable,
                 fkLength,
-                0,
-                0,
+                fkStorage != null ? fkStorage.storage().precision() : 0,
+                fkStorage != null ? fkStorage.storage().scale() : 0,
                 null,
                 "",
                 fkConverter,
@@ -4460,6 +4526,7 @@ public final class EntityMetadataFactory {
         ManyToOne relation = attribute.annotation(ManyToOne.class);
         Class<?> target = relation.targetEntity() == void.class ? attribute.javaType() : relation.targetEntity();
         JoinColumn join = attribute.annotation(JoinColumn.class);
+        rejectJoinColumnDefinition(join, entityType.getName() + "." + attribute.name());
         ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
         ToOneForeignKey composite = storage == null ? resolveCompositeToOneForeignKey(entityType, target, attribute) : null;
         String column = composite != null ? composite.columns().get(0).columnName()
@@ -4467,7 +4534,8 @@ public final class EntityMetadataFactory {
         String mapsId = resolveMapsIdMarker(entityType, attribute);
         boolean nullable = relation.optional() && (join == null || join.nullable());
         return new PersistentProperty(null, attribute.name(), column, storage == null ? Long.class : storage.javaType(),
-                false, false, nullable, storage == null ? 255 : storage.length(), 0, 0, null, "",
+                false, false, nullable, storage == null ? 255 : storage.storage().length(),
+                storage == null ? 0 : storage.storage().precision(), storage == null ? 0 : storage.storage().scale(), null, "",
                 storage == null ? null : storage.converter(), false, false, false, false, List.of(), false, null, false,
                 true, target, nullable, false, null, "", join == null || join.insertable(), join == null || join.updatable(),
                 join != null && join.unique(), join == null ? "" : join.columnDefinition(), false,
@@ -4562,6 +4630,7 @@ public final class EntityMetadataFactory {
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
         JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
+        rejectJoinColumnDefinition(joinColumn, entityType.getName() + "." + field.getName());
         rejectUnsupportedOwningOneToOne(entityType, field.getName(), oneToOne, joinColumn,
                 memberAnnotation(field, JoinColumns.class), memberPresent(field, MapsId.class));
         String columnName;
@@ -4582,7 +4651,7 @@ public final class EntityMetadataFactory {
         Class<?> fkJavaType = fkStorage != null ? fkStorage.javaType() : Long.class;
         AttributeConverter<Object, Object> fkConverter = fkStorage != null ? fkStorage.converter() : null;
         Class<?> fkConverterColumnType = fkStorage != null ? fkStorage.converterColumnType() : null;
-        int fkLength = fkStorage != null ? fkStorage.length() : 255;
+        int fkLength = fkStorage != null ? fkStorage.storage().length() : 255;
         // 단일 @Id 해석 불가(복합키 @EmbeddedId/@IdClass)면 다중컬럼 FK 모델로 확장한다. 복합 FK가 있으면
         // 단일 columnName 대신 그 첫 FK 컬럼명을 대표로 두고(단일컬럼 접근자/uniqueness 표기 결정성 유지),
         // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
@@ -4601,8 +4670,8 @@ public final class EntityMetadataFactory {
                 false,
                 nullable,
                 fkLength,
-                0,
-                0,
+                fkStorage != null ? fkStorage.storage().precision() : 0,
+                fkStorage != null ? fkStorage.storage().scale() : 0,
                 null,
                 "",
                 fkConverter,
@@ -4892,6 +4961,9 @@ public final class EntityMetadataFactory {
         if (declared == null || declared.length == 0) {
             return result;
         }
+        for (JoinColumn joinColumn : declared) {
+            rejectJoinColumnDefinition(joinColumn, location);
+        }
         if (referencedColumns.size() == 1) {
             // 단일키: 레거시 동작 보존 — referencedColumnName은 여기서 검증하지 않는다(FK 해석에서 별도로 검증).
             if (declared.length > 1) {
@@ -5001,6 +5073,7 @@ public final class EntityMetadataFactory {
         if (columns.length > 1) {
             throw new IllegalArgumentException(location + " with multiple columns (composite keys) is not supported");
         }
+        rejectJoinColumnDefinition(columns[0], location);
         String name = columns[0].name();
         return name == null || name.isBlank() ? defaultName : name;
     }
@@ -5058,7 +5131,8 @@ public final class EntityMetadataFactory {
             rejectOrderColumnCollision(orderColumn, ownerForeignKeyColumn, valueColumns, location);
             rejectMapKeyCollision(mapKey, ownerForeignKeyColumn, valueColumns, location);
             info = new ElementCollectionInfo(
-                    tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns, orderColumn, mapKey);
+                    tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns, orderColumn, mapKey,
+                    null, null);
         } else {
             Column column = memberAnnotation(field, Column.class);
             String valueColumn = column != null && !column.name().isBlank()
@@ -5070,9 +5144,13 @@ public final class EntityMetadataFactory {
             // 해석한다 — enum(@Enumerated)/UUID/@Convert/@Temporal은 저장 표현으로, 순수 기본 타입은 그대로.
             ElementValueMapping valueMapping = resolveBasicElementValueMapping(
                     entityType, field, elementType, location, isMap ? "value" : null);
+            rejectRawBigDecimalDefinition(column, valueMapping.columnType(), location);
             info = new ElementCollectionInfo(
                     tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet,
-                    List.of(), orderColumn, mapKey, valueMapping.columnType(), valueMapping.converter());
+                    List.of(), orderColumn, mapKey,
+                    new ColumnStorage(valueMapping.columnType(), column == null ? 255 : column.length(),
+                            column == null ? 0 : column.precision(), column == null ? 0 : column.scale()),
+                    valueMapping.converter());
         }
         return new PersistentProperty(
                 field, field.getName(), "", fieldType,
@@ -5135,7 +5213,7 @@ public final class EntityMetadataFactory {
             rejectOrderColumnCollision(order, ownerColumn, valueColumns, location);
             rejectMapKeyCollision(key, ownerColumn, valueColumns, location);
             ElementCollectionInfo info = new ElementCollectionInfo(tableName, ownerColumn, "", valueType,
-                    usesSet, columns, order, key);
+                    usesSet, columns, order, key, null, null);
             return new PersistentProperty(null, attribute.name(), "", collectionType, false, false, true,
                     255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
                     false, null, true, false, null, "", true, true, false, "", false, null, false,
@@ -5146,10 +5224,14 @@ public final class EntityMetadataFactory {
         String valueColumn = column != null && !column.name().isBlank() ? column.name()
                 : namingStrategy.columnName(attribute.name());
         ElementValueMapping mapping = resolveDescriptorElementValueMapping(attribute, valueType, map ? "value" : null, location);
+        rejectRawBigDecimalDefinition(column, mapping.columnType(), location);
         rejectOrderColumnCollision(order, ownerColumn, List.of(valueColumn), location);
         rejectMapKeyCollision(key, ownerColumn, List.of(valueColumn), location);
         ElementCollectionInfo info = new ElementCollectionInfo(tableName, ownerColumn, valueColumn,
-                wrapPrimitiveType(valueType), usesSet, List.of(), order, key, mapping.columnType(), mapping.converter());
+                wrapPrimitiveType(valueType), usesSet, List.of(), order, key,
+                new ColumnStorage(mapping.columnType(), column == null ? 255 : column.length(),
+                        column == null ? 0 : column.precision(), column == null ? 0 : column.scale()),
+                mapping.converter());
         return new PersistentProperty(null, attribute.name(), "", collectionType, false, false, true,
                 255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
                 false, null, true, false, null, "", true, true, false, "", false, null, false,
@@ -5233,10 +5315,14 @@ public final class EntityMetadataFactory {
                         + " @MapKeyColumn is not valid on an entity map key; use @MapKeyJoinColumn instead");
             }
             MapKeyJoinColumn join = attribute.annotation(MapKeyJoinColumn.class);
+            if (join != null && !join.columnDefinition().isBlank()) {
+                throw new IllegalArgumentException(location + " @MapKeyJoinColumn(columnDefinition) is not supported:"
+                        + " entity map-key storage must reuse the referenced identifier shape");
+            }
             String name = join != null && !join.name().isBlank() ? join.name()
                     : namingStrategy.columnName(attribute.name()) + "_key";
             return ElementCollectionInfo.MapKeyInfo.entity(name, keyType,
-                    storage.converterColumnType() != null ? storage.converterColumnType() : storage.javaType(),
+                    storage.storage(),
                     storage.converter());
         }
         MapKeyColumn column = attribute.annotation(MapKeyColumn.class);
@@ -5254,19 +5340,21 @@ public final class EntityMetadataFactory {
                     throw new IllegalStateException(location
                             + " cannot combine @Convert(attributeName=\"key\") with @MapKeyEnumerated");
                 }
-                return new ElementCollectionInfo.MapKeyInfo(name, keyType, explicit.columnType(), null, explicit.instantiate());
+                return new ElementCollectionInfo.MapKeyInfo(
+                        name, keyType, mapKeyStorage(column, explicit.columnType()), null, explicit.instantiate());
             }
             if (enumerated == null && !disabled) {
                 JpaConverterDescriptor automatic = uniqueJpaConverter(keyType, true, location);
                 if (automatic != null) {
                     return new ElementCollectionInfo.MapKeyInfo(
-                            name, keyType, automatic.columnType(), null, automatic.instantiate());
+                            name, keyType, mapKeyStorage(column, automatic.columnType()), null, automatic.instantiate());
                 }
             }
             EnumType type = enumerated == null ? inferredEnumType(keyType) : enumerated.value();
             EnumMapping mapping = resolveEnumMapping(keyType, type);
             return new ElementCollectionInfo.MapKeyInfo(name, keyType,
-                    mapping.customColumnType() != null ? mapping.customColumnType() : type == EnumType.STRING ? String.class : Integer.class,
+                    mapKeyStorage(column, mapping.customColumnType() != null
+                            ? mapping.customColumnType() : type == EnumType.STRING ? String.class : Integer.class),
                     type, mapping.converter());
         }
         if (explicit != null) {
@@ -5274,7 +5362,8 @@ public final class EntityMetadataFactory {
                 throw new IllegalStateException(location
                         + " cannot combine @Convert(attributeName=\"key\") with @MapKeyTemporal");
             }
-            return new ElementCollectionInfo.MapKeyInfo(name, keyType, explicit.columnType(), null, explicit.instantiate());
+            return new ElementCollectionInfo.MapKeyInfo(
+                    name, keyType, mapKeyStorage(column, explicit.columnType()), null, explicit.instantiate());
         }
         if (enumerated != null) {
             throw new IllegalArgumentException(location
@@ -5287,7 +5376,7 @@ public final class EntityMetadataFactory {
                 case TIME -> java.time.LocalTime.class;
                 case TIMESTAMP -> java.time.LocalDateTime.class;
             };
-            return new ElementCollectionInfo.MapKeyInfo(name, keyType, stored, null,
+            return new ElementCollectionInfo.MapKeyInfo(name, keyType, mapKeyStorage(column, stored), null,
                     castConverter(new TemporalAttributeConverter(keyType, temporal.value())));
         }
         if (utilDate || calendar) {
@@ -5297,28 +5386,38 @@ public final class EntityMetadataFactory {
         if (!disabled) {
             JpaConverterDescriptor automatic = uniqueJpaConverter(wrapPrimitiveType(keyType), true, location);
             if (automatic != null) {
-                return new ElementCollectionInfo.MapKeyInfo(name, wrapPrimitiveType(keyType), automatic.columnType(),
+                return new ElementCollectionInfo.MapKeyInfo(name, wrapPrimitiveType(keyType), mapKeyStorage(column, automatic.columnType()),
                         null, automatic.instantiate());
             }
         }
         ElementValueMapping storage = resolveBasicStorageMapping(wrapPrimitiveType(keyType));
         if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapPrimitiveType(keyType))) {
             throw new IllegalArgumentException(location + " @ElementCollection Map key type " + keyType.getName()
-                    + " is not supported; supported key types: String, Integer, Long, Short, Boolean, UUID, or an enum");
+                    + " is not supported; supported key types: String, Integer, Long, Short, Boolean, BigDecimal, UUID, or an enum");
         }
-        return new ElementCollectionInfo.MapKeyInfo(name, wrapPrimitiveType(keyType), storage.columnType(), null, storage.converter());
+        return new ElementCollectionInfo.MapKeyInfo(
+                name, wrapPrimitiveType(keyType), mapKeyStorage(column, storage.columnType()), null, storage.converter());
+    }
+
+    private static ColumnStorage mapKeyStorage(MapKeyColumn column, Class<?> javaType) {
+        if (javaType == java.math.BigDecimal.class && column != null && !column.columnDefinition().isBlank()) {
+            throw new IllegalArgumentException("@MapKeyColumn cannot use columnDefinition for BigDecimal storage:"
+                    + " the numeric shape must remain reusable");
+        }
+        return new ColumnStorage(javaType, column == null ? 255 : column.length(),
+                column == null ? 0 : column.precision(), column == null ? 0 : column.scale());
     }
 
     private List<ElementCollectionInfo.EmbeddableColumn> expandEmbeddableCollectionColumns(
             Class<?> embeddableType, PersistentAttributeAccess collection, String location,
             String ownerForeignKeyColumn, boolean key) {
         List<PersistentAttributeAccess> attributes = embeddedComponentAttributes(embeddableType, collection.accessType());
-        Map<String, String> overrides = new java.util.HashMap<>();
+        Map<String, Column> overrides = new java.util.HashMap<>();
         String prefix = key ? "key." : "";
         for (AttributeOverride override : collection.annotationsByType(AttributeOverride.class)) {
             boolean keyOverride = override.name().startsWith("key.");
             if ((key && keyOverride) || (!key && !keyOverride)) {
-                overrides.put(key ? override.name().substring("key.".length()) : override.name(), override.column().name());
+                overrides.put(key ? override.name().substring("key.".length()) : override.name(), override.column());
             }
         }
         java.util.Set<String> names = new java.util.HashSet<>();
@@ -5337,8 +5436,9 @@ public final class EntityMetadataFactory {
                         + " must be a simple value field");
             }
             Column column = component.annotation(Column.class);
-            String columnName = overrides.containsKey(component.name()) && !overrides.get(component.name()).isBlank()
-                    ? overrides.get(component.name())
+            Column effectiveColumn = overrides.getOrDefault(component.name(), column);
+            String columnName = effectiveColumn != null && !effectiveColumn.name().isBlank()
+                    ? effectiveColumn.name()
                     : column != null && !column.name().isBlank() ? column.name()
                     : namingStrategy.columnName(component.name());
             if (!columns.add(columnName)) {
@@ -5346,12 +5446,14 @@ public final class EntityMetadataFactory {
                         + " produces duplicate collection column '" + columnName + "'");
             }
             if (component.isAnnotationPresent(Json.class)) {
-                result.add(new ElementCollectionInfo.EmbeddableColumn(component, columnName, String.class,
+                result.add(new ElementCollectionInfo.EmbeddableColumn(component, columnName,
+                        columnStorage(effectiveColumn, String.class),
                         castConverter(new JsonAttributeConverter(jsonCodec, component.javaType())), true));
             } else {
                 ElementValueMapping mapping = resolveDescriptorElementValueMapping(component, component.javaType(), null,
                         location + " component " + component.name());
-                result.add(new ElementCollectionInfo.EmbeddableColumn(component, columnName, mapping.columnType(),
+                result.add(new ElementCollectionInfo.EmbeddableColumn(component, columnName,
+                        columnStorage(effectiveColumn, mapping.columnType()),
                         mapping.converter(), false));
             }
         }
@@ -5548,7 +5650,7 @@ public final class EntityMetadataFactory {
      * 여기엔 포함하지 않는다(임의 {@code @Embeddable}/엔티티 key는 거부).
      */
     private static final Set<Class<?>> SUPPORTED_MAP_KEY_BASIC_TYPES =
-            Set.of(String.class, Integer.class, Long.class, Short.class, Boolean.class, UUID.class);
+            Set.of(String.class, Integer.class, Long.class, Short.class, Boolean.class, java.math.BigDecimal.class, UUID.class);
 
     /**
      * {@code @ElementCollection Map} key 컬럼 이름이 owner FK나 값/펼침 컬럼과 충돌하면 거부한다 — silent
@@ -5699,14 +5801,15 @@ public final class EntityMetadataFactory {
                         location + " @MapKeyColumn is not valid on an entity map key; use @MapKeyJoinColumn instead");
             }
             MapKeyJoinColumn mapKeyJoinColumn = memberAnnotation(field, MapKeyJoinColumn.class);
+            if (mapKeyJoinColumn != null && !mapKeyJoinColumn.columnDefinition().isBlank()) {
+                throw new IllegalArgumentException(location + " @MapKeyJoinColumn(columnDefinition) is not supported:"
+                        + " entity map-key storage must reuse the referenced identifier shape");
+            }
             String entityKeyColumnName = mapKeyJoinColumn != null && !mapKeyJoinColumn.name().isBlank()
                     ? mapKeyJoinColumn.name()
                     : namingStrategy.columnName(field.getName()) + "_key";
-            Class<?> entityKeyColumnType = idStorage.converterColumnType() != null
-                    ? idStorage.converterColumnType()
-                    : idStorage.javaType();
             return ElementCollectionInfo.MapKeyInfo.entity(
-                    entityKeyColumnName, keyType, entityKeyColumnType, idStorage.converter());
+                    entityKeyColumnName, keyType, idStorage.storage(), idStorage.converter());
         }
         MapKeyColumn mapKeyColumn = memberAnnotation(field, MapKeyColumn.class);
         String keyColumnName = mapKeyColumn != null && !mapKeyColumn.name().isBlank()
@@ -5722,13 +5825,13 @@ public final class EntityMetadataFactory {
                             + " cannot combine @Convert(attributeName=\"key\") with @MapKeyEnumerated");
                 }
                 return new ElementCollectionInfo.MapKeyInfo(keyColumnName, keyType,
-                        explicitKeyConverter.columnType(), null, explicitKeyConverter.instantiate());
+                        mapKeyStorage(mapKeyColumn, explicitKeyConverter.columnType()), null, explicitKeyConverter.instantiate());
             }
             if (mapKeyEnumerated == null && !conversionDisabled(field, "key")) {
                 JpaConverterDescriptor automatic = uniqueJpaConverter(keyType, true, location);
                 if (automatic != null) {
                     return new ElementCollectionInfo.MapKeyInfo(
-                            keyColumnName, keyType, automatic.columnType(), null, automatic.instantiate());
+                            keyColumnName, keyType, mapKeyStorage(mapKeyColumn, automatic.columnType()), null, automatic.instantiate());
                 }
             }
             if (mapKeyEnumerated == null) {
@@ -5738,7 +5841,7 @@ public final class EntityMetadataFactory {
             Class<?> keyColumnType = mapping.customColumnType() != null ? mapping.customColumnType()
                     : enumType == EnumType.STRING ? String.class : Integer.class;
             return new ElementCollectionInfo.MapKeyInfo(
-                    keyColumnName, keyType, keyColumnType, enumType, mapping.converter());
+                    keyColumnName, keyType, mapKeyStorage(mapKeyColumn, keyColumnType), enumType, mapping.converter());
         }
         if (explicitKeyConverter != null) {
             if (mapKeyTemporal != null) {
@@ -5746,7 +5849,7 @@ public final class EntityMetadataFactory {
                         + " cannot combine @Convert(attributeName=\"key\") with @MapKeyTemporal");
             }
             return new ElementCollectionInfo.MapKeyInfo(keyColumnName, keyType,
-                    explicitKeyConverter.columnType(), null, explicitKeyConverter.instantiate());
+                    mapKeyStorage(mapKeyColumn, explicitKeyConverter.columnType()), null, explicitKeyConverter.instantiate());
         }
         if (mapKeyEnumerated != null) {
             throw new IllegalArgumentException(
@@ -5765,7 +5868,7 @@ public final class EntityMetadataFactory {
                 case TIMESTAMP -> java.time.LocalDateTime.class;
             };
             return new ElementCollectionInfo.MapKeyInfo(
-                    keyColumnName, keyType, keyColumnType, null,
+                    keyColumnName, keyType, mapKeyStorage(mapKeyColumn, keyColumnType), null,
                     castConverter(new TemporalAttributeConverter(keyType, temporalType)));
         }
         if (isUtilDate || isCalendar) {
@@ -5778,20 +5881,20 @@ public final class EntityMetadataFactory {
             JpaConverterDescriptor automatic = uniqueJpaConverter(wrapped, true, location);
             if (automatic != null) {
                 return new ElementCollectionInfo.MapKeyInfo(
-                        keyColumnName, wrapped, automatic.columnType(), null, automatic.instantiate());
+                        keyColumnName, wrapped, mapKeyStorage(mapKeyColumn, automatic.columnType()), null, automatic.instantiate());
             }
         }
         if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapped)) {
             throw new IllegalArgumentException(
                     location + " @ElementCollection Map key type " + keyType.getName()
-                            + " is not supported; supported key types: String, Integer, Long, Short, Boolean, UUID,"
+                            + " is not supported; supported key types: String, Integer, Long, Short, Boolean, BigDecimal, UUID,"
                             + " or an enum");
         }
         // 기본 타입 key의 저장타입 분리를 스칼라/EC value와 동일 규칙으로 해석한다 — UUID key는 varchar(String) +
         // UuidStringConverter로 저장타입을 분리해 non-String map key 디코딩 함정(varchar→UUID 직접 디코드 불가)을 피한다.
         ElementValueMapping keyStorage = resolveBasicStorageMapping(wrapped);
         return new ElementCollectionInfo.MapKeyInfo(
-                keyColumnName, wrapped, keyStorage.columnType(), null, keyStorage.converter());
+                keyColumnName, wrapped, mapKeyStorage(mapKeyColumn, keyStorage.columnType()), null, keyStorage.converter());
     }
 
     /**
@@ -5826,12 +5929,12 @@ public final class EntityMetadataFactory {
         // 이 @ElementCollection 필드의 @AttributeOverride(name=field, column=@Column(name=...))를 모은다.
         // "key." 접두사 override는 map key(@Embeddable key) 컬럼용이므로 value 확장에서는 skip한다(키 확장부가
         // 처리한다) — 그러지 않으면 유효한 key override가 value 컴포넌트 필드에 안 맞아 fail-fast로 오거부된다.
-        Map<String, String> columnOverrides = new java.util.HashMap<>();
+        Map<String, Column> columnOverrides = new java.util.HashMap<>();
         for (AttributeOverride override : collectionField.getAnnotationsByType(AttributeOverride.class)) {
             if (override.name().startsWith("key.")) {
                 continue;
             }
-            columnOverrides.put(override.name(), override.column().name());
+            columnOverrides.put(override.name(), override.column());
         }
         // 오타/존재하지 않는 필드를 가리키는 @AttributeOverride는 조용히 무시되면 의도한 컬럼명이 적용되지
         // 않으므로 fail-fast로 거부한다.
@@ -5884,11 +5987,11 @@ public final class EntityMetadataFactory {
                                 + " component " + subField.getName()
                                 + " must not declare @Version/@SoftDelete/@CreatedAt/@UpdatedAt");
             }
-            String overridden = columnOverrides.get(subField.getName());
+            Column effectiveColumn = columnOverrides.getOrDefault(subField.getName(), subField.getAnnotation(Column.class));
             Column column = subField.getAnnotation(Column.class);
             String columnName;
-            if (overridden != null && !overridden.isBlank()) {
-                columnName = overridden;
+            if (effectiveColumn != null && !effectiveColumn.name().isBlank()) {
+                columnName = effectiveColumn.name();
             } else if (column != null && !column.name().isBlank()) {
                 columnName = column.name();
             } else {
@@ -5902,7 +6005,7 @@ public final class EntityMetadataFactory {
             }
             subField.setAccessible(true);
             columns.add(resolveEmbeddableCollectionColumn(
-                    elementType, subField, columnName, location + " component " + subField.getName()));
+                    elementType, subField, effectiveColumn, columnName, location + " component " + subField.getName()));
         }
         if (columns.isEmpty()) {
             throw new IllegalArgumentException(
@@ -5937,10 +6040,10 @@ public final class EntityMetadataFactory {
                             + "); inherited fields would be silently dropped from the key columns");
         }
         // 이 컬렉션 필드의 @AttributeOverride 중 "key." 접두사를 가진 것만 map key 컬럼 override로 모은다.
-        Map<String, String> keyOverrides = new java.util.HashMap<>();
+        Map<String, Column> keyOverrides = new java.util.HashMap<>();
         for (AttributeOverride override : collectionField.getAnnotationsByType(AttributeOverride.class)) {
             if (override.name().startsWith("key.")) {
-                keyOverrides.put(override.name().substring("key.".length()), override.column().name());
+                keyOverrides.put(override.name().substring("key.".length()), override.column());
             }
         }
         java.util.Set<String> persistableFieldNames = new java.util.HashSet<>();
@@ -5989,11 +6092,11 @@ public final class EntityMetadataFactory {
                                 + " component " + subField.getName()
                                 + " must not declare @Version/@SoftDelete/@CreatedAt/@UpdatedAt");
             }
-            String overridden = keyOverrides.get(subField.getName());
+            Column effectiveColumn = keyOverrides.getOrDefault(subField.getName(), subField.getAnnotation(Column.class));
             Column column = subField.getAnnotation(Column.class);
             String columnName;
-            if (overridden != null && !overridden.isBlank()) {
-                columnName = overridden;
+            if (effectiveColumn != null && !effectiveColumn.name().isBlank()) {
+                columnName = effectiveColumn.name();
             } else if (column != null && !column.name().isBlank()) {
                 columnName = column.name();
             } else {
@@ -6007,7 +6110,7 @@ public final class EntityMetadataFactory {
             }
             subField.setAccessible(true);
             columns.add(resolveEmbeddableCollectionColumn(
-                    keyType, subField, columnName, location + " key component " + subField.getName()));
+                    keyType, subField, effectiveColumn, columnName, location + " key component " + subField.getName()));
         }
         if (columns.isEmpty()) {
             throw new IllegalArgumentException(
@@ -6018,7 +6121,7 @@ public final class EntityMetadataFactory {
     }
 
     private ElementCollectionInfo.EmbeddableColumn resolveEmbeddableCollectionColumn(
-            Class<?> embeddableType, Field field, String columnName, String location) {
+            Class<?> embeddableType, Field field, Column effectiveColumn, String columnName, String location) {
         if (memberPresent(field, Json.class)) {
             if (memberPresent(field, Enumerated.class) || memberPresent(field, Temporal.class)) {
                 throw new IllegalStateException(location + " cannot combine @Json with @Enumerated/@Temporal");
@@ -6029,13 +6132,20 @@ public final class EntityMetadataFactory {
                 throw new IllegalStateException(location + " cannot combine @Json with an AttributeConverter");
             }
             return new ElementCollectionInfo.EmbeddableColumn(
-                    selectedAttribute(field), columnName, String.class,
+                    selectedAttribute(field), columnName, columnStorage(effectiveColumn, String.class),
                     castConverter(new JsonAttributeConverter(jsonCodec, field.getType())), true);
         }
         ElementValueMapping mapping = resolveBasicElementValueMapping(
                 embeddableType, field, field.getType(), location, null);
         return new ElementCollectionInfo.EmbeddableColumn(
-                selectedAttribute(field), columnName, mapping.columnType(), mapping.converter(), false);
+                selectedAttribute(field), columnName, columnStorage(effectiveColumn, mapping.columnType()),
+                mapping.converter(), false);
+    }
+
+    private static ColumnStorage columnStorage(Column column, Class<?> javaType) {
+        rejectRawBigDecimalDefinition(column, javaType, "collection embeddable component");
+        return new ColumnStorage(javaType, column == null ? 255 : column.length(),
+                column == null ? 0 : column.precision(), column == null ? 0 : column.scale());
     }
 
     private static Class<?> resolveElementCollectionElementType(Class<?> entityType, Field field) {

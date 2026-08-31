@@ -23,6 +23,16 @@ import io.nova.support.fixtures.FixtureEntities.SingleIndexEntity;
 import io.nova.support.fixtures.FixtureEntities.SingleUniqueConstraintEntity;
 import io.nova.support.fixtures.FixtureEntities.TemporalEvent;
 import io.nova.support.fixtures.FixtureEntities.UnsupportedTypeEntity;
+import io.nova.support.fixtures.FixtureEntities.DecimalCollectionEntity;
+import io.nova.support.fixtures.FixtureEntities.DecimalConvertedEmbeddedEntity;
+import io.nova.support.fixtures.FixtureEntities.DecimalEmbeddedEntity;
+import io.nova.support.fixtures.FixtureEntities.DecimalFieldEntity;
+import io.nova.support.fixtures.FixtureEntities.DecimalInheritanceChild;
+import io.nova.support.fixtures.FixtureEntities.DecimalInheritanceRoot;
+import io.nova.support.fixtures.FixtureEntities.DecimalPropertyEntity;
+import io.nova.support.fixtures.FixtureEntities.DecimalRelationEntity;
+import io.nova.support.fixtures.FixtureEntities.DecimalSecondaryEntity;
+import io.nova.support.fixtures.FixtureEntities.DecimalTargetEntity;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -600,9 +610,11 @@ class AbstractSchemaGeneratorTest {
     // --- @ElementCollection 원소 타입별 collection table DDL -----------------
 
     private String collectionTableDdl(Class<?> entity, String property) {
-        io.nova.metadata.ElementCollectionInfo info = factory.getEntityMetadata(entity)
+        EntityMetadata<?> metadata = factory.getEntityMetadata(entity);
+        io.nova.metadata.ElementCollectionInfo info = metadata
                 .findProperty(property).orElseThrow().elementCollectionInfo();
-        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(Long.class);
+        io.nova.metadata.CollectionTableDefinition definition = info.toCollectionTableDefinition(
+                io.nova.metadata.ColumnStorage.from(metadata.idProperty()));
         return dialect.schemaGenerator().createCollectionTable(definition);
     }
 
@@ -631,6 +643,60 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void bigDecimalDdlUsesNumericWithoutLossAcrossEveryPhysicalSurface() {
+        assertTrue(dialect.schemaGenerator().createTable(factory.getEntityMetadata(DecimalFieldEntity.class))
+                .contains("id numeric(31, 11) primary key, amount numeric(31, 11)"));
+        assertTrue(dialect.schemaGenerator().createTable(factory.getEntityMetadata(DecimalPropertyEntity.class))
+                .contains("id numeric(31, 11) primary key, amount numeric(31, 11)"));
+        assertTrue(dialect.schemaGenerator().createTable(factory.getEntityMetadata(DecimalEmbeddedEntity.class))
+                .contains("overridden_amount numeric(29, 7)"));
+        assertTrue(dialect.schemaGenerator().createTable(factory.getEntityMetadata(DecimalConvertedEmbeddedEntity.class))
+                .contains("amount varchar(255)"));
+
+        var collections = factory.getEntityMetadata(DecimalCollectionEntity.class);
+        String list = dialect.schemaGenerator().createCollectionTable(collections.findProperty("amounts").orElseThrow()
+                .elementCollectionInfo().toCollectionTableDefinition(
+                        io.nova.metadata.ColumnStorage.from(collections.idProperty())));
+        String map = dialect.schemaGenerator().createCollectionTable(collections.findProperty("amountsByKey").orElseThrow()
+                .elementCollectionInfo().toCollectionTableDefinition(
+                        io.nova.metadata.ColumnStorage.from(collections.idProperty())));
+        assertTrue(list.contains("owner_id numeric(31, 11) not null, amount numeric(31, 11)"), list);
+        assertTrue(map.contains("owner_id numeric(31, 11) not null, amount_key numeric(31, 11) not null,"
+                + " amount_value numeric(31, 11)"), map);
+
+        String relation = dialect.schemaGenerator().createTable(factory.getEntityMetadata(DecimalRelationEntity.class));
+        assertTrue(relation.contains("many_target_id numeric(31, 11), one_target_id numeric(31, 11)"), relation);
+        var joinProperty = factory.getEntityMetadata(DecimalRelationEntity.class).findProperty("targets").orElseThrow();
+        String join = dialect.schemaGenerator().createJoinTable(io.nova.metadata.JoinTableDefinition.of(
+                factory.getEntityMetadata(DecimalRelationEntity.class), joinProperty.manyToManyInfo(),
+                factory.getEntityMetadata(DecimalTargetEntity.class)));
+        assertTrue(join.contains("target_id numeric(31, 11) not null"), join);
+
+        var secondaryMetadata = factory.getEntityMetadata(DecimalSecondaryEntity.class);
+        String secondary = dialect.schemaGenerator().createSecondaryTable(secondaryMetadata,
+                secondaryMetadata.secondaryTables().get(0));
+        assertTrue(secondary.contains("id numeric(31, 11) not null primary key, amount numeric(31, 11)"), secondary);
+
+        factory.getEntityMetadata(DecimalInheritanceChild.class);
+        var layout = factory.inheritanceLayout(DecimalInheritanceRoot.class);
+        var child = layout.subtypes().stream()
+                .filter(subtype -> subtype.metadata().entityType() == DecimalInheritanceChild.class)
+                .findFirst().orElseThrow();
+        assertTrue(dialect.schemaGenerator().createJoinedRootTable(layout, false)
+                .contains("id numeric(31, 11) primary key"));
+        assertTrue(dialect.schemaGenerator().createJoinedSubtypeTable(layout, child, false)
+                .contains("id numeric(31, 11) not null primary key"));
+    }
+
+    @Test
+    void rejectsUnshapedBigDecimalDdlInsteadOfGuessingLossyPrecision() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(UnshapedDecimalEntity.class)));
+
+        assertEquals("BigDecimal column requires explicit @Column(precision, scale)", error.getMessage());
+    }
+
+    @Test
     void localDateElementRendersDateValueColumn() {
         String ddl = collectionTableDdl(EcTypeEntity.class, "dates");
         assertTrue(ddl.contains("dates date"), ddl);
@@ -640,7 +706,7 @@ class AbstractSchemaGeneratorTest {
     void unsupportedPojoElementFailsFastInSchema() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> collectionTableDdl(UnsupportedEcEntity.class, "pojos"));
-        assertTrue(error.getMessage().contains("Unsupported @ElementCollection element type"), error.getMessage());
+        assertTrue(error.getMessage().contains("Unsupported column type"), error.getMessage());
     }
 
     @Test
@@ -687,6 +753,7 @@ class AbstractSchemaGeneratorTest {
         java.util.Set<java.util.UUID> refs;
 
         @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Column(precision = 19, scale = 2)
         java.util.List<java.math.BigDecimal> amounts;
 
         @jakarta.persistence.ElementCollection
@@ -702,6 +769,14 @@ class AbstractSchemaGeneratorTest {
         @jakarta.persistence.ElementCollection(targetClass = Pojo.class)
         @SuppressWarnings("rawtypes")
         java.util.Set pojos;
+    }
+
+    @jakarta.persistence.Entity
+    static class UnshapedDecimalEntity {
+        @jakarta.persistence.Id
+        Long id;
+
+        java.math.BigDecimal amount;
     }
 
     private static final class TestDialect implements Dialect {
