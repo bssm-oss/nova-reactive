@@ -3172,9 +3172,18 @@ public final class EntityMetadataFactory {
         if (attribute.isAnnotationPresent(MapsId.class) && (oneToMany || manyToMany)) {
             throw new IllegalStateException(location + " @MapsId is only valid on a to-one relationship");
         }
-        if (attribute.isAnnotationPresent(jakarta.persistence.OrderColumn.class)
-                && (manyToOne || oneToOne || manyToMany)) {
-            throw new IllegalStateException(location + " @OrderColumn is not valid on this relationship");
+        if (attribute.isAnnotationPresent(jakarta.persistence.OrderColumn.class)) {
+            if (manyToOne || oneToOne) {
+                throw new IllegalStateException(
+                        location + " @OrderColumn is only valid on an ordered List collection,"
+                                + " not on a single-valued @ManyToOne/@OneToOne relationship");
+            }
+            if (manyToMany) {
+                throw new IllegalStateException(
+                        location + " @OrderColumn on @ManyToMany is not supported;"
+                                + " @OrderColumn is supported on @ElementCollection List"
+                                + " and @OneToMany(mappedBy) List");
+            }
         }
     }
 
