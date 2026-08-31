@@ -1276,9 +1276,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
                     var column = compositeProperty.toOneForeignKey().columns().get(index);
                     terms.add(dialect.quote(column.columnName()) + " " + condition.operator().sql() + " "
                             + dialect.bindMarkers().marker(context.nextIndex()));
-                    context.addBinding(values.get(index));
+                    context.addBinding(column.toColumnValue(values.get(index)));
                 }
-                return String.join(" and ", terms);
+                return String.join(condition.operator() == ComparisonOperator.NE ? " or " : " and ", terms);
             }
             ResolvedExpression expression = resolveExpression(metadata, condition.property(), aliasLookup);
             ComparisonOperator operator = condition.operator();

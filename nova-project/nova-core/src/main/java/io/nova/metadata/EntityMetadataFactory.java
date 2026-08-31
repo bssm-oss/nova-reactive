@@ -2498,7 +2498,7 @@ public final class EntityMetadataFactory {
         }
         JoinColumn join = attribute.annotation(JoinColumn.class);
         rejectUnsupportedOwningOneToOne(entityType, attribute.name(), annotation, join,
-                attribute.isAnnotationPresent(MapsId.class));
+                attribute.annotation(JoinColumns.class), attribute.isAnnotationPresent(MapsId.class));
         ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
         ToOneForeignKey compositeForeignKey = storage == null
                 ? resolveCompositeToOneForeignKey(entityType, target, attribute) : null;
@@ -2551,7 +2551,8 @@ public final class EntityMetadataFactory {
     }
 
     private static void rejectUnsupportedOwningOneToOne(
-            Class<?> entityType, String propertyName, OneToOne annotation, JoinColumn joinColumn, boolean mapsId) {
+            Class<?> entityType, String propertyName, OneToOne annotation, JoinColumn joinColumn,
+            JoinColumns joinColumns, boolean mapsId) {
         if (!annotation.orphanRemoval()) {
             return;
         }
@@ -2562,6 +2563,14 @@ public final class EntityMetadataFactory {
         if (joinColumn != null && !joinColumn.updatable()) {
             throw new IllegalArgumentException(entityType.getName() + "." + propertyName
                     + " orphanRemoval requires an updatable @JoinColumn");
+        }
+        if (joinColumns != null) {
+            for (JoinColumn column : joinColumns.value()) {
+                if (!column.updatable()) {
+                    throw new IllegalArgumentException(entityType.getName() + "." + propertyName
+                            + " orphanRemoval requires every @JoinColumn to be updatable");
+                }
+            }
         }
     }
 
@@ -4554,7 +4563,7 @@ public final class EntityMetadataFactory {
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
         JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
         rejectUnsupportedOwningOneToOne(entityType, field.getName(), oneToOne, joinColumn,
-                memberPresent(field, MapsId.class));
+                memberAnnotation(field, JoinColumns.class), memberPresent(field, MapsId.class));
         String columnName;
         if (joinColumn != null && !joinColumn.name().isBlank()) {
             columnName = joinColumn.name();
