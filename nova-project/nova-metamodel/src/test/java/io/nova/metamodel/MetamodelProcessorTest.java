@@ -476,7 +476,7 @@ class MetamodelProcessorTest {
             assertFalse(compilation.success(), "identifier mapping cannot mix field and property access");
             Diagnostic<? extends JavaFileObject> error = compilation.firstError();
             assertNotNull(error);
-            assertTrue(error.getMessage(null).contains("mixed"),
+            assertTrue(error.getMessage(null).contains("mixes"),
                     () -> "expected mixed-access diagnostic, got: " + error.getMessage(null));
         }
 
