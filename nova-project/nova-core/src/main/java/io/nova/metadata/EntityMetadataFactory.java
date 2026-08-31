@@ -774,7 +774,7 @@ public final class EntityMetadataFactory {
             }
             if (attribute.isAnnotationPresent(Embedded.class)) {
                 List<PersistentProperty> expanded = createEmbeddedProperties(
-                        entityType, attribute, List.of(), "", new LinkedHashSet<>(), Map.of());
+                        entityType, attribute, List.of(), "", new LinkedHashSet<>(), Map.of(), false);
                 properties.addAll(expanded);
                 continue;
             }
@@ -1726,79 +1726,11 @@ public final class EntityMetadataFactory {
      * @param parentColumnPrefix 누적된 컬럼 prefix(끝에 {@code _} 포함)
      * @param embeddableStack 현재 재귀 경로에 있는 @Embeddable 타입 집합 (cycle 검출용)
      */
-    /**
-     * {@code @EmbeddedId} 필드를 복합키 컬럼들로 펼친다. {@code @Embedded}와 달리 컬럼 이름에 host 필드
-     * 이름 prefix를 붙이지 않는다 — JPA는 {@code @EmbeddedId} 컴포넌트를 그 자신의 컬럼 이름(또는
-     * host 필드의 {@code @AttributeOverride})으로 직접 매핑한다. 각 컴포넌트는 {@link PersistentProperty#withId()}로
-     * id 표시되며, read/write를 위한 embedded host path는 {@code @EmbeddedId} holder 필드 하나다.
-     * 컴포넌트는 application-assigned이므로 {@code @GeneratedValue}나 중첩 embedded를 가질 수 없다.
-     */
-    private List<PersistentProperty> createEmbeddedIdProperties(Class<?> entityType, Field idField) {
-        Class<?> embeddableType = idField.getType();
-        if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + idField.getName()
-                            + " is annotated with @EmbeddedId but its type " + embeddableType.getName()
-                            + " is not annotated with @Embeddable");
-        }
-        validateRecordComponentsMapped(embeddableType,
-                entityType.getName() + "." + idField.getName() + " @EmbeddedId");
-        List<Field> hostPath = List.of(idField);
-        // @EmbeddedId host 필드의 @AttributeOverride(name=..., column=@Column(name=...))로 컴포넌트 컬럼명을 재정의한다.
-        Map<String, Column> columnOverrides = new java.util.HashMap<>();
-        for (AttributeOverride override : idField.getAnnotationsByType(AttributeOverride.class)) {
-            columnOverrides.put(override.name(), override.column());
-        }
-        List<PersistentProperty> result = new ArrayList<>();
-        for (PersistentAttributeAccess componentAttribute : embeddedComponentAttributes(
-                embeddableType, selectedAttribute(idField).accessType())) {
-            Field subField = componentAttribute.field();
-            if (subField == null) {
-                PersistentProperty component = createDescriptorProperty(componentAttribute);
-                if (component.generated()) {
-                    throw new IllegalArgumentException(entityType.getName() + "." + idField.getName()
-                            + " @EmbeddedId component " + componentAttribute.name()
-                            + " cannot use @GeneratedValue; composite keys are application-assigned");
-                }
-                result.add(component.withId());
-                continue;
-            }
-            if (isNotPersistable(subField)) {
-                continue;
-            }
-            if (componentAttribute.isAnnotationPresent(Embedded.class)
-                    || componentAttribute.isAnnotationPresent(EmbeddedId.class)) {
-                throw new IllegalArgumentException(
-                        entityType.getName() + "." + idField.getName()
-                                + " @EmbeddedId component " + subField.getName()
-                                + " must be a simple (non-embedded) field");
-            }
-            // columnPrefix=""로 호출해 host 필드 이름 prefix 없이 컴포넌트 컬럼 이름을 그대로 쓴다.
-            PersistentProperty component = createProperty(
-                    embeddableType, subField, hostPath, "", columnOverrides.get(subField.getName()), true, null);
-            if (component.generated()) {
-                throw new IllegalArgumentException(
-                        entityType.getName() + "." + idField.getName()
-                                + " @EmbeddedId component " + subField.getName()
-                                + " cannot use @GeneratedValue; composite keys are application-assigned");
-            }
-            result.add(component.withId());
-        }
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + idField.getName()
-                            + " @EmbeddedId type " + embeddableType.getName()
-                            + " has no persistent fields to map as key columns");
-        }
-        return composeEmbeddedHostAccess(result);
-    }
-
     private List<PersistentProperty> createEmbeddedIdProperties(
             Class<?> entityType, PersistentAttributeAccess attribute) {
-        if (attribute.field() == null) {
-            return createDescriptorEmbeddedProperties(entityType, attribute, true, "");
-        }
-        return createEmbeddedIdProperties(entityType, attribute.field());
+        List<PersistentProperty> properties = createEmbeddedProperties(entityType, attribute, List.of(), "",
+                new LinkedHashSet<>(), Map.of(), true);
+        return properties.stream().map(PersistentProperty::withId).toList();
     }
 
     /**
@@ -1855,181 +1787,98 @@ public final class EntityMetadataFactory {
 
     private List<PersistentProperty> createEmbeddedProperties(
             Class<?> entityType,
-            Field hostField,
-            List<Field> parentHostPath,
+            PersistentAttributeAccess host,
+            List<PersistentAttributeAccess> parentHostPath,
             String parentColumnPrefix,
             LinkedHashSet<Class<?>> embeddableStack,
-            Map<String, Convert> inheritedConversionOverrides
+            Map<String, Convert> inheritedConversionOverrides,
+            boolean embeddedId
     ) {
-        Class<?> embeddableType = hostField.getType();
+        Class<?> embeddableType = host.javaType();
+        String location = entityType.getName() + "." + host.name();
         if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + hostField.getName()
-                            + " is annotated with @Embedded but its type " + embeddableType.getName()
-                            + " is not annotated with @Embeddable");
+            throw new IllegalArgumentException(location + " is annotated with @Embedded but its type "
+                    + embeddableType.getName() + " is not annotated with @Embeddable");
         }
-        validateRecordComponentsMapped(embeddableType,
-                entityType.getName() + "." + hostField.getName() + " @Embedded");
-        if (embeddableStack.contains(embeddableType)) {
-            throw new IllegalArgumentException(
-                    "circular @Embedded detected on " + entityType.getName()
-                            + ": type " + embeddableType.getName()
-                            + " transitively embeds itself via " + describeEmbeddableStack(embeddableStack, embeddableType));
+        validateRecordComponentsMapped(embeddableType, location + " @Embedded");
+        if (!embeddableStack.add(embeddableType)) {
+            throw new IllegalArgumentException("circular @Embedded detected on " + entityType.getName()
+                    + ": type " + embeddableType.getName() + " transitively embeds itself via "
+                    + describeEmbeddableStack(embeddableStack, embeddableType));
         }
-        if (hasIdAnnotatedField(embeddableType)) {
-            throw new IllegalArgumentException(
-                    "@Embeddable type " + embeddableType.getName()
-                            + " must not declare @Id-annotated fields");
-        }
-        String columnPrefix = parentColumnPrefix + namingStrategy.columnName(hostField.getName()) + "_";
-        List<Field> hostPath = new ArrayList<>(parentHostPath.size() + 1);
-        hostPath.addAll(parentHostPath);
-        hostPath.add(hostField);
-        List<Field> immutableHostPath = List.copyOf(hostPath);
-        // @AttributeOverride(name="city", column=@Column(name="ship_city")) — 이 @Embedded 호스트 필드에
-        // 선언된 override를 immediate sub-property 이름 기준으로 모은다. 컬럼 name만 적용한다.
-        Map<String, Column> columnOverrides = new java.util.HashMap<>();
-        for (AttributeOverride override : hostField.getAnnotationsByType(AttributeOverride.class)) {
-            columnOverrides.put(override.name(), override.column());
-        }
-        Map<String, Convert> conversionOverrides = new LinkedHashMap<>(inheritedConversionOverrides);
-        for (Convert convert : hostField.getAnnotationsByType(Convert.class)) {
-            if (convert.attributeName().isBlank()) {
-                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
-                        + " @Convert on an @Embedded attribute must specify attributeName");
-            }
-            Convert duplicate = conversionOverrides.putIfAbsent(convert.attributeName(), convert);
-            if (duplicate != null) {
-                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
-                        + " declares duplicate @Convert path '" + convert.attributeName() + "'");
-            }
-        }
-        List<PersistentProperty> result = new ArrayList<>();
-        embeddableStack.add(embeddableType);
         try {
-            for (PersistentAttributeAccess componentAttribute : embeddedComponentAttributes(
-                    embeddableType, selectedAttribute(hostField).accessType())) {
-                Field subField = componentAttribute.field();
-                if (subField == null) {
-                    result.add(createDescriptorProperty(componentAttribute));
-                    continue;
+            if (embeddedComponentAttributes(embeddableType, host.accessType()).stream()
+                    .anyMatch(component -> component.isAnnotationPresent(Id.class))) {
+                throw new IllegalArgumentException("@Embeddable type " + embeddableType.getName()
+                        + " must not declare @Id-annotated fields");
+            }
+            List<PersistentAttributeAccess> hostPath = new ArrayList<>(parentHostPath);
+            hostPath.add(host);
+            hostPath = List.copyOf(hostPath);
+            String columnPrefix = embeddedId ? parentColumnPrefix
+                    : parentColumnPrefix + namingStrategy.columnName(host.name()) + "_";
+            Map<String, Column> columnOverrides = new java.util.HashMap<>();
+            for (AttributeOverride override : host.annotationsByType(AttributeOverride.class)) {
+                columnOverrides.put(override.name(), override.column());
+            }
+            Map<String, Convert> conversionOverrides = new LinkedHashMap<>(inheritedConversionOverrides);
+            for (Convert convert : host.annotationsByType(Convert.class)) {
+                if (convert.attributeName().isBlank()) {
+                    throw new IllegalArgumentException(location + " @Convert on an @Embedded attribute must specify attributeName");
                 }
-                if (isNotPersistable(subField)) {
-                    continue;
+                if (conversionOverrides.putIfAbsent(convert.attributeName(), convert) != null) {
+                    throw new IllegalArgumentException(location + " declares duplicate @Convert path '"
+                            + convert.attributeName() + "'");
                 }
-                rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
-                if (componentAttribute.isAnnotationPresent(Embedded.class)) {
-                    String nestedPrefix = subField.getName() + ".";
+            }
+            List<PersistentProperty> result = new ArrayList<>();
+            for (PersistentAttributeAccess component : embeddedComponentAttributes(embeddableType, host.accessType())) {
+                rejectIllegalEmbeddedComponent(location, component);
+                if (component.isAnnotationPresent(Embedded.class)) {
+                    String nestedPrefix = component.name() + ".";
                     Map<String, Convert> nestedConversions = new LinkedHashMap<>();
                     conversionOverrides.entrySet().removeIf(entry -> {
-                        if (!entry.getKey().startsWith(nestedPrefix)) {
-                            return false;
-                        }
-                        String nestedPath = entry.getKey().substring(nestedPrefix.length());
-                        Convert previous = nestedConversions.putIfAbsent(nestedPath, entry.getValue());
-                        if (previous != null) {
-                            throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
-                                    + " declares duplicate @Convert path '" + entry.getKey() + "'");
-                        }
+                        if (!entry.getKey().startsWith(nestedPrefix)) return false;
+                        nestedConversions.put(entry.getKey().substring(nestedPrefix.length()), entry.getValue());
                         return true;
                     });
-                    // nested @Embedded는 재귀적으로 펼친다. host path와 column prefix는 이 단계에서 한 번 확장된 값을 넘긴다.
-                    List<PersistentProperty> nested = createEmbeddedProperties(
-                            entityType, subField, immutableHostPath, columnPrefix, embeddableStack, nestedConversions);
-                    result.addAll(nested);
+                    result.addAll(createEmbeddedProperties(entityType, component, hostPath, columnPrefix,
+                            embeddableStack, nestedConversions, false));
                     continue;
                 }
-                Convert conversionOverride = conversionOverrides.remove(subField.getName());
-                PersistentProperty property = createProperty(
-                        embeddableType, subField, immutableHostPath, columnPrefix,
-                        columnOverrides.get(subField.getName()), false, conversionOverride);
-                result.add(property);
+                Convert conversionOverride = conversionOverrides.remove(component.name());
+                Column override = columnOverrides.get(component.name());
+                PersistentProperty property = createDescriptorProperty(component, conversionOverride);
+                String column = override != null && !override.name().isBlank()
+                        ? override.name() : columnPrefix + property.columnName();
+                String propertyName = hostPath.stream().map(PersistentAttributeAccess::name)
+                        .collect(java.util.stream.Collectors.joining(".")) + "." + component.name();
+                result.add(property.withPropertyName(propertyName).withColumnName(column)
+                        .withEmbeddedHostAccessPath(hostPath));
             }
             if (!conversionOverrides.isEmpty()) {
-                String unknown = conversionOverrides.keySet().iterator().next();
-                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
-                        + " @Convert attributeName '" + unknown + "' does not match an embedded leaf property");
+                throw new IllegalArgumentException(location + " @Convert attributeName '"
+                        + conversionOverrides.keySet().iterator().next() + "' does not match an embedded leaf property");
             }
+            return result;
         } finally {
             embeddableStack.remove(embeddableType);
         }
-        return composeEmbeddedHostAccess(result);
     }
 
-    /**
-     * The Field path remains a public compatibility view; runtime traversal is always through
-     * the selected JPA access descriptor for each embedded host.
-     */
-    private static List<PersistentProperty> composeEmbeddedHostAccess(List<PersistentProperty> properties) {
-        return properties.stream()
-                .map(property -> property.withEmbeddedHostAccessPath(
-                        property.embeddedHostPath().stream()
-                                .map(EntityMetadataFactory::selectedAttribute)
-                                .toList()))
-                .toList();
+    private static void rejectIllegalEmbeddedComponent(String location, PersistentAttributeAccess component) {
+        if (component.isAnnotationPresent(EmbeddedId.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name()
+                    + " must not declare @EmbeddedId");
+        }
+        if (component.isAnnotationPresent(Id.class) || component.isAnnotationPresent(Version.class)
+                || component.isAnnotationPresent(SoftDelete.class) || component.isAnnotationPresent(CreatedAt.class)
+                || component.isAnnotationPresent(UpdatedAt.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name()
+                    + " must not declare an identifier, version, or audit annotation");
+        }
     }
 
-    private List<PersistentProperty> createEmbeddedProperties(
-            Class<?> entityType,
-            PersistentAttributeAccess attribute,
-            List<Field> parentHostPath,
-            String parentColumnPrefix,
-            LinkedHashSet<Class<?>> embeddableStack,
-            Map<String, Convert> inheritedConversionOverrides
-    ) {
-        if (attribute.field() == null) {
-            return createDescriptorEmbeddedProperties(entityType, attribute, false, parentColumnPrefix);
-        }
-        return createEmbeddedProperties(entityType, attribute.field(), parentHostPath, parentColumnPrefix,
-                embeddableStack, inheritedConversionOverrides);
-    }
-
-    /**
-     * PROPERTY access may legitimately expose an embedded host without a physical backing field.
-     * Build its simple leaves directly from selected descriptors; host traversal remains composed
-     * descriptors rather than attempting to rediscover a Field.
-     */
-    private List<PersistentProperty> createDescriptorEmbeddedProperties(
-            Class<?> entityType, PersistentAttributeAccess host, boolean embeddedId, String parentPrefix) {
-        Class<?> embeddableType = host.javaType();
-        if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(entityType.getName() + "." + host.name()
-                    + " is annotated as embedded but its type " + embeddableType.getName()
-                    + " is not annotated with @Embeddable");
-        }
-        List<PersistentProperty> result = new ArrayList<>();
-        String prefix = embeddedId ? "" : parentPrefix + namingStrategy.columnName(host.name()) + "_";
-        Map<String, Column> overrides = new java.util.HashMap<>();
-        for (AttributeOverride override : host.annotationsByType(AttributeOverride.class)) {
-            overrides.put(override.name(), override.column());
-        }
-        for (PersistentAttributeAccess component : embeddedComponentAttributes(embeddableType, host.accessType())) {
-            if (component.isAnnotationPresent(Embedded.class) || component.isAnnotationPresent(EmbeddedId.class)) {
-                throw new IllegalArgumentException(entityType.getName() + "." + host.name()
-                        + " uses nested embedded PROPERTY members without backing fields");
-            }
-            PersistentProperty property = createDescriptorProperty(component);
-            Column override = overrides.get(component.name());
-            String columnName = override != null && !override.name().isBlank()
-                    ? override.name() : prefix + property.columnName();
-            PersistentProperty embeddedProperty = property.withColumnName(columnName);
-            if (embeddedId) {
-                embeddedProperty = embeddedProperty.withId();
-            }
-            result.add(embeddedProperty.withEmbeddedHostAccessPath(List.of(host)));
-        }
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException(entityType.getName() + "." + host.name()
-                    + " embedded type has no persistent properties");
-        }
-        return result;
-    }
-
-    /**
-     * Record embeddables are immutable canonical-constructor values. Their component accessors
-     * therefore remain the selected descriptors even beneath a FIELD-access host, preserving
-     * unannotated components as canonical-constructor leaves.
-     */
     private static List<PersistentAttributeAccess> embeddedComponentAttributes(
             Class<?> embeddableType, AccessType inheritedAccess) {
         if (!embeddableType.isRecord()) {
@@ -2037,16 +1886,15 @@ public final class EntityMetadataFactory {
         }
         List<PersistentAttributeAccess> components = new ArrayList<>();
         for (java.lang.reflect.RecordComponent component : embeddableType.getRecordComponents()) {
-            Field field;
             try {
-                field = embeddableType.getDeclaredField(component.getName());
+                Field field = embeddableType.getDeclaredField(component.getName());
+                if (!isNotPersistable(field)) {
+                    components.add(new PersistentAttributeAccess(
+                            component.getName(), component.getAccessor(), null, field));
+                }
             } catch (NoSuchFieldException exception) {
                 throw new IllegalStateException(embeddableType.getName() + " record component '"
                         + component.getName() + "' has no matching field metadata", exception);
-            }
-            if (!isNotPersistable(field)) {
-                components.add(new PersistentAttributeAccess(
-                        component.getName(), component.getAccessor(), null, field));
             }
         }
         return components;
@@ -2300,6 +2148,11 @@ public final class EntityMetadataFactory {
      * caused legal JPA annotations to be silently ignored.
      */
     private PersistentProperty createDescriptorProperty(PersistentAttributeAccess attribute) {
+        return createDescriptorProperty(attribute, null);
+    }
+
+    private PersistentProperty createDescriptorProperty(
+            PersistentAttributeAccess attribute, Convert conversionOverride) {
         ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
         if (manyToOne != null) {
             JoinColumn join = attribute.annotation(JoinColumn.class);
@@ -2395,11 +2248,11 @@ public final class EntityMetadataFactory {
         Class<?> converterColumnType = null;
         boolean enumeratedMapping = false;
         EnumType enumType = null;
-        Convert convert = Arrays.stream(attribute.annotationsByType(Convert.class))
+        Convert convert = conversionOverride != null ? conversionOverride : Arrays.stream(attribute.annotationsByType(Convert.class))
                 .filter(candidate -> candidate.attributeName().isBlank()).findFirst().orElse(null);
         JpaConverterDescriptor explicitConverter = attribute.getter() != null
-                ? explicitJpaConverter(attribute.getter(), javaType, null, location, null)
-                : explicitJpaConverter(attribute.field(), javaType, null, location, null);
+                ? explicitJpaConverter(attribute.getter(), javaType, null, location, convert)
+                : explicitJpaConverter(attribute.field(), javaType, null, location, convert);
         if (enumerated != null) {
             if (json) {
                 throw new IllegalStateException(location + " cannot declare both @Json and @Enumerated");
@@ -5087,8 +4940,18 @@ public final class EntityMetadataFactory {
         }
         ElementCollectionInfo.MapKeyInfo key = map ? resolveDescriptorMapKeyInfo(attribute, location) : null;
         if (valueType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(location + " descriptor-only @ElementCollection @Embeddable values require"
-                    + " descriptor component expansion");
+            List<ElementCollectionInfo.EmbeddableColumn> columns =
+                    expandEmbeddableCollectionColumns(valueType, attribute, location, ownerColumn, false);
+            List<String> valueColumns = columns.stream().map(ElementCollectionInfo.EmbeddableColumn::columnName).toList();
+            rejectOrderColumnCollision(order, ownerColumn, valueColumns, location);
+            rejectMapKeyCollision(key, ownerColumn, valueColumns, location);
+            ElementCollectionInfo info = new ElementCollectionInfo(tableName, ownerColumn, "", valueType,
+                    usesSet, columns, order, key);
+            return new PersistentProperty(null, attribute.name(), "", collectionType, false, false, true,
+                    255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                    false, null, true, false, null, "", true, true, false, "", false, null, false,
+                    null, info, null, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                    ColumnDdlDefinition.EMPTY);
         }
         Column column = attribute.annotation(Column.class);
         String valueColumn = column != null && !column.name().isBlank() ? column.name()
@@ -5159,7 +5022,8 @@ public final class EntityMetadataFactory {
         if (keyType == null) throw new IllegalArgumentException(location + " @ElementCollection cannot infer the Map key type from a raw map;"
                 + " use a parameterized Map<K,V> or specify @MapKeyClass");
         if (keyType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(location + " descriptor-only @MapKeyClass @Embeddable keys require descriptor component expansion");
+            return ElementCollectionInfo.MapKeyInfo.embeddable(keyType,
+                    expandEmbeddableCollectionColumns(keyType, attribute, location, null, true));
         }
         MapKeyColumn column = attribute.annotation(MapKeyColumn.class);
         String name = column != null && !column.name().isBlank() ? column.name() : namingStrategy.columnName(attribute.name()) + "_key";
@@ -5179,9 +5043,69 @@ public final class EntityMetadataFactory {
         return new ElementCollectionInfo.MapKeyInfo(name, wrapPrimitiveType(keyType), storage.columnType(), null, storage.converter());
     }
 
+    private List<ElementCollectionInfo.EmbeddableColumn> expandEmbeddableCollectionColumns(
+            Class<?> embeddableType, PersistentAttributeAccess collection, String location,
+            String ownerForeignKeyColumn, boolean key) {
+        List<PersistentAttributeAccess> attributes = embeddedComponentAttributes(embeddableType, collection.accessType());
+        Map<String, String> overrides = new java.util.HashMap<>();
+        String prefix = key ? "key." : "";
+        for (AttributeOverride override : collection.annotationsByType(AttributeOverride.class)) {
+            if (key == override.name().startsWith(prefix)) {
+                overrides.put(key ? override.name().substring(prefix.length()) : override.name(), override.column().name());
+            }
+        }
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<String> columns = new java.util.HashSet<>();
+        if (ownerForeignKeyColumn != null) columns.add(ownerForeignKeyColumn);
+        List<ElementCollectionInfo.EmbeddableColumn> result = new ArrayList<>();
+        for (PersistentAttributeAccess component : attributes) {
+            names.add(component.name());
+            if (component.isAnnotationPresent(Embedded.class) || component.isAnnotationPresent(EmbeddedId.class)
+                    || component.isAnnotationPresent(Id.class) || component.isAnnotationPresent(OneToMany.class)
+                    || component.isAnnotationPresent(ManyToOne.class) || component.isAnnotationPresent(OneToOne.class)
+                    || component.isAnnotationPresent(ManyToMany.class) || component.isAnnotationPresent(ElementCollection.class)
+                    || component.isAnnotationPresent(Version.class) || component.isAnnotationPresent(SoftDelete.class)
+                    || component.isAnnotationPresent(CreatedAt.class) || component.isAnnotationPresent(UpdatedAt.class)) {
+                throw new IllegalArgumentException(location + " @Embeddable component " + component.name()
+                        + " must be a simple value field");
+            }
+            Column column = component.annotation(Column.class);
+            String columnName = overrides.containsKey(component.name()) && !overrides.get(component.name()).isBlank()
+                    ? overrides.get(component.name())
+                    : column != null && !column.name().isBlank() ? column.name()
+                    : namingStrategy.columnName(component.name());
+            if (!columns.add(columnName)) {
+                throw new IllegalArgumentException(location + " @Embeddable component " + component.name()
+                        + " produces duplicate collection column '" + columnName + "'");
+            }
+            if (component.isAnnotationPresent(Json.class)) {
+                result.add(new ElementCollectionInfo.EmbeddableColumn(component, columnName, String.class,
+                        castConverter(new JsonAttributeConverter(jsonCodec, component.javaType())), true));
+            } else {
+                ElementValueMapping mapping = resolveDescriptorElementValueMapping(component, component.javaType(), null,
+                        location + " component " + component.name());
+                result.add(new ElementCollectionInfo.EmbeddableColumn(component, columnName, mapping.columnType(),
+                        mapping.converter(), false));
+            }
+        }
+        for (String override : overrides.keySet()) {
+            if (!names.contains(override)) {
+                throw new IllegalArgumentException(location + " @AttributeOverride(name="" + prefix + override
+                        + "") does not match an @Embeddable component");
+            }
+        }
+        if (result.isEmpty()) {
+            throw new IllegalArgumentException(location + " @Embeddable " + embeddableType.getName()
+                    + " has no persistent fields to map as collection columns");
+        }
+        return result;
+    }
+
     private ElementValueMapping resolveDescriptorElementValueMapping(
             PersistentAttributeAccess attribute, Class<?> type, String selector, String location) {
-        JpaConverterDescriptor explicit = explicitJpaConverter(attribute.getter(), wrapPrimitiveType(type), selector, location, null);
+        JpaConverterDescriptor explicit = attribute.getter() != null
+                ? explicitJpaConverter(attribute.getter(), wrapPrimitiveType(type), selector, location, null)
+                : explicitJpaConverter(attribute.field(), wrapPrimitiveType(type), selector, location, null);
         if (explicit != null) return new ElementValueMapping(explicit.columnType(), explicit.instantiate());
         Enumerated enumerated = attribute.annotation(Enumerated.class);
         if (type.isEnum()) {
