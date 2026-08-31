@@ -1,6 +1,10 @@
 package io.nova.metadata;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.RecordComponent;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,6 +29,11 @@ public final class EntityMetadata<T> {
     private final List<PersistentProperty> columnMappedProperties;
     private final Map<String, PersistentProperty> propertiesByName;
     private final PersistentProperty idProperty;
+    /**
+     * {@code @IdClass}의 검증·선택된 member와 생성 전략. 런타임은 이 불변 계획만 사용하며 annotation/field를
+     * 다시 탐색하지 않는다.
+     */
+    private final IdClassPlan idClassPlan;
     /**
      * id로 표시된 property들을 declaration 순서로 보관한다. 단일 {@code @Id}는 1개, {@code @EmbeddedId}로
      * 펼쳐진 복합키는 컴포넌트 수만큼이다. {@link #properties}에서 {@link PersistentProperty#id()} 필터로
@@ -244,6 +253,7 @@ public final class EntityMetadata<T> {
         this.propertiesByName = Collections.unmodifiableMap(index);
         this.idProperty = idProperty;
         this.idProperties = this.properties.stream().filter(PersistentProperty::id).toList();
+        this.idClassPlan = createIdClassPlan(entityType, this.idProperties);
         this.manyToOneProperties = this.properties.stream().filter(PersistentProperty::manyToOne).toList();
         this.oneToManyProperties = this.properties.stream().filter(PersistentProperty::oneToMany).toList();
         this.oneToOneInverseProperties = this.properties.stream().filter(PersistentProperty::inverseToOne).toList();
@@ -376,18 +386,7 @@ public final class EntityMetadata<T> {
             // @EmbeddedId: holder 객체를 그대로 반환한다.
             return idProperties.get(0).readHostHolder(entity);
         }
-        // @IdClass: 별도 IdClass 인스턴스를 만들어 entity의 @Id 값들을 같은 이름 필드에 채운다.
-        Class<?> idClass = requireIdClass();
-        Object instance = instantiateIdClass(idClass);
-        for (PersistentProperty idProperty : idProperties) {
-            java.lang.reflect.Field target = idClassField(idClass, idProperty.propertyName());
-            try {
-                target.set(instance, idProperty.read(entity));
-            } catch (IllegalAccessException exception) {
-                throw new IllegalStateException("Cannot write @IdClass field " + target.getName(), exception);
-            }
-        }
-        return instance;
+        return requireIdClassPlan().assemble(entity);
     }
 
     /**
@@ -402,42 +401,275 @@ public final class EntityMetadata<T> {
         if (idProperty.embedded()) {
             return idProperty.readFromIdHolder(idObject);
         }
-        java.lang.reflect.Field source = idClassField(idObject.getClass(), idProperty.propertyName());
-        try {
-            return source.get(idObject);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read @IdClass field " + source.getName(), exception);
-        }
+        return requireIdClassPlan().read(idProperty.propertyName(), idObject);
     }
 
-    private Class<?> requireIdClass() {
+    private IdClassPlan requireIdClassPlan() {
+        if (idClassPlan == null) {
+            throw new IllegalStateException(entityType.getName() + " has no @IdClass descriptor plan");
+        }
+        return idClassPlan;
+    }
+
+    private static IdClassPlan createIdClassPlan(Class<?> entityType, List<PersistentProperty> idProperties) {
+        if (idProperties.size() < 2 || idProperties.get(0).embedded()) {
+            return null;
+        }
         jakarta.persistence.IdClass annotation = entityType.getAnnotation(jakarta.persistence.IdClass.class);
         if (annotation == null) {
-            throw new IllegalStateException(entityType.getName() + " has no @IdClass");
+            return null;
         }
-        return annotation.value();
+        Class<?> idClass = annotation.value();
+        if (idClass.isRecord()) {
+            return IdClassPlan.record(idClass, idProperties);
+        }
+        return IdClassPlan.mutable(idClass, idProperties);
     }
 
-    private static Object instantiateIdClass(Class<?> idClass) {
-        try {
-            java.lang.reflect.Constructor<?> constructor = idClass.getDeclaredConstructor();
-            constructor.setAccessible(true);
-            return constructor.newInstance();
-        } catch (ReflectiveOperationException exception) {
+    private static final class IdClassPlan {
+        private final Class<?> idClass;
+        private final Constructor<?> constructor;
+        private final List<IdClassMember> members;
+        private final Map<String, IdClassMember> membersByName;
+        private final boolean record;
+
+        private IdClassPlan(Class<?> idClass, Constructor<?> constructor, List<IdClassMember> members, boolean record) {
+            this.idClass = idClass;
+            this.constructor = constructor;
+            this.members = List.copyOf(members);
+            LinkedHashMap<String, IdClassMember> membersByName = new LinkedHashMap<>();
+            for (IdClassMember member : members) {
+                membersByName.put(member.name, member);
+            }
+            this.membersByName = Collections.unmodifiableMap(membersByName);
+            this.record = record;
+        }
+
+        static IdClassPlan mutable(Class<?> idClass, List<PersistentProperty> idProperties) {
+            Constructor<?> constructor;
+            try {
+                constructor = idClass.getDeclaredConstructor();
+                constructor.setAccessible(true);
+            } catch (NoSuchMethodException exception) {
+                throw new IllegalArgumentException(
+                        "@IdClass " + idClass.getName() + " must expose a no-args constructor", exception);
+            }
+            List<IdClassMember> members = new ArrayList<>(idProperties.size());
+            for (PersistentProperty property : idProperties) {
+                members.add(IdClassMember.mutable(idClass, property));
+            }
+            return new IdClassPlan(idClass, constructor, members, false);
+        }
+
+        static IdClassPlan record(Class<?> idClass, List<PersistentProperty> idProperties) {
+            RecordComponent[] components = idClass.getRecordComponents();
+            if (components.length != idProperties.size()) {
+                throw new IllegalArgumentException(
+                        "@IdClass record " + idClass.getName() + " declares " + components.length
+                                + " components for " + idProperties.size() + " entity id properties");
+            }
+            List<IdClassMember> members = new ArrayList<>(idProperties.size());
+            Class<?>[] parameterTypes = new Class<?>[components.length];
+            for (int index = 0; index < components.length; index++) {
+                parameterTypes[index] = components[index].getType();
+            }
+            Constructor<?> constructor;
+            try {
+                constructor = idClass.getDeclaredConstructor(parameterTypes);
+                constructor.setAccessible(true);
+            } catch (NoSuchMethodException exception) {
+                throw new IllegalArgumentException(
+                        "@IdClass record " + idClass.getName() + " has no canonical constructor", exception);
+            }
+            for (PersistentProperty property : idProperties) {
+                int componentIndex = recordComponentIndex(components, property.propertyName());
+                if (componentIndex < 0) {
+                    throw new IllegalArgumentException(
+                            "@IdClass record " + idClass.getName() + " has no component '"
+                                    + property.propertyName() + "'");
+                }
+                RecordComponent component = components[componentIndex];
+                requireCompatibleType(idClass, property, component.getType());
+                Method accessor = component.getAccessor();
+                accessor.setAccessible(true);
+                members.add(new IdClassMember(
+                        property.propertyName(), property, accessor, null, null, componentIndex));
+            }
+            return new IdClassPlan(idClass, constructor, members, true);
+        }
+
+        Object assemble(Object entity) {
+            try {
+                if (record) {
+                    Object[] values = new Object[members.size()];
+                    for (IdClassMember member : members) {
+                        values[member.recordIndex] = member.property.read(entity);
+                    }
+                    return constructor.newInstance(values);
+                }
+                Object instance = constructor.newInstance();
+                for (IdClassMember member : members) {
+                    member.write(instance, member.property.read(entity));
+                }
+                return instance;
+            } catch (ReflectiveOperationException exception) {
+                throw new IllegalStateException("Cannot construct @IdClass " + idClass.getName(), exception);
+            }
+        }
+
+        Object read(String propertyName, Object idObject) {
+            if (!idClass.isInstance(idObject)) {
+                throw new IllegalArgumentException(
+                        "Expected @IdClass " + idClass.getName() + " but got "
+                                + (idObject == null ? "null" : idObject.getClass().getName()));
+            }
+            IdClassMember member = membersByName.get(propertyName);
+            if (member != null) {
+                return member.read(idObject);
+            }
             throw new IllegalStateException(
-                    "@IdClass type must expose a no-args constructor: " + idClass.getName(), exception);
+                    "@IdClass descriptor plan for " + idClass.getName() + " has no member '" + propertyName + "'");
+        }
+
+        private static int recordComponentIndex(RecordComponent[] components, String name) {
+            for (int index = 0; index < components.length; index++) {
+                if (components[index].getName().equals(name)) {
+                    return index;
+                }
+            }
+            return -1;
         }
     }
 
-    private static java.lang.reflect.Field idClassField(Class<?> idClass, String fieldName) {
+    private static final class IdClassMember {
+        private final String name;
+        private final PersistentProperty property;
+        private final Method getter;
+        private final Method setter;
+        private final Field field;
+        private final int recordIndex;
+
+        private IdClassMember(
+                String name, PersistentProperty property, Method getter, Method setter, Field field, int recordIndex) {
+            this.name = name;
+            this.property = property;
+            this.getter = getter;
+            this.setter = setter;
+            this.field = field;
+            this.recordIndex = recordIndex;
+        }
+
+        static IdClassMember mutable(Class<?> idClass, PersistentProperty property) {
+            String name = property.propertyName();
+            if (!property.propertyAccess()) {
+                Field field = findField(idClass, name);
+                if (field == null) {
+                    throw new IllegalArgumentException(
+                            "@IdClass " + idClass.getName() + " is missing field '" + name + "'");
+                }
+                requireCompatibleType(idClass, property, field.getType());
+                return new IdClassMember(name, property, null, null, field, -1);
+            }
+
+            Method getter = findGetter(idClass, name);
+            if (getter == null) {
+                throw new IllegalArgumentException(
+                        "@IdClass " + idClass.getName() + "." + name + " must expose a JavaBean getter");
+            }
+            Method setter = findSetter(idClass, name, property.javaType());
+            if (setter == null) {
+                throw new IllegalArgumentException(
+                        "@IdClass " + idClass.getName() + "." + name + " must expose a JavaBean setter");
+            }
+            requireCompatibleType(idClass, property, getter.getReturnType());
+            requireCompatibleType(idClass, property, setter.getParameterTypes()[0]);
+            return new IdClassMember(name, property, getter, setter, null, -1);
+        }
+
+        Object read(Object idObject) {
+            try {
+                return getter != null ? getter.invoke(idObject) : field.get(idObject);
+            } catch (ReflectiveOperationException exception) {
+                throw new IllegalStateException("Cannot read @IdClass member " + name, exception);
+            }
+        }
+
+        void write(Object idObject, Object value) {
+            try {
+                if (setter != null) {
+                    setter.invoke(idObject, value);
+                } else {
+                    field.set(idObject, value);
+                }
+            } catch (ReflectiveOperationException exception) {
+                throw new IllegalStateException("Cannot write @IdClass member " + name, exception);
+            }
+        }
+    }
+
+    private static Method findGetter(Class<?> type, String propertyName) {
+        String suffix = Character.toUpperCase(propertyName.charAt(0)) + propertyName.substring(1);
+        for (String name : List.of("get" + suffix, "is" + suffix)) {
+            for (Class<?> current = type; current != null && current != Object.class;
+                    current = current.getSuperclass()) {
+                for (Method method : current.getDeclaredMethods()) {
+                    if (method.getName().equals(name) && method.getParameterCount() == 0
+                            && (name.startsWith("get") || method.getReturnType() == boolean.class
+                            || method.getReturnType() == Boolean.class)) {
+                        method.setAccessible(true);
+                        return method;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Method findSetter(Class<?> type, String propertyName, Class<?> propertyType) {
+        String name = "set" + Character.toUpperCase(propertyName.charAt(0)) + propertyName.substring(1);
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            for (Method method : current.getDeclaredMethods()) {
+                if (method.getName().equals(name) && method.getParameterCount() == 1
+                        && wrapPrimitive(method.getParameterTypes()[0]) == wrapPrimitive(propertyType)) {
+                    method.setAccessible(true);
+                    return method;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Field findField(Class<?> type, String name) {
         try {
-            java.lang.reflect.Field field = idClass.getDeclaredField(fieldName);
+            Field field = type.getDeclaredField(name);
             field.setAccessible(true);
             return field;
-        } catch (NoSuchFieldException exception) {
-            throw new IllegalStateException(
-                    "@IdClass " + idClass.getName() + " has no field '" + fieldName + "'", exception);
+        } catch (NoSuchFieldException ignored) {
+            return null;
         }
+    }
+
+    private static void requireCompatibleType(Class<?> idClass, PersistentProperty property, Class<?> memberType) {
+        if (wrapPrimitive(property.javaType()) != wrapPrimitive(memberType)) {
+            throw new IllegalArgumentException(
+                    "@IdClass " + idClass.getName() + "." + property.propertyName() + " type "
+                            + memberType.getName() + " does not match entity id type " + property.javaType().getName());
+        }
+    }
+
+    private static Class<?> wrapPrimitive(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == boolean.class) return Boolean.class;
+        if (type == byte.class) return Byte.class;
+        if (type == short.class) return Short.class;
+        if (type == int.class) return Integer.class;
+        if (type == long.class) return Long.class;
+        if (type == float.class) return Float.class;
+        if (type == double.class) return Double.class;
+        if (type == char.class) return Character.class;
+        return type;
     }
 
     public Optional<PersistentProperty> softDeleteProperty() {

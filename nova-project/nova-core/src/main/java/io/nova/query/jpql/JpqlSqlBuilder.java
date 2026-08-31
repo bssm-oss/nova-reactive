@@ -1009,7 +1009,7 @@ public final class JpqlSqlBuilder {
         if (declared != null) {
             return declared;
         }
-        java.lang.reflect.Type generic = property.field().getGenericType();
+        java.lang.reflect.Type generic = property.genericType();
         if (generic instanceof java.lang.reflect.ParameterizedType pt) {
             java.lang.reflect.Type[] args = pt.getActualTypeArguments();
             if (args.length > 0 && args[args.length - 1] instanceof Class<?> element) {

@@ -5,6 +5,7 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
@@ -46,6 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DerivedQueryPagingIntegrationTest {
 
     private AccountRepository repository;
+    private EntityMetadata<Account> entityMetadata;
 
     @BeforeEach
     void setUp() {
@@ -60,6 +62,7 @@ class DerivedQueryPagingIntegrationTest {
                 new SimpleReactiveTransactionOperations(transactionManager);
         SimpleReactiveEntityOperations ops = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, sqlExecutor, new EntityStateDetector(), transactionOperations);
+        this.entityMetadata = metadataFactory.getEntityMetadata(Account.class);
 
         String ddl = ops.createTableSql(Account.class);
         StepVerifier.create(sqlExecutor.execute(new SqlStatement(ddl, List.of())))
@@ -72,12 +75,13 @@ class DerivedQueryPagingIntegrationTest {
                 .concatMap(ops::save);
         StepVerifier.create(inserts.then()).verifyComplete();
 
-        this.repository = newProxy(ops);
+        this.repository = newProxy(ops, entityMetadata);
     }
 
-    private static AccountRepository newProxy(ReactiveEntityOperations operations) {
+    private static AccountRepository newProxy(
+            ReactiveEntityOperations operations, EntityMetadata<Account> entityMetadata) {
         SimpleReactiveRepository handler =
-                new SimpleReactiveRepository(Account.class, Long.class, operations);
+                new SimpleReactiveRepository(Account.class, Long.class, operations, null, null, entityMetadata);
         return (AccountRepository) Proxy.newProxyInstance(
                 AccountRepository.class.getClassLoader(),
                 new Class<?>[]{AccountRepository.class},

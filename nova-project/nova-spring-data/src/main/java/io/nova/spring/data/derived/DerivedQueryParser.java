@@ -1,5 +1,6 @@
 package io.nova.spring.data.derived;
 
+import io.nova.metadata.EntityMetadata;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
 import io.nova.query.Slice;
@@ -96,8 +97,8 @@ public final class DerivedQueryParser {
 
     private final EntityPropertyIndex propertyIndex;
 
-    public DerivedQueryParser(Class<?> entityType) {
-        this.propertyIndex = EntityPropertyIndex.of(entityType);
+    public DerivedQueryParser(EntityMetadata<?> entityMetadata) {
+        this.propertyIndex = EntityPropertyIndex.of(entityMetadata);
     }
 
     /**

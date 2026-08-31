@@ -1,9 +1,21 @@
 package io.nova.spring.data.derived;
 
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
 import io.nova.query.Slice;
 import io.nova.query.Sort;
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
+import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.MappedSuperclass;
+import jakarta.persistence.Transient;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -23,13 +35,136 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DerivedQueryParserTest {
 
+    @Entity
     static final class Account {
+        @Id
         Long id;
         String email;
         String emailAddress;
         boolean active;
         Instant createdAt;
         int loginCount;
+    }
+
+    private static final EntityMetadataFactory METADATA_FACTORY =
+            new EntityMetadataFactory(new DefaultNamingStrategy());
+    private static final EntityMetadata<Account> ACCOUNT_METADATA =
+            METADATA_FACTORY.getEntityMetadata(Account.class);
+
+    @Embeddable
+    static final class Location {
+        String countryCode;
+    }
+
+    @Embeddable
+    static final class Address {
+        String city;
+        @Embedded
+        Location location;
+    }
+
+    @Embeddable
+    static final class AddressWithCityName {
+        String cityName;
+    }
+
+    @Embeddable
+    static final class AddressCityWithName {
+        String name;
+    }
+
+    @Entity
+    static final class AmbiguousEmbeddedPathAccount {
+        @Id
+        Long id;
+        @Embedded
+        AddressWithCityName address;
+        @Embedded
+        @jakarta.persistence.AttributeOverride(
+                name = "name", column = @Column(name = "address_city_name_alt"))
+        AddressCityWithName addressCity;
+    }
+
+    @Entity
+    static final class EmbeddedPropertyAccount {
+        @Id
+        Long id;
+        @Column(name = "direct_address_city")
+        String addressCity;
+        @Column(name = "direct_address_underscore_city")
+        String address_city;
+        @Embedded
+        Address address;
+    }
+
+    interface EmbeddedPropertyRepository {
+        Flux<EmbeddedPropertyAccount> findByAddressCity(String city);
+
+        Flux<EmbeddedPropertyAccount> findByAddress_City(String city);
+
+        Flux<EmbeddedPropertyAccount> findByAddressLocationCountryCode(String countryCode);
+
+        Flux<EmbeddedPropertyAccount> findByAddress_Location_CountryCode(String countryCode);
+
+        Flux<EmbeddedPropertyAccount> findByAddress_city(String addressCity);
+    }
+
+    interface AmbiguousEmbeddedPathRepository {
+        Flux<AmbiguousEmbeddedPathAccount> findByAddressCityName(String value);
+
+        Flux<AmbiguousEmbeddedPathAccount> findByAddress_CityName(String value);
+
+        Flux<AmbiguousEmbeddedPathAccount> findByAddressCity_Name(String value);
+    }
+
+    @MappedSuperclass
+    @Access(AccessType.PROPERTY)
+    static class LogicalPropertyBase {
+        private String inheritedName;
+
+        public String getInheritedName() {
+            return inheritedName;
+        }
+
+        public void setInheritedName(String inheritedName) {
+            this.inheritedName = inheritedName;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static final class LogicalPropertyAccount extends LogicalPropertyBase {
+        private Long id;
+        private String getterOnly;
+        @SuppressWarnings("unused")
+        private String inactiveField;
+        private String temporary;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public String getGetterOnly() {
+            return getterOnly;
+        }
+
+        public void setGetterOnly(String getterOnly) {
+            this.getterOnly = getterOnly;
+        }
+
+        @Transient
+        public String getTemporary() {
+            return temporary;
+        }
+
+        public void setTemporary(String temporary) {
+            this.temporary = temporary;
+        }
     }
 
     interface AccountRepository {
@@ -121,7 +256,23 @@ class DerivedQueryParserTest {
         Flux<Account> findFirst2ByActiveTrue(Pageable pageable);
     }
 
-    private final DerivedQueryParser parser = new DerivedQueryParser(Account.class);
+    private final DerivedQueryParser parser = new DerivedQueryParser(ACCOUNT_METADATA);
+    private final DerivedQueryParser logicalPropertiesParser = new DerivedQueryParser(
+            METADATA_FACTORY.getEntityMetadata(LogicalPropertyAccount.class));
+    private final DerivedQueryParser embeddedPropertiesParser = new DerivedQueryParser(
+            METADATA_FACTORY.getEntityMetadata(EmbeddedPropertyAccount.class));
+    private final DerivedQueryParser ambiguousEmbeddedPathsParser = new DerivedQueryParser(
+            METADATA_FACTORY.getEntityMetadata(AmbiguousEmbeddedPathAccount.class));
+
+    interface LogicalPropertyRepository {
+        Flux<LogicalPropertyAccount> findByGetterOnly(String value);
+
+        Flux<LogicalPropertyAccount> findByInheritedName(String value);
+
+        Flux<LogicalPropertyAccount> findByInactiveField(String value);
+
+        Flux<LogicalPropertyAccount> findByTemporary(String value);
+    }
 
     private Method method(String name, Class<?>... params) {
         try {
@@ -451,6 +602,90 @@ class DerivedQueryParserTest {
             // "EmailAddress"는 "Email" + "Address"로 잘못 잘리면 안 된다.
             DerivedQuery q = parse("findByEmailAddress", String.class);
             assertEquals("emailAddress", q.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        @DisplayName("direct property가 flattened embedded path보다 우선한다")
+        void directPropertyWinsOverFlattenedEmbeddedPath() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod("findByAddressCity", String.class)).orElseThrow();
+
+            assertEquals("addressCity", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        @DisplayName("underscore traversal token은 embedded canonical path를 보존한다")
+        void explicitUnderscoreTokenMatchesEmbeddedPath() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod("findByAddress_City", String.class)).orElseThrow();
+
+            assertEquals("address.city", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        void deeplyEmbeddedPathMatchesFlattenedToken() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod(
+                            "findByAddressLocationCountryCode", String.class)).orElseThrow();
+
+            assertEquals("address.location.countryCode", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        void deeplyEmbeddedPathMatchesExplicitUnderscoreToken() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod(
+                            "findByAddress_Location_CountryCode", String.class)).orElseThrow();
+
+            assertEquals("address.location.countryCode", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        void ambiguousFlattenedEmbeddedPathTokenIsRejectedButExplicitTokensResolve() throws NoSuchMethodException {
+            Method flattened = AmbiguousEmbeddedPathRepository.class.getMethod("findByAddressCityName", String.class);
+            DerivedQuery first = ambiguousEmbeddedPathsParser.tryParse(
+                    AmbiguousEmbeddedPathRepository.class.getMethod("findByAddress_CityName", String.class))
+                    .orElseThrow();
+            DerivedQuery second = ambiguousEmbeddedPathsParser.tryParse(
+                    AmbiguousEmbeddedPathRepository.class.getMethod("findByAddressCity_Name", String.class))
+                    .orElseThrow();
+
+            IllegalArgumentException exception = assertThrows(
+                    IllegalArgumentException.class, () -> ambiguousEmbeddedPathsParser.tryParse(flattened));
+            assertTrue(exception.getMessage().contains("unknown property"),
+                    () -> "unexpected: " + exception.getMessage());
+            assertEquals("address.cityName", first.orGroups().get(0).get(0).propertyName());
+            assertEquals("addressCity.name", second.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        void underscoresRemainPartOfTheirCanonicalPropertyToken() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod("findByAddress_city", String.class)).orElseThrow();
+
+            assertEquals("address_city", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        @DisplayName("metadata의 getter-only 및 상속 logical property를 사용한다")
+        void getterOnlyAndInheritedLogicalPropertiesParse() throws NoSuchMethodException {
+            DerivedQuery getterOnly = logicalPropertiesParser.tryParse(
+                    LogicalPropertyRepository.class.getMethod("findByGetterOnly", String.class)).orElseThrow();
+            DerivedQuery inherited = logicalPropertiesParser.tryParse(
+                    LogicalPropertyRepository.class.getMethod("findByInheritedName", String.class)).orElseThrow();
+
+            assertEquals("getterOnly", getterOnly.orGroups().get(0).get(0).propertyName());
+            assertEquals("inheritedName", inherited.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        @DisplayName("metadata에서 제외된 field와 Transient getter를 property로 허용하지 않는다")
+        void inactiveFieldAndTransientGetterAreRejected() throws NoSuchMethodException {
+            Method inactive = LogicalPropertyRepository.class.getMethod("findByInactiveField", String.class);
+            Method temporary = LogicalPropertyRepository.class.getMethod("findByTemporary", String.class);
+
+            assertThrows(IllegalArgumentException.class, () -> logicalPropertiesParser.tryParse(inactive));
+            assertThrows(IllegalArgumentException.class, () -> logicalPropertiesParser.tryParse(temporary));
         }
 
         @Test

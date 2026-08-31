@@ -5,6 +5,7 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
@@ -48,6 +49,7 @@ class AnnotatedQueryIntegrationTest {
     private ReactiveEntityOperations operations;
     private JpqlExecutor jpqlExecutor;
     private Dialect dialect;
+    private EntityMetadata<Account> entityMetadata;
     private AccountRepository repository;
 
     @BeforeEach
@@ -64,6 +66,7 @@ class AnnotatedQueryIntegrationTest {
         SimpleReactiveEntityOperations ops = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, sqlExecutor, new EntityStateDetector(), transactionOperations);
         this.operations = ops;
+        this.entityMetadata = metadataFactory.getEntityMetadata(Account.class);
         this.jpqlExecutor = new JpqlExecutor(ops, dialect, metadataFactory, Account.class);
 
         String ddl = ops.createTableSql(Account.class);
@@ -80,13 +83,17 @@ class AnnotatedQueryIntegrationTest {
                 .concatMap(ops::save);
         StepVerifier.create(inserts.then()).verifyComplete();
 
-        this.repository = newProxy(operations, jpqlExecutor, dialect);
+        this.repository = newProxy(operations, jpqlExecutor, dialect, entityMetadata);
     }
 
-    private static AccountRepository newProxy(ReactiveEntityOperations operations,
-                                              JpqlExecutor jpqlExecutor, Dialect dialect) {
+    private static AccountRepository newProxy(
+            ReactiveEntityOperations operations,
+            JpqlExecutor jpqlExecutor,
+            Dialect dialect,
+            EntityMetadata<Account> entityMetadata) {
         SimpleReactiveRepository handler =
-                new SimpleReactiveRepository(Account.class, Long.class, operations, jpqlExecutor, dialect);
+                new SimpleReactiveRepository(
+                        Account.class, Long.class, operations, () -> jpqlExecutor, dialect, entityMetadata);
         return (AccountRepository) Proxy.newProxyInstance(
                 AccountRepository.class.getClassLoader(),
                 new Class<?>[]{AccountRepository.class},
@@ -212,7 +219,8 @@ class AnnotatedQueryIntegrationTest {
     @DisplayName("JpqlExecutor 미구성 시 JPQL @Query는 명확한 예외로 fail-fast")
     void jpqlWithoutExecutorFailsFast() {
         SimpleReactiveRepository handler =
-                new SimpleReactiveRepository(Account.class, Long.class, operations);
+                new SimpleReactiveRepository(
+                        Account.class, Long.class, operations, null, null, entityMetadata);
         AccountRepository repo = (AccountRepository) Proxy.newProxyInstance(
                 AccountRepository.class.getClassLoader(),
                 new Class<?>[]{AccountRepository.class}, handler);
@@ -225,7 +233,8 @@ class AnnotatedQueryIntegrationTest {
     @DisplayName("Dialect 미구성 시 native @Query는 명확한 예외로 fail-fast")
     void nativeWithoutDialectFailsFast() {
         SimpleReactiveRepository handler =
-                new SimpleReactiveRepository(Account.class, Long.class, operations);
+                new SimpleReactiveRepository(
+                        Account.class, Long.class, operations, null, null, entityMetadata);
         AccountRepository repo = (AccountRepository) Proxy.newProxyInstance(
                 AccountRepository.class.getClassLoader(),
                 new Class<?>[]{AccountRepository.class}, handler);

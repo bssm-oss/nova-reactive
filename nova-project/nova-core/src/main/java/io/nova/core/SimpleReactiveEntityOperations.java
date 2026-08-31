@@ -266,14 +266,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             visited.add(owner);
             Mono<Void> chain = Flux.fromIterable(cascading)
                     .concatMap(property -> {
-                        Object reference;
-                        try {
-                            reference = property.field().get(owner);
-                        } catch (IllegalAccessException exception) {
-                            return Mono.error(new IllegalStateException(
-                                    "Cannot read to-one reference " + property.propertyName()
-                                            + " for cascade on " + metadata.entityType().getName(), exception));
-                        }
+                        Object reference = property.readReference(owner);
                         if (reference == null) {
                             // null 참조 = 이번 save에서 이 관계를 관리하지 않음 → cascade no-op.
                             return Mono.empty();
@@ -294,15 +287,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         }
                         // 참조 엔티티를 먼저 저장해 id를 확보한다. 반환된(=관리되는) 인스턴스를 owner 필드에 다시 set해
                         // 이후 owner row 쓰기에서 read()가 채워진 @Id를 FK로 추출하도록 한다.
-                        return save(reference).doOnNext(savedReference -> {
-                            try {
-                                property.field().set(owner, savedReference);
-                            } catch (IllegalAccessException exception) {
-                                throw new IllegalStateException(
-                                        "Cannot rebind cascaded to-one reference " + property.propertyName()
-                                                + " on " + metadata.entityType().getName(), exception);
-                            }
-                        }).then();
+                        return save(reference).doOnNext(savedReference -> property.writeReference(owner, savedReference))
+                                .then();
                     })
                     .then();
             // visited 집합을 nested save(reference)가 보도록 Context로 전파한다.
@@ -423,11 +409,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (component == null || component.isBlank()) {
             return metadata.idProperty();
         }
-        // @MapsId("component")는 복합 @Id의 leaf 필드 이름을 가리킨다. @EmbeddedId 컴포넌트는 host-qualified
-        // propertyName("id.component")을 가지므로 leaf 필드 이름(field().getName())으로 매칭한다(@IdClass는 top-level
-        // @Id 필드라 동일하게 동작). 존재 검증은 이미 EntityMetadataFactory가 끝냈으므로 미발견은 내부 불변식 위반이다.
+        // @MapsId("component")는 복합 @Id의 leaf property 이름을 가리킨다. @EmbeddedId 컴포넌트는 host-qualified
+        // propertyName("id.component")을 가지므로 마지막 segment로 매칭한다(@IdClass는 top-level @Id라 동일).
+        // 존재 검증은 이미 EntityMetadataFactory가 끝냈으므로 미발견은 내부 불변식 위반이다.
         return metadata.idProperties().stream()
-                .filter(id -> id.field().getName().equals(component))
+                .filter(id -> id.propertyName().equals(component)
+                        || id.propertyName().endsWith("." + component))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException(
                         metadata.entityType().getName() + " @MapsId(\"" + component
@@ -484,13 +471,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private Mono<Void> reconcileOneManyToMany(
             EntityMetadata<?> ownerMetadata, PersistentProperty property, Object owner, Object ownerId) {
         ManyToManyInfo info = property.manyToManyInfo();
-        Object collection;
-        try {
-            collection = property.field().get(owner);
-        } catch (IllegalAccessException exception) {
-            return Mono.error(new IllegalStateException(
-                    "Cannot read @ManyToMany collection " + property.propertyName(), exception));
-        }
+        Object collection = property.readReference(owner);
         if (collection == null) {
             // null 컬렉션 = "이번 save에서 이 관계를 관리하지 않음" → 삭제하지 않는다. (빈 컬렉션만 전체 삭제.)
             return Mono.empty();
@@ -701,13 +682,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private Mono<Void> reconcileOneElementCollection(
             EntityMetadata<?> ownerMetadata, PersistentProperty property, Object owner, Object ownerId) {
         ElementCollectionInfo info = property.elementCollectionInfo();
-        Object collection;
-        try {
-            collection = property.field().get(owner);
-        } catch (IllegalAccessException exception) {
-            return Mono.error(new IllegalStateException(
-                    "Cannot read @ElementCollection " + property.propertyName(), exception));
-        }
+        Object collection = property.readReference(owner);
         if (collection == null) {
             // null 컬렉션 = 이번 save에서 관리하지 않음 → 삭제하지 않는다(빈 컬렉션만 전체 삭제).
             return Mono.empty();
@@ -929,13 +904,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
         PersistentProperty mappedByProperty = resolveMappedByProperty(metadata, property, childMetadata);
-        Object collection;
-        try {
-            collection = property.field().get(parent);
-        } catch (IllegalAccessException exception) {
-            return Mono.error(new IllegalStateException(
-                    "Cannot read @OneToMany collection " + property.propertyName(), exception));
-        }
+        Object collection = property.readReference(parent);
         if (collection == null) {
             // null 컬렉션 = 이번 save에서 이 관계를 관리하지 않음 → cascade/orphanRemoval 모두 no-op.
             return Mono.empty();
@@ -1039,13 +1008,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
         String orderColumnName = property.oneToManyOrderColumn().columnName();
-        Object collection;
-        try {
-            collection = property.field().get(parent);
-        } catch (IllegalAccessException exception) {
-            return Mono.error(new IllegalStateException(
-                    "Cannot read @OneToMany collection " + property.propertyName(), exception));
-        }
+        Object collection = property.readReference(parent);
         if (collection == null) {
             // null 컬렉션 = 이번 save에서 이 관계를 관리하지 않음 → 순서 재인덱싱 no-op.
             return Mono.empty();
@@ -1112,13 +1075,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * {@link PersistentProperty#read(Object)}가 parent의 @Id를 추출해 FK 컬럼에 바인딩한다.
      */
     private static void bindParentReference(PersistentProperty mappedByProperty, Object child, Object parent) {
-        try {
-            mappedByProperty.field().set(child, parent);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot bind @ManyToOne back-reference " + mappedByProperty.propertyName()
-                            + " on cascaded child", exception);
-        }
+        mappedByProperty.writeReference(child, parent);
     }
 
     private <T> Mono<T> insertPath(EntityMetadata<T> metadata, T entity) {
@@ -1905,57 +1862,58 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (entry == null) {
             return;
         }
+        canonicalizeHydratedRelations(activeSession, metadata, owner);
         for (PersistentProperty property : collectionSyncProperties(metadata)) {
             Object collection = readCollectionField(property, owner);
             // null 컬렉션은 hydration이 채우지 않은 경우 — baseline 미설정으로 남겨 full-replace를 피하고 건드리지 않는다.
             if (collection != null) {
-                if (property.oneToMany()) {
-                    // JPA 완전 파리티: 로드된 @OneToMany child를 세션 identity map에 편입해, 잔존 child의 스칼라
-                    // 변경도 자기 ManagedEntry의 dirty diff로 자동 flush되게 한다(child @Id는 로드 행이라 항상 채워짐).
-                    registerLoadedOneToManyChildren(activeSession, property, collection);
-                }
                 entry.putCollectionSnapshot(property.propertyName(), collectionRepresentation(metadata, property, owner));
             }
         }
     }
 
     /**
-     * findById/findAll이 hydrate한 @OneToMany 컬렉션의 각 child를 세션 identity map에 편입한다({@link #captureCollectionSnapshots}
-     * 전용 헬퍼). {@code hydrateChildSpec}은 session-agnostic으로 FetchGroup/EntityGraph 경로에서도 공유되므로 거기서
-     * 직접 등록하지 않고, 세션이 실제로 있는 이 자리(findById/findAll의 기본 eager 경로)에서만 편입한다.
-     * <p>
-     * {@link PersistenceSession#registerOnLoad}는 child가 이미 이 세션에서 관리 중이면(예: 다른 parent를 통해
-     * 먼저 로드됨) 그 <em>canonical</em> 인스턴스를 반환하고 방금 디코딩된 중복 인스턴스는 버린다. 그 반환값을
-     * 버리면 parent 컬렉션이 non-canonical 중복을 계속 쥐게 되어, 그 중복 인스턴스에 가한 수정이 canonical
-     * {@link PersistenceSession.ManagedEntry}의 dirty diff에 안 잡히고 조용히 유실된다(silent lost update). 그래서
-     * 컬렉션이 {@code List}면 반환된 canonical로 원소를 되쓴다(rebind) — 컬렉션 자체는 D1 수정으로 이미 가변임이
-     * 보장된다. registerOnLoad(등록) → rebind → baseline 스냅샷 캡처(호출부 {@link #captureCollectionSnapshots})
-     * 순서를 지켜야 baseline이 rebind 이후의 canonical 컬렉션을 기준으로 찍힌다.
+     * Hydrated association targets are registered regardless of whether the owning collection participates in a
+     * flush diff. Rebinding through the association descriptor preserves PROPERTY setters and replaces duplicate
+     * row instances with the session's canonical instance.
      */
-    private void registerLoadedOneToManyChildren(PersistenceSession session, PersistentProperty property, Object collection) {
-        EntityMetadata<?> childMetadata = metadataFactory.getEntityMetadata(property.oneToManyTargetType());
-        if (collection instanceof List<?> rawList) {
-            @SuppressWarnings("unchecked")
-            List<Object> mutable = (List<Object>) rawList;
-            for (int i = 0; i < mutable.size(); i++) {
-                Object child = mutable.get(i);
-                if (child == null) {
-                    continue;
-                }
-                Object canonical = registerChildOnLoad(session, childMetadata, child);
-                if (canonical != child) {
-                    mutable.set(i, canonical);
-                }
+    private void canonicalizeHydratedRelations(
+            PersistenceSession session, EntityMetadata<?> ownerMetadata, Object owner) {
+        for (PersistentProperty property : ownerMetadata.properties()) {
+            Class<?> targetType = associationTargetType(property);
+            if (targetType == null) {
+                continue;
             }
-            return;
-        }
-        // List가 아닌 Collection(예: Set) @OneToMany는 index 기반 rebind가 불가하다 — 등록만 하고 canonical
-        // rebind는 건너뛴다(알려진 한계, 이 코드베이스의 @OneToMany는 현재 List만 실전 커버됨).
-        for (Object child : (Iterable<?>) collection) {
-            if (child != null) {
-                registerChildOnLoad(session, childMetadata, child);
+            Object related = property.readReference(owner);
+            if (related == null) {
+                continue;
+            }
+            EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(targetType);
+            if (related instanceof Iterable<?> values) {
+                List<Object> canonical = new ArrayList<>();
+                for (Object value : values) {
+                    if (value != null) {
+                        canonical.add(registerChildOnLoad(session, targetMetadata, value));
+                    }
+                }
+                Object replacement = java.util.Set.class.isAssignableFrom(property.javaType())
+                        ? new LinkedHashSet<>(canonical)
+                        : new ArrayList<>(canonical);
+                property.writeReference(owner, replacement);
+            } else {
+                property.writeReference(owner, registerChildOnLoad(session, targetMetadata, related));
             }
         }
+    }
+
+    private static Class<?> associationTargetType(PersistentProperty property) {
+        if (property.manyToMany()) {
+            return property.manyToManyInfo().targetType();
+        }
+        if (property.manyToOne()) {
+            return property.manyToOneTargetType();
+        }
+        return property.oneToMany() || property.inverseToOne() ? property.oneToManyTargetType() : null;
     }
 
     @SuppressWarnings("unchecked")
@@ -2184,7 +2142,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     if (childId == null || !appearedSet.contains(childId)) {
                         continue;
                     }
-                    Object currentOwnerRef = mappedByProperty.readReferenceInstance(child);
+                    Object currentOwnerRef = mappedByProperty.readReference(child);
                     Object currentOwnerId = currentOwnerRef == null ? null : metadata.readIdValue(currentOwnerRef);
                     if (!Objects.equals(currentOwnerId, ownerId)) {
                         return Mono.error(new IllegalStateException(
@@ -2303,7 +2261,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             if (candidateId == null || !removedSet.contains(candidateId)) {
                 continue;
             }
-            Object currentOwnerRef = mappedByProperty.readReferenceInstance(candidate.entity());
+            Object currentOwnerRef = mappedByProperty.readReference(candidate.entity());
             Object currentOwnerId = currentOwnerRef == null ? null : ownerMetadata.readIdValue(currentOwnerRef);
             if (currentOwnerId != null && !Objects.equals(currentOwnerId, ownerId)) {
                 moved.add(candidateId);
@@ -2495,12 +2453,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private Object readCollectionField(PersistentProperty property, Object owner) {
-        try {
-            return property.field().get(owner);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot read collection " + property.propertyName(), exception);
-        }
+        return property.readReference(owner);
     }
 
     /**
@@ -2878,14 +2831,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         return Flux.fromIterable(removing)
                 .concatMap(property -> {
-                    Object reference;
-                    try {
-                        reference = property.field().get(owner);
-                    } catch (IllegalAccessException exception) {
-                        return Mono.error(new IllegalStateException(
-                                "Cannot read to-one reference " + property.propertyName()
-                                        + " for cascade remove on " + metadata.entityType().getName(), exception));
-                    }
+                    Object reference = property.readReference(owner);
                     if (reference == null) {
                         return Mono.empty();
                     }
@@ -4168,11 +4114,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private static void injectCollection(PersistentProperty property, Object parent, List<?> items, boolean usesSet) {
         Object value = usesSet ? new LinkedHashSet<>(items) : new ArrayList<>(items);
-        try {
-            property.field().set(parent, value);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot inject collection " + property.propertyName(), exception);
-        }
+        property.writeReference(parent, value);
     }
 
     private static <P> void injectEmptyMaps(PersistentProperty property, List<P> parents) {
@@ -4182,11 +4124,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private static void injectMap(PersistentProperty property, Object parent, Map<?, ?> entries) {
-        try {
-            property.field().set(parent, new LinkedHashMap<>(entries));
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot inject @ElementCollection Map " + property.propertyName(), exception);
-        }
+        property.writeReference(parent, new LinkedHashMap<>(entries));
     }
 
     /**
@@ -4441,12 +4379,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         for (ElementCollectionInfo.EmbeddableColumn column : info.embeddableColumns()) {
             Object value = column.decode(row.get(column.columnName(), column.columnType()));
-            try {
-                column.field().set(element, value);
-            } catch (IllegalAccessException exception) {
-                throw new IllegalStateException(
-                        "Cannot set @Embeddable @ElementCollection field " + column.field().getName(), exception);
-            }
+            column.write(element, value);
         }
         return element;
     }
@@ -4478,12 +4411,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         for (ElementCollectionInfo.EmbeddableColumn column : mapKey.embeddableKeyColumns()) {
             Object value = column.decode(row.get(column.columnName(), column.columnType()));
-            try {
-                column.field().set(key, value);
-            } catch (IllegalAccessException exception) {
-                throw new IllegalStateException(
-                        "Cannot set @MapKeyClass @Embeddable key field " + column.field().getName(), exception);
-            }
+            column.write(key, value);
         }
         return key;
     }

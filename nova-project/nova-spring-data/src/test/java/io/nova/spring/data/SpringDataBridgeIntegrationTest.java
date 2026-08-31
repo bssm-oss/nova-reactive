@@ -5,6 +5,7 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Criteria;
 import io.nova.query.QuerySpec;
@@ -48,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SpringDataBridgeIntegrationTest {
 
     private ReactiveEntityOperations operations;
+    private EntityMetadata<Account> entityMetadata;
     private AccountRepository repository;
 
     @BeforeEach
@@ -64,6 +66,7 @@ class SpringDataBridgeIntegrationTest {
         SimpleReactiveEntityOperations ops = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, sqlExecutor, new EntityStateDetector(), transactionOperations);
         this.operations = ops;
+        this.entityMetadata = metadataFactory.getEntityMetadata(Account.class);
 
         String ddl = ops.createTableSql(Account.class);
         StepVerifier.create(sqlExecutor.execute(new SqlStatement(ddl, List.of())))
@@ -76,12 +79,13 @@ class SpringDataBridgeIntegrationTest {
                 .concatMap(ops::save);
         StepVerifier.create(inserts.then()).verifyComplete();
 
-        this.repository = newProxy(operations);
+        this.repository = newProxy(operations, entityMetadata);
     }
 
-    private static AccountRepository newProxy(ReactiveEntityOperations operations) {
+    private static AccountRepository newProxy(
+            ReactiveEntityOperations operations, EntityMetadata<Account> entityMetadata) {
         SimpleReactiveRepository handler =
-                new SimpleReactiveRepository(Account.class, Long.class, operations);
+                new SimpleReactiveRepository(Account.class, Long.class, operations, null, null, entityMetadata);
         return (AccountRepository) Proxy.newProxyInstance(
                 AccountRepository.class.getClassLoader(),
                 new Class<?>[]{AccountRepository.class},

@@ -16,7 +16,7 @@ import java.lang.annotation.Target;
  * 그리고 관계 어노테이션({@link jakarta.persistence.ManyToOne}/{@link jakarta.persistence.OneToMany})과는 함께 사용할 수 없다 —
  * 변환 책임이 충돌하기 때문이다.
  */
-@Target(ElementType.FIELD)
+@Target({ElementType.FIELD, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
 public @interface Json {
 }

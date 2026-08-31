@@ -89,6 +89,7 @@ import io.nova.convert.UuidStringConverter;
 import io.nova.json.JsonCodec;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -215,8 +216,14 @@ public final class EntityMetadataFactory {
     /**
      * 프로퍼티 타입용 converter를 등록해 컬럼 값과 프로퍼티 값 사이의 변환에 사용한다.
      */
-    public <X, Y> void registerConverter(Class<X> propertyType, AttributeConverter<X, Y> converter) {
-        converters.put(propertyType, converter);
+    public synchronized <X, Y> void registerConverter(Class<X> propertyType, AttributeConverter<X, Y> converter) {
+        ensureConverterRegistrationOpen();
+        Objects.requireNonNull(propertyType, "propertyType must not be null");
+        Objects.requireNonNull(converter, "converter must not be null");
+        AttributeConverter<?, ?> previous = converters.putIfAbsent(propertyType, converter);
+        if (previous != null && previous != converter) {
+            throw new IllegalArgumentException("A converter is already registered for " + propertyType.getName());
+        }
     }
 
     /** Registers a managed Jakarta converter class for explicit and auto-apply conversion. */
@@ -674,8 +681,8 @@ public final class EntityMetadataFactory {
      */
     private static boolean isRootTableColumn(PersistentProperty property, Class<?> rootClass) {
         Class<?> declaringClass = property.embedded()
-                ? property.embeddedHostPath().get(0).getDeclaringClass()
-                : property.field().getDeclaringClass();
+                ? property.embeddedHostAccessPath().get(0).declaringType()
+                : property.access().declaringType();
         // declaringClass가 root이거나 root의 상위면 루트 테이블. (root가 declaringClass의 하위이면)
         return declaringClass.isAssignableFrom(rootClass);
     }
@@ -707,40 +714,44 @@ public final class EntityMetadataFactory {
         PersistentProperty updatedAtProperty = null;
         PersistentProperty softDeleteProperty = null;
         PersistentProperty versionProperty = null;
-        for (Field field : mappedFields(entityType)) {
-            if (isNotPersistable(field)) {
+        PersistentTypeAccess accessPlan = new PersistentAccessResolver().resolve(entityType);
+
+        for (PersistentAttributeAccess attribute : accessPlan.attributes()) {
+            Field field = attribute.field();
+            if (field != null && isNotPersistable(field)) {
                 continue;
             }
-            rejectIncompatibleRelationAnnotations(entityType, field);
-            rejectMisplacedForeignKey(entityType, field);
-            if (field.isAnnotationPresent(OneToMany.class)) {
+            rejectInactiveRelationAnnotations(entityType, attribute);
+            rejectIncompatibleRelationAnnotations(entityType, attribute);
+            rejectMisplacedForeignKey(entityType, attribute);
+            if (attribute.isAnnotationPresent(OneToMany.class)) {
                 // OneToMany는 parent 테이블 컬럼이 없는 marker-only property — column uniqueness 검증에서 제외된다.
-                properties.add(createOneToManyProperty(entityType, field));
+                properties.add(createOneToManyProperty(entityType, attribute));
                 continue;
             }
-            if (field.isAnnotationPresent(ManyToOne.class)) {
-                properties.add(createManyToOneProperty(entityType, field));
+            if (attribute.isAnnotationPresent(ManyToOne.class)) {
+                properties.add(createManyToOneProperty(entityType, attribute));
                 continue;
             }
-            if (field.isAnnotationPresent(OneToOne.class)) {
+            if (attribute.isAnnotationPresent(OneToOne.class)) {
                 // owning(@JoinColumn FK)은 컬럼이 있고, inverse(mappedBy)는 컬럼이 없는 마커다.
-                properties.add(createOneToOneProperty(entityType, field));
+                properties.add(createOneToOneProperty(entityType, attribute));
                 continue;
             }
-            if (field.isAnnotationPresent(ManyToMany.class)) {
+            if (attribute.isAnnotationPresent(ManyToMany.class)) {
                 // owning(@JoinTable) / inverse(mappedBy) 모두 컬럼이 없는 marker. link table은 별도 관리된다.
-                properties.add(createManyToManyProperty(entityType, tableName, field));
+                properties.add(createManyToManyProperty(entityType, tableName, attribute));
                 continue;
             }
-            if (field.isAnnotationPresent(ElementCollection.class)) {
+            if (attribute.isAnnotationPresent(ElementCollection.class)) {
                 // 값 컬렉션 — collection table에 별도 저장되는 컬럼 없는 marker.
-                properties.add(createElementCollectionProperty(entityType, tableName, field));
+                properties.add(createElementCollectionProperty(entityType, tableName, attribute));
                 continue;
             }
-            if (field.isAnnotationPresent(EmbeddedId.class)) {
-                if (field.isAnnotationPresent(Id.class)) {
+            if (attribute.isAnnotationPresent(EmbeddedId.class)) {
+                if (attribute.isAnnotationPresent(Id.class)) {
                     throw new IllegalArgumentException(
-                            entityType.getName() + "." + field.getName()
+                            entityType.getName() + "." + attribute.name()
                                     + " cannot declare both @Id and @EmbeddedId");
                 }
                 if (hasIdClass) {
@@ -752,7 +763,7 @@ public final class EntityMetadataFactory {
                             entityType.getName() + " declares multiple @Id/@EmbeddedId properties");
                 }
                 // @EmbeddedId는 @Embeddable holder를 컬럼들로 펼친 뒤 각 컴포넌트를 복합키 id로 표시한다.
-                List<PersistentProperty> components = createEmbeddedIdProperties(entityType, field);
+                List<PersistentProperty> components = createEmbeddedIdProperties(entityType, attribute);
                 for (PersistentProperty idComponent : components) {
                     properties.add(idComponent);
                     if (idProperty == null) {
@@ -761,13 +772,13 @@ public final class EntityMetadataFactory {
                 }
                 continue;
             }
-            if (field.isAnnotationPresent(Embedded.class)) {
+            if (attribute.isAnnotationPresent(Embedded.class)) {
                 List<PersistentProperty> expanded = createEmbeddedProperties(
-                        entityType, field, List.of(), "", new LinkedHashSet<>(), Map.of());
+                        entityType, attribute, List.of(), "", new LinkedHashSet<>(), Map.of(), false);
                 properties.addAll(expanded);
                 continue;
             }
-            PersistentProperty property = createProperty(entityType, field, List.of(), "");
+            PersistentProperty property = createProperty(entityType, attribute, List.of(), "");
             properties.add(property);
             if (property.id()) {
                 if (idProperty != null && !hasIdClass) {
@@ -831,7 +842,8 @@ public final class EntityMetadataFactory {
         applyAssociationOverrides(entityType, properties);
 
         if (idProperty == null) {
-            throw new IllegalArgumentException(entityType.getName() + " must declare a field annotated with @Id");
+            throw new IllegalArgumentException(entityType.getName()
+                    + " must declare an access member annotated with @Id or @EmbeddedId");
         }
         if (hasIdClass) {
             validateIdClass(entityType, properties);
@@ -918,6 +930,37 @@ public final class EntityMetadataFactory {
         );
         registerHierarchyMember(metadata);
         return metadata;
+    }
+
+    /**
+     * The resolver intentionally omits unannotated members without a selected getter.  An entity
+     * using PROPERTY access, however, cannot silently drop an ordinary persistent field: it would
+     * produce a partial entity mapping.  Records are exempt because their component accessors are
+     * not JavaBean getters and are handled by the descriptor resolver.
+     */
+    private static void validatePropertyAccessCompleteness(Class<?> entityType) {
+        for (Class<?> type = entityType; type != null && type != Object.class; type = type.getSuperclass()) {
+            if (type != entityType && !type.isAnnotationPresent(MappedSuperclass.class)
+                    && !type.isAnnotationPresent(Entity.class)) {
+                continue;
+            }
+            if (type.isRecord()) {
+                continue;
+            }
+            for (Field field : type.getDeclaredFields()) {
+                if (isNotPersistable(field) || !resolvePropertyAccess(field)) {
+                    continue;
+                }
+                if (findPropertyGetter(field) == null) {
+                    String capitalized = capitalize(field.getName());
+                    String suffix = (field.getType() == boolean.class || field.getType() == Boolean.class)
+                            ? " or is" + capitalized : "";
+                    throw new IllegalArgumentException(type.getName() + "." + field.getName()
+                            + " uses @Access(PROPERTY) but has no JavaBean getter (expected get"
+                            + capitalized + suffix + ")");
+                }
+            }
+        }
     }
 
     /**
@@ -1090,10 +1133,10 @@ public final class EntityMetadataFactory {
      */
     private String joinedRootIdColumn(Class<?> root) {
         for (Field field : mappedFields(root)) {
-            if (isNotPersistable(field) || !field.isAnnotationPresent(Id.class)) {
+            if (isNotPersistable(field) || !memberPresent(field, Id.class)) {
                 continue;
             }
-            Column column = field.getAnnotation(Column.class);
+            Column column = memberAnnotation(field, Column.class);
             if (column != null && !column.name().isBlank()) {
                 return column.name();
             }
@@ -1474,9 +1517,7 @@ public final class EntityMetadataFactory {
         return field.isSynthetic()
                 || Modifier.isStatic(field.getModifiers())
                 || Modifier.isTransient(field.getModifiers())
-                || field.isAnnotationPresent(Transient.class)
-                || (resolvePropertyAccess(field)
-                && resolvePropertyGetter(field).isAnnotationPresent(Transient.class));
+                || memberPresent(field, Transient.class);
     }
 
     /**
@@ -1486,7 +1527,7 @@ public final class EntityMetadataFactory {
      * {@code allocationSize}/{@code initialValue}는 Nova가 매 INSERT마다 nextval만 호출하므로 무시된다.
      */
     private static String resolveSequenceName(Class<?> declaringType, Field field, String generatorName) {
-        SequenceGenerator sg = field.getAnnotation(SequenceGenerator.class);
+        SequenceGenerator sg = memberAnnotation(field, SequenceGenerator.class);
         if (sg == null || !sg.name().equals(generatorName)) {
             SequenceGenerator onType = declaringType.getAnnotation(SequenceGenerator.class);
             sg = onType != null && onType.name().equals(generatorName) ? onType : null;
@@ -1495,6 +1536,15 @@ public final class EntityMetadataFactory {
             return generatorName;
         }
         return sg.sequenceName().isBlank() ? sg.name() : sg.sequenceName();
+    }
+
+    private static String resolveSequenceName(Class<?> declaringType, Method getter, String generatorName) {
+        SequenceGenerator sg = getter.getAnnotation(SequenceGenerator.class);
+        if (sg == null || !sg.name().equals(generatorName)) {
+            SequenceGenerator onType = declaringType.getAnnotation(SequenceGenerator.class);
+            sg = onType != null && onType.name().equals(generatorName) ? onType : null;
+        }
+        return sg == null ? generatorName : (sg.sequenceName().isBlank() ? sg.name() : sg.sequenceName());
     }
 
     /**
@@ -1506,7 +1556,7 @@ public final class EntityMetadataFactory {
      */
     private static TableGeneratorInfo resolveTableGeneratorInfo(
             Class<?> declaringType, Field field, String generatorName) {
-        TableGenerator tg = field.getAnnotation(TableGenerator.class);
+        TableGenerator tg = memberAnnotation(field, TableGenerator.class);
         if (tg == null || !tg.name().equals(generatorName)) {
             // @TableGenerator는 @Inherited가 아니므로 getAnnotation은 superclass를 보지 않는다. 상속 매핑
             // (JOINED/TABLE_PER_CLASS)에서 @TableGenerator를 abstract root에 두고 @Id를 subtype이 상속하는
@@ -1549,6 +1599,40 @@ public final class EntityMetadataFactory {
         validateGeneratorIdentifier(declaringType, field, "pkColumnValue", pkColumnValue);
         return new TableGeneratorInfo(
                 table, pkColumnName, valueColumnName, pkColumnValue, initialValue, allocationSize);
+    }
+
+    private static TableGeneratorInfo resolveTableGeneratorInfo(
+            Class<?> declaringType, Method getter, String generatorName) {
+        TableGenerator tg = getter.getAnnotation(TableGenerator.class);
+        if (tg == null || !tg.name().equals(generatorName)) {
+            tg = findTableGeneratorInHierarchy(declaringType, generatorName);
+        }
+        String table = DEFAULT_TABLE_GENERATOR_TABLE;
+        String pkColumnName = DEFAULT_TABLE_GENERATOR_PK_COLUMN;
+        String valueColumnName = DEFAULT_TABLE_GENERATOR_VALUE_COLUMN;
+        String pkColumnValue = generatorName == null || generatorName.isBlank() ? getter.getName() : generatorName;
+        long initialValue = 0L;
+        int allocationSize = 1;
+        if (tg != null) {
+            table = tg.table().isBlank() ? table : tg.table();
+            pkColumnName = tg.pkColumnName().isBlank() ? pkColumnName : tg.pkColumnName();
+            valueColumnName = tg.valueColumnName().isBlank() ? valueColumnName : tg.valueColumnName();
+            pkColumnValue = tg.pkColumnValue().isBlank() ? pkColumnValue : tg.pkColumnValue();
+            initialValue = tg.initialValue();
+            allocationSize = tg.allocationSize();
+            if (allocationSize < 1) {
+                throw new IllegalArgumentException(declaringType.getName() + "." + getter.getName()
+                        + " @TableGenerator(allocationSize=" + allocationSize + ") must be >= 1");
+            }
+        }
+        for (String value : List.of(table, pkColumnName, valueColumnName, pkColumnValue)) {
+            if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(value).matches()) {
+                throw new IllegalArgumentException("Invalid @TableGenerator identifier '" + value + "' on "
+                        + declaringType.getName() + "." + getter.getName() + " — must match identifier pattern "
+                        + SEQUENCE_GENERATOR_NAME_PATTERN.pattern());
+            }
+        }
+        return new TableGeneratorInfo(table, pkColumnName, valueColumnName, pkColumnValue, initialValue, allocationSize);
     }
 
     /**
@@ -1642,63 +1726,16 @@ public final class EntityMetadataFactory {
      * @param parentColumnPrefix 누적된 컬럼 prefix(끝에 {@code _} 포함)
      * @param embeddableStack 현재 재귀 경로에 있는 @Embeddable 타입 집합 (cycle 검출용)
      */
-    /**
-     * {@code @EmbeddedId} 필드를 복합키 컬럼들로 펼친다. {@code @Embedded}와 달리 컬럼 이름에 host 필드
-     * 이름 prefix를 붙이지 않는다 — JPA는 {@code @EmbeddedId} 컴포넌트를 그 자신의 컬럼 이름(또는
-     * host 필드의 {@code @AttributeOverride})으로 직접 매핑한다. 각 컴포넌트는 {@link PersistentProperty#withId()}로
-     * id 표시되며, read/write를 위한 embedded host path는 {@code @EmbeddedId} holder 필드 하나다.
-     * 컴포넌트는 application-assigned이므로 {@code @GeneratedValue}나 중첩 embedded를 가질 수 없다.
-     */
-    private List<PersistentProperty> createEmbeddedIdProperties(Class<?> entityType, Field idField) {
-        Class<?> embeddableType = idField.getType();
-        if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + idField.getName()
-                            + " is annotated with @EmbeddedId but its type " + embeddableType.getName()
-                            + " is not annotated with @Embeddable");
-        }
-        validateRecordComponentsMapped(embeddableType,
-                entityType.getName() + "." + idField.getName() + " @EmbeddedId");
-        List<Field> hostPath = List.of(idField);
-        // @EmbeddedId host 필드의 @AttributeOverride(name=..., column=@Column(name=...))로 컴포넌트 컬럼명을 재정의한다.
-        Map<String, Column> columnOverrides = new java.util.HashMap<>();
-        for (AttributeOverride override : idField.getAnnotationsByType(AttributeOverride.class)) {
-            columnOverrides.put(override.name(), override.column());
-        }
-        List<PersistentProperty> result = new ArrayList<>();
-        for (Field subField : embeddableType.getDeclaredFields()) {
-            if (isNotPersistable(subField)) {
-                continue;
-            }
-            if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
-                throw new IllegalArgumentException(
-                        entityType.getName() + "." + idField.getName()
-                                + " @EmbeddedId component " + subField.getName()
-                                + " must be a simple (non-embedded) field");
-            }
-            // columnPrefix=""로 호출해 host 필드 이름 prefix 없이 컴포넌트 컬럼 이름을 그대로 쓴다.
-            PersistentProperty component = createProperty(
-                    embeddableType, subField, hostPath, "", columnOverrides.get(subField.getName()), true, null);
-            if (component.generated()) {
-                throw new IllegalArgumentException(
-                        entityType.getName() + "." + idField.getName()
-                                + " @EmbeddedId component " + subField.getName()
-                                + " cannot use @GeneratedValue; composite keys are application-assigned");
-            }
-            result.add(component.withId());
-        }
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + idField.getName()
-                            + " @EmbeddedId type " + embeddableType.getName()
-                            + " has no persistent fields to map as key columns");
-        }
-        return result;
+    private List<PersistentProperty> createEmbeddedIdProperties(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        List<PersistentProperty> properties = createEmbeddedProperties(entityType, attribute, List.of(), "",
+                new LinkedHashSet<>(), Map.of(), true);
+        return properties.stream().map(PersistentProperty::withId).toList();
     }
 
     /**
-     * {@code @IdClass} 복합키를 검증한다. 엔티티는 개별 {@code @Id} 필드를 2개 이상 선언해야 하고, IdClass는
-     * 각 {@code @Id} 필드와 같은 이름·호환 타입의 필드를 가져야 하며 no-arg 생성자를 노출해야 한다. 매핑은
+     * {@code @IdClass} 복합키를 검증한다. 엔티티는 개별 {@code @Id} 속성을 2개 이상 선언해야 하고, IdClass는
+     * 각 {@code @Id} 속성과 같은 논리 이름·호환 타입의 selected descriptor를 가져야 한다. 매핑은
      * top-level {@code @Id} 컬럼을 그대로 쓰므로 별도 컬럼 생성 없이 검증만 수행한다(분해/조립은 런타임에
      * {@link EntityMetadata#idColumnValue}/{@link EntityMetadata#readIdValue}가 처리한다).
      */
@@ -1716,27 +1753,32 @@ public final class EntityMetadataFactory {
                             + " @IdClass models a composite key");
         }
         Class<?> idClass = entityType.getAnnotation(jakarta.persistence.IdClass.class).value();
-        try {
-            idClass.getDeclaredConstructor();
-        } catch (NoSuchMethodException exception) {
-            throw new IllegalArgumentException(
-                    "@IdClass " + idClass.getName() + " must expose a no-args constructor", exception);
+        PersistentTypeAccess entityAccess = new PersistentAccessResolver().resolve(entityType);
+        List<PersistentAttributeAccess> entityIds = entityAccess.attributes().stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
+        if (entityIds.size() != idProperties.size()) {
+            throw new IllegalArgumentException(entityType.getName()
+                    + " @IdClass validation could not resolve each selected @Id attribute");
         }
-        for (PersistentProperty idProperty : idProperties) {
-            String name = idProperty.propertyName();
-            Field idClassField;
-            try {
-                idClassField = idClass.getDeclaredField(name);
-            } catch (NoSuchFieldException exception) {
+        AccessType idAccess = entityIds.get(0).accessType();
+        if (entityIds.stream().anyMatch(attribute -> attribute.accessType() != idAccess)) {
+            throw new IllegalArgumentException(entityType.getName()
+                    + " @IdClass requires all selected @Id attributes to use one access strategy");
+        }
+        PersistentTypeAccess idClassAccess = new PersistentAccessResolver().resolve(idClass, idAccess);
+        for (PersistentAttributeAccess entityId : entityIds) {
+            String name = entityId.name();
+            PersistentAttributeAccess idClassAttribute = idClassAccess.attribute(name);
+            if (idClassAttribute == null) {
                 throw new IllegalArgumentException(
-                        "@IdClass " + idClass.getName() + " is missing field '" + name
-                                + "' declared as @Id on " + entityType.getName(), exception);
+                        "@IdClass " + idClass.getName() + " is missing property '" + name
+                                + "' declared as @Id on " + entityType.getName());
             }
-            Class<?> expected = wrapPrimitiveType(idProperty.javaType());
-            Class<?> actual = wrapPrimitiveType(idClassField.getType());
+            Class<?> expected = wrapPrimitiveType(entityId.javaType());
+            Class<?> actual = wrapPrimitiveType(idClassAttribute.javaType());
             if (!expected.equals(actual)) {
                 throw new IllegalArgumentException(
-                        "@IdClass " + idClass.getName() + " field '" + name + "' type " + actual.getName()
+                        "@IdClass " + idClass.getName() + " property '" + name + "' type " + actual.getName()
                                 + " does not match @Id type " + expected.getName()
                                 + " on " + entityType.getName());
             }
@@ -1745,99 +1787,131 @@ public final class EntityMetadataFactory {
 
     private List<PersistentProperty> createEmbeddedProperties(
             Class<?> entityType,
-            Field hostField,
-            List<Field> parentHostPath,
+            PersistentAttributeAccess host,
+            List<PersistentAttributeAccess> parentHostPath,
             String parentColumnPrefix,
             LinkedHashSet<Class<?>> embeddableStack,
-            Map<String, Convert> inheritedConversionOverrides
+            Map<String, Convert> inheritedConversionOverrides,
+            boolean embeddedId
     ) {
-        Class<?> embeddableType = hostField.getType();
+        Class<?> embeddableType = host.javaType();
+        String location = entityType.getName() + "." + host.name();
         if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
-            throw new IllegalArgumentException(
-                    entityType.getName() + "." + hostField.getName()
-                            + " is annotated with @Embedded but its type " + embeddableType.getName()
-                            + " is not annotated with @Embeddable");
+            throw new IllegalArgumentException(location + " is annotated with @Embedded but its type "
+                    + embeddableType.getName() + " is not annotated with @Embeddable");
         }
-        validateRecordComponentsMapped(embeddableType,
-                entityType.getName() + "." + hostField.getName() + " @Embedded");
-        if (embeddableStack.contains(embeddableType)) {
-            throw new IllegalArgumentException(
-                    "circular @Embedded detected on " + entityType.getName()
-                            + ": type " + embeddableType.getName()
-                            + " transitively embeds itself via " + describeEmbeddableStack(embeddableStack, embeddableType));
+        validateRecordComponentsMapped(embeddableType, location + " @Embedded");
+        if (!embeddableStack.add(embeddableType)) {
+            throw new IllegalArgumentException("circular @Embedded detected on " + entityType.getName()
+                    + ": type " + embeddableType.getName() + " transitively embeds itself via "
+                    + describeEmbeddableStack(embeddableStack, embeddableType));
         }
-        if (hasIdAnnotatedField(embeddableType)) {
-            throw new IllegalArgumentException(
-                    "@Embeddable type " + embeddableType.getName()
-                            + " must not declare @Id-annotated fields");
-        }
-        String columnPrefix = parentColumnPrefix + namingStrategy.columnName(hostField.getName()) + "_";
-        List<Field> hostPath = new ArrayList<>(parentHostPath.size() + 1);
-        hostPath.addAll(parentHostPath);
-        hostPath.add(hostField);
-        List<Field> immutableHostPath = List.copyOf(hostPath);
-        // @AttributeOverride(name="city", column=@Column(name="ship_city")) — 이 @Embedded 호스트 필드에
-        // 선언된 override를 immediate sub-property 이름 기준으로 모은다. 컬럼 name만 적용한다.
-        Map<String, Column> columnOverrides = new java.util.HashMap<>();
-        for (AttributeOverride override : hostField.getAnnotationsByType(AttributeOverride.class)) {
-            columnOverrides.put(override.name(), override.column());
-        }
-        Map<String, Convert> conversionOverrides = new LinkedHashMap<>(inheritedConversionOverrides);
-        for (Convert convert : hostField.getAnnotationsByType(Convert.class)) {
-            if (convert.attributeName().isBlank()) {
-                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
-                        + " @Convert on an @Embedded attribute must specify attributeName");
-            }
-            Convert duplicate = conversionOverrides.putIfAbsent(convert.attributeName(), convert);
-            if (duplicate != null) {
-                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
-                        + " declares duplicate @Convert path '" + convert.attributeName() + "'");
-            }
-        }
-        List<PersistentProperty> result = new ArrayList<>();
-        embeddableStack.add(embeddableType);
         try {
-            for (Field subField : embeddableType.getDeclaredFields()) {
-                if (isNotPersistable(subField)) {
-                    continue;
+            if (embeddedComponentAttributes(embeddableType, host.accessType()).stream()
+                    .anyMatch(component -> component.isAnnotationPresent(Id.class))) {
+                throw new IllegalArgumentException("@Embeddable type " + embeddableType.getName()
+                        + " must not declare @Id-annotated fields");
+            }
+            List<PersistentAttributeAccess> hostPath = new ArrayList<>(parentHostPath);
+            hostPath.add(host);
+            hostPath = List.copyOf(hostPath);
+            String columnPrefix = embeddedId ? parentColumnPrefix
+                    : parentColumnPrefix + namingStrategy.columnName(host.name()) + "_";
+            Map<String, Column> columnOverrides = new java.util.HashMap<>();
+            for (AttributeOverride override : host.annotationsByType(AttributeOverride.class)) {
+                columnOverrides.put(override.name(), override.column());
+            }
+            Map<String, Convert> conversionOverrides = new LinkedHashMap<>(inheritedConversionOverrides);
+            for (Convert convert : host.annotationsByType(Convert.class)) {
+                if (convert.attributeName().isBlank()) {
+                    throw new IllegalArgumentException(location + " @Convert on an @Embedded attribute must specify attributeName");
                 }
-                rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
-                if (subField.isAnnotationPresent(Embedded.class)) {
-                    String nestedPrefix = subField.getName() + ".";
+                if (conversionOverrides.putIfAbsent(convert.attributeName(), convert) != null) {
+                    throw new IllegalArgumentException(location + " declares duplicate @Convert path '"
+                            + convert.attributeName() + "'");
+                }
+            }
+            List<PersistentProperty> result = new ArrayList<>();
+            for (PersistentAttributeAccess component : embeddedComponentAttributes(embeddableType, host.accessType())) {
+                rejectIllegalEmbeddedComponent(location, component);
+                if (embeddedId && component.isAnnotationPresent(Embedded.class)) {
+                    throw new IllegalArgumentException(location + " @EmbeddedId component " + component.name()
+                            + " must be a simple (non-embedded) field");
+                }
+                if (component.isAnnotationPresent(Embedded.class)) {
+                    String nestedPrefix = component.name() + ".";
                     Map<String, Convert> nestedConversions = new LinkedHashMap<>();
                     conversionOverrides.entrySet().removeIf(entry -> {
-                        if (!entry.getKey().startsWith(nestedPrefix)) {
-                            return false;
-                        }
-                        String nestedPath = entry.getKey().substring(nestedPrefix.length());
-                        Convert previous = nestedConversions.putIfAbsent(nestedPath, entry.getValue());
-                        if (previous != null) {
-                            throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
-                                    + " declares duplicate @Convert path '" + entry.getKey() + "'");
-                        }
+                        if (!entry.getKey().startsWith(nestedPrefix)) return false;
+                        nestedConversions.put(entry.getKey().substring(nestedPrefix.length()), entry.getValue());
                         return true;
                     });
-                    // nested @Embedded는 재귀적으로 펼친다. host path와 column prefix는 이 단계에서 한 번 확장된 값을 넘긴다.
-                    List<PersistentProperty> nested = createEmbeddedProperties(
-                            entityType, subField, immutableHostPath, columnPrefix, embeddableStack, nestedConversions);
-                    result.addAll(nested);
+                    result.addAll(createEmbeddedProperties(entityType, component, hostPath, columnPrefix,
+                            embeddableStack, nestedConversions, false));
                     continue;
                 }
-                Convert conversionOverride = conversionOverrides.remove(subField.getName());
-                PersistentProperty property = createProperty(
-                        embeddableType, subField, immutableHostPath, columnPrefix,
-                        columnOverrides.get(subField.getName()), false, conversionOverride);
-                result.add(property);
+                Convert conversionOverride = conversionOverrides.remove(component.name());
+                Column override = columnOverrides.get(component.name());
+                PersistentProperty property = createDescriptorProperty(component, conversionOverride, embeddedId, override);
+                String column = override != null && !override.name().isBlank()
+                        ? override.name() : columnPrefix + property.columnName();
+                String propertyName = hostPath.stream().map(PersistentAttributeAccess::name)
+                        .collect(java.util.stream.Collectors.joining(".")) + "." + component.name();
+                PersistentProperty mapped = property.withPropertyName(propertyName).withColumnName(column)
+                        .withEmbeddedHostAccessPath(hostPath);
+                result.add(mapped);
             }
             if (!conversionOverrides.isEmpty()) {
-                String unknown = conversionOverrides.keySet().iterator().next();
-                throw new IllegalArgumentException(entityType.getName() + "." + hostField.getName()
-                        + " @Convert attributeName '" + unknown + "' does not match an embedded leaf property");
+                throw new IllegalArgumentException(location + " @Convert attributeName '"
+                        + conversionOverrides.keySet().iterator().next() + "' does not match an embedded leaf property");
             }
+            return result;
         } finally {
             embeddableStack.remove(embeddableType);
         }
-        return result;
+    }
+
+    private static void rejectIllegalEmbeddedComponent(String location, PersistentAttributeAccess component) {
+        if (component.isAnnotationPresent(EmbeddedId.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name()
+                    + " must not declare @EmbeddedId");
+        }
+        if (component.isAnnotationPresent(Id.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @Id");
+        }
+        if (component.isAnnotationPresent(Version.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @Version");
+        }
+        if (component.isAnnotationPresent(SoftDelete.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @SoftDelete");
+        }
+        if (component.isAnnotationPresent(CreatedAt.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @CreatedAt");
+        }
+        if (component.isAnnotationPresent(UpdatedAt.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @UpdatedAt");
+        }
+    }
+
+    private static List<PersistentAttributeAccess> embeddedComponentAttributes(
+            Class<?> embeddableType, AccessType inheritedAccess) {
+        if (!embeddableType.isRecord()) {
+            return new PersistentAccessResolver().resolve(embeddableType, inheritedAccess).attributes();
+        }
+        List<PersistentAttributeAccess> components = new ArrayList<>();
+        for (java.lang.reflect.RecordComponent component : embeddableType.getRecordComponents()) {
+            try {
+                Field field = embeddableType.getDeclaredField(component.getName());
+                if (!isNotPersistable(field)) {
+                    components.add(new PersistentAttributeAccess(
+                            component.getName(), component.getAccessor(), null, field));
+                }
+            } catch (NoSuchFieldException exception) {
+                throw new IllegalStateException(embeddableType.getName() + " record component '"
+                        + component.getName() + "' has no matching field metadata", exception);
+            }
+        }
+        return components;
     }
 
     private static String describeEmbeddableStack(LinkedHashSet<Class<?>> stack, Class<?> repeated) {
@@ -1854,7 +1928,7 @@ public final class EntityMetadataFactory {
             if (isNotPersistable(field)) {
                 continue;
             }
-            if (field.isAnnotationPresent(Id.class)) {
+            if (memberPresent(field, Id.class)) {
                 return true;
             }
         }
@@ -2083,6 +2157,305 @@ public final class EntityMetadataFactory {
     }
 
     /**
+     * Builds a PROPERTY-access mapping without assuming a Java field exists.  A property descriptor
+     * is the selected persistent member in this case; keeping a reduced "no field" mapper here
+     * caused legal JPA annotations to be silently ignored.
+     */
+    private PersistentProperty createDescriptorProperty(PersistentAttributeAccess attribute) {
+        return createDescriptorProperty(attribute, null, false, null);
+    }
+
+    private PersistentProperty createDescriptorProperty(
+            PersistentAttributeAccess attribute, Convert conversionOverride) {
+        return createDescriptorProperty(attribute, conversionOverride, false, null);
+    }
+
+    private PersistentProperty createDescriptorProperty(
+            PersistentAttributeAccess attribute, Convert conversionOverride, boolean suppressAutoApply) {
+        return createDescriptorProperty(attribute, conversionOverride, suppressAutoApply, null);
+    }
+
+    private PersistentProperty createDescriptorProperty(
+            PersistentAttributeAccess attribute, Convert conversionOverride, boolean suppressAutoApply,
+            Column effectiveColumn) {
+        ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
+        if (manyToOne != null) {
+            JoinColumn join = attribute.annotation(JoinColumn.class);
+            Class<?> target = manyToOne.targetEntity() == void.class ? attribute.javaType() : manyToOne.targetEntity();
+            ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
+            ToOneForeignKey compositeForeignKey = storage == null
+                    ? resolveCompositeToOneForeignKey(attribute.declaringType(), target, attribute) : null;
+            String columnName = compositeForeignKey != null
+                    ? compositeForeignKey.columns().get(0).columnName()
+                    : join != null && !join.name().isBlank()
+                            ? join.name()
+                            : namingStrategy.columnName(attribute.name() + "_id");
+            return new PersistentProperty(attribute.field(), attribute.name(),
+                    columnName,
+                    storage == null ? Long.class : storage.javaType(), false, false,
+                    manyToOne.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.length(),
+                    0, 0, null, "", storage == null ? null : storage.converter(), false, false, false,
+                    false, List.of(), false, null, false, true, target,
+                    manyToOne.optional() && (join == null || join.nullable()), false, null, "",
+                    join == null || join.insertable(), join == null || join.updatable(), join != null && join.unique(),
+                    join == null ? "" : join.columnDefinition(), false,
+                    storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
+                    false, "",
+                    attribute.accessType() == AccessType.PROPERTY,
+                    attribute.getter(), attribute.setter(),
+                    manyToOne.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(manyToOne.cascade())),
+                    "", compositeForeignKey);
+        }
+        Column column = effectiveColumn != null ? effectiveColumn : attribute.annotation(Column.class);
+        GeneratedValue generated = attribute.annotation(GeneratedValue.class);
+        boolean id = attribute.isAnnotationPresent(Id.class);
+        boolean version = attribute.isAnnotationPresent(Version.class);
+        Class<?> javaType = attribute.javaType();
+        String location = attribute.declaringType().getName() + "." + attribute.name();
+        if (attribute.isAnnotationPresent(SoftDelete.class)) {
+            if (id) {
+                throw new IllegalArgumentException(location + " cannot be annotated with both @Id and @SoftDelete");
+            }
+            if (!SUPPORTED_SOFT_DELETE_TYPES.contains(javaType)) {
+                throw new IllegalArgumentException(location + " has unsupported @SoftDelete type " + javaType.getName()
+                        + "; supported types are java.time.Instant, java.time.LocalDateTime, java.time.OffsetDateTime");
+            }
+        }
+        if (version) {
+            if (id) {
+                throw new IllegalArgumentException(location + " cannot be both @Id and @Version");
+            }
+            if (!SUPPORTED_VERSION_TYPES.contains(javaType)) {
+                throw new IllegalArgumentException("Unsupported version type " + javaType.getName() + " on " + location
+                        + "; supported types are Long, Integer, Short, java.time.LocalDateTime");
+            }
+        }
+        String columnName = column != null && !column.name().isBlank()
+                ? column.name() : namingStrategy.columnName(attribute.name());
+        Basic basic = attribute.annotation(Basic.class);
+        boolean nullable = (column == null || column.nullable()) && (basic == null || basic.optional());
+        if (generated != null && !id) {
+            throw new IllegalArgumentException(location + " uses @GeneratedValue but is not annotated with @Id");
+        }
+        GenerationType generationType = generated == null ? null : generated.strategy();
+        String generator = generated == null ? "" : generated.generator();
+        TableGeneratorInfo tableGeneratorInfo = null;
+        if (generationType == GenerationType.SEQUENCE) {
+            if (generator.isBlank()) {
+                throw new IllegalArgumentException(location
+                        + " uses @GeneratedValue(SEQUENCE) but does not specify generator (sequence name)");
+            }
+            generator = attribute.getter() != null
+                    ? resolveSequenceName(attribute.declaringType(), attribute.getter(), generator)
+                    : resolveSequenceName(attribute.declaringType(), attribute.field(), generator);
+            if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(generator).matches()) {
+                throw new IllegalArgumentException("Invalid sequence generator name: '" + generator + "' on " + location
+                        + " — must match identifier pattern " + SEQUENCE_GENERATOR_NAME_PATTERN.pattern());
+            }
+        }
+        if (generationType == GenerationType.UUID && !SUPPORTED_UUID_ID_TYPES.contains(javaType)) {
+            throw new IllegalArgumentException("Unsupported UUID id type " + javaType.getName() + " on " + location
+                    + "; supported types are java.util.UUID, java.lang.String");
+        }
+        if (generationType == GenerationType.TABLE) {
+            if (!SUPPORTED_TABLE_GENERATOR_ID_TYPES.contains(wrapPrimitiveType(javaType))) {
+                throw new IllegalArgumentException("Unsupported @GeneratedValue(TABLE) id type " + javaType.getName()
+                        + " on " + location + "; supported types are Long, Integer");
+            }
+            tableGeneratorInfo = attribute.getter() != null
+                    ? resolveTableGeneratorInfo(attribute.declaringType(), attribute.getter(), generator)
+                    : resolveTableGeneratorInfo(attribute.declaringType(), attribute.field(), generator);
+        }
+        Enumerated enumerated = attribute.annotation(Enumerated.class);
+        boolean json = attribute.isAnnotationPresent(Json.class);
+        AttributeConverter<?, ?> userConverter = converters.get(javaType);
+        AttributeConverter<?, ?> converter = userConverter;
+        Class<?> converterColumnType = null;
+        boolean enumeratedMapping = false;
+        EnumType enumType = null;
+        Convert convert = conversionOverride != null ? conversionOverride : Arrays.stream(attribute.annotationsByType(Convert.class))
+                .filter(candidate -> candidate.attributeName().isBlank()).findFirst().orElse(null);
+        JpaConverterDescriptor explicitConverter = attribute.getter() != null
+                ? explicitJpaConverter(attribute.getter(), javaType, null, location, convert)
+                : explicitJpaConverter(attribute.field(), javaType, null, location, convert);
+        if (enumerated != null) {
+            if (json) {
+                throw new IllegalStateException(location + " cannot declare both @Json and @Enumerated");
+            }
+            if (!javaType.isEnum()) {
+                throw new IllegalArgumentException(location + " is annotated with @Enumerated but its type "
+                        + javaType.getName() + " is not an enum");
+            }
+            if (userConverter != null) {
+                throw new IllegalArgumentException(location
+                        + " cannot use both @Enumerated and a registered AttributeConverter for " + javaType.getName());
+            }
+            enumeratedMapping = true;
+            enumType = enumerated.value();
+            EnumMapping mapping = resolveEnumMapping(javaType, enumType);
+            converter = mapping.converter();
+            converterColumnType = mapping.customColumnType();
+        }
+        if (json) {
+            if (userConverter != null) {
+                throw new IllegalStateException(location + " cannot use both @Json and a registered AttributeConverter for "
+                        + javaType.getName());
+            }
+            converter = new JsonAttributeConverter(jsonCodec, javaType);
+        }
+        if (explicitConverter != null) {
+            if (enumeratedMapping || json) {
+                throw new IllegalStateException(location + " cannot combine @Convert with @Enumerated/@Json");
+            }
+            if (userConverter != null) {
+                throw new IllegalStateException(location + " cannot combine @Convert with a registered AttributeConverter for "
+                        + javaType.getName());
+            }
+            converter = explicitConverter.instantiate();
+            converterColumnType = explicitConverter.columnType();
+        }
+        Temporal temporal = attribute.annotation(Temporal.class);
+        boolean utilDate = javaType == java.util.Date.class;
+        boolean calendar = java.util.Calendar.class.isAssignableFrom(javaType);
+        if (temporal != null) {
+            if (enumeratedMapping || json) {
+                throw new IllegalStateException(location + " cannot combine @Temporal with @Enumerated/@Json");
+            }
+            if (convert != null && !convert.disableConversion()) {
+                throw new IllegalStateException(location + " cannot combine @Temporal with @Convert");
+            }
+            if (userConverter != null) {
+                throw new IllegalStateException(location + " cannot combine @Temporal with a registered AttributeConverter for "
+                        + javaType.getName());
+            }
+            if (!utilDate && !calendar) {
+                if (java.util.Date.class.isAssignableFrom(javaType)) {
+                    throw new IllegalArgumentException(location + " is annotated with @Temporal but its type "
+                            + javaType.getName() + " is a java.sql.* type whose temporal precision is already fixed by the type;"
+                            + " map java.sql.Date/Time/Timestamp without @Temporal");
+                }
+                throw new IllegalArgumentException(location + " is annotated with @Temporal but its type "
+                        + javaType.getName() + " is not java.util.Date or java.util.Calendar; java.time types must not use @Temporal");
+            }
+            converter = new TemporalAttributeConverter(javaType, temporal.value());
+            converterColumnType = switch (temporal.value()) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+        } else if ((utilDate || calendar) && converter == null) {
+            throw new IllegalArgumentException(location + " maps " + javaType.getName()
+                    + " but is missing @Temporal(TemporalType.DATE|TIME|TIMESTAMP); java.util.Date/Calendar mapping is ambiguous without it");
+        }
+        boolean conversionDisabled = convert != null ? convert.disableConversion() : attribute.getter() != null
+                ? conversionDisabled(attribute.getter(), null, null)
+                : conversionDisabled(attribute.field(), null, null);
+        if (converter == null && !id && !version && enumerated == null && temporal == null && !json
+                && !conversionDisabled && !suppressAutoApply) {
+            JpaConverterDescriptor automatic = uniqueJpaConverter(javaType, true, location);
+            if (automatic != null) {
+                converter = automatic.instantiate();
+                converterColumnType = automatic.columnType();
+            }
+        }
+        if (converter == null && javaType.isEnum()) {
+            enumeratedMapping = true;
+            enumType = inferredEnumType(javaType);
+            EnumMapping mapping = resolveEnumMapping(javaType, enumType);
+            converter = mapping.converter();
+            converterColumnType = mapping.customColumnType();
+        }
+        if (converter == null) {
+            ElementValueMapping storage = resolveBasicStorageMapping(wrapPrimitiveType(javaType));
+            if (storage.converter() != null) {
+                converter = storage.converter();
+                converterColumnType = storage.columnType();
+            }
+        }
+        return new PersistentProperty(attribute.field(), attribute.name(), columnName, javaType, id,
+                version, nullable,
+                column == null ? 255 : column.length(), column == null ? 0 : column.precision(),
+                column == null ? 0 : column.scale(), generationType,
+                generator, converter,
+                attribute.isAnnotationPresent(CreatedAt.class), attribute.isAnnotationPresent(UpdatedAt.class),
+                attribute.isAnnotationPresent(SoftDelete.class), false, List.of(), enumeratedMapping, enumType, json,
+                false, null, true, false, null, "", column == null || column.insertable(),
+                column == null || column.updatable(), column != null && column.unique(),
+                column == null ? "" : column.columnDefinition(), attribute.isAnnotationPresent(Lob.class), converterColumnType,
+                false, null, null, null, tableGeneratorInfo, false, "",
+                attribute.accessType() == AccessType.PROPERTY, attribute.getter(), attribute.setter(),
+                null, column == null ? "" : column.table(), null,
+                columnDdlDefinition(column, attribute));
+    }
+
+    private static Class<?> collectionElementType(
+            Class<?> entityType, String name, Type genericType, Class<? extends Annotation> relation) {
+        if (genericType instanceof ParameterizedType parameterized
+                && parameterized.getActualTypeArguments().length == 1
+                && parameterized.getActualTypeArguments()[0] instanceof Class<?> elementType) {
+            return elementType;
+        }
+        throw new IllegalArgumentException(entityType.getName() + "." + name + " @"
+                + relation.getSimpleName() + " cannot infer the target entity from a raw collection; specify targetEntity");
+    }
+
+    private PersistentProperty createDescriptorToOneProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute, boolean oneToOne) {
+        OneToOne annotation = attribute.annotation(OneToOne.class);
+        Class<?> target = annotation.targetEntity() == void.class ? attribute.javaType() : annotation.targetEntity();
+        String mappedBy = annotation.mappedBy();
+        if (!mappedBy.isBlank()) {
+            if (attribute.isAnnotationPresent(MapsId.class)) {
+                throw new IllegalArgumentException(entityType.getName() + "." + attribute.name()
+                        + " @MapsId is only valid on the owning side of a to-one relationship;"
+                        + " it cannot be placed on an inverse @OneToOne(mappedBy)");
+            }
+            return new PersistentProperty(attribute.field(), attribute.name(), "", attribute.javaType(),
+                    false, false, true,
+                    255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                    false, null, false, false, target, mappedBy, true, true, false, "", false, null, true,
+                    null, null, null, null, false, "", attribute.accessType() == AccessType.PROPERTY,
+                    attribute.getter(), attribute.setter(), null, "", null,
+                    ColumnDdlDefinition.EMPTY);
+        }
+        JoinColumn join = attribute.annotation(JoinColumn.class);
+        ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
+        ToOneForeignKey compositeForeignKey = storage == null
+                ? resolveCompositeToOneForeignKey(entityType, target, attribute) : null;
+        String columnName = compositeForeignKey != null
+                ? compositeForeignKey.columns().get(0).columnName()
+                : join != null && !join.name().isBlank()
+                        ? join.name()
+                        : namingStrategy.columnName(attribute.name() + "_id");
+        String mapsId = resolveMapsIdMarker(entityType, attribute);
+        return new PersistentProperty(attribute.field(), attribute.name(),
+                columnName,
+                storage == null ? Long.class : storage.javaType(), false, false,
+                annotation.optional() && (join == null || join.nullable()), storage == null ? 255 : storage.length(),
+                0, 0, null, "", storage == null ? null : storage.converter(), false, false, false,
+                false, List.of(), false, null, false, true, target,
+                annotation.optional() && (join == null || join.nullable()), false, null, "",
+                join == null || join.insertable(), join == null || join.updatable(), oneToOne || (join != null && join.unique()),
+                join == null ? "" : join.columnDefinition(), false,
+                storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
+                mapsId != null, mapsId == null ? "" : mapsId,
+                attribute.accessType() == AccessType.PROPERTY,
+                attribute.getter(), attribute.setter(),
+                annotation.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(annotation.cascade())),
+                "", compositeForeignKey);
+    }
+
+    private PersistentProperty createDescriptorCollectionMarker(PersistentAttributeAccess attribute) {
+        return new PersistentProperty(attribute.field(), attribute.name(), "", attribute.javaType(),
+                false, false, true,
+                255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                false, null, true, false, null, "", true, true, false, "", false, null, false,
+                null, null, null, null, false, "", attribute.accessType() == AccessType.PROPERTY,
+                attribute.getter(), attribute.setter(), null, "", null,
+                ColumnDdlDefinition.EMPTY);
+    }
+
+    /**
      * 단일 field로부터 {@link PersistentProperty}를 만든다. {@code hostPath}가 비어있지 않으면
      * 이 property는 {@code @Embedded} 필드(들) 안에 있는 sub-field이며 column 이름에 prefix가 붙고
      * property name은 호스트 필드 이름들을 dot으로 join한 prefix를 갖는다.
@@ -2094,7 +2467,22 @@ public final class EntityMetadataFactory {
             String columnPrefix
     ) {
         return createProperty(declaringType, field, hostPath, columnPrefix, null,
-                field.isAnnotationPresent(Id.class), null);
+                memberPresent(field, Id.class), null);
+    }
+
+    private PersistentProperty createProperty(
+            Class<?> declaringType,
+            PersistentAttributeAccess attribute,
+            List<Field> hostPath,
+            String columnPrefix
+    ) {
+        // Top-level metadata is always descriptor-driven, regardless of whether a conventional
+        // backing field happens to exist. Embedded legacy paths still carry their column prefix
+        // until composed host descriptors replace List<Field>.
+        if (hostPath.isEmpty()) {
+            return createDescriptorProperty(attribute);
+        }
+        return createProperty(declaringType, attribute.field(), hostPath, columnPrefix);
     }
 
     /**
@@ -2109,7 +2497,7 @@ public final class EntityMetadataFactory {
             Column columnOverride
     ) {
         return createProperty(declaringType, field, hostPath, columnPrefix, columnOverride,
-                field.isAnnotationPresent(Id.class), null);
+                memberPresent(field, Id.class), null);
     }
 
     private PersistentProperty createProperty(
@@ -2121,10 +2509,10 @@ public final class EntityMetadataFactory {
             boolean effectiveId,
             Convert conversionOverride
     ) {
-        Column column = columnOverride != null ? columnOverride : field.getAnnotation(Column.class);
-        GeneratedValue generatedValue = field.getAnnotation(GeneratedValue.class);
-        boolean isId = effectiveId || field.isAnnotationPresent(Id.class);
-        boolean isSoftDelete = field.isAnnotationPresent(SoftDelete.class);
+        Column column = columnOverride != null ? columnOverride : memberAnnotation(field, Column.class);
+        GeneratedValue generatedValue = memberAnnotation(field, GeneratedValue.class);
+        boolean isId = effectiveId || memberPresent(field, Id.class);
+        boolean isSoftDelete = memberPresent(field, SoftDelete.class);
         if (isSoftDelete) {
             if (isId) {
                 throw new IllegalArgumentException(
@@ -2138,7 +2526,7 @@ public final class EntityMetadataFactory {
                                 + "; supported types are java.time.Instant, java.time.LocalDateTime, java.time.OffsetDateTime");
             }
         }
-        boolean isVersion = field.isAnnotationPresent(Version.class);
+        boolean isVersion = memberPresent(field, Version.class);
         if (isVersion) {
             if (isId) {
                 throw new IllegalArgumentException(
@@ -2224,8 +2612,8 @@ public final class EntityMetadataFactory {
             propertyName = builder.toString();
         }
 
-        Enumerated enumerated = field.getAnnotation(Enumerated.class);
-        boolean isJson = field.isAnnotationPresent(Json.class);
+        Enumerated enumerated = memberAnnotation(field, Enumerated.class);
+        boolean isJson = memberPresent(field, Json.class);
         AttributeConverter<?, ?> userConverter = converters.get(field.getType());
         boolean isEnumerated = false;
         EnumType enumType = null;
@@ -2274,7 +2662,7 @@ public final class EntityMetadataFactory {
         // 저장 표현 타입(Y)을 columnType()/schema 컬럼 타입의 근거로 보관한다.
         Convert convert = conversionOverride != null
                 ? conversionOverride
-                : Arrays.stream(field.getAnnotationsByType(Convert.class))
+                : Arrays.stream(memberAnnotations(field, Convert.class))
                         .filter(candidate -> candidate.attributeName().isBlank()).findFirst().orElse(null);
         if (explicitConverter != null) {
             if (isEnumerated || isJson) {
@@ -2296,7 +2684,7 @@ public final class EntityMetadataFactory {
         // 네이티브이므로 @Temporal이 붙은 Date/Calendar에 TemporalAttributeConverter를 달고, 저장 타입
         // (DATE→LocalDate, TIME→LocalTime, TIMESTAMP→LocalDateTime)을 converterColumnType으로 보관해
         // schema 컬럼 타입(date/time/timestamp)과 row 디코딩이 도메인 타입이 아닌 저장 타입을 따르게 한다.
-        Temporal temporal = field.getAnnotation(Temporal.class);
+        Temporal temporal = memberAnnotation(field, Temporal.class);
         boolean isUtilDate = field.getType() == java.util.Date.class;
         boolean isCalendar = java.util.Calendar.class.isAssignableFrom(field.getType());
         if (temporal != null) {
@@ -2399,11 +2787,11 @@ public final class EntityMetadataFactory {
         boolean updatable = column == null || column.updatable();
         boolean unique = column != null && column.unique();
         String columnDefinition = column == null ? "" : column.columnDefinition();
-        boolean lob = field.isAnnotationPresent(Lob.class);
+        boolean lob = memberPresent(field, Lob.class);
         // @Basic(optional=false)은 @Column(nullable=false)과 동일하게 NOT NULL 제약으로 반영한다. JPA에서 basic
         // 속성의 nullability는 @Column.nullable / @Basic.optional 중 하나라도 false면 NOT NULL이다. (@Basic.fetch는
         // Nova에 lazy basic 개념이 없어 no-op으로 수용 — 관계 fetch=LAZY와 동일 정책.)
-        Basic basic = field.getAnnotation(Basic.class);
+        Basic basic = memberAnnotation(field, Basic.class);
         boolean nullable = (column == null || column.nullable()) && (basic == null || basic.optional());
         // @Access(AccessType.PROPERTY): 클래스 레벨 기본 access type + 멤버 레벨 override를 해석하고,
         // PROPERTY access이면 JavaBean getter/setter를 resolve해 PP에 캐시한다(resolve 실패 시 fail-fast).
@@ -2429,8 +2817,8 @@ public final class EntityMetadataFactory {
                 generationType,
                 generator,
                 converter,
-                field.isAnnotationPresent(CreatedAt.class),
-                field.isAnnotationPresent(UpdatedAt.class),
+                memberPresent(field, CreatedAt.class),
+                memberPresent(field, UpdatedAt.class),
                 isSoftDelete,
                 embedded,
                 embedded ? hostPath : List.of(),
@@ -2498,11 +2886,49 @@ public final class EntityMetadataFactory {
         return new ColumnDdlDefinition(checks, comment, options, secondPrecision);
     }
 
+    private static ColumnDdlDefinition columnDdlDefinition(
+            Column column, PersistentAttributeAccess attribute) {
+        if (column == null) {
+            return ColumnDdlDefinition.EMPTY;
+        }
+        String location = attribute.declaringType().getName() + "." + attribute.name();
+        int secondPrecision = column.secondPrecision();
+        if (secondPrecision < -1) {
+            throw new IllegalArgumentException("@Column.secondPrecision on " + location
+                    + " must be -1 (unspecified) or non-negative");
+        }
+        Temporal temporal = attribute.annotation(Temporal.class);
+        boolean secondPrecisionCapable = attribute.javaType() == java.time.LocalTime.class
+                || attribute.javaType() == java.time.LocalDateTime.class
+                || (temporal != null
+                && (temporal.value() == TemporalType.TIME || temporal.value() == TemporalType.TIMESTAMP));
+        if (secondPrecision >= 0 && !secondPrecisionCapable) {
+            throw new IllegalArgumentException("@Column.secondPrecision on " + location
+                    + " requires a TIME or TIMESTAMP property");
+        }
+        List<CheckConstraintDefinition> checks = new ArrayList<>();
+        for (CheckConstraint check : column.check()) {
+            CheckConstraintDefinition definition = checkConstraint(
+                    check.name(), check.constraint(), check.options(), "@Column.check on " + location);
+            if (definition != null) {
+                checks.add(definition);
+            }
+        }
+        String comment = column.comment();
+        String options = fragment(column.options(), "@Column.options on " + location);
+        if (!column.columnDefinition().isBlank() && !options.isEmpty()) {
+            throw new IllegalArgumentException("@Column.columnDefinition and @Column.options"
+                    + " cannot both be non-blank on " + location);
+        }
+        validateNoNul(comment, "@Column.comment on " + location);
+        return new ColumnDdlDefinition(checks, comment, options, secondPrecision);
+    }
+
     private static boolean isSecondPrecisionCapable(Field field) {
         if (field.getType() == java.time.LocalTime.class || field.getType() == java.time.LocalDateTime.class) {
             return true;
         }
-        Temporal temporal = field.getAnnotation(Temporal.class);
+        Temporal temporal = memberAnnotation(field, Temporal.class);
         return temporal != null && (temporal.value() == TemporalType.TIME || temporal.value() == TemporalType.TIMESTAMP);
     }
 
@@ -2562,6 +2988,13 @@ public final class EntityMetadataFactory {
         if (memberAccess != null) {
             return memberAccess.value() == AccessType.PROPERTY;
         }
+        Method getter = findPropertyGetter(field);
+        if (getter != null) {
+            memberAccess = getter.getAnnotation(Access.class);
+            if (memberAccess != null) {
+                return memberAccess.value() == AccessType.PROPERTY;
+            }
+        }
         for (Class<?> type = field.getDeclaringClass(); type != null && type != Object.class;
                 type = type.getSuperclass()) {
             Access classAccess = type.getAnnotation(Access.class);
@@ -2569,7 +3002,82 @@ public final class EntityMetadataFactory {
                 return classAccess.value() == AccessType.PROPERTY;
             }
         }
-        return false;
+        boolean fieldIdentifier = false;
+        boolean propertyIdentifier = false;
+        for (Class<?> type = field.getDeclaringClass(); type != null && type != Object.class;
+                type = type.getSuperclass()) {
+            if (type != field.getDeclaringClass()
+                    && !type.isAnnotationPresent(Entity.class)
+                    && !type.isAnnotationPresent(MappedSuperclass.class)) {
+                continue;
+            }
+            for (Field candidate : type.getDeclaredFields()) {
+                fieldIdentifier |= candidate.isAnnotationPresent(Id.class)
+                        || candidate.isAnnotationPresent(EmbeddedId.class);
+            }
+            for (Method candidate : type.getDeclaredMethods()) {
+                propertyIdentifier |= candidate.isAnnotationPresent(Id.class)
+                        || candidate.isAnnotationPresent(EmbeddedId.class);
+            }
+        }
+        if (fieldIdentifier && propertyIdentifier) {
+            throw new IllegalArgumentException(field.getDeclaringClass().getName()
+                    + " mixes field and property identifier placement; declare @Access explicitly");
+        }
+        return propertyIdentifier;
+    }
+
+    /** Returns the selected descriptor for the effective JPA access strategy. */
+    private static PersistentAttributeAccess selectedAttribute(Field field) {
+        if (!resolvePropertyAccess(field)) {
+            return new PersistentAttributeAccess(field.getName(), field);
+        }
+        return new PersistentAttributeAccess(
+                field.getName(), resolvePropertyGetter(field), resolvePropertySetter(field), field);
+    }
+
+    private static <A extends Annotation> A memberAnnotation(Field field, Class<A> annotationType) {
+        if (!resolvePropertyAccess(field)) {
+            return field.getAnnotation(annotationType);
+        }
+        Method getter = findPropertyGetter(field);
+        return getter == null ? null : getter.getAnnotation(annotationType);
+    }
+
+    private static boolean memberPresent(Field field, Class<? extends Annotation> annotationType) {
+        if (!resolvePropertyAccess(field)) {
+            return field.isAnnotationPresent(annotationType);
+        }
+        Method getter = findPropertyGetter(field);
+        return getter != null && getter.isAnnotationPresent(annotationType);
+    }
+
+    private static AnnotatedElement selectedMember(Field field) {
+        PersistentAttributeAccess attribute = selectedAttribute(field);
+        return attribute.accessType() == AccessType.PROPERTY ? attribute.getter() : attribute.field();
+    }
+
+    private static <A extends Annotation> A[] memberAnnotations(Field field, Class<A> annotationType) {
+        return selectedMember(field).getAnnotationsByType(annotationType);
+    }
+
+    private static Type selectedGenericType(Field field) {
+        return selectedAttribute(field).genericType();
+    }
+
+    private static Method findPropertyGetter(Field field) {
+        Class<?> owner = field.getDeclaringClass();
+        String capitalized = capitalize(field.getName());
+        Class<?> type = field.getType();
+        if (type == boolean.class || type == Boolean.class) {
+            Method isGetter = findZeroArgMethod(owner, "is" + capitalized);
+            if (isGetter != null && (isGetter.getReturnType() == boolean.class
+                    || isGetter.getReturnType() == Boolean.class)) {
+                return isGetter;
+            }
+        }
+        Method getter = findZeroArgMethod(owner, "get" + capitalized);
+        return getter != null && getter.getReturnType() != void.class ? getter : null;
     }
 
     /**
@@ -2583,23 +3091,16 @@ public final class EntityMetadataFactory {
             if (accessor != null && accessor.getReturnType() == field.getType()) {
                 return accessor;
             }
-            throw new IllegalStateException("Record component " + owner.getName() + "." + field.getName()
+            throw new IllegalArgumentException("Record component " + owner.getName() + "." + field.getName()
                     + " has no matching component accessor");
+        }
+        Method getter = findPropertyGetter(field);
+        if (getter != null) {
+            return getter;
         }
         String capitalized = capitalize(field.getName());
         Class<?> type = field.getType();
-        if (type == boolean.class || type == Boolean.class) {
-            Method isGetter = findZeroArgMethod(owner, "is" + capitalized);
-            if (isGetter != null && (isGetter.getReturnType() == boolean.class
-                    || isGetter.getReturnType() == Boolean.class)) {
-                return isGetter;
-            }
-        }
-        Method getter = findZeroArgMethod(owner, "get" + capitalized);
-        if (getter != null && getter.getReturnType() != void.class) {
-            return getter;
-        }
-        throw new IllegalStateException(
+        throw new IllegalArgumentException(
                 owner.getName() + "." + field.getName()
                         + " uses @Access(PROPERTY) but has no JavaBean getter"
                         + " (expected get" + capitalized
@@ -2612,6 +3113,12 @@ public final class EntityMetadataFactory {
      */
     private static Method resolvePropertySetter(Field field) {
         Class<?> owner = field.getDeclaringClass();
+        // Record components are immutable and are populated through their canonical constructor.
+        // Their component accessor is the selected PROPERTY reader; requiring a JavaBean setter
+        // here would reject otherwise valid record embeddables before construction can occur.
+        if (owner.isRecord()) {
+            return null;
+        }
         String setterName = "set" + capitalize(field.getName());
         for (Class<?> type = owner; type != null && type != Object.class; type = type.getSuperclass()) {
             for (Method method : type.getDeclaredMethods()) {
@@ -2628,7 +3135,7 @@ public final class EntityMetadataFactory {
                 }
             }
         }
-        throw new IllegalStateException(
+        throw new IllegalArgumentException(
                 owner.getName() + "." + field.getName()
                         + " uses @Access(PROPERTY) but has no JavaBean setter"
                         + " (expected " + setterName + "(" + field.getType().getSimpleName() + "))");
@@ -2749,7 +3256,7 @@ public final class EntityMetadataFactory {
     private JpaConverterDescriptor explicitJpaConverter(
             Field field, Class<?> attributeType, String selector, String location, Convert override) {
         Convert selected = null;
-        Convert[] candidates = override == null ? field.getAnnotationsByType(Convert.class) : new Convert[]{override};
+        Convert[] candidates = override == null ? memberAnnotations(field, Convert.class) : new Convert[]{override};
         for (Convert candidate : candidates) {
             String name = candidate.attributeName();
             boolean matches = override != null || (selector == null
@@ -2779,12 +3286,59 @@ public final class EntityMetadataFactory {
         return uniqueJpaConverter(attributeType, false, location);
     }
 
+    private JpaConverterDescriptor explicitJpaConverter(
+            Method getter, Class<?> attributeType, String selector, String location, Convert override) {
+        Convert selected = null;
+        Convert[] candidates = override == null ? getter.getAnnotationsByType(Convert.class) : new Convert[]{override};
+        for (Convert candidate : candidates) {
+            String name = candidate.attributeName();
+            boolean matches = override != null || (selector == null
+                    ? name.isBlank()
+                    : name.equals(selector) || (selector.equals("value") && name.isBlank()));
+            if (!matches) {
+                continue;
+            }
+            if (selected != null) {
+                throw new IllegalArgumentException(location + " declares multiple @Convert mappings for "
+                        + (selector == null ? "the attribute" : "map " + selector));
+            }
+            selected = candidate;
+        }
+        if (selected == null || selected.disableConversion()) {
+            return null;
+        }
+        if (selected.converter() != jakarta.persistence.AttributeConverter.class) {
+            Class<?>[] types = resolveJpaConverterTypeArguments(selected.converter());
+            Class<?> target = wrapPrimitiveType(types[0]);
+            if (target != wrapPrimitiveType(attributeType)) {
+                throw new IllegalArgumentException(location + " @Convert converter " + selected.converter().getName()
+                        + " targets " + target.getName() + " but the mapped type is " + attributeType.getName());
+            }
+            return new JpaConverterDescriptor(selected.converter(), target, wrapPrimitiveType(types[1]), false);
+        }
+        return uniqueJpaConverter(attributeType, false, location);
+    }
+
     private boolean conversionDisabled(Field field, String selector) {
         return conversionDisabled(field, selector, null);
     }
 
     private boolean conversionDisabled(Field field, String selector, Convert override) {
-        Convert[] candidates = override == null ? field.getAnnotationsByType(Convert.class) : new Convert[]{override};
+        Convert[] candidates = override == null ? memberAnnotations(field, Convert.class) : new Convert[]{override};
+        for (Convert convert : candidates) {
+            String name = convert.attributeName();
+            boolean matches = override != null || (selector == null
+                    ? name.isBlank()
+                    : name.equals(selector) || (selector.equals("value") && name.isBlank()));
+            if (matches && convert.disableConversion()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean conversionDisabled(Method getter, String selector, Convert override) {
+        Convert[] candidates = override == null ? getter.getAnnotationsByType(Convert.class) : new Convert[]{override};
         for (Convert convert : candidates) {
             String name = convert.attributeName();
             boolean matches = override != null || (selector == null
@@ -2859,10 +3413,10 @@ public final class EntityMetadataFactory {
      * 검증은 {@link OneToMany}/{@link ManyToOne} 한쪽이라도 존재할 때만 수행한다.
      */
     private static void rejectIncompatibleRelationAnnotations(Class<?> entityType, Field field) {
-        boolean isManyToOne = field.isAnnotationPresent(ManyToOne.class);
-        boolean isOneToMany = field.isAnnotationPresent(OneToMany.class);
-        boolean isOneToOne = field.isAnnotationPresent(OneToOne.class);
-        boolean isManyToMany = field.isAnnotationPresent(ManyToMany.class);
+        boolean isManyToOne = memberPresent(field, ManyToOne.class);
+        boolean isOneToMany = memberPresent(field, OneToMany.class);
+        boolean isOneToOne = memberPresent(field, OneToOne.class);
+        boolean isManyToMany = memberPresent(field, ManyToMany.class);
         int relationCount = (isManyToOne ? 1 : 0) + (isOneToMany ? 1 : 0)
                 + (isOneToOne ? 1 : 0) + (isManyToMany ? 1 : 0);
         if (relationCount == 0) {
@@ -2873,36 +3427,36 @@ public final class EntityMetadataFactory {
             throw new IllegalStateException(
                     location + " cannot declare more than one of @ManyToOne / @OneToMany / @OneToOne / @ManyToMany");
         }
-        if (field.isAnnotationPresent(Embedded.class)) {
+        if (memberPresent(field, Embedded.class)) {
             throw new IllegalStateException(location + " cannot declare @Embedded together with a relation annotation");
         }
-        if (field.isAnnotationPresent(Id.class)) {
+        if (memberPresent(field, Id.class)) {
             throw new IllegalStateException(location + " cannot declare @Id together with a relation annotation");
         }
-        if (field.isAnnotationPresent(Version.class)) {
+        if (memberPresent(field, Version.class)) {
             throw new IllegalStateException(location + " cannot declare @Version together with a relation annotation");
         }
-        if (field.isAnnotationPresent(SoftDelete.class)) {
+        if (memberPresent(field, SoftDelete.class)) {
             throw new IllegalStateException(location + " cannot declare @SoftDelete together with a relation annotation");
         }
-        if (field.isAnnotationPresent(CreatedAt.class)) {
+        if (memberPresent(field, CreatedAt.class)) {
             throw new IllegalStateException(location + " cannot declare @CreatedAt together with a relation annotation");
         }
-        if (field.isAnnotationPresent(UpdatedAt.class)) {
+        if (memberPresent(field, UpdatedAt.class)) {
             throw new IllegalStateException(location + " cannot declare @UpdatedAt together with a relation annotation");
         }
-        if (field.isAnnotationPresent(Enumerated.class)) {
+        if (memberPresent(field, Enumerated.class)) {
             throw new IllegalStateException(location + " cannot declare @Enumerated together with a relation annotation");
         }
-        if (field.isAnnotationPresent(Json.class)) {
+        if (memberPresent(field, Json.class)) {
             throw new IllegalStateException(location + " cannot declare @Json together with a relation annotation");
         }
-        if (field.isAnnotationPresent(MapsId.class) && (isOneToMany || isManyToMany)) {
+        if (memberPresent(field, MapsId.class) && (isOneToMany || isManyToMany)) {
             throw new IllegalStateException(
                     location + " @MapsId is only valid on a to-one relationship (@OneToOne/@ManyToOne),"
                             + " not on @OneToMany/@ManyToMany");
         }
-        if (field.isAnnotationPresent(jakarta.persistence.OrderColumn.class)) {
+        if (memberPresent(field, jakarta.persistence.OrderColumn.class)) {
             if (isManyToOne || isOneToOne) {
                 throw new IllegalStateException(
                         location + " @OrderColumn is only valid on an ordered List collection,"
@@ -2919,6 +3473,67 @@ public final class EntityMetadataFactory {
         }
     }
 
+    private static void rejectIncompatibleRelationAnnotations(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        boolean manyToOne = attribute.isAnnotationPresent(ManyToOne.class);
+        boolean oneToMany = attribute.isAnnotationPresent(OneToMany.class);
+        boolean oneToOne = attribute.isAnnotationPresent(OneToOne.class);
+        boolean manyToMany = attribute.isAnnotationPresent(ManyToMany.class);
+        int count = (manyToOne ? 1 : 0) + (oneToMany ? 1 : 0) + (oneToOne ? 1 : 0) + (manyToMany ? 1 : 0);
+        if (count == 0) return;
+        String location = entityType.getName() + "." + attribute.name();
+        if (count > 1) throw new IllegalStateException(location + " cannot declare more than one relation annotation");
+        for (Class<? extends Annotation> incompatible : List.of(
+                Embedded.class, Id.class, Version.class, SoftDelete.class, CreatedAt.class, UpdatedAt.class,
+                Enumerated.class, Json.class)) {
+            if (attribute.isAnnotationPresent(incompatible)) {
+                throw new IllegalStateException(location + " cannot declare @" + incompatible.getSimpleName()
+                        + " together with a relation annotation");
+            }
+        }
+        if (attribute.isAnnotationPresent(MapsId.class) && (oneToMany || manyToMany)) {
+            throw new IllegalStateException(location + " @MapsId is only valid on a to-one relationship");
+        }
+        if (attribute.isAnnotationPresent(jakarta.persistence.OrderColumn.class)) {
+            if (manyToOne || oneToOne) {
+                throw new IllegalStateException(
+                        location + " @OrderColumn is only valid on an ordered List collection,"
+                                + " not on a single-valued @ManyToOne/@OneToOne relationship");
+            }
+            if (manyToMany) {
+                throw new IllegalStateException(
+                        location + " @OrderColumn on @ManyToMany is not supported;"
+                                + " @OrderColumn is supported on @ElementCollection List"
+                                + " and @OneToMany(mappedBy) List");
+            }
+        }
+    }
+
+    /**
+     * Relationship annotations cannot be harmlessly ignored on the inactive access side: doing so
+     * would silently map an entity reference as a basic column. Basic annotations on the inactive
+     * side are deliberately ignored, but relations are rejected with an actionable error.
+     */
+    private static void rejectInactiveRelationAnnotations(Class<?> entityType, Field field) {
+        AnnotatedElement inactive = resolvePropertyAccess(field) ? field : findPropertyGetter(field);
+        if (inactive == null) {
+            return;
+        }
+        for (Class<? extends Annotation> relation : List.of(
+                OneToMany.class, ManyToOne.class, OneToOne.class, ManyToMany.class, ElementCollection.class)) {
+            if (inactive.isAnnotationPresent(relation)) {
+                throw new IllegalArgumentException(entityType.getName() + "." + field.getName()
+                        + " declares @" + relation.getSimpleName() + " on the inactive "
+                        + (resolvePropertyAccess(field) ? "field" : "getter") + " access side");
+            }
+        }
+    }
+
+    private static void rejectInactiveRelationAnnotations(Class<?> entityType, PersistentAttributeAccess attribute) {
+        // The resolver has already selected the active member.  Inactive members are validated while
+        // constructing that plan; this factory must not reselect a field/getter pair.
+    }
+
     /**
      * FK 제약이 의미를 가질 수 없는 위치에 명시적 {@code @ForeignKey}(= {@code value != PROVIDER_DEFAULT})가
      * 붙은 경우를 fail-fast로 거부한다 — 조용히 무시하면 사용자가 FK 커스터마이즈가 적용된 것으로 오인한다.
@@ -2930,26 +3545,46 @@ public final class EntityMetadataFactory {
      */
     private static void rejectMisplacedForeignKey(Class<?> entityType, Field field) {
         String location = entityType.getName() + "." + field.getName();
-        boolean toOne = field.isAnnotationPresent(ManyToOne.class) || field.isAnnotationPresent(OneToOne.class);
-        JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
+        boolean toOne = memberPresent(field, ManyToOne.class) || memberPresent(field, OneToOne.class);
+        JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
         if (joinColumn != null && isExplicitForeignKey(joinColumn.foreignKey()) && !toOne) {
             throw new IllegalStateException(
                     location + " @JoinColumn(foreignKey=...) is only honored on an owning"
                             + " @ManyToOne/@OneToOne relationship");
         }
-        JoinTable joinTable = field.getAnnotation(JoinTable.class);
+        JoinTable joinTable = memberAnnotation(field, JoinTable.class);
         if (joinTable != null
                 && (isExplicitForeignKey(joinTable.foreignKey())
                         || isExplicitForeignKey(joinTable.inverseForeignKey()))
-                && !field.isAnnotationPresent(ManyToMany.class)) {
+                && !memberPresent(field, ManyToMany.class)) {
             throw new IllegalStateException(
                     location + " @JoinTable foreign key customization is only honored on a @ManyToMany relationship");
         }
-        CollectionTable collectionTable = field.getAnnotation(CollectionTable.class);
+        CollectionTable collectionTable = memberAnnotation(field, CollectionTable.class);
         if (collectionTable != null && isExplicitForeignKey(collectionTable.foreignKey())
-                && !field.isAnnotationPresent(ElementCollection.class)) {
+                && !memberPresent(field, ElementCollection.class)) {
             throw new IllegalStateException(
                     location + " @CollectionTable(foreignKey=...) is only honored on an @ElementCollection");
+        }
+    }
+
+    private static void rejectMisplacedForeignKey(Class<?> entityType, PersistentAttributeAccess attribute) {
+        String location = entityType.getName() + "." + attribute.name();
+        boolean toOne = attribute.isAnnotationPresent(ManyToOne.class) || attribute.isAnnotationPresent(OneToOne.class);
+        JoinColumn joinColumn = attribute.annotation(JoinColumn.class);
+        if (joinColumn != null && isExplicitForeignKey(joinColumn.foreignKey()) && !toOne) {
+            throw new IllegalStateException(location + " @JoinColumn(foreignKey=...) is only honored on an owning to-one");
+        }
+        JoinTable joinTable = attribute.annotation(JoinTable.class);
+        if (joinTable != null && (isExplicitForeignKey(joinTable.foreignKey())
+                || isExplicitForeignKey(joinTable.inverseForeignKey()))
+                && !attribute.isAnnotationPresent(ManyToMany.class)) {
+            throw new IllegalStateException(location + " @JoinTable foreign key customization is only honored on @ManyToMany");
+        }
+        CollectionTable collectionTable = attribute.annotation(CollectionTable.class);
+        if (collectionTable != null && isExplicitForeignKey(collectionTable.foreignKey())
+                && !attribute.isAnnotationPresent(ElementCollection.class)) {
+            throw new IllegalStateException(location + " @CollectionTable foreign key customization is only honored on @ElementCollection");
         }
     }
 
@@ -2967,7 +3602,8 @@ public final class EntityMetadataFactory {
      * save/delete/flush 시 child 전파를 구동하고, 둘 다 없으면 {@code null}로 두어 기존 marker-only 동작을 보존한다.
      */
     private PersistentProperty createOneToManyProperty(Class<?> entityType, Field field) {
-        OneToMany annotation = field.getAnnotation(OneToMany.class);
+        RelationAccess access = resolveRelationAccess(field);
+        OneToMany annotation = memberAnnotation(field, OneToMany.class);
         OrderColumnInfo orderColumn = resolveOneToManyOrderColumn(entityType, field);
         OneToManyInfo oneToManyInfo;
         if (annotation.cascade().length > 0 || annotation.orphanRemoval() || orderColumn != null) {
@@ -2986,14 +3622,14 @@ public final class EntityMetadataFactory {
         }
         Class<?> targetType = annotation.targetEntity();
         if (targetType == void.class) {
-            // erasure로 컬렉션의 원소 타입을 직접 추론할 수 없으면 null로 두고 호출자가 명시할 수 있게 한다.
-            targetType = null;
+            targetType = collectionElementType(
+                    entityType, field.getName(), selectedGenericType(field), OneToMany.class);
         }
         return new PersistentProperty(
                 field,
                 field.getName(),
                 "", // no column for inverse side
-                field.getType(),
+                selectedAttribute(field).javaType(),
                 false,
                 false,
                 true,
@@ -3030,14 +3666,41 @@ public final class EntityMetadataFactory {
                 null,
                 false,
                 "",
-                false,
-                null,
-                null,
+                access.propertyAccess(),
+                access.getter(),
+                access.setter(),
                 null,
                 "",
                 null,
                 ColumnDdlDefinition.EMPTY
         );
+    }
+
+    private PersistentProperty createOneToManyProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        if (attribute.accessType() == AccessType.FIELD) {
+            return createOneToManyProperty(entityType, attribute.field());
+        }
+        OneToMany annotation = attribute.annotation(OneToMany.class);
+        String mappedBy = annotation.mappedBy();
+        if (mappedBy == null || mappedBy.isBlank()) {
+            throw new IllegalStateException(entityType.getName() + "." + attribute.name()
+                    + " @OneToMany requires non-blank mappedBy");
+        }
+        Class<?> target = annotation.targetEntity() == void.class
+                ? collectionElementType(entityType, attribute.name(), attribute.genericType(), OneToMany.class)
+                : annotation.targetEntity();
+        OrderColumnInfo orderColumn = resolveOneToManyOrderColumn(entityType, attribute.getter());
+        OneToManyInfo info = annotation.cascade().length > 0 || annotation.orphanRemoval() || orderColumn != null
+                ? new OneToManyInfo(Set.of(annotation.cascade()), annotation.orphanRemoval(), orderColumn)
+                : null;
+        return new PersistentProperty(attribute.field(), attribute.name(), "", attribute.javaType(),
+                false, false, true,
+                255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                false, null, true, true, target, mappedBy, true, true, false, "", false, null, false,
+                null, null, info, null, false, "", attribute.accessType() == AccessType.PROPERTY,
+                attribute.getter(), attribute.setter(), null, "", null,
+                ColumnDdlDefinition.EMPTY);
     }
 
     /**
@@ -3063,61 +3726,68 @@ public final class EntityMetadataFactory {
      * application/연관-PK가 채우므로 양립 불가).
      */
     private static String resolveMapsIdMarker(Class<?> entityType, Field field) {
-        MapsId mapsId = field.getAnnotation(MapsId.class);
+        return resolveMapsIdMarker(entityType, selectedAttribute(field));
+    }
+
+    private static String resolveMapsIdMarker(Class<?> entityType, PersistentAttributeAccess relation) {
+        MapsId mapsId = relation.annotation(MapsId.class);
         if (mapsId == null) {
             return null;
         }
+        String location = entityType.getName() + "." + relation.name();
+        Class<?> relationTarget = relation.javaType();
+        ManyToOne manyToOne = relation.annotation(ManyToOne.class);
+        if (manyToOne != null && manyToOne.targetEntity() != void.class) {
+            relationTarget = manyToOne.targetEntity();
+        }
+        OneToOne oneToOne = relation.annotation(OneToOne.class);
+        if (oneToOne != null && oneToOne.targetEntity() != void.class) {
+            relationTarget = oneToOne.targetEntity();
+        }
         String value = mapsId.value();
         // 파생 대상 @Id 구조 파악: top-level @Id 필드들과 @EmbeddedId holder를 수집한다.
-        List<Field> idFields = new ArrayList<>();
-        Field embeddedIdField = null;
-        for (Field candidate : mappedFields(entityType)) {
-            if (isNotPersistable(candidate)) {
-                continue;
-            }
-            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                embeddedIdField = candidate;
-            }
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idFields.add(candidate);
-            }
-        }
-        boolean composite = embeddedIdField != null
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(entityType);
+        PersistentAttributeAccess embeddedId = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(EmbeddedId.class))
+                .findFirst().orElse(null);
+        List<PersistentAttributeAccess> idFields = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
+        boolean composite = embeddedId != null
                 || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class)
                 || idFields.size() > 1;
-        if (embeddedIdField != null && embeddedIdField.getType().isRecord()) {
-            throw new IllegalArgumentException(entityType.getName() + "." + field.getName()
-                    + " uses @MapsId with record @EmbeddedId " + embeddedIdField.getType().getName()
+        if (embeddedId != null && embeddedId.javaType().isRecord()) {
+            throw new IllegalArgumentException(location
+                    + " uses @MapsId with record @EmbeddedId " + embeddedId.javaType().getName()
                     + "; immutable record identifiers cannot be derived by mutation");
         }
         if (value != null && !value.isBlank()) {
             // @MapsId("component"): owner는 복합 @Id여야 하고 named 컴포넌트가 존재해야 한다.
             if (!composite) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName()
+                        location
                                 + " @MapsId(\"" + value + "\") names an id component but the entity does not declare a"
                                 + " composite @Id (@EmbeddedId/@IdClass); use a simple @MapsId to derive the single @Id");
             }
-            if (!compositeIdComponentExists(embeddedIdField, idFields, value)) {
+            if (!compositeIdComponentExists(embeddedId, idFields, value)) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName()
+                        location
                                 + " @MapsId(\"" + value + "\") does not match any component of the composite @Id of "
                                 + entityType.getName());
             }
-            if (compositeIdComponentGenerated(embeddedIdField, idFields, value)) {
+            if (compositeIdComponentGenerated(embeddedId, idFields, value)) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName()
+                        location
                                 + " @MapsId(\"" + value + "\") cannot be combined with @GeneratedValue on the id"
                                 + " component; a derived identifier is supplied by the associated entity's primary key");
             }
             // 파생 값은 연관 엔티티의 PK 전체(readIdValue)에서 온다. 그 타겟이 복합 @Id면 어느 컴포넌트를
             // owner의 어느 컴포넌트로 매핑할지 모호하고 holder 객체를 스칼라 컬럼에 쓰려다 런타임에 던진다.
             // 조용한 런타임 실패 대신 build 시점에 명확히 거부한다(단일 @Id 타겟만 지원).
-            if (declaresCompositeId(field.getType())) {
+            if (declaresCompositeId(relationTarget)) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName()
+                        location
                                 + " @MapsId(\"" + value + "\") derives an id component from "
-                                + field.getType().getName() + ", but deriving from a composite-key associated"
+                                + relationTarget.getName() + ", but deriving from a composite-key associated"
                                 + " entity is not supported; the associated entity must declare a single @Id");
             }
             return value;
@@ -3125,19 +3795,19 @@ public final class EntityMetadataFactory {
         // 단순 @MapsId: 정확히 하나의 단일 @Id 필드여야 하고 @GeneratedValue가 없어야 한다.
         if (composite) {
             throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
+                    location
                             + " @MapsId requires the owning entity to declare exactly one single @Id"
                             + " (a composite @Id requires @MapsId(\"component\") to derive one named component)");
         }
         if (idFields.size() != 1) {
             throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
+                    location
                             + " @MapsId requires the owning entity to declare exactly one single @Id"
                             + " (composite keys are not supported)");
         }
         if (idFields.get(0).isAnnotationPresent(GeneratedValue.class)) {
             throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
+                    location
                             + " @MapsId cannot be combined with @GeneratedValue on the @Id;"
                             + " a derived identifier is supplied by the associated entity's primary key");
         }
@@ -3153,36 +3823,28 @@ public final class EntityMetadataFactory {
         if (type.isAnnotationPresent(jakarta.persistence.IdClass.class)) {
             return true;
         }
-        int idCount = 0;
-        for (Field candidate : mappedFields(type)) {
-            if (isNotPersistable(candidate)) {
-                continue;
-            }
-            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                return true;
-            }
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idCount++;
-            }
-        }
-        return idCount > 1;
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(type);
+        return identifiers.stream().anyMatch(attribute -> attribute.isAnnotationPresent(EmbeddedId.class))
+                || identifiers.stream().filter(attribute -> attribute.isAnnotationPresent(Id.class)).count() > 1;
     }
 
     /**
      * 복합 {@code @Id}에 {@code name} 컴포넌트가 존재하는지 검사한다. {@code @EmbeddedId}는 {@code @Embeddable}의
      * leaf 필드 이름을, {@code @IdClass}(또는 top-level 다중 {@code @Id})는 top-level {@code @Id} 필드 이름을 본다.
      */
-    private static boolean compositeIdComponentExists(Field embeddedIdField, List<Field> idFields, String name) {
-        if (embeddedIdField != null) {
-            for (Field sub : embeddedIdField.getType().getDeclaredFields()) {
-                if (!isNotPersistable(sub) && sub.getName().equals(name)) {
+    private static boolean compositeIdComponentExists(
+            PersistentAttributeAccess embeddedId, List<PersistentAttributeAccess> idFields, String name) {
+        if (embeddedId != null) {
+            for (PersistentAttributeAccess component
+                    : embeddedComponentAttributes(embeddedId.javaType(), embeddedId.accessType())) {
+                if (component.name().equals(name)) {
                     return true;
                 }
             }
             return false;
         }
-        for (Field idField : idFields) {
-            if (idField.getName().equals(name)) {
+        for (PersistentAttributeAccess idField : idFields) {
+            if (idField.name().equals(name)) {
                 return true;
             }
         }
@@ -3192,17 +3854,19 @@ public final class EntityMetadataFactory {
     /**
      * 복합 {@code @Id}의 {@code name} 컴포넌트가 {@code @GeneratedValue}로 표시되어 있으면 {@code true}.
      */
-    private static boolean compositeIdComponentGenerated(Field embeddedIdField, List<Field> idFields, String name) {
-        if (embeddedIdField != null) {
-            for (Field sub : embeddedIdField.getType().getDeclaredFields()) {
-                if (sub.getName().equals(name)) {
-                    return sub.isAnnotationPresent(GeneratedValue.class);
+    private static boolean compositeIdComponentGenerated(
+            PersistentAttributeAccess embeddedId, List<PersistentAttributeAccess> idFields, String name) {
+        if (embeddedId != null) {
+            for (PersistentAttributeAccess component
+                    : embeddedComponentAttributes(embeddedId.javaType(), embeddedId.accessType())) {
+                if (component.name().equals(name)) {
+                    return component.isAnnotationPresent(GeneratedValue.class);
                 }
             }
             return false;
         }
-        for (Field idField : idFields) {
-            if (idField.getName().equals(name)) {
+        for (PersistentAttributeAccess idField : idFields) {
+            if (idField.name().equals(name)) {
                 return idField.isAnnotationPresent(GeneratedValue.class);
             }
         }
@@ -3253,23 +3917,43 @@ public final class EntityMetadataFactory {
      * 아니면(복합키 {@code @EmbeddedId}/{@code @IdClass}) {@code null}로 떨어져 {@code Long} 폴백을 유지한다.
      */
     private static ForeignKeyStorage resolveToOneForeignKeyStorage(Class<?> targetType) {
-        Field idField = null;
-        int idCount = 0;
-        // 대상 자신 + @MappedSuperclass/상위 @Entity 조상 체인(root-first)을 훑어 @Id를 센다.
-        // 상속된 단일 @Id를 찾아 FK 저장 표현에 반영하되, 복합키(idCount != 1)는 Long 폴백을 유지한다.
-        for (Field candidate : mappedFields(targetType)) {
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idCount++;
-                idField = candidate;
-            }
-        }
-        if (idCount != 1) {
-            // 복합키(@EmbeddedId/@IdClass) 또는 @Id 미탐지 — read-path와 동일하게 단일 @Id가 아니면
-            // 단일 FK 저장 표현으로는 해석하지 않는다. 복합키 타겟은 별도로 다중컬럼 FK 모델
-            // ({@link #resolveCompositeToOneForeignKey})로 확장하고, 그마저 불가하면 호출부가 Long 기본값을 유지한다.
+        List<PersistentAttributeAccess> ids = selectedIdentifierAttributes(targetType).stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
+        if (ids.size() != 1) {
             return null;
         }
-        return resolveScalarFieldStorage(targetType, idField);
+        return resolveScalarStorage(ids.get(0));
+    }
+
+    private static List<PersistentAttributeAccess> selectedIdentifierAttributes(Class<?> type) {
+        return new PersistentAccessResolver().resolve(type).attributes().stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)
+                        || attribute.isAnnotationPresent(EmbeddedId.class))
+                .toList();
+    }
+
+    private static ForeignKeyStorage resolveScalarStorage(PersistentAttributeAccess id) {
+        Class<?> domainType = wrapPrimitiveType(id.javaType());
+        Column column = id.annotation(Column.class);
+        int length = column == null ? 255 : column.length();
+        Convert convert = id.annotation(Convert.class);
+        if (convert != null && !convert.disableConversion()) {
+            Class<?>[] attributeAndColumn = resolveJpaConverterTypeArguments(convert.converter());
+            AttributeConverter<Object, Object> converter =
+                    new JpaAttributeConverterAdapter<>(instantiateJpaConverter(convert.converter()));
+            return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1], length);
+        }
+        Enumerated enumerated = id.annotation(Enumerated.class);
+        if (enumerated != null || id.javaType().isEnum()) {
+            EnumType enumType = enumerated == null ? inferredEnumType(id.javaType()) : enumerated.value();
+            EnumMapping mapping = resolveEnumMapping(id.javaType(), enumType);
+            Class<?> storageType = mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class;
+            return new ForeignKeyStorage(domainType, mapping.converter(), storageType, length);
+        }
+        ElementValueMapping basic = resolveBasicStorageMapping(domainType);
+        return new ForeignKeyStorage(domainType, basic.converter(),
+                basic.converter() == null ? null : basic.columnType(), length);
     }
 
     /**
@@ -3278,31 +3962,6 @@ public final class EntityMetadataFactory {
      * {@code owner}는 {@code @Convert} 제네릭 인자 해석에 쓰이는 필드 선언 타입(단일키는 target 엔티티,
      * {@code @EmbeddedId} 컴포넌트는 {@code @Embeddable} 타입)이다.
      */
-    private static ForeignKeyStorage resolveScalarFieldStorage(Class<?> owner, Field idField) {
-        Class<?> domainType = wrapPrimitiveType(idField.getType());
-        Column column = idField.getAnnotation(Column.class);
-        int length = column != null ? column.length() : 255;
-        Convert convert = idField.getAnnotation(Convert.class);
-        if (convert != null && !convert.disableConversion()) {
-            Class<?>[] attributeAndColumn =
-                    resolveJpaConverterTypeArguments(owner, idField, convert.converter());
-            AttributeConverter<Object, Object> converter =
-                    new JpaAttributeConverterAdapter<>(instantiateJpaConverter(convert.converter()));
-            return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1], length);
-        }
-        Enumerated enumerated = idField.getAnnotation(Enumerated.class);
-        if (enumerated != null || idField.getType().isEnum()) {
-            EnumType enumType = enumerated != null ? enumerated.value() : inferredEnumType(idField.getType());
-            EnumMapping mapping = resolveEnumMapping(idField.getType(), enumType);
-            Class<?> converterColumnType = mapping.customColumnType() != null ? mapping.customColumnType()
-                    : enumType == EnumType.STRING ? String.class : Integer.class;
-            return new ForeignKeyStorage(domainType, mapping.converter(), converterColumnType, length);
-        }
-        ElementValueMapping basic = resolveBasicStorageMapping(domainType);
-        return new ForeignKeyStorage(domainType, basic.converter(),
-                basic.converter() == null ? null : basic.columnType(), length);
-    }
-
     /**
      * to-one FK property의 저장 표현 해석 결과. {@code javaType}은 참조 {@code @Id}의 도메인 타입,
      * {@code converter}/{@code converterColumnType}은 저장 표현(널이면 도메인 타입을 그대로 저장), {@code length}는
@@ -3318,7 +3977,7 @@ public final class EntityMetadataFactory {
      */
     private record ReferencedIdComponent(String referencedColumnName, Class<?> domainType,
             AttributeConverter<Object, Object> converter, Class<?> converterColumnType, int length,
-            List<Field> referencedPath) {
+            List<PersistentAttributeAccess> referencedPath) {
     }
 
     /**
@@ -3331,14 +3990,15 @@ public final class EntityMetadataFactory {
      * {@code referencedColumnName} 지정 시 참조 컬럼명 매칭, 전부 미지정 시 위치 매칭), 없으면 기본
      * {@code <property>_<referencedColumn>} 규칙으로 만든다.
      */
-    private ToOneForeignKey resolveCompositeToOneForeignKey(Class<?> entityType, Class<?> targetType, Field field) {
+    private ToOneForeignKey resolveCompositeToOneForeignKey(
+            Class<?> entityType, Class<?> targetType, PersistentAttributeAccess attribute) {
         List<ReferencedIdComponent> components = resolveReferencedIdComponents(targetType);
         if (components == null || components.size() < 2) {
             return null;
         }
-        JoinColumn[] perComponent = alignJoinColumns(entityType, field, components);
-        ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
-        OneToOne oneToOne = field.getAnnotation(OneToOne.class);
+        JoinColumn[] perComponent = alignJoinColumns(entityType, attribute, components);
+        ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
+        OneToOne oneToOne = attribute.annotation(OneToOne.class);
         boolean relationOptional = manyToOne != null ? manyToOne.optional() : (oneToOne == null || oneToOne.optional());
         List<ToOneForeignKeyColumn> fkColumns = new ArrayList<>(components.size());
         for (int i = 0; i < components.size(); i++) {
@@ -3346,7 +4006,7 @@ public final class EntityMetadataFactory {
             JoinColumn joinColumn = perComponent[i];
             String fkColumnName = joinColumn != null && !joinColumn.name().isBlank()
                     ? joinColumn.name()
-                    : namingStrategy.columnName(field.getName() + "_" + component.referencedColumnName());
+                    : namingStrategy.columnName(attribute.name() + "_" + component.referencedColumnName());
             boolean nullable = relationOptional && (joinColumn == null || joinColumn.nullable());
             Class<?> columnType = component.converterColumnType() != null
                     ? component.converterColumnType() : component.domainType();
@@ -3371,50 +4031,42 @@ public final class EntityMetadataFactory {
      * embedded 컴포넌트 등 미지원이면 {@code null}.
      */
     private List<ReferencedIdComponent> resolveReferencedIdComponents(Class<?> targetType) {
-        Field embeddedIdField = null;
-        List<Field> topLevelIds = new ArrayList<>();
-        for (Field field : mappedFields(targetType)) {
-            if (isNotPersistable(field)) {
-                continue;
-            }
-            if (field.isAnnotationPresent(EmbeddedId.class)) {
-                embeddedIdField = field;
-            } else if (field.isAnnotationPresent(Id.class)) {
-                topLevelIds.add(field);
-            }
-        }
-        if (embeddedIdField != null) {
-            Class<?> embeddableType = embeddedIdField.getType();
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(targetType);
+        PersistentAttributeAccess embeddedId = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(EmbeddedId.class))
+                .findFirst().orElse(null);
+        List<PersistentAttributeAccess> topLevelIds = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
+        if (embeddedId != null) {
+            Class<?> embeddableType = embeddedId.javaType();
             if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
                 return null;
             }
             Map<String, String> columnOverrides = new java.util.HashMap<>();
-            for (AttributeOverride override : embeddedIdField.getAnnotationsByType(AttributeOverride.class)) {
+            for (AttributeOverride override : embeddedId.annotationsByType(AttributeOverride.class)) {
                 columnOverrides.put(override.name(), override.column().name());
             }
             List<ReferencedIdComponent> result = new ArrayList<>();
-            for (Field subField : embeddableType.getDeclaredFields()) {
-                if (isNotPersistable(subField)) {
-                    continue;
-                }
-                if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
+            for (PersistentAttributeAccess component
+                    : embeddedComponentAttributes(embeddableType, embeddedId.accessType())) {
+                if (component.isAnnotationPresent(Embedded.class) || component.isAnnotationPresent(EmbeddedId.class)) {
                     // nested embedded @EmbeddedId 컴포넌트는 미지원 — 조용한 오매핑 대신 확장하지 않는다.
                     return null;
                 }
-                String override = columnOverrides.get(subField.getName());
-                String columnName = override != null && !override.isBlank() ? override : columnNameOf(subField);
-                ForeignKeyStorage storage = resolveScalarFieldStorage(embeddableType, subField);
+                String override = columnOverrides.get(component.name());
+                String columnName = override != null && !override.isBlank() ? override : columnNameOf(component);
+                ForeignKeyStorage storage = resolveScalarStorage(component);
                 result.add(new ReferencedIdComponent(columnName, storage.javaType(), storage.converter(),
-                        storage.converterColumnType(), storage.length(), List.of(embeddedIdField, subField)));
+                        storage.converterColumnType(), storage.length(), List.of(embeddedId, component)));
             }
             return result.isEmpty() ? null : result;
         }
         if (topLevelIds.size() >= 2) {
             List<ReferencedIdComponent> result = new ArrayList<>(topLevelIds.size());
-            for (Field idField : topLevelIds) {
-                ForeignKeyStorage storage = resolveScalarFieldStorage(targetType, idField);
-                result.add(new ReferencedIdComponent(columnNameOf(idField), storage.javaType(), storage.converter(),
-                        storage.converterColumnType(), storage.length(), List.of(idField)));
+            for (PersistentAttributeAccess id : topLevelIds) {
+                ForeignKeyStorage storage = resolveScalarStorage(id);
+                result.add(new ReferencedIdComponent(columnNameOf(id), storage.javaType(), storage.converter(),
+                        storage.converterColumnType(), storage.length(), List.of(id)));
             }
             return result;
         }
@@ -3425,11 +4077,11 @@ public final class EntityMetadataFactory {
      * 스칼라 {@code @Id}/{@code @EmbeddedId} 컴포넌트 필드의 컬럼명을 해석한다({@code createProperty}와 동일 규칙:
      * {@code @Column(name)}이 있으면 그 이름, 없으면 naming strategy).
      */
-    private String columnNameOf(Field field) {
-        Column column = field.getAnnotation(Column.class);
+    private String columnNameOf(PersistentAttributeAccess attribute) {
+        Column column = attribute.annotation(Column.class);
         return column != null && !column.name().isBlank()
                 ? column.name()
-                : namingStrategy.columnName(field.getName());
+                : namingStrategy.columnName(attribute.name());
     }
 
     /**
@@ -3437,20 +4089,21 @@ public final class EntityMetadataFactory {
      * join 컬럼이 없으면 전부 {@code null}(기본 이름 규칙 사용), 있으면 개수가 컴포넌트 수와 일치해야 하며
      * {@code referencedColumnName}은 전부 지정(참조명 매칭)하거나 전부 생략(위치 매칭)해야 한다. 위반 시 fail-fast.
      */
-    private JoinColumn[] alignJoinColumns(Class<?> entityType, Field field, List<ReferencedIdComponent> components) {
+    private JoinColumn[] alignJoinColumns(
+            Class<?> entityType, PersistentAttributeAccess attribute, List<ReferencedIdComponent> components) {
         JoinColumn[] result = new JoinColumn[components.size()];
         JoinColumn[] declared;
-        JoinColumns container = field.getAnnotation(JoinColumns.class);
+        JoinColumns container = attribute.annotation(JoinColumns.class);
         if (container != null) {
             declared = container.value();
         } else {
-            JoinColumn single = field.getAnnotation(JoinColumn.class);
+            JoinColumn single = attribute.annotation(JoinColumn.class);
             declared = single != null ? new JoinColumn[] {single} : new JoinColumn[0];
         }
         if (declared.length == 0) {
             return result;
         }
-        String location = entityType.getName() + "." + field.getName();
+        String location = entityType.getName() + "." + attribute.name();
         if (declared.length != components.size()) {
             throw new IllegalArgumentException(location + " references composite-key entity with "
                     + components.size() + " id columns but declares " + declared.length
@@ -3586,7 +4239,7 @@ public final class EntityMetadataFactory {
         // 관계 property의 effective access 전략을 basic property와 동일 규칙으로 해석한다. 클래스/멤버 레벨
         // @Access(PROPERTY)면 JavaBean getter/setter로 read/write하고(없으면 fail-fast), FIELD면 field 접근을 유지한다.
         RelationAccess access = resolveRelationAccess(field);
-        ManyToOne manyToOne = field.getAnnotation(ManyToOne.class);
+        ManyToOne manyToOne = memberAnnotation(field, ManyToOne.class);
         String mapsIdMarker = resolveMapsIdMarker(entityType, field);
         // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 관계는 findById에서
         // 자동 fetch되지 않고 FetchGroup을 명시 구동할 때만 hydration된다. 따라서 EAGER와 LAZY는
@@ -3594,7 +4247,7 @@ public final class EntityMetadataFactory {
         ToOneCascadeInfo toOneCascadeInfo = manyToOne.cascade().length > 0
                 ? new ToOneCascadeInfo(Set.of(manyToOne.cascade()))
                 : null;
-        JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
+        JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
         Class<?> targetType = manyToOne.targetEntity();
         if (targetType == void.class) {
             targetType = field.getType();
@@ -3621,7 +4274,7 @@ public final class EntityMetadataFactory {
         // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
         // 기존 단일 FK 경로를 byte-identical하게 유지한다.
         ToOneForeignKey compositeForeignKey = fkStorage == null
-                ? resolveCompositeToOneForeignKey(entityType, targetType, field) : null;
+                ? resolveCompositeToOneForeignKey(entityType, targetType, selectedAttribute(field)) : null;
         if (compositeForeignKey != null) {
             columnName = compositeForeignKey.columns().get(0).columnName();
         }
@@ -3675,6 +4328,36 @@ public final class EntityMetadataFactory {
                 ColumnDdlDefinition.EMPTY);
     }
 
+    private PersistentProperty createManyToOneProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        if (attribute.accessType() == AccessType.FIELD) {
+            return createManyToOneProperty(entityType, attribute.field());
+        }
+        return createDescriptorManyToOneProperty(entityType, attribute);
+    }
+
+    private PersistentProperty createDescriptorManyToOneProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        ManyToOne relation = attribute.annotation(ManyToOne.class);
+        Class<?> target = relation.targetEntity() == void.class ? attribute.javaType() : relation.targetEntity();
+        JoinColumn join = attribute.annotation(JoinColumn.class);
+        ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
+        ToOneForeignKey composite = storage == null ? resolveCompositeToOneForeignKey(entityType, target, attribute) : null;
+        String column = composite != null ? composite.columns().get(0).columnName()
+                : join != null && !join.name().isBlank() ? join.name() : namingStrategy.columnName(attribute.name() + "_id");
+        String mapsId = resolveMapsIdMarker(entityType, attribute);
+        boolean nullable = relation.optional() && (join == null || join.nullable());
+        return new PersistentProperty(null, attribute.name(), column, storage == null ? Long.class : storage.javaType(),
+                false, false, nullable, storage == null ? 255 : storage.length(), 0, 0, null, "",
+                storage == null ? null : storage.converter(), false, false, false, false, List.of(), false, null, false,
+                true, target, nullable, false, null, "", join == null || join.insertable(), join == null || join.updatable(),
+                join != null && join.unique(), join == null ? "" : join.columnDefinition(), false,
+                storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
+                mapsId != null, mapsId == null ? "" : mapsId, true, attribute.getter(), attribute.setter(),
+                relation.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(relation.cascade())), "", composite,
+                ColumnDdlDefinition.EMPTY);
+    }
+
     /**
      * {@link OneToOne} property를 만든다. {@code mappedBy}가 없으면 owning side로 FK 컬럼을 가지며
      * {@code @ManyToOne}과 동일한 단건 참조 메커니즘({@code manyToOne=true})으로 모델링한다(FK는 unique 기본).
@@ -3686,7 +4369,7 @@ public final class EntityMetadataFactory {
     private PersistentProperty createOneToOneProperty(Class<?> entityType, Field field) {
         // 관계 property의 effective access 전략을 basic property와 동일 규칙으로 해석한다(owning/inverse 공통).
         RelationAccess access = resolveRelationAccess(field);
-        OneToOne oneToOne = field.getAnnotation(OneToOne.class);
+        OneToOne oneToOne = memberAnnotation(field, OneToOne.class);
         // fetch=LAZY는 그대로 수용한다(no-op): Nova는 lazy proxy가 없어 EAGER/LAZY가 런타임에서
         // 동일하게 동작하며 관계는 FetchGroup을 명시 구동할 때만 populate된다. FK 컬럼은 정상 persist.
         ToOneCascadeInfo toOneCascadeInfo = oneToOne.cascade().length > 0
@@ -3700,7 +4383,7 @@ public final class EntityMetadataFactory {
         if (mappedBy != null && !mappedBy.isBlank()) {
             // @MapsId는 FK를 소유한 owning side에서만 식별자를 파생할 수 있다. inverse(mappedBy) side에
             // @MapsId가 붙으면 조용히 무시되지 않도록 fail-fast로 거부한다.
-            if (field.isAnnotationPresent(MapsId.class)) {
+            if (memberPresent(field, MapsId.class)) {
                 throw new IllegalArgumentException(
                         entityType.getName() + "." + field.getName()
                                 + " @MapsId is only valid on the owning side of a to-one relationship;"
@@ -3758,7 +4441,7 @@ public final class EntityMetadataFactory {
             );
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
-        JoinColumn joinColumn = field.getAnnotation(JoinColumn.class);
+        JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
         String columnName;
         if (joinColumn != null && !joinColumn.name().isBlank()) {
             columnName = joinColumn.name();
@@ -3783,7 +4466,7 @@ public final class EntityMetadataFactory {
         // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
         // 기존 단일 FK 경로를 byte-identical하게 유지한다.
         ToOneForeignKey compositeForeignKey = fkStorage == null
-                ? resolveCompositeToOneForeignKey(entityType, targetType, field) : null;
+                ? resolveCompositeToOneForeignKey(entityType, targetType, selectedAttribute(field)) : null;
         if (compositeForeignKey != null) {
             columnName = compositeForeignKey.columns().get(0).columnName();
         }
@@ -3837,6 +4520,14 @@ public final class EntityMetadataFactory {
                 ColumnDdlDefinition.EMPTY);
     }
 
+    private PersistentProperty createOneToOneProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        if (attribute.accessType() == AccessType.FIELD) {
+            return createOneToOneProperty(entityType, attribute.field());
+        }
+        return createDescriptorToOneProperty(entityType, attribute, true);
+    }
+
     /**
      * {@code @ManyToMany} property를 만든다. owning({@code mappedBy} 없음, {@code @JoinTable})과
      * inverse({@code mappedBy}) 모두 컬럼 없는 marker이며 link table 매핑을 {@link ManyToManyInfo}에 담는다.
@@ -3845,8 +4536,9 @@ public final class EntityMetadataFactory {
      * raw/non-collection 필드는 fail-fast로 거부한다.
      */
     private PersistentProperty createManyToManyProperty(Class<?> entityType, String ownerTableName, Field field) {
-        ManyToMany annotation = field.getAnnotation(ManyToMany.class);
-        Class<?> fieldType = field.getType();
+        RelationAccess access = resolveRelationAccess(field);
+        ManyToMany annotation = memberAnnotation(field, ManyToMany.class);
+        Class<?> fieldType = selectedAttribute(field).javaType();
         if (!List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
             throw new IllegalArgumentException(
                     entityType.getName() + "." + field.getName()
@@ -3903,8 +4595,70 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null, null, false, "", false, null, null, null, "", null,
+                info, null, null, null, false, "", access.propertyAccess(), access.getter(), access.setter(), null, "", null,
                 ColumnDdlDefinition.EMPTY);
+    }
+
+    private PersistentProperty createManyToManyProperty(
+            Class<?> entityType, String ownerTableName, PersistentAttributeAccess attribute) {
+        if (attribute.accessType() == AccessType.FIELD) {
+            return createManyToManyProperty(entityType, ownerTableName, attribute.field());
+        }
+        Class<?> collectionType = attribute.javaType();
+        String location = entityType.getName() + "." + attribute.name();
+        if (!List.class.isAssignableFrom(collectionType) && !Set.class.isAssignableFrom(collectionType)) {
+            throw new IllegalArgumentException(location + " @ManyToMany must map to a List or Set; got "
+                    + collectionType.getName());
+        }
+        ManyToMany annotation = attribute.annotation(ManyToMany.class);
+        Class<?> target = annotation.targetEntity() == void.class
+                ? collectionElementType(entityType, attribute.name(), attribute.genericType(), ManyToMany.class)
+                : annotation.targetEntity();
+        boolean usesSet = Set.class.isAssignableFrom(collectionType);
+        String mappedBy = annotation.mappedBy();
+        boolean owning = mappedBy == null || mappedBy.isBlank();
+        Set<CascadeType> cascades = Set.of(annotation.cascade());
+        if (!owning && !cascades.isEmpty()) {
+            throw new IllegalArgumentException(location + " @ManyToMany cascade must be declared on the owning side"
+                    + " (the @JoinTable side), not the mappedBy side");
+        }
+        ManyToManyInfo info = owning
+                ? resolveDescriptorOwningManyToManyInfo(entityType, ownerTableName, attribute, target, usesSet)
+                        .withCascade(cascades)
+                : resolveDescriptorInverseManyToManyInfo(entityType, attribute, target, mappedBy, usesSet);
+        return new PersistentProperty(null, attribute.name(), "", collectionType, false, false, true,
+                255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                false, null, true, false, null, "", true, true, false, "", false, null, false,
+                info, null, null, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                ColumnDdlDefinition.EMPTY);
+    }
+
+    private ManyToManyInfo resolveDescriptorOwningManyToManyInfo(
+            Class<?> ownerType, String ownerTable, PersistentAttributeAccess attribute, Class<?> target, boolean usesSet) {
+        JoinTable joinTable = attribute.annotation(JoinTable.class);
+        String location = ownerType.getName() + "." + attribute.name();
+        String tableName = joinTable != null && !joinTable.name().isBlank()
+                ? joinTable.name() : namingStrategy.joinTableName(ownerTable, resolveTableName(target));
+        return new ManyToManyInfo(true, target, tableName,
+                resolveManyToManyJoinColumnRefs(ownerType, joinTable == null ? null : joinTable.joinColumns(),
+                        ownerType.getSimpleName(), location + " @JoinTable.joinColumns"),
+                resolveManyToManyJoinColumnRefs(target, joinTable == null ? null : joinTable.inverseJoinColumns(),
+                        target.getSimpleName(), location + " @JoinTable.inverseJoinColumns"),
+                "", usesSet);
+    }
+
+    private ManyToManyInfo resolveDescriptorInverseManyToManyInfo(
+            Class<?> entityType, PersistentAttributeAccess attribute, Class<?> target, String mappedBy, boolean usesSet) {
+        PersistentAttributeAccess owning = new PersistentAccessResolver().resolve(target).attribute(mappedBy);
+        String location = entityType.getName() + "." + attribute.name();
+        if (owning == null || !owning.isAnnotationPresent(ManyToMany.class)) {
+            throw new IllegalArgumentException(location + " @ManyToMany(mappedBy=\"" + mappedBy
+                    + "\") must point to an owning @ManyToMany on " + target.getName());
+        }
+        ManyToManyInfo owner = resolveDescriptorOwningManyToManyInfo(
+                target, resolveTableName(target), owning, entityType, usesSet);
+        return new ManyToManyInfo(false, target, owner.joinTableName(), owner.targetForeignKeyColumns(),
+                owner.ownerForeignKeyColumns(), mappedBy, usesSet);
     }
 
     /**
@@ -3915,7 +4669,7 @@ public final class EntityMetadataFactory {
         if (annotation.targetEntity() != void.class) {
             return annotation.targetEntity();
         }
-        Type generic = field.getGenericType();
+        Type generic = selectedGenericType(field);
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 1 && arguments[0] instanceof Class<?> elementType) {
@@ -3935,7 +4689,7 @@ public final class EntityMetadataFactory {
      */
     private ManyToManyInfo resolveOwningManyToManyInfo(
             Class<?> ownerType, String ownerTable, Field field, Class<?> target, boolean usesSet) {
-        JoinTable joinTable = field.getAnnotation(JoinTable.class);
+        JoinTable joinTable = memberAnnotation(field, JoinTable.class);
         String location = ownerType.getName() + "." + field.getName();
         String targetTable = resolveTableName(target);
         String tableName = joinTable != null && !joinTable.name().isBlank()
@@ -3984,19 +4738,10 @@ public final class EntityMetadataFactory {
      * {@code @EmbeddedId}처럼 미지원 복합키면 fail-fast로 거부한다(조용한 오매핑 방지).
      */
     private List<String> resolveManyToManyReferencedColumns(Class<?> type, String location) {
-        List<Field> idFields = new ArrayList<>();
-        boolean hasEmbeddedId = false;
-        for (Field candidate : mappedFields(type)) {
-            if (isNotPersistable(candidate)) {
-                continue;
-            }
-            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                hasEmbeddedId = true;
-            }
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idFields.add(candidate);
-            }
-        }
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(type);
+        boolean hasEmbeddedId = identifiers.stream().anyMatch(attribute -> attribute.isAnnotationPresent(EmbeddedId.class));
+        List<PersistentAttributeAccess> idFields = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
         if (hasEmbeddedId || idFields.size() >= 2) {
             List<ReferencedIdComponent> components = resolveReferencedIdComponents(type);
             if (components == null) {
@@ -4106,29 +4851,16 @@ public final class EntityMetadataFactory {
      * fail-fast로 거부한다.
      */
     private String resolveSingleIdColumn(Class<?> type, String location) {
-        List<Field> idFields = new ArrayList<>();
-        boolean hasEmbeddedId = false;
-        for (Field candidate : mappedFields(type)) {
-            if (isNotPersistable(candidate)) {
-                continue;
-            }
-            if (candidate.isAnnotationPresent(EmbeddedId.class)) {
-                hasEmbeddedId = true;
-            }
-            if (candidate.isAnnotationPresent(Id.class)) {
-                idFields.add(candidate);
-            }
-        }
+        List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(type);
+        boolean hasEmbeddedId = identifiers.stream().anyMatch(attribute -> attribute.isAnnotationPresent(EmbeddedId.class));
+        List<PersistentAttributeAccess> idFields = identifiers.stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
         if (hasEmbeddedId || idFields.size() != 1) {
             throw new IllegalArgumentException(
                     location + " @ManyToMany with composite-keyed entity " + type.getName()
                             + " is not supported");
         }
-        Field idField = idFields.get(0);
-        Column column = idField.getAnnotation(Column.class);
-        return column != null && !column.name().isBlank()
-                ? column.name()
-                : namingStrategy.columnName(idField.getName());
+        return columnNameOf(idFields.get(0));
     }
 
     private String resolveTableName(Class<?> type) {
@@ -4158,7 +4890,8 @@ public final class EntityMetadataFactory {
      * JPA 기본 규약을 따른다. {@code @MapKey}/{@code @Embeddable} key/복합키 owner/non-collection 필드는 fail-fast로 거부한다.
      */
     private PersistentProperty createElementCollectionProperty(Class<?> entityType, String ownerTableName, Field field) {
-        Class<?> fieldType = field.getType();
+        RelationAccess access = resolveRelationAccess(field);
+        Class<?> fieldType = selectedAttribute(field).javaType();
         boolean isMap = Map.class.isAssignableFrom(fieldType);
         if (!isMap && !List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
             throw new IllegalArgumentException(
@@ -4171,7 +4904,7 @@ public final class EntityMetadataFactory {
                 ? resolveMapValueType(entityType, field, location)
                 : resolveElementCollectionElementType(entityType, field);
         String ownerIdColumn = resolveSingleIdColumn(entityType, location);
-        CollectionTable collectionTable = field.getAnnotation(CollectionTable.class);
+        CollectionTable collectionTable = memberAnnotation(field, CollectionTable.class);
         String tableName = collectionTable != null && !collectionTable.name().isBlank()
                 ? collectionTable.name()
                 : namingStrategy.joinTableName(ownerTableName, namingStrategy.columnName(field.getName()));
@@ -4184,7 +4917,7 @@ public final class EntityMetadataFactory {
         OrderColumnInfo orderColumn;
         if (isMap) {
             // Map은 정렬 의미가 없다 — @OrderColumn은 거부한다(조용한 무시 금지).
-            if (field.isAnnotationPresent(jakarta.persistence.OrderColumn.class)) {
+            if (memberPresent(field, jakarta.persistence.OrderColumn.class)) {
                 throw new IllegalArgumentException(
                         location + " @OrderColumn is not valid on a Map @ElementCollection (maps are unordered)");
             }
@@ -4205,7 +4938,7 @@ public final class EntityMetadataFactory {
             info = new ElementCollectionInfo(
                     tableName, ownerForeignKeyColumn, "", elementType, usesSet, embeddableColumns, orderColumn, mapKey);
         } else {
-            Column column = field.getAnnotation(Column.class);
+            Column column = memberAnnotation(field, Column.class);
             String valueColumn = column != null && !column.name().isBlank()
                     ? column.name()
                     : namingStrategy.columnName(field.getName());
@@ -4235,13 +4968,358 @@ public final class EntityMetadataFactory {
                 null,
                 false,
                 "",
-                false,
-                null,
-                null,
+                access.propertyAccess(),
+                access.getter(),
+                access.setter(),
                 null,
                 "",
                 null,
                 ColumnDdlDefinition.EMPTY);
+    }
+
+    private PersistentProperty createElementCollectionProperty(
+            Class<?> entityType, String ownerTableName, PersistentAttributeAccess attribute) {
+        if (attribute.accessType() == AccessType.FIELD) {
+            return createElementCollectionProperty(entityType, ownerTableName, attribute.field());
+        }
+        Class<?> collectionType = attribute.javaType();
+        String location = entityType.getName() + "." + attribute.name();
+        boolean map = Map.class.isAssignableFrom(collectionType);
+        if (!map && !List.class.isAssignableFrom(collectionType) && !Set.class.isAssignableFrom(collectionType)) {
+            throw new IllegalArgumentException(location + " @ElementCollection must map to a List, Set, or Map; got "
+                    + collectionType.getName());
+        }
+        Class<?> valueType = descriptorCollectionValueType(attribute, map, location);
+        CollectionTable table = attribute.annotation(CollectionTable.class);
+        String ownerId = resolveSingleIdColumn(entityType, location);
+        String tableName = table != null && !table.name().isBlank() ? table.name()
+                : namingStrategy.joinTableName(ownerTableName, namingStrategy.columnName(attribute.name()));
+        String ownerColumn = resolveSingleJoinColumn(table == null ? null : table.joinColumns(),
+                namingStrategy.joinColumnName(entityType.getSimpleName(), ownerId), location + " @CollectionTable.joinColumns");
+        boolean usesSet = Set.class.isAssignableFrom(collectionType);
+        OrderColumnInfo order = null;
+        if (map) {
+            if (attribute.isAnnotationPresent(jakarta.persistence.OrderColumn.class)) {
+                throw new IllegalArgumentException(location + " @OrderColumn is not valid on a Map @ElementCollection (maps are unordered)");
+            }
+        } else {
+            order = resolveDescriptorElementCollectionOrderColumn(attribute, usesSet, location);
+        }
+        ElementCollectionInfo.MapKeyInfo key = map ? resolveDescriptorMapKeyInfo(attribute, location) : null;
+        if (valueType.isAnnotationPresent(Embeddable.class)) {
+            List<ElementCollectionInfo.EmbeddableColumn> columns =
+                    expandEmbeddableCollectionColumns(valueType, attribute, location, ownerColumn, false);
+            List<String> valueColumns = columns.stream().map(ElementCollectionInfo.EmbeddableColumn::columnName).toList();
+            rejectOrderColumnCollision(order, ownerColumn, valueColumns, location);
+            rejectMapKeyCollision(key, ownerColumn, valueColumns, location);
+            ElementCollectionInfo info = new ElementCollectionInfo(tableName, ownerColumn, "", valueType,
+                    usesSet, columns, order, key);
+            return new PersistentProperty(null, attribute.name(), "", collectionType, false, false, true,
+                    255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                    false, null, true, false, null, "", true, true, false, "", false, null, false,
+                    null, info, null, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                    ColumnDdlDefinition.EMPTY);
+        }
+        Column column = attribute.annotation(Column.class);
+        String valueColumn = column != null && !column.name().isBlank() ? column.name()
+                : namingStrategy.columnName(attribute.name());
+        ElementValueMapping mapping = resolveDescriptorElementValueMapping(attribute, valueType, map ? "value" : null, location);
+        rejectOrderColumnCollision(order, ownerColumn, List.of(valueColumn), location);
+        rejectMapKeyCollision(key, ownerColumn, List.of(valueColumn), location);
+        ElementCollectionInfo info = new ElementCollectionInfo(tableName, ownerColumn, valueColumn,
+                wrapPrimitiveType(valueType), usesSet, List.of(), order, key, mapping.columnType(), mapping.converter());
+        return new PersistentProperty(null, attribute.name(), "", collectionType, false, false, true,
+                255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                false, null, true, false, null, "", true, true, false, "", false, null, false,
+                null, info, null, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                ColumnDdlDefinition.EMPTY);
+    }
+
+    private static Class<?> descriptorCollectionValueType(
+            PersistentAttributeAccess attribute, boolean map, String location) {
+        ElementCollection annotation = attribute.annotation(ElementCollection.class);
+        if (annotation.targetClass() != void.class) {
+            return annotation.targetClass();
+        }
+        if (attribute.genericType() instanceof ParameterizedType parameterized) {
+            Type[] arguments = parameterized.getActualTypeArguments();
+            int valueIndex = map ? 1 : 0;
+            if (arguments.length == (map ? 2 : 1) && arguments[valueIndex] instanceof Class<?> valueType) {
+                return valueType;
+            }
+        }
+        throw new IllegalArgumentException(location + " @ElementCollection cannot infer the "
+                + (map ? "Map value type from a raw map; specify targetClass" : "element type from a raw collection; specify targetClass"));
+    }
+
+    private OrderColumnInfo resolveDescriptorElementCollectionOrderColumn(
+            PersistentAttributeAccess attribute, boolean usesSet, String location) {
+        jakarta.persistence.OrderColumn order = attribute.annotation(jakarta.persistence.OrderColumn.class);
+        if (order == null) return null;
+        if (usesSet) {
+            throw new IllegalArgumentException(location + " @OrderColumn is only valid on an ordered List, not on a Set @ElementCollection");
+        }
+        if (attribute.isAnnotationPresent(jakarta.persistence.OrderBy.class)) {
+            throw new IllegalArgumentException(location + " cannot declare both @OrderColumn and @OrderBy; the two ordering strategies conflict");
+        }
+        return new OrderColumnInfo(order.name().isBlank() ? namingStrategy.columnName(attribute.name()) + "_order" : order.name());
+    }
+
+    private ElementCollectionInfo.MapKeyInfo resolveDescriptorMapKeyInfo(
+            PersistentAttributeAccess attribute, String location) {
+        if (attribute.isAnnotationPresent(MapKey.class)) {
+            throw new IllegalArgumentException(location + " @MapKey (using an associated entity property as the map key) is not supported;"
+                    + " use a basic or enum map key with @MapKeyColumn");
+        }
+        Class<?> keyType = null;
+        if (attribute.genericType() instanceof ParameterizedType parameterized
+                && parameterized.getActualTypeArguments().length == 2
+                && parameterized.getActualTypeArguments()[0] instanceof Class<?> type) keyType = type;
+        MapKeyClass declared = attribute.annotation(MapKeyClass.class);
+        if (declared != null) {
+            if (declared.value() == void.class || declared.value() == Void.class) {
+                throw new IllegalArgumentException(location + " @MapKeyClass requires a key class");
+            }
+            if (keyType != null && keyType != declared.value()) {
+                throw new IllegalArgumentException(location + " @MapKeyClass " + declared.value().getName()
+                        + " does not match the parameterized Map key type " + keyType.getName());
+            }
+            keyType = declared.value();
+        }
+        if (keyType == null) throw new IllegalArgumentException(location + " @ElementCollection cannot infer the Map key type from a raw map;"
+                + " use a parameterized Map<K,V> or specify @MapKeyClass");
+        MapKeyTemporal temporal = attribute.annotation(MapKeyTemporal.class);
+        boolean utilDate = keyType == java.util.Date.class;
+        boolean calendar = java.util.Calendar.class.isAssignableFrom(keyType);
+        if (temporal != null && !utilDate && !calendar) {
+            throw new IllegalArgumentException(location + " @MapKeyTemporal is only valid on a java.util.Date or"
+                    + " java.util.Calendar map key, but the key type is " + keyType.getName());
+        }
+        if (keyType.isAnnotationPresent(Embeddable.class)) {
+            return ElementCollectionInfo.MapKeyInfo.embeddable(keyType,
+                    expandEmbeddableCollectionColumns(keyType, attribute, location, null, true));
+        }
+        if (keyType.isAnnotationPresent(Entity.class)) {
+            ForeignKeyStorage storage = resolveToOneForeignKeyStorage(keyType);
+            if (storage == null) {
+                throw new IllegalArgumentException(location + " @MapKeyClass naming an entity key class "
+                        + keyType.getName() + " with a composite @Id (@EmbeddedId/@IdClass) is not supported;"
+                        + " only a single-@Id entity map key is supported");
+            }
+            if (attribute.isAnnotationPresent(MapKeyColumn.class)) {
+                throw new IllegalArgumentException(location
+                        + " @MapKeyColumn is not valid on an entity map key; use @MapKeyJoinColumn instead");
+            }
+            MapKeyJoinColumn join = attribute.annotation(MapKeyJoinColumn.class);
+            String name = join != null && !join.name().isBlank() ? join.name()
+                    : namingStrategy.columnName(attribute.name()) + "_key";
+            return ElementCollectionInfo.MapKeyInfo.entity(name, keyType,
+                    storage.converterColumnType() != null ? storage.converterColumnType() : storage.javaType(),
+                    storage.converter());
+        }
+        MapKeyColumn column = attribute.annotation(MapKeyColumn.class);
+        String name = column != null && !column.name().isBlank() ? column.name() : namingStrategy.columnName(attribute.name()) + "_key";
+        JpaConverterDescriptor explicit = attribute.getter() != null
+                ? explicitJpaConverter(attribute.getter(), keyType, "key", location, null)
+                : explicitJpaConverter(attribute.field(), keyType, "key", location, null);
+        MapKeyEnumerated enumerated = attribute.annotation(MapKeyEnumerated.class);
+        boolean disabled = attribute.getter() != null
+                ? conversionDisabled(attribute.getter(), "key", null)
+                : conversionDisabled(attribute.field(), "key", null);
+        if (keyType.isEnum()) {
+            if (explicit != null) {
+                if (enumerated != null) {
+                    throw new IllegalStateException(location
+                            + " cannot combine @Convert(attributeName=\"key\") with @MapKeyEnumerated");
+                }
+                return new ElementCollectionInfo.MapKeyInfo(name, keyType, explicit.columnType(), null, explicit.instantiate());
+            }
+            if (enumerated == null && !disabled) {
+                JpaConverterDescriptor automatic = uniqueJpaConverter(keyType, true, location);
+                if (automatic != null) {
+                    return new ElementCollectionInfo.MapKeyInfo(
+                            name, keyType, automatic.columnType(), null, automatic.instantiate());
+                }
+            }
+            EnumType type = enumerated == null ? inferredEnumType(keyType) : enumerated.value();
+            EnumMapping mapping = resolveEnumMapping(keyType, type);
+            return new ElementCollectionInfo.MapKeyInfo(name, keyType,
+                    mapping.customColumnType() != null ? mapping.customColumnType() : type == EnumType.STRING ? String.class : Integer.class,
+                    type, mapping.converter());
+        }
+        if (explicit != null) {
+            if (temporal != null) {
+                throw new IllegalStateException(location
+                        + " cannot combine @Convert(attributeName=\"key\") with @MapKeyTemporal");
+            }
+            return new ElementCollectionInfo.MapKeyInfo(name, keyType, explicit.columnType(), null, explicit.instantiate());
+        }
+        if (enumerated != null) {
+            throw new IllegalArgumentException(location
+                    + " @MapKeyEnumerated is only valid on an enum map key, but the key type is "
+                    + keyType.getName());
+        }
+        if (temporal != null) {
+            Class<?> stored = switch (temporal.value()) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+            return new ElementCollectionInfo.MapKeyInfo(name, keyType, stored, null,
+                    castConverter(new TemporalAttributeConverter(keyType, temporal.value())));
+        }
+        if (utilDate || calendar) {
+            throw new IllegalArgumentException(location + " maps a java.util.Date/Calendar map key but is missing"
+                    + " @MapKeyTemporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
+        }
+        if (!disabled) {
+            JpaConverterDescriptor automatic = uniqueJpaConverter(wrapPrimitiveType(keyType), true, location);
+            if (automatic != null) {
+                return new ElementCollectionInfo.MapKeyInfo(name, wrapPrimitiveType(keyType), automatic.columnType(),
+                        null, automatic.instantiate());
+            }
+        }
+        ElementValueMapping storage = resolveBasicStorageMapping(wrapPrimitiveType(keyType));
+        if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapPrimitiveType(keyType))) {
+            throw new IllegalArgumentException(location + " @ElementCollection Map key type " + keyType.getName()
+                    + " is not supported; supported key types: String, Integer, Long, Short, Boolean, UUID, or an enum");
+        }
+        return new ElementCollectionInfo.MapKeyInfo(name, wrapPrimitiveType(keyType), storage.columnType(), null, storage.converter());
+    }
+
+    private List<ElementCollectionInfo.EmbeddableColumn> expandEmbeddableCollectionColumns(
+            Class<?> embeddableType, PersistentAttributeAccess collection, String location,
+            String ownerForeignKeyColumn, boolean key) {
+        List<PersistentAttributeAccess> attributes = embeddedComponentAttributes(embeddableType, collection.accessType());
+        Map<String, String> overrides = new java.util.HashMap<>();
+        String prefix = key ? "key." : "";
+        for (AttributeOverride override : collection.annotationsByType(AttributeOverride.class)) {
+            boolean keyOverride = override.name().startsWith("key.");
+            if ((key && keyOverride) || (!key && !keyOverride)) {
+                overrides.put(key ? override.name().substring("key.".length()) : override.name(), override.column().name());
+            }
+        }
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<String> columns = new java.util.HashSet<>();
+        if (ownerForeignKeyColumn != null) columns.add(ownerForeignKeyColumn);
+        List<ElementCollectionInfo.EmbeddableColumn> result = new ArrayList<>();
+        for (PersistentAttributeAccess component : attributes) {
+            names.add(component.name());
+            if (component.isAnnotationPresent(Embedded.class) || component.isAnnotationPresent(EmbeddedId.class)
+                    || component.isAnnotationPresent(Id.class) || component.isAnnotationPresent(OneToMany.class)
+                    || component.isAnnotationPresent(ManyToOne.class) || component.isAnnotationPresent(OneToOne.class)
+                    || component.isAnnotationPresent(ManyToMany.class) || component.isAnnotationPresent(ElementCollection.class)
+                    || component.isAnnotationPresent(Version.class) || component.isAnnotationPresent(SoftDelete.class)
+                    || component.isAnnotationPresent(CreatedAt.class) || component.isAnnotationPresent(UpdatedAt.class)) {
+                throw new IllegalArgumentException(location + " @Embeddable component " + component.name()
+                        + " must be a simple value field");
+            }
+            Column column = component.annotation(Column.class);
+            String columnName = overrides.containsKey(component.name()) && !overrides.get(component.name()).isBlank()
+                    ? overrides.get(component.name())
+                    : column != null && !column.name().isBlank() ? column.name()
+                    : namingStrategy.columnName(component.name());
+            if (!columns.add(columnName)) {
+                throw new IllegalArgumentException(location + " @Embeddable component " + component.name()
+                        + " produces duplicate collection column '" + columnName + "'");
+            }
+            if (component.isAnnotationPresent(Json.class)) {
+                result.add(new ElementCollectionInfo.EmbeddableColumn(component, columnName, String.class,
+                        castConverter(new JsonAttributeConverter(jsonCodec, component.javaType())), true));
+            } else {
+                ElementValueMapping mapping = resolveDescriptorElementValueMapping(component, component.javaType(), null,
+                        location + " component " + component.name());
+                result.add(new ElementCollectionInfo.EmbeddableColumn(component, columnName, mapping.columnType(),
+                        mapping.converter(), false));
+            }
+        }
+        for (String override : overrides.keySet()) {
+            if (!names.contains(override)) {
+                throw new IllegalArgumentException(location + " @AttributeOverride(name='" + prefix + override
+                        + "') does not match an @Embeddable component");
+            }
+        }
+        if (result.isEmpty()) {
+            throw new IllegalArgumentException(location + " @Embeddable " + embeddableType.getName()
+                    + " has no persistent fields to map as collection columns");
+        }
+        return result;
+    }
+
+    private ElementValueMapping resolveDescriptorElementValueMapping(
+            PersistentAttributeAccess attribute, Class<?> type, String selector, String location) {
+        Class<?> wrapped = wrapPrimitiveType(type);
+        JpaConverterDescriptor explicit = attribute.getter() != null
+                ? explicitJpaConverter(attribute.getter(), wrapped, selector, location, null)
+                : explicitJpaConverter(attribute.field(), wrapped, selector, location, null);
+        Enumerated enumerated = attribute.annotation(Enumerated.class);
+        Temporal temporal = attribute.annotation(Temporal.class);
+        boolean json = attribute.isAnnotationPresent(Json.class);
+        AttributeConverter<?, ?> registered = converters.get(type);
+        if (json) {
+            if (enumerated != null || temporal != null || explicit != null || registered != null) {
+                throw new IllegalStateException(location + " cannot combine @Json with @Enumerated/@Temporal/@Convert");
+            }
+            return new ElementValueMapping(String.class,
+                    castConverter(new JsonAttributeConverter(jsonCodec, type)));
+        }
+        if (enumerated != null) {
+            if (!type.isEnum()) {
+                throw new IllegalArgumentException(location + " is annotated with @Enumerated but its type "
+                        + type.getName() + " is not an enum");
+            }
+            if (explicit != null || temporal != null || registered != null) {
+                throw new IllegalStateException(location + " cannot combine @Enumerated with @Convert/@Temporal");
+            }
+            EnumMapping mapping = resolveEnumMapping(type, enumerated.value());
+            return new ElementValueMapping(mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumerated.value() == EnumType.STRING ? String.class : Integer.class, mapping.converter());
+        }
+        if (explicit != null) {
+            if (temporal != null || registered != null) {
+                throw new IllegalStateException(location + " cannot combine @Convert with @Temporal or a registered AttributeConverter");
+            }
+            return new ElementValueMapping(explicit.columnType(), explicit.instantiate());
+        }
+        boolean utilDate = type == java.util.Date.class;
+        boolean calendar = java.util.Calendar.class.isAssignableFrom(type);
+        if (temporal != null) {
+            if (registered != null) {
+                throw new IllegalStateException(location + " cannot combine @Temporal with a registered AttributeConverter");
+            }
+            if (!utilDate && !calendar) {
+                throw new IllegalArgumentException(location + " is annotated with @Temporal but its type "
+                        + type.getName() + " is not java.util.Date or java.util.Calendar");
+            }
+            Class<?> stored = switch (temporal.value()) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+            return new ElementValueMapping(stored, castConverter(new TemporalAttributeConverter(type, temporal.value())));
+        }
+        if (utilDate || calendar) {
+            throw new IllegalArgumentException(location + " maps a java.util.Date/Calendar @ElementCollection element but is missing @Temporal");
+        }
+        if (registered != null) {
+            return new ElementValueMapping(wrapped, castConverter(registered));
+        }
+        boolean disabled = attribute.getter() != null
+                ? conversionDisabled(attribute.getter(), selector, null)
+                : conversionDisabled(attribute.field(), selector, null);
+        if (!disabled) {
+            JpaConverterDescriptor automatic = uniqueJpaConverter(wrapped, true, location);
+            if (automatic != null) {
+                return new ElementValueMapping(automatic.columnType(), automatic.instantiate());
+            }
+        }
+        if (type.isEnum()) {
+            EnumType enumType = inferredEnumType(type);
+            EnumMapping mapping = resolveEnumMapping(type, enumType);
+            return new ElementValueMapping(mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class, mapping.converter());
+        }
+        return resolveBasicStorageMapping(wrapped);
     }
 
     /**
@@ -4255,7 +5333,7 @@ public final class EntityMetadataFactory {
      * {@code <property>_order}(snake_case 일관성)를 쓴다.
      */
     private OrderColumnInfo resolveElementCollectionOrderColumn(Field field, boolean usesSet, String location) {
-        jakarta.persistence.OrderColumn orderColumn = field.getAnnotation(jakarta.persistence.OrderColumn.class);
+        jakarta.persistence.OrderColumn orderColumn = memberAnnotation(field, jakarta.persistence.OrderColumn.class);
         if (orderColumn == null) {
             return null;
         }
@@ -4263,7 +5341,7 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     location + " @OrderColumn is only valid on an ordered List, not on a Set @ElementCollection");
         }
-        if (field.isAnnotationPresent(jakarta.persistence.OrderBy.class)) {
+        if (memberPresent(field, jakarta.persistence.OrderBy.class)) {
             throw new IllegalArgumentException(
                     location + " cannot declare both @OrderColumn and @OrderBy; the two ordering strategies conflict");
         }
@@ -4278,7 +5356,7 @@ public final class EntityMetadataFactory {
      * {@code <property>_order}이다.
      */
     private OrderColumnInfo resolveOneToManyOrderColumn(Class<?> entityType, Field field) {
-        jakarta.persistence.OrderColumn orderColumn = field.getAnnotation(jakarta.persistence.OrderColumn.class);
+        jakarta.persistence.OrderColumn orderColumn = memberAnnotation(field, jakarta.persistence.OrderColumn.class);
         if (orderColumn == null) {
             return null;
         }
@@ -4288,12 +5366,33 @@ public final class EntityMetadataFactory {
                     location + " @OrderColumn is only valid on an ordered List @OneToMany, not on "
                             + field.getType().getName());
         }
-        if (field.isAnnotationPresent(jakarta.persistence.OrderBy.class)) {
+        if (memberPresent(field, jakarta.persistence.OrderBy.class)) {
             throw new IllegalArgumentException(
                     location + " cannot declare both @OrderColumn and @OrderBy; the two ordering strategies conflict");
         }
         String name = orderColumn.name().isBlank() ? defaultOrderColumnName(field) : orderColumn.name();
         return new OrderColumnInfo(name);
+    }
+
+    private OrderColumnInfo resolveOneToManyOrderColumn(Class<?> entityType, Method getter) {
+        jakarta.persistence.OrderColumn orderColumn = getter.getAnnotation(jakarta.persistence.OrderColumn.class);
+        if (orderColumn == null) {
+            return null;
+        }
+        String location = entityType.getName() + "." + getter.getName();
+        if (!List.class.isAssignableFrom(getter.getReturnType())) {
+            throw new IllegalArgumentException(location + " @OrderColumn is only valid on an ordered List @OneToMany, not on "
+                    + getter.getReturnType().getName());
+        }
+        if (getter.isAnnotationPresent(jakarta.persistence.OrderBy.class)) {
+            throw new IllegalArgumentException(location
+                    + " cannot declare both @OrderColumn and @OrderBy; the two ordering strategies conflict");
+        }
+        String getterName = getter.getName();
+        String propertyName = getterName.startsWith("is") ? getterName.substring(2) : getterName.substring(3);
+        propertyName = Character.toLowerCase(propertyName.charAt(0)) + propertyName.substring(1);
+        return new OrderColumnInfo(orderColumn.name().isBlank()
+                ? namingStrategy.columnName(propertyName) + "_order" : orderColumn.name());
     }
 
     /**
@@ -4364,11 +5463,11 @@ public final class EntityMetadataFactory {
      * 지정되면 그 타입을, 아니면 generic {@code Map<K,V>}의 두 번째 타입 인자를 쓴다. raw {@code Map}이면 거부한다.
      */
     private static Class<?> resolveMapValueType(Class<?> entityType, Field field, String location) {
-        ElementCollection annotation = field.getAnnotation(ElementCollection.class);
+        ElementCollection annotation = memberAnnotation(field, ElementCollection.class);
         if (annotation.targetClass() != void.class) {
             return annotation.targetClass();
         }
-        Type generic = field.getGenericType();
+        Type generic = selectedGenericType(field);
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 2 && arguments[1] instanceof Class<?> valueType) {
@@ -4391,14 +5490,14 @@ public final class EntityMetadataFactory {
      */
     private static Class<?> resolveMapKeyType(Class<?> entityType, Field field, String location) {
         Class<?> parameterizedKeyType = null;
-        Type generic = field.getGenericType();
+        Type generic = selectedGenericType(field);
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 2 && arguments[0] instanceof Class<?> keyType) {
                 parameterizedKeyType = keyType;
             }
         }
-        MapKeyClass mapKeyClass = field.getAnnotation(MapKeyClass.class);
+        MapKeyClass mapKeyClass = memberAnnotation(field, MapKeyClass.class);
         if (mapKeyClass != null) {
             Class<?> declaredKeyType = mapKeyClass.value();
             if (declaredKeyType == void.class || declaredKeyType == Void.class) {
@@ -4441,13 +5540,13 @@ public final class EntityMetadataFactory {
      * key 컬럼 이름은 {@code @MapKeyColumn(name=...)} → naming strategy 기본 {@code <property>_key} 순으로 정한다.
      */
     private ElementCollectionInfo.MapKeyInfo resolveMapKeyInfo(Class<?> entityType, Field field, String location) {
-        if (field.isAnnotationPresent(MapKey.class)) {
+        if (memberPresent(field, MapKey.class)) {
             throw new IllegalArgumentException(
                     location + " @MapKey (using an associated entity property as the map key) is not supported;"
                             + " use a basic or enum map key with @MapKeyColumn");
         }
         Class<?> keyType = resolveMapKeyType(entityType, field, location);
-        MapKeyTemporal mapKeyTemporal = field.getAnnotation(MapKeyTemporal.class);
+        MapKeyTemporal mapKeyTemporal = memberAnnotation(field, MapKeyTemporal.class);
         boolean isUtilDate = keyType == java.util.Date.class;
         boolean isCalendar = java.util.Calendar.class.isAssignableFrom(keyType);
         if (mapKeyTemporal != null && !isUtilDate && !isCalendar) {
@@ -4473,11 +5572,11 @@ public final class EntityMetadataFactory {
                                 + " with a composite @Id (@EmbeddedId/@IdClass) is not supported;"
                                 + " only a single-@Id entity map key is supported");
             }
-            if (field.isAnnotationPresent(MapKeyColumn.class)) {
+            if (memberPresent(field, MapKeyColumn.class)) {
                 throw new IllegalArgumentException(
                         location + " @MapKeyColumn is not valid on an entity map key; use @MapKeyJoinColumn instead");
             }
-            MapKeyJoinColumn mapKeyJoinColumn = field.getAnnotation(MapKeyJoinColumn.class);
+            MapKeyJoinColumn mapKeyJoinColumn = memberAnnotation(field, MapKeyJoinColumn.class);
             String entityKeyColumnName = mapKeyJoinColumn != null && !mapKeyJoinColumn.name().isBlank()
                     ? mapKeyJoinColumn.name()
                     : namingStrategy.columnName(field.getName()) + "_key";
@@ -4487,11 +5586,11 @@ public final class EntityMetadataFactory {
             return ElementCollectionInfo.MapKeyInfo.entity(
                     entityKeyColumnName, keyType, entityKeyColumnType, idStorage.converter());
         }
-        MapKeyColumn mapKeyColumn = field.getAnnotation(MapKeyColumn.class);
+        MapKeyColumn mapKeyColumn = memberAnnotation(field, MapKeyColumn.class);
         String keyColumnName = mapKeyColumn != null && !mapKeyColumn.name().isBlank()
                 ? mapKeyColumn.name()
                 : namingStrategy.columnName(field.getName()) + "_key";
-        MapKeyEnumerated mapKeyEnumerated = field.getAnnotation(MapKeyEnumerated.class);
+        MapKeyEnumerated mapKeyEnumerated = memberAnnotation(field, MapKeyEnumerated.class);
         JpaConverterDescriptor explicitKeyConverter = explicitJpaConverter(field, keyType, "key", location);
         if (keyType.isEnum()) {
             EnumType enumType = mapKeyEnumerated != null ? mapKeyEnumerated.value() : EnumType.ORDINAL;
@@ -4798,8 +5897,8 @@ public final class EntityMetadataFactory {
 
     private ElementCollectionInfo.EmbeddableColumn resolveEmbeddableCollectionColumn(
             Class<?> embeddableType, Field field, String columnName, String location) {
-        if (field.isAnnotationPresent(Json.class)) {
-            if (field.isAnnotationPresent(Enumerated.class) || field.isAnnotationPresent(Temporal.class)) {
+        if (memberPresent(field, Json.class)) {
+            if (memberPresent(field, Enumerated.class) || memberPresent(field, Temporal.class)) {
                 throw new IllegalStateException(location + " cannot combine @Json with @Enumerated/@Temporal");
             }
             JpaConverterDescriptor explicit = explicitJpaConverter(
@@ -4808,21 +5907,21 @@ public final class EntityMetadataFactory {
                 throw new IllegalStateException(location + " cannot combine @Json with an AttributeConverter");
             }
             return new ElementCollectionInfo.EmbeddableColumn(
-                    field, columnName, String.class,
+                    selectedAttribute(field), columnName, String.class,
                     castConverter(new JsonAttributeConverter(jsonCodec, field.getType())), true);
         }
         ElementValueMapping mapping = resolveBasicElementValueMapping(
                 embeddableType, field, field.getType(), location, null);
         return new ElementCollectionInfo.EmbeddableColumn(
-                field, columnName, mapping.columnType(), mapping.converter(), false);
+                selectedAttribute(field), columnName, mapping.columnType(), mapping.converter(), false);
     }
 
     private static Class<?> resolveElementCollectionElementType(Class<?> entityType, Field field) {
-        ElementCollection annotation = field.getAnnotation(ElementCollection.class);
+        ElementCollection annotation = memberAnnotation(field, ElementCollection.class);
         if (annotation.targetClass() != void.class) {
             return annotation.targetClass();
         }
-        Type generic = field.getGenericType();
+        Type generic = selectedGenericType(field);
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 1 && arguments[0] instanceof Class<?> elementType) {
@@ -4845,8 +5944,8 @@ public final class EntityMetadataFactory {
     private ElementValueMapping resolveBasicElementValueMapping(
             Class<?> entityType, Field field, Class<?> elementType, String location, String selector) {
         Class<?> wrapped = wrapPrimitiveType(elementType);
-        Enumerated enumerated = field.getAnnotation(Enumerated.class);
-        Temporal temporal = field.getAnnotation(Temporal.class);
+        Enumerated enumerated = memberAnnotation(field, Enumerated.class);
+        Temporal temporal = memberAnnotation(field, Temporal.class);
         JpaConverterDescriptor explicit = explicitJpaConverter(field, wrapped, selector, location);
         boolean hasConvert = explicit != null;
 
@@ -4967,7 +6066,7 @@ public final class EntityMetadataFactory {
     private static Field enumeratedValueField(Class<?> enumClass) {
         Field marker = null;
         for (Field field : enumClass.getDeclaredFields()) {
-            if (field.isAnnotationPresent(EnumeratedValue.class)) {
+            if (memberPresent(field, EnumeratedValue.class)) {
                 if (marker != null) {
                     throw new IllegalArgumentException("Enum " + enumClass.getName()
                             + " declares more than one @EnumeratedValue field");

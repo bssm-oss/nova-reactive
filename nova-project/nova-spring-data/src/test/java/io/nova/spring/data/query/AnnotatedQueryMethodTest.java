@@ -7,6 +7,8 @@ import io.nova.spring.data.Modifying;
 import io.nova.spring.data.Param;
 import io.nova.spring.data.Query;
 import io.nova.spring.data.ReactiveCrudRepository;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -27,7 +29,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class AnnotatedQueryMethodTest {
 
+    @Entity
     static final class Account {
+        @Id
         Long id;
         String email;
     }

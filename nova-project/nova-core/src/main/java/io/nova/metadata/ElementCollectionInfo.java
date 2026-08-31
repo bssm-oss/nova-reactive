@@ -215,14 +215,23 @@ public record ElementCollectionInfo(
      * 반영된) 물리 컬럼 이름, {@code columnType}은 저장 표현의 Java 타입(primitive는 wrapper로 정규화됨)이다.
      */
     public record EmbeddableColumn(
-            Field field,
+            PersistentAttributeAccess attribute,
             String columnName,
             Class<?> columnType,
             AttributeConverter<Object, Object> converter,
             boolean json) {
 
+        public EmbeddableColumn {
+            java.util.Objects.requireNonNull(attribute, "attribute");
+        }
+
         public EmbeddableColumn(Field field, String columnName, Class<?> columnType) {
-            this(field, columnName, columnType, null, false);
+            this(new PersistentAttributeAccess(field.getName(), field), columnName, columnType, null, false);
+        }
+
+        /** Backing field retained for record-constructor discovery; logical access uses {@link #attribute()}. */
+        public Field field() {
+            return attribute.field();
         }
 
         public Object encode(Object value) {
@@ -233,13 +242,25 @@ public record ElementCollectionInfo(
             return value == null || converter == null ? value : converter.read(value);
         }
 
+        public String propertyName() {
+            return attribute.name();
+        }
+
+        public Object read(Object instance) {
+            return attribute.read(instance);
+        }
+
+        public void write(Object instance, Object value) {
+            attribute.write(instance, value);
+        }
+
         @Override
         public boolean equals(Object other) {
             if (this == other) {
                 return true;
             }
             return other instanceof EmbeddableColumn that
-                    && java.util.Objects.equals(field, that.field)
+                    && java.util.Objects.equals(attribute, that.attribute)
                     && java.util.Objects.equals(columnName, that.columnName)
                     && java.util.Objects.equals(columnType, that.columnType)
                     && json == that.json;
@@ -247,7 +268,7 @@ public record ElementCollectionInfo(
 
         @Override
         public int hashCode() {
-            return java.util.Objects.hash(field, columnName, columnType, json);
+            return java.util.Objects.hash(attribute, columnName, columnType, json);
         }
     }
 

@@ -2,6 +2,9 @@ package io.nova.spring.data.derived;
 
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.CompoundPredicate;
@@ -18,6 +21,8 @@ import io.nova.query.Slice;
 import io.nova.query.Sort;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -39,13 +44,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DerivedQueryDispatcherTest {
 
+    @Entity
     static final class Account {
+        @Id
         Long id;
         String email;
         boolean active;
         Instant createdAt;
         int loginCount;
     }
+
+    private static final EntityMetadataFactory METADATA_FACTORY =
+            new EntityMetadataFactory(new DefaultNamingStrategy());
+    private static final EntityMetadata<Account> ACCOUNT_METADATA =
+            METADATA_FACTORY.getEntityMetadata(Account.class);
 
     interface AccountRepository {
         Flux<Account> findByEmail(String email);
@@ -85,7 +97,7 @@ class DerivedQueryDispatcherTest {
     }
 
     private final CapturingOperations operations = new CapturingOperations();
-    private final DerivedQueries derived = new DerivedQueries(Account.class, operations);
+    private final DerivedQueries derived = new DerivedQueries(ACCOUNT_METADATA, operations);
 
     private Method method(String name, Class<?>... params) {
         try {

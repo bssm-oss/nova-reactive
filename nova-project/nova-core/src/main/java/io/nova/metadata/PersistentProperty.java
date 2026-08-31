@@ -4,21 +4,15 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.GenerationType;
 import io.nova.convert.AttributeConverter;
 
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Objects;
 
 public final class PersistentProperty {
     private final Field field;
-    /**
-     * leaf 필드의 {@link VarHandle} — reflective {@code Field.get/set}보다 빠른 접근 경로다. 모듈 제약 등으로
-     * 생성에 실패하면 {@code null}로 두고 {@link #field} 리플렉션으로 fallback한다(동작 동일). 기본(non-exact)
-     * VarHandle 접근이라 primitive 필드의 boxing/unboxing은 자동 처리된다.
-     */
-    private final VarHandle fieldHandle;
+    private final PersistentAttributeAccess access;
     private final String propertyName;
     private final String columnName;
     private final Class<?> javaType;
@@ -34,13 +28,14 @@ public final class PersistentProperty {
     private final boolean createdAt;
     private final boolean updatedAt;
     private final boolean softDelete;
-    private final boolean embedded;
+    private boolean embedded;
     /**
      * 호스트 엔티티 인스턴스에서 이 property가 가리키는 leaf field까지 traverse해야 하는
      * {@link jakarta.persistence.Embedded} 필드들의 outer → inner 순서 체인. top-level property는
      * 비어있다. nested 1-level은 길이 1, 2-level은 길이 2.
      */
-    private final List<Field> embeddedHostPath;
+    private List<Field> embeddedHostPath;
+    private List<PersistentAttributeAccess> embeddedHostAccessPath;
     private final boolean enumerated;
     private final EnumType enumType;
     private final boolean json;
@@ -141,7 +136,7 @@ public final class PersistentProperty {
      */
     private final ToOneForeignKey toOneForeignKey;
     /** DDL-only members of the effective {@code @Column} declaration. */
-    private final ColumnDdlDefinition columnDdlDefinition;
+    private ColumnDdlDefinition columnDdlDefinition;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -217,8 +212,12 @@ public final class PersistentProperty {
             ColumnDdlDefinition columnDdlDefinition
     ) {
         this.field = field;
-        this.field.setAccessible(true);
-        this.fieldHandle = resolveFieldHandle(field);
+        if (field != null) {
+            this.field.setAccessible(true);
+        }
+        this.access = propertyAccess
+                ? new PersistentAttributeAccess(propertyName, propertyAccessGetter, propertyAccessSetter)
+                : new PersistentAttributeAccess(propertyName, field);
         this.propertyName = propertyName;
         this.columnName = columnName;
         this.javaType = javaType;
@@ -239,6 +238,9 @@ public final class PersistentProperty {
         for (Field hostField : this.embeddedHostPath) {
             hostField.setAccessible(true);
         }
+        this.embeddedHostAccessPath = this.embeddedHostPath.stream()
+                .map(hostField -> new PersistentAttributeAccess(hostField.getName(), hostField))
+                .toList();
         this.enumerated = enumerated;
         this.enumType = enumType;
         this.json = json;
@@ -265,7 +267,7 @@ public final class PersistentProperty {
         this.propertyAccessGetter = propertyAccessGetter;
         this.propertyAccessSetter = propertyAccessSetter;
         if (propertyAccess) {
-            boolean immutableRecordComponent = field.getDeclaringClass().isRecord();
+            boolean immutableRecordComponent = propertyAccessGetter.getDeclaringClass().isRecord();
             if (propertyAccessGetter == null || (propertyAccessSetter == null && !immutableRecordComponent)) {
                 throw new IllegalStateException(
                         "PROPERTY access property " + propertyName
@@ -352,7 +354,7 @@ public final class PersistentProperty {
         if (this.columnName.equals(newColumnName)) {
             return this;
         }
-        return new PersistentProperty(
+        PersistentProperty copy = new PersistentProperty(
                 field,
                 propertyName,
                 newColumnName,
@@ -401,6 +403,64 @@ public final class PersistentProperty {
                 toOneForeignKey,
                 columnDdlDefinition
         );
+        return copy.withEmbeddedHostAccessPath(embeddedHostAccessPath);
+    }
+
+
+    public PersistentProperty withPropertyName(String newPropertyName) {
+        if (this.propertyName.equals(newPropertyName)) {
+            return this;
+        }
+        PersistentProperty copy = new PersistentProperty(
+                field,
+                newPropertyName,
+                columnName,
+                javaType,
+                id,
+                version,
+                nullable,
+                length,
+                precision,
+                scale,
+                generationType,
+                generator,
+                converter,
+                createdAt,
+                updatedAt,
+                softDelete,
+                embedded,
+                embeddedHostPath,
+                enumerated,
+                enumType,
+                json,
+                manyToOne,
+                manyToOneTargetType,
+                manyToOneNullable,
+                oneToMany,
+                oneToManyTargetType,
+                oneToManyMappedBy,
+                insertable,
+                updatable,
+                unique,
+                columnDefinition,
+                lob,
+                converterColumnType,
+                inverseToOne,
+                manyToManyInfo,
+                elementCollectionInfo,
+                oneToManyInfo,
+                tableGeneratorInfo,
+                mapsId,
+                mapsIdValue,
+                propertyAccess,
+                propertyAccessGetter,
+                propertyAccessSetter,
+                toOneCascadeInfo,
+                secondaryTableName,
+                toOneForeignKey,
+                columnDdlDefinition
+        );
+        return copy.withEmbeddedHostAccessPath(embeddedHostAccessPath);
     }
 
     /**
@@ -413,7 +473,7 @@ public final class PersistentProperty {
         if (this.id) {
             return this;
         }
-        return new PersistentProperty(
+        PersistentProperty copy = new PersistentProperty(
                 field,
                 propertyName,
                 columnName,
@@ -462,6 +522,7 @@ public final class PersistentProperty {
                 toOneForeignKey,
                 columnDdlDefinition
         );
+        return copy.withEmbeddedHostAccessPath(embeddedHostAccessPath);
     }
 
     /**
@@ -509,8 +570,34 @@ public final class PersistentProperty {
         return field;
     }
 
+    /** The selected member's declaration, not necessarily the backing field's authority. */
+    public Class<?> declaringType() {
+        return access.declaringType();
+    }
+
+    /** The selected state and annotation carrier for this property. */
+    public PersistentAttributeAccess access() {
+        return access;
+    }
+
     public String propertyName() {
         return propertyName;
+    }
+
+    /** Selected logical member name used when reconstructing embeddable components. */
+    public String leafName() {
+        int separator = propertyName.lastIndexOf('.');
+        return separator < 0 ? propertyName : propertyName.substring(separator + 1);
+    }
+
+    /** Returns a mapping annotation from the selected state carrier. */
+    public <A extends java.lang.annotation.Annotation> A annotation(Class<A> annotationType) {
+        return access.annotation(annotationType);
+    }
+
+    /** Generic Java type from the selected state carrier. */
+    public java.lang.reflect.Type genericType() {
+        return access.genericType();
     }
 
     public String columnName() {
@@ -608,6 +695,38 @@ public final class PersistentProperty {
      */
     public List<Field> embeddedHostPath() {
         return embeddedHostPath;
+    }
+
+    /** Selected access path used for embedded runtime traversal. */
+    public List<PersistentAttributeAccess> embeddedHostAccessPath() {
+        return embeddedHostAccessPath;
+    }
+
+    PersistentProperty withEmbeddedHostAccessPath(List<PersistentAttributeAccess> path) {
+        this.embeddedHostAccessPath = List.copyOf(path);
+        // This legacy Field path is intentionally observational only. Hosts exposed solely by
+        // getters have no field entry, while all runtime traversal uses the descriptor path.
+        this.embeddedHostPath = path.stream().map(PersistentAttributeAccess::field)
+                .filter(Objects::nonNull).toList();
+        this.embedded = !path.isEmpty();
+        return this;
+    }
+
+    PersistentProperty withColumnDdlDefinition(ColumnDdlDefinition definition) {
+        this.columnDdlDefinition = definition;
+        return this;
+    }
+
+    /**
+     * Hydration helper for a materialized embedded host. Runtime mappers keep host-field access inside the cached
+     * descriptor instead of rediscovering a field from the entity type.
+     */
+    public void writeEmbeddedHost(Object instance, int pathIndex, Object value) {
+        if (pathIndex < 0 || pathIndex >= embeddedHostAccessPath.size()) {
+            throw new IllegalArgumentException("Invalid embedded host path index " + pathIndex
+                    + " for " + propertyName);
+        }
+        embeddedHostAccessPath.get(pathIndex).write(instance, value);
     }
 
     /**
@@ -713,18 +832,7 @@ public final class PersistentProperty {
      * 각각 꺼낼 수 있도록 raw reference를 노출한다. 관계는 항상 FIELD access로 저장되므로 field로 읽는다.
      */
     public Object readReferenceInstance(Object instance) {
-        try {
-            Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                current = hostField.get(current);
-                if (current == null) {
-                    return null;
-                }
-            }
-            return fieldHandle != null ? fieldHandle.get(current) : field.get(current);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read @ManyToOne/@OneToOne reference field " + field.getName(), exception);
-        }
+        return readReference(instance);
     }
 
     /**
@@ -733,28 +841,7 @@ public final class PersistentProperty {
      * 경우에 사용한다(복합키 타겟은 단일 {@code @Id} stub 경로가 성립하지 않으므로). 관계는 항상 FIELD access다.
      */
     public void writeReferenceInstance(Object instance, Object reference) {
-        try {
-            // 관계 property는 top-level이라 embeddedHostPath가 비어 있지만, readReferenceInstance와 대칭이 되도록
-            // (그리고 향후 @Embeddable 내부 to-one 매핑에서도 어긋나지 않도록) 동일한 host-path traversal을 따르고
-            // 동일한 접근 경로(fieldHandle 우선)를 쓴다.
-            Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                Object next = hostField.get(current);
-                if (next == null) {
-                    next = instantiateEmbeddable(hostField.getType());
-                    hostField.set(current, next);
-                }
-                current = next;
-            }
-            if (fieldHandle != null) {
-                fieldHandle.set(current, reference);
-            } else {
-                field.set(current, reference);
-            }
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write @ManyToOne/@OneToOne reference field " + field.getName(), exception);
-        }
+        writeReference(instance, reference);
     }
 
     /**
@@ -764,12 +851,7 @@ public final class PersistentProperty {
      */
     public void writeCompositeReference(Object instance, List<Object> decodedValues) {
         Object stub = toOneForeignKey.assembleStub(decodedValues);
-        try {
-            field.set(instance, stub);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write @ManyToOne/@OneToOne reference field " + field.getName(), exception);
-        }
+        writeReferenceInstance(instance, stub);
     }
 
     /**
@@ -958,95 +1040,25 @@ public final class PersistentProperty {
         return propertyAccess;
     }
 
-    /**
-     * PROPERTY access getter. {@link #propertyAccess()}가 {@code false}이면 {@code null}.
-     */
     public Method propertyAccessGetter() {
         return propertyAccessGetter;
     }
 
-    /**
-     * PROPERTY access setter. {@link #propertyAccess()}가 {@code false}이면 {@code null}.
-     */
     public Method propertyAccessSetter() {
         return propertyAccessSetter;
     }
 
-    /**
-     * inverse-side {@code @OneToOne}({@code mappedBy})이면 {@code true}. 이 테이블에 컬럼이 없는 마커이며
-     * hydration에서 단건 child가 주입된다.
-     */
     public boolean inverseToOne() {
         return inverseToOne;
     }
 
-    /**
-     * leaf 필드의 read/write VarHandle을 만든다. {@code private} 패키지 lookup으로 unreflect하며, 모듈
-     * 미개방 등으로 실패하면 {@code null}을 반환해 reflective {@link Field} 경로로 fallback한다. {@code final}
-     * 필드는 VarHandle set이 불가하므로(리플렉션도 동일) 건너뛰어 동작을 일관되게 유지한다.
-     */
-    private static VarHandle resolveFieldHandle(Field field) {
-        if (java.lang.reflect.Modifier.isFinal(field.getModifiers())) {
-            return null;
-        }
-        try {
-            MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(field.getDeclaringClass(), MethodHandles.lookup());
-            return lookup.unreflectVarHandle(field);
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
     public Object read(Object instance) {
-        try {
-            Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                current = hostField.get(current);
-                if (current == null) {
-                    return null;
-                }
-            }
-            // @Access(PROPERTY)이면 leaf field 대신 JavaBean getter로 상태를 읽는다(access 전략은 생성자에서 확정).
-            Object value = propertyAccess
-                    ? invokeGetter(current)
-                    : (fieldHandle != null ? fieldHandle.get(current) : field.get(current));
-            if (manyToOne && value != null) {
-                // @ManyToOne property는 entity reference를 보관하지만, FK column에 바인딩되는 값은
-                // 참조 대상의 @Id 값이다. binding 시점에 reflection으로 target의 @Id 필드를 찾아 그 값을 반환한다.
-                return extractReferencedId(value);
-            }
-            return value;
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read field " + field.getName(), exception);
+        Object holder = readHostHolder(instance);
+        if (holder == null) {
+            return null;
         }
-    }
-
-    /**
-     * PROPERTY access getter를 holder 인스턴스에 대해 호출한다. 호출 대상 메서드가 던진 예외는
-     * {@link IllegalStateException}으로 감싸 전파한다.
-     */
-    private Object invokeGetter(Object holder) {
-        try {
-            return propertyAccessGetter.invoke(holder);
-        } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException(
-                    "Cannot read PROPERTY-access property " + propertyName
-                            + " via " + propertyAccessGetter.getName(), exception);
-        }
-    }
-
-    /**
-     * PROPERTY access setter를 holder 인스턴스에 대해 호출한다. 호출 대상 메서드가 던진 예외는
-     * {@link IllegalStateException}으로 감싸 전파한다.
-     */
-    private void invokeSetter(Object holder, Object value) {
-        try {
-            propertyAccessSetter.invoke(holder, value);
-        } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException(
-                    "Cannot write PROPERTY-access property " + propertyName
-                            + " via " + propertyAccessSetter.getName(), exception);
-        }
+        Object value = access.read(holder);
+        return manyToOne && value != null ? extractReferencedId(value) : value;
     }
 
     /**
@@ -1058,45 +1070,20 @@ public final class PersistentProperty {
      * 못 찾으면 {@code null}. 복합키({@code @IdClass}) 대상은 자신에 여러 {@code @Id}를 선언하므로 자신 필드에서
      * 첫 {@code @Id}를 반환해 기존 동작을 그대로 보존한다.
      */
-    private static Field findReferencedIdField(Class<?> targetType) {
-        Class<?> current = targetType;
-        while (current != null && current != Object.class) {
-            for (Field candidate : current.getDeclaredFields()) {
-                if (candidate.isAnnotationPresent(jakarta.persistence.Id.class)) {
-                    return candidate;
-                }
-            }
-            Class<?> ancestor = current.getSuperclass();
-            if (ancestor == null || ancestor == Object.class
-                    || !(ancestor.isAnnotationPresent(jakarta.persistence.MappedSuperclass.class)
-                            || ancestor.isAnnotationPresent(jakarta.persistence.Entity.class))) {
-                return null;
-            }
-            current = ancestor;
-        }
-        return null;
+    private static PersistentAttributeAccess findReferencedId(Class<?> targetType) {
+        return new PersistentAccessResolver().resolve(targetType).attributes().stream()
+                .filter(attribute -> attribute.isAnnotationPresent(jakarta.persistence.Id.class))
+                .findFirst().orElse(null);
     }
 
-    /**
-     * {@code @ManyToOne} 참조 대상 인스턴스에서 {@link jakarta.persistence.Id} 필드를 찾아 그 값을 꺼낸다.
-     * cycle-aware EntityMetadataFactory 없이도 동작하도록 직접 reflection으로 @Id를 탐색하며(상속된 단일 @Id
-     * 포함, {@link #findReferencedIdField}), target 클래스 계층에 @Id가 없으면 {@link IllegalStateException}으로
-     * 즉시 거부한다.
-     */
+    /** Reads a referenced identifier through its selected FIELD or PROPERTY descriptor. */
     private static Object extractReferencedId(Object referenced) {
-        Class<?> type = referenced.getClass();
-        Field idField = findReferencedIdField(type);
-        if (idField == null) {
+        PersistentAttributeAccess id = findReferencedId(referenced.getClass());
+        if (id == null) {
             throw new IllegalStateException(
-                    "@ManyToOne referenced entity " + type.getName() + " has no @Id field");
+                    "@ManyToOne referenced entity " + referenced.getClass().getName() + " has no @Id property");
         }
-        idField.setAccessible(true);
-        try {
-            return idField.get(referenced);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot read @Id field on referenced entity " + type.getName(), exception);
-        }
+        return id.read(referenced);
     }
 
     /**
@@ -1106,17 +1093,10 @@ public final class PersistentProperty {
      * 아니라 id holder에서 읽으므로 {@link #read(Object)}의 embedded host-path traversal을 거치지 않는다.
      */
     public Object readFromIdHolder(Object idHolder) {
-        if (embeddedHostPath.isEmpty()) {
+        if (embeddedHostAccessPath.isEmpty()) {
             return idHolder;
         }
-        if (propertyAccess) {
-            return invokeGetter(idHolder);
-        }
-        try {
-            return fieldHandle != null ? fieldHandle.get(idHolder) : field.get(idHolder);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read @EmbeddedId component " + field.getName(), exception);
-        }
+        return access.read(idHolder);
     }
 
     /**
@@ -1125,18 +1105,14 @@ public final class PersistentProperty {
      * 복합키 entity에서 id 값 객체(holder)를 통째로 꺼낼 때 사용한다.
      */
     public Object readHostHolder(Object instance) {
-        try {
-            Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                current = hostField.get(current);
-                if (current == null) {
-                    return null;
-                }
+        Object current = instance;
+        for (PersistentAttributeAccess host : embeddedHostAccessPath) {
+            current = host.read(current);
+            if (current == null) {
+                return null;
             }
-            return current;
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read embedded host for " + field.getName(), exception);
         }
+        return current;
     }
 
     public void write(Object instance, Object value) {
@@ -1155,27 +1131,8 @@ public final class PersistentProperty {
             writeManyToOneStub(instance, value);
             return;
         }
-        try {
-            Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                Object next = hostField.get(current);
-                if (next == null) {
-                    next = instantiateEmbeddable(hostField.getType());
-                    hostField.set(current, next);
-                }
-                current = next;
-            }
-            // @Access(PROPERTY)이면 leaf field 대신 JavaBean setter로 상태를 쓴다(access 전략은 생성자에서 확정).
-            if (propertyAccess) {
-                invokeSetter(current, value);
-            } else if (fieldHandle != null) {
-                fieldHandle.set(current, value);
-            } else {
-                field.set(current, value);
-            }
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot write field " + field.getName(), exception);
-        }
+        Object current = ensureHostHolder(instance);
+        access.write(current, value);
     }
 
     /**
@@ -1190,14 +1147,11 @@ public final class PersistentProperty {
         }
         Class<?> target = manyToOneTargetType != null ? manyToOneTargetType : field.getType();
         Object stub = instantiateTarget(target);
-        Field idField = findIdField(target);
-        idField.setAccessible(true);
-        try {
-            idField.set(stub, fkValue);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write @Id on @ManyToOne stub " + target.getName(), exception);
+        PersistentAttributeAccess id = findReferencedId(target);
+        if (id == null) {
+            throw new IllegalStateException("@ManyToOne target type " + target.getName() + " has no @Id property");
         }
+        id.write(stub, fkValue);
         setReferenceValue(instance, stub);
     }
 
@@ -1207,15 +1161,8 @@ public final class PersistentProperty {
      * {@code @Access(PROPERTY)}이면 JavaBean getter로, 아니면 field로 읽는다(관계는 embedded host-path가 없다).
      */
     public Object readReference(Object instance) {
-        if (propertyAccess) {
-            return invokeGetter(instance);
-        }
-        try {
-            return fieldHandle != null ? fieldHandle.get(instance) : field.get(instance);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot read relation reference " + field.getName(), exception);
-        }
+        Object current = readHostHolder(instance);
+        return current == null ? null : access.read(current);
     }
 
     /**
@@ -1232,16 +1179,30 @@ public final class PersistentProperty {
      * 분기한다. row 디코딩 stub 주입과 hydration이 모두 이 자리를 거쳐 일관되게 동작한다.
      */
     private void setReferenceValue(Object instance, Object reference) {
-        if (propertyAccess) {
-            invokeSetter(instance, reference);
-            return;
+        writeCollection(instance, reference);
+    }
+
+    /** Writes a logical collection marker through its selected FIELD/PROPERTY descriptor. */
+    public void writeCollection(Object instance, Object value) {
+        access.write(ensureHostHolder(instance), value);
+    }
+
+    /** Writes this leaf on an already-instantiated embedded holder, without traversing its root host path. */
+    public void writeEmbeddedLeaf(Object holder, Object value) {
+        access.write(holder, value);
+    }
+
+    private Object ensureHostHolder(Object instance) {
+        Object current = instance;
+        for (PersistentAttributeAccess host : embeddedHostAccessPath) {
+            Object next = host.read(current);
+            if (next == null) {
+                next = instantiateEmbeddable(host.javaType());
+                host.write(current, next);
+            }
+            current = next;
         }
-        try {
-            field.set(instance, reference);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write @ManyToOne reference field " + field.getName(), exception);
-        }
+        return current;
     }
 
     private static Object instantiateTarget(Class<?> targetType) {
@@ -1253,15 +1214,6 @@ public final class PersistentProperty {
             throw new IllegalStateException(
                     "@ManyToOne target type must expose a no-args constructor: " + targetType.getName(), exception);
         }
-    }
-
-    private static Field findIdField(Class<?> targetType) {
-        Field idField = findReferencedIdField(targetType);
-        if (idField == null) {
-            throw new IllegalStateException(
-                    "@ManyToOne target type " + targetType.getName() + " has no @Id field");
-        }
-        return idField;
     }
 
     private static Object instantiateEmbeddable(Class<?> embeddableType) {

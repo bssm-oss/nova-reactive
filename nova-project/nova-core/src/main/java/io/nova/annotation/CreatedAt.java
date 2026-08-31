@@ -10,7 +10,7 @@ import java.lang.annotation.Target;
  * {@link java.time.Instant}, {@link java.time.LocalDateTime}, {@link java.time.OffsetDateTime}
  * 중 하나여야 한다. 이미 값이 채워져 있으면 덮어쓰지 않는다.
  */
-@Target(ElementType.FIELD)
+@Target({ElementType.FIELD, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
 public @interface CreatedAt {
 }

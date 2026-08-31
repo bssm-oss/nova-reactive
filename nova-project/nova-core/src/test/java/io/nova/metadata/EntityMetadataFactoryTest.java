@@ -192,7 +192,8 @@ class EntityMetadataFactoryTest {
                 () -> factory.getEntityMetadata(MissingIdEntity.class)
         );
 
-        assertTrue(exception.getMessage().contains("must declare a field annotated with @Id"));
+        assertTrue(exception.getMessage().contains(
+                "must declare an access member annotated with @Id or @EmbeddedId"));
     }
 
     @Test
@@ -1457,11 +1458,11 @@ class EntityMetadataFactoryTest {
     @Entity
     @Access(AccessType.PROPERTY)
     static class GetterTransientPropertyEntity {
-        @Id
         private Long id;
         private String persisted;
         private String cached;
 
+        @Id
         public Long getId() {
             return id;
         }

@@ -158,7 +158,7 @@ class EnableNovaRepositoriesTest {
                 .verifyComplete();
     }
 
-    @Entity
+    @Entity(name = "Widget")
     @Table(name = "widgets")
     public static class Widget {
         @Id
