@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
+import reactor.test.publisher.TestPublisher;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -26,7 +27,6 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -112,24 +112,73 @@ class SimpleReactiveEntityOperationsPageTest {
     }
 
     @Test
-    void findAllByPageableWaitsForContentCompletionBeforeStartingCount() {
-        SerialPageExecutor executor = new SerialPageExecutor();
-        executor.queryManyResults.addLast(List.of(row(1L, "x@nova.io", true)));
-        executor.queryOneResults.addLast(row(Map.of("count", 1L)));
+    void findAllByPageableDoesNotSubscribeToCountUntilContentCompletes() {
+        TestPublisher<MapRowAccessor> content = TestPublisher.create();
+        TestPublisher<MapRowAccessor> count = TestPublisher.create();
 
-        StepVerifier.create(newOperations(executor).findAll(
+        StepVerifier.create(newOperations(new DeferredPageExecutor(content, count)).findAll(
                         SampleAccount.class, QuerySpec.empty(), Pageable.of(5, 0L)))
+                .then(() -> {
+                    content.assertWasSubscribed();
+                    count.assertWasNotSubscribed();
+                    content.emit(row(1L, "x@nova.io", true));
+                })
+                .then(() -> {
+                    count.assertWasSubscribed();
+                    count.emit(row(Map.of("count", 1L)));
+                })
                 .assertNext(page -> {
                     assertEquals(1, page.content().size());
                     assertEquals(1L, page.totalElements());
                 })
                 .verifyComplete();
+    }
 
-        assertEquals(2, executor.allStatements.size());
-        assertFalse(executor.allStatements.get(0).sql().startsWith("select count("),
-                "content SELECT must finish before COUNT begins");
-        assertTrue(executor.allStatements.get(1).sql().startsWith("select count("),
-                "COUNT must start only after content SELECT completes");
+    @Test
+    void findAllByPageableDoesNotSubscribeToCountWhenContentErrors() {
+        TestPublisher<MapRowAccessor> content = TestPublisher.create();
+        TestPublisher<MapRowAccessor> count = TestPublisher.create();
+
+        StepVerifier.create(newOperations(new DeferredPageExecutor(content, count)).findAll(
+                        SampleAccount.class, QuerySpec.empty(), Pageable.of(5, 0L)))
+                .then(() -> content.error(new IllegalStateException("content failed")))
+                .expectErrorMessage("content failed")
+                .verify();
+
+        count.assertWasNotSubscribed();
+    }
+
+    @Test
+    void findAllByPageableDoesNotSubscribeToCountWhenContentIsCancelled() {
+        TestPublisher<MapRowAccessor> content = TestPublisher.create();
+        TestPublisher<MapRowAccessor> count = TestPublisher.create();
+
+        StepVerifier.create(newOperations(new DeferredPageExecutor(content, count)).findAll(
+                        SampleAccount.class, QuerySpec.empty(), Pageable.of(5, 0L)))
+                .then(() -> {
+                    content.assertWasSubscribed();
+                    count.assertWasNotSubscribed();
+                })
+                .thenCancel()
+                .verify();
+
+        count.assertWasNotSubscribed();
+    }
+
+    @Test
+    void findAllByPageableDoesNotEmitPageWhenCountErrors() {
+        TestPublisher<MapRowAccessor> content = TestPublisher.create();
+        TestPublisher<MapRowAccessor> count = TestPublisher.create();
+
+        StepVerifier.create(newOperations(new DeferredPageExecutor(content, count)).findAll(
+                        SampleAccount.class, QuerySpec.empty(), Pageable.of(5, 0L)))
+                .then(() -> content.emit(row(1L, "x@nova.io", true)))
+                .then(() -> {
+                    count.assertWasSubscribed();
+                    count.error(new IllegalStateException("count failed"));
+                })
+                .expectErrorMessage("count failed")
+                .verify();
     }
 
     @Test
@@ -298,53 +347,23 @@ class SimpleReactiveEntityOperationsPageTest {
         }
     }
 
-    /**
-     * A connection-like executor which rejects a second operation while a result stream is active.
-     */
-    private static final class SerialPageExecutor implements SqlExecutor {
-        private final Deque<List<MapRowAccessor>> queryManyResults = new ArrayDeque<>();
-        private final Deque<MapRowAccessor> queryOneResults = new ArrayDeque<>();
-        private final List<SqlStatement> allStatements = new ArrayList<>();
-        private final AtomicBoolean operationInFlight = new AtomicBoolean();
-
+    private record DeferredPageExecutor(
+            TestPublisher<MapRowAccessor> content,
+            TestPublisher<MapRowAccessor> count
+    ) implements SqlExecutor {
         @Override
         public Mono<Long> execute(SqlStatement statement) {
-            return Mono.defer(() -> {
-                if (!operationInFlight.compareAndSet(false, true)) {
-                    return Mono.error(new IllegalStateException("connection already has an active operation"));
-                }
-                allStatements.add(statement);
-                operationInFlight.set(false);
-                return Mono.just(1L);
-            });
+            return Mono.just(1L);
         }
 
         @Override
         public <T> Mono<T> queryOne(SqlStatement statement, Function<RowAccessor, T> mapper) {
-            return Mono.defer(() -> {
-                if (!operationInFlight.compareAndSet(false, true)) {
-                    return Mono.error(new IllegalStateException("connection already has an active operation"));
-                }
-                allStatements.add(statement);
-                T result = mapper.apply(queryOneResults.removeFirst());
-                operationInFlight.set(false);
-                return Mono.just(result);
-            });
+            return count.flux().next().map(mapper);
         }
 
         @Override
         public <T> Flux<T> queryMany(SqlStatement statement, Function<RowAccessor, T> mapper) {
-            return Flux.defer(() -> {
-                if (!operationInFlight.compareAndSet(false, true)) {
-                    return Flux.error(new IllegalStateException("connection already has an active operation"));
-                }
-                allStatements.add(statement);
-                return Flux.fromIterable(queryManyResults.removeFirst())
-                        .map(mapper)
-                        .doOnComplete(() -> operationInFlight.set(false))
-                        .doOnError(ignored -> operationInFlight.set(false))
-                        .doOnCancel(() -> operationInFlight.set(false));
-            });
+            return content.flux().map(mapper);
         }
     }
 
