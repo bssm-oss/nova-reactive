@@ -156,6 +156,30 @@ class PersistenceSessionIntegrationTest {
     }
 
     @Test
+    void separateRequiredOperationWrappersShareRawPhysicalTransactionSession() {
+        Long id = support.operations().save(new Person("shared", 29)).map(Person::getId).block();
+        AtomicReference<Person> first = new AtomicReference<>();
+        listener.clear();
+
+        StepVerifier.create(support.transactionManager().inTransaction(TransactionDefinition.DEFAULT, ignored ->
+                        support.operations().inTransaction(firstOps ->
+                                        firstOps.findById(Person.class, id).doOnNext(person -> {
+                                            first.set(person);
+                                            person.setName("changed once");
+                                        }))
+                                .then(support.operations().inTransaction(secondOps ->
+                                        secondOps.findById(Person.class, id).doOnNext(person ->
+                                                assertSame(first.get(), person))))))
+                .verifyComplete();
+
+        assertEquals(1, listener.updates().size(),
+                "one physical transaction must register and run exactly one session flush");
+        StepVerifier.create(support.operations().findById(Person.class, id))
+                .assertNext(person -> assertEquals("changed once", person.getName()))
+                .verifyComplete();
+    }
+
+    @Test
     void requiresNewUsesIndependentSessionAndRestoresOuterDirtyIdentity() {
         Long id = support.operations().save(new Person("original", 30)).map(Person::getId).block();
         AtomicReference<Person> outer = new AtomicReference<>();
