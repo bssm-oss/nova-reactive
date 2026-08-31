@@ -234,7 +234,13 @@ public final class MetamodelProcessor extends AbstractProcessor {
         }
         if (type.getKind() == ElementKind.RECORD) {
             for (RecordComponentElement component : type.getRecordComponents()) {
-                result.put(component.getSimpleName().toString(), component.getAccessor());
+                String name = component.getSimpleName().toString();
+                ExecutableElement accessor = component.getAccessor();
+                ExecutableElement previous = result.put(name, accessor);
+                if (previous != null && !previous.equals(accessor)) {
+                    throw new IllegalStateException(type.getQualifiedName()
+                            + " has ambiguous accessor for " + name);
+                }
             }
         }
         return result;

@@ -50,7 +50,7 @@ final class EntityPropertyIndex {
                 entries.add(new Entry(toPascal(name), name, MatchRank.DIRECT_PROPERTY));
             }
         }
-        failOnSameRankCollisions(entries);
+        removeAmbiguousFlattenedAliases(entries);
         entries.sort(Comparator
                 .comparingInt((Entry entry) -> entry.token().length()).reversed()
                 .thenComparing(Entry::rank)
@@ -114,16 +114,22 @@ final class EntityPropertyIndex {
         return token.toString();
     }
 
-    private static void failOnSameRankCollisions(List<Entry> entries) {
+    private static void removeAmbiguousFlattenedAliases(List<Entry> entries) {
         Map<CollisionKey, String> propertyByTokenAndRank = new HashMap<>();
+        java.util.Set<CollisionKey> ambiguousFlattened = new java.util.HashSet<>();
         for (Entry entry : entries) {
             CollisionKey key = new CollisionKey(entry.token(), entry.rank());
             String previous = propertyByTokenAndRank.putIfAbsent(key, entry.propertyName());
             if (previous != null && !previous.equals(entry.propertyName())) {
+                if (entry.rank() == MatchRank.FLATTENED_PATH) {
+                    ambiguousFlattened.add(key);
+                    continue;
+                }
                 throw new IllegalArgumentException("Ambiguous derived-query property token '" + entry.token()
                         + "' for properties '" + previous + "' and '" + entry.propertyName() + "'");
             }
         }
+        entries.removeIf(entry -> ambiguousFlattened.contains(new CollisionKey(entry.token(), entry.rank())));
     }
 
     private enum MatchRank {
