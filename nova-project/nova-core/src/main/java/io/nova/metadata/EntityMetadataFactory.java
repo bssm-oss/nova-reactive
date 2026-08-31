@@ -1707,11 +1707,19 @@ public final class EntityMetadataFactory {
             columnOverrides.put(override.name(), override.column());
         }
         List<PersistentProperty> result = new ArrayList<>();
-        for (Field subField : embeddableType.getDeclaredFields()) {
+        PersistentTypeAccess componentPlan = new PersistentAccessResolver().resolve(
+                embeddableType, selectedAttribute(idField).accessType());
+        for (PersistentAttributeAccess componentAttribute : componentPlan.attributes()) {
+            Field subField = componentAttribute.field();
+            if (subField == null) {
+                throw new IllegalArgumentException(embeddableType.getName() + "." + componentAttribute.name()
+                        + " @EmbeddedId component requires a physical backing field");
+            }
             if (isNotPersistable(subField)) {
                 continue;
             }
-            if (subField.isAnnotationPresent(Embedded.class) || subField.isAnnotationPresent(EmbeddedId.class)) {
+            if (componentAttribute.isAnnotationPresent(Embedded.class)
+                    || componentAttribute.isAnnotationPresent(EmbeddedId.class)) {
                 throw new IllegalArgumentException(
                         entityType.getName() + "." + idField.getName()
                                 + " @EmbeddedId component " + subField.getName()
@@ -1846,12 +1854,19 @@ public final class EntityMetadataFactory {
         List<PersistentProperty> result = new ArrayList<>();
         embeddableStack.add(embeddableType);
         try {
-            for (Field subField : embeddableType.getDeclaredFields()) {
+            PersistentTypeAccess componentPlan = new PersistentAccessResolver().resolve(
+                    embeddableType, selectedAttribute(hostField).accessType());
+            for (PersistentAttributeAccess componentAttribute : componentPlan.attributes()) {
+                Field subField = componentAttribute.field();
+                if (subField == null) {
+                    throw new IllegalArgumentException(embeddableType.getName() + "." + componentAttribute.name()
+                            + " @Embedded component requires a physical backing field");
+                }
                 if (isNotPersistable(subField)) {
                     continue;
                 }
                 rejectIllegalSubFieldAnnotations(entityType, hostField, embeddableType, subField);
-                if (subField.isAnnotationPresent(Embedded.class)) {
+                if (componentAttribute.isAnnotationPresent(Embedded.class)) {
                     String nestedPrefix = subField.getName() + ".";
                     Map<String, Convert> nestedConversions = new LinkedHashMap<>();
                     conversionOverrides.entrySet().removeIf(entry -> {
@@ -2776,7 +2791,7 @@ public final class EntityMetadataFactory {
             if (accessor != null && accessor.getReturnType() == field.getType()) {
                 return accessor;
             }
-            throw new IllegalStateException("Record component " + owner.getName() + "." + field.getName()
+            throw new IllegalArgumentException("Record component " + owner.getName() + "." + field.getName()
                     + " has no matching component accessor");
         }
         Method getter = findPropertyGetter(field);
@@ -2785,7 +2800,7 @@ public final class EntityMetadataFactory {
         }
         String capitalized = capitalize(field.getName());
         Class<?> type = field.getType();
-        throw new IllegalStateException(
+        throw new IllegalArgumentException(
                 owner.getName() + "." + field.getName()
                         + " uses @Access(PROPERTY) but has no JavaBean getter"
                         + " (expected get" + capitalized
@@ -2820,7 +2835,7 @@ public final class EntityMetadataFactory {
                 }
             }
         }
-        throw new IllegalStateException(
+        throw new IllegalArgumentException(
                 owner.getName() + "." + field.getName()
                         + " uses @Access(PROPERTY) but has no JavaBean setter"
                         + " (expected " + setterName + "(" + field.getType().getSimpleName() + "))");
