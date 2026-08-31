@@ -1,8 +1,15 @@
 package io.nova.r2dbc.integration;
 
+import io.nova.query.Criteria;
 import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.r2dbc.integration.IntegrationFixtures.IdentityAccount;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -77,6 +84,31 @@ class PageQueryIntegrationTest {
     }
 
     @Test
+    void findAllByPageableFlushesManagedMutationBeforeContentAndCount() {
+        support.execute(support.operations().createTableSql(ManagedPageAccount.class));
+        ManagedPageAccount first = new ManagedPageAccount("first", false);
+        ManagedPageAccount second = new ManagedPageAccount("second", true);
+
+        StepVerifier.create(support.operations().save(first)
+                        .then(support.operations().save(second)))
+                .verifyComplete();
+
+        QuerySpec activeOnly = QuerySpec.empty().where(Criteria.eq("active", true));
+        StepVerifier.create(support.operations().inTransaction(operations ->
+                        operations.findById(ManagedPageAccount.class, first.getId())
+                                .doOnNext(account -> account.setActive(true))
+                                .then(operations.findAll(
+                                        ManagedPageAccount.class, activeOnly, Pageable.of(10, 0L)))))
+                .assertNext(page -> {
+                    assertEquals(2, page.content().size(),
+                            "content SELECT must observe the managed mutation");
+                    assertEquals(2L, page.totalElements(),
+                            "COUNT must run after the content query's auto-flush");
+                })
+                .verifyComplete();
+    }
+
+    @Test
     void findSliceProbesOneExtraRowToReportHasNextWithoutCountQuery() {
         // limit 4, offset 0 → 4건 + probe로 5번째 행이 있는지 확인 → hasNext=true
         Pageable pageable = Pageable.of(4, 0L);
@@ -105,5 +137,35 @@ class PageQueryIntegrationTest {
                     assertTrue(slice.hasPrevious());
                 })
                 .verifyComplete();
+    }
+
+    @Entity
+    @Table(name = "managed_page_accounts")
+    static class ManagedPageAccount {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(nullable = false)
+        private String name;
+
+        @Column(nullable = false)
+        private boolean active;
+
+        ManagedPageAccount() {
+        }
+
+        ManagedPageAccount(String name, boolean active) {
+            this.name = name;
+            this.active = active;
+        }
+
+        Long getId() {
+            return id;
+        }
+
+        void setActive(boolean active) {
+            this.active = active;
+        }
     }
 }
