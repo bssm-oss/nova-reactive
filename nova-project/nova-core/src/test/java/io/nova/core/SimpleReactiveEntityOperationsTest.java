@@ -3149,7 +3149,56 @@ class SimpleReactiveEntityOperationsTest {
                         "update one_to_one_orphan_owners set target_id = ? where id = ?",
                         "delete from one_to_one_orphan_targets where id = ?"),
                 executor.chronologicalSqlCalls);
-        assertEquals(List.of("pre-remove", "post-remove"), ONE_TO_ONE_REMOVAL_TRACE);
+        assertEquals(List.of("owner-pre-update", "pre-remove", "post-remove"), ONE_TO_ONE_REMOVAL_TRACE);
+    }
+
+    @Test
+    void ownerDeleteSkipsOneToOneOrphanWhenSharedGuardFindsLiveReference() {
+        ONE_TO_ONE_REMOVAL_TRACE.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of()));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, new OneToOneOrphanTarget(10L));
+
+        StepVerifier.create(operations.delete(owner)).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("delete from one_to_one_orphan_owners where id = ?"), executor.chronologicalSqlCalls);
+        assertTrue(ONE_TO_ONE_REMOVAL_TRACE.isEmpty(), "a shared target receives no removal callbacks");
+    }
+
+    @Test
+    void statelessTransientOneToOneReplacementWithoutCascadeFailsBeforeOwnerOrOrphanSql() {
+        ONE_TO_ONE_REMOVAL_TRACE.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "target_id", 10L)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, new OneToOneOrphanTarget());
+
+        StepVerifier.create(operations.save(owner))
+                .expectErrorSatisfies(error -> assertTrue(error.getMessage().contains("without cascade PERSIST")))
+                .verify();
+
+        assertEquals(List.of("owner-pre-update"), ONE_TO_ONE_REMOVAL_TRACE);
+        assertTrue(executor.executedStatements.isEmpty(), "validation precedes owner update and orphan delete");
+    }
+
+    @Test
+    void managedTransientOneToOneReplacementWithoutCascadeInvokesCallbackButEmitsNoSql() {
+        ONE_TO_ONE_REMOVAL_TRACE.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, new OneToOneOrphanTarget(10L));
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(OneToOneOrphanOwner.class), owner);
+        owner.target = new OneToOneOrphanTarget();
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorSatisfies(error -> assertTrue(error.getMessage().contains("without cascade PERSIST")))
+                .verify();
+
+        assertEquals(List.of("owner-pre-update"), ONE_TO_ONE_REMOVAL_TRACE);
+        assertTrue(executor.executedStatements.isEmpty());
     }
 
     private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
@@ -3889,6 +3938,10 @@ class SimpleReactiveEntityOperationsTest {
         private OneToOneOrphanTarget() {
         }
 
+        private OneToOneOrphanTarget(Long id) {
+            this.id = id;
+        }
+
         @PreRemove
         void preRemove() {
             ONE_TO_ONE_REMOVAL_TRACE.add("pre-remove");
@@ -3916,6 +3969,11 @@ class SimpleReactiveEntityOperationsTest {
         private OneToOneOrphanOwner(Long id, OneToOneOrphanTarget target) {
             this.id = id;
             this.target = target;
+        }
+
+        @PreUpdate
+        void preUpdate() {
+            ONE_TO_ONE_REMOVAL_TRACE.add("owner-pre-update");
         }
     }
 

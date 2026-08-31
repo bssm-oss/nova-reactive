@@ -1652,6 +1652,21 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void compositeToOneInequalityUsesOrAcrossForeignKeyColumns() {
+        EntityMetadata<CompositeReferenceOwner> ownerMetadata =
+                metadataFactory.getEntityMetadata(CompositeReferenceOwner.class);
+
+        SqlStatement statement = dialect.sqlRenderer().exists(
+                ownerMetadata,
+                QuerySpec.empty().where(Criteria.ne("target", java.util.List.of("tenant-a", 42L))));
+
+        assertEquals(
+                "select 1 from composite_reference_owners where target_tenant <> ? or target_sequence <> ? limit 1",
+                statement.sql());
+        assertEquals(java.util.List.of("tenant-a", 42L), statement.bindings());
+    }
+
+    @Test
     void existsDelegatesRowLimitToOverriddenHookClause() {
         // 비표준 row-limit 절을 내는 core-level 서브클래스. exists() 본문이 리터럴 " limit 1"을
         // 박지 않고 existsRowLimitClause() hook을 호출함을 dialect 모듈과 독립적으로 고정한다.

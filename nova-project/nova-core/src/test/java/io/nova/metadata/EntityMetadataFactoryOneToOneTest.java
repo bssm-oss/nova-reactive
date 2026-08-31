@@ -7,6 +7,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
@@ -122,6 +123,10 @@ class EntityMetadataFactoryOneToOneTest {
         IllegalArgumentException readOnly = assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(ReadOnlyOrphanOwner.class));
         assertTrue(readOnly.getMessage().contains("updatable"));
+
+        IllegalArgumentException compositeReadOnly = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CompositeReadOnlyOrphanOwner.class));
+        assertTrue(compositeReadOnly.getMessage().contains("updatable"));
     }
 
     @Test
@@ -236,6 +241,20 @@ class EntityMetadataFactoryOneToOneTest {
 
         @OneToOne(orphanRemoval = true)
         @JoinColumn(updatable = false)
+        Passport passport;
+    }
+
+    @Entity
+    @Table(name = "composite_read_only_orphan_owner")
+    static class CompositeReadOnlyOrphanOwner {
+        @Id
+        Long id;
+
+        @OneToOne(orphanRemoval = true)
+        @JoinColumns({
+                @JoinColumn(name = "passport_id", updatable = false),
+                @JoinColumn(name = "passport_copy_id")
+        })
         Passport passport;
     }
 
