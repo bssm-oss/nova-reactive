@@ -457,8 +457,6 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
     }
 
     private static Optional<PersistenceSession> currentSession(ContextView ctx) {
-        return ctx.hasKey(SimpleReactiveEntityOperations.SESSION_KEY)
-                ? Optional.of(ctx.get(SimpleReactiveEntityOperations.SESSION_KEY))
-                : Optional.empty();
+        return SimpleReactiveEntityOperations.resolveSession(ctx);
     }
 }

@@ -1,6 +1,7 @@
 package io.nova.r2dbc;
 
 import io.nova.tx.IsolationLevel;
+import io.nova.tx.PhysicalTransactionScope;
 import io.nova.tx.Propagation;
 import io.nova.tx.ReactiveConnectionOperations;
 import io.nova.tx.ReactiveTransactionManager;
@@ -129,15 +130,19 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
     private <T> Mono<T> runInNewTransaction(TransactionDefinition definition,
                                             Function<TransactionContext, Mono<T>> callback) {
         BoundaryOwner owner = new BoundaryOwner();
+        PhysicalTransactionScope scope = PhysicalTransactionScope.active();
         return Mono.usingWhen(
                 begin(definition),
                 ctx -> Mono.defer(() -> callback.apply(ctx))
                         .doOnCancel(owner::cancelQueued)
+                        .flatMap(result -> scope.seal().then(scope.beforeCommit()).thenReturn(result))
+                        .switchIfEmpty(Mono.defer(() -> scope.seal().then(scope.beforeCommit()).then(Mono.empty())))
                         .contextWrite(c -> c.put(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())
-                                .put(ACTIVE_TRANSACTION_KEY, owner)),
+                                .put(ACTIVE_TRANSACTION_KEY, owner)
+                                .put(PhysicalTransactionScope.CONTEXT_KEY, scope)),
                 ctx -> owner.seal().then(commitAfterSuccess(ctx)).onErrorMap(CleanupFailure::new),
-                (ctx, error) -> owner.seal().then(rollbackAfterError(ctx, error)),
-                ctx -> owner.seal().then(rollback(ctx)))
+                (ctx, error) -> owner.seal().then(scope.seal()).then(rollbackAfterError(ctx, error)),
+                ctx -> owner.seal().then(scope.seal()).then(rollback(ctx)))
                 .onErrorMap(R2dbcTransactionManager::unwrapCleanupFailure);
     }
 
@@ -431,7 +436,8 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         TransactionContext ctx = new R2dbcTransactionContext(null);
         Mono<T> work = Mono.defer(() -> callback.apply(ctx));
         return suspendConnection
-                ? work.contextWrite(c -> c.delete(CONNECTION_KEY).delete(ACTIVE_TRANSACTION_KEY))
+                ? work.contextWrite(c -> c.delete(CONNECTION_KEY).delete(ACTIVE_TRANSACTION_KEY)
+                        .put(PhysicalTransactionScope.CONTEXT_KEY, PhysicalTransactionScope.inactive()))
                 : work;
     }
 

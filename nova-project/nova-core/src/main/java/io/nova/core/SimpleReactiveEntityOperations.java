@@ -41,6 +41,7 @@ import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
 import io.nova.tx.ReactiveTransactionOperations;
+import io.nova.tx.PhysicalTransactionScope;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.util.context.ContextView;
@@ -444,7 +445,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     private Optional<PersistenceSession> currentSession(ContextView ctx) {
-        return ctx.hasKey(SESSION_KEY) ? Optional.of(ctx.get(SESSION_KEY)) : Optional.empty();
+        return resolveSession(ctx);
+    }
+
+    static Optional<PersistenceSession> resolveSession(ContextView ctx) {
+        if (!ctx.hasKey(SESSION_KEY)) {
+            return Optional.empty();
+        }
+        Object session = ctx.get(SESSION_KEY);
+        if (session instanceof SessionBinding binding) {
+            return binding.resolve(ctx);
+        }
+        return session instanceof PersistenceSession persistenceSession
+                ? Optional.of(persistenceSession)
+                : Optional.empty();
     }
 
     /**
@@ -3323,13 +3337,54 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 // 새 세션·flush를 만들지 않는다(최외곽 스코프만 flush를 소유).
                 return callback.apply(this);
             }
-            PersistenceSession session = new PersistenceSession();
-            // flush를 콜백의 마지막 단계로 끼워 tx 레이어의 commit이 그 뒤에 붙게 한다 = flush-before-commit.
-            return callback.apply(this)
-                    .flatMap(result -> flush(session).thenReturn(result))
-                    .switchIfEmpty(Mono.defer(() -> flush(session).then(Mono.empty())))
-                    .contextWrite(context -> context.put(SESSION_KEY, session));
+            SessionBinding binding = new SessionBinding(this);
+            Mono<R> work = callback.apply(this).contextWrite(context -> context.put(SESSION_KEY, binding));
+            return hasActivePhysicalScope(ctx)
+                    ? work
+                    : work.flatMap(result -> binding.flushLegacy().thenReturn(result))
+                            .switchIfEmpty(Mono.defer(() -> binding.flushLegacy().then(Mono.empty())));
         }));
+    }
+
+    private static boolean hasActivePhysicalScope(ContextView ctx) {
+        return ctx.hasKey(PhysicalTransactionScope.CONTEXT_KEY)
+                && ctx.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY).isActive();
+    }
+
+    private static final class SessionBinding {
+        private final SimpleReactiveEntityOperations operations;
+        private final Object resourceKey = new Object();
+        private PersistenceSession legacySession;
+
+        private SessionBinding(SimpleReactiveEntityOperations operations) {
+            this.operations = operations;
+        }
+
+        private Optional<PersistenceSession> resolve(ContextView ctx) {
+            if (!ctx.hasKey(PhysicalTransactionScope.CONTEXT_KEY)) {
+                return Optional.of(legacySession());
+            }
+            PhysicalTransactionScope scope = ctx.get(PhysicalTransactionScope.CONTEXT_KEY);
+            if (!scope.isActive()) {
+                return Optional.empty();
+            }
+            return Optional.of(scope.getOrCreateResource(resourceKey, () -> {
+                PersistenceSession session = new PersistenceSession();
+                scope.beforeCommit(() -> operations.flush(session));
+                return session;
+            }));
+        }
+
+        private synchronized PersistenceSession legacySession() {
+            if (legacySession == null) {
+                legacySession = new PersistenceSession();
+            }
+            return legacySession;
+        }
+
+        private Mono<Void> flushLegacy() {
+            return legacySession == null ? Mono.empty() : operations.flush(legacySession);
+        }
     }
 
     @Override
