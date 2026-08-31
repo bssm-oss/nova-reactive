@@ -95,6 +95,10 @@ import java.util.List;
 
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
+import jakarta.persistence.AttributeOverride;
+import jakarta.persistence.Basic;
+import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
@@ -109,6 +113,7 @@ import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
 import jakarta.persistence.EnumType;
+import io.nova.annotation.Json;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -936,7 +941,46 @@ class EntityMetadataFactoryTest {
         assertEquals(List.of("id", "address_street", "address_geo_country"),
                 metadata.properties().stream().map(PersistentProperty::columnName).toList());
         assertEquals(AccessType.PROPERTY, metadata.findProperty("address.geo.country").orElseThrow()
-                .embeddedHostAccessPath().get(0).accessType());
+                .embeddedHostPath().get(0).accessType());
+    }
+
+    @Test
+    void doesNotImplicitlyEmbedExplicitBasicEmbeddableMappings() {
+        EntityMetadata<ExplicitBasicEmbeddableEntity> metadata =
+                factory.getEntityMetadata(ExplicitBasicEmbeddableEntity.class);
+
+        assertTrue(metadata.findProperty("converted").isPresent());
+        assertTrue(metadata.findProperty("json").isPresent());
+        assertTrue(metadata.findProperty("basic").isPresent());
+        assertTrue(metadata.findProperty("converted.street").isEmpty());
+        assertTrue(metadata.findProperty("json.street").isEmpty());
+        assertTrue(metadata.findProperty("basic.street").isEmpty());
+    }
+
+    @Test
+    void propagatesNestedAttributeOverridesThroughImplicitEmbeddables() {
+        EntityMetadata<ImplicitEmbeddedOverrideEntity> metadata =
+                factory.getEntityMetadata(ImplicitEmbeddedOverrideEntity.class);
+
+        assertEquals("nation", metadata.findProperty("address.geo.country").orElseThrow().columnName());
+    }
+
+    @Test
+    void rejectsUnmatchedNestedAttributeOverridesOnImplicitEmbeddables() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(InvalidImplicitEmbeddedOverrideEntity.class));
+
+        assertTrue(exception.getMessage().contains("@AttributeOverride"));
+        assertTrue(exception.getMessage().contains("geo.zip"));
+    }
+
+    @Test
+    void rejectsDuplicateNestedAttributeOverridesOnImplicitEmbeddables() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DuplicateImplicitEmbeddedOverrideEntity.class));
+
+        assertTrue(exception.getMessage().contains("duplicate @AttributeOverride"));
+        assertTrue(exception.getMessage().contains("geo.country"));
     }
 
     @Test
@@ -1633,6 +1677,56 @@ class EntityMetadataFactoryTest {
         public void setAddress(ImplicitAddress address) {
             this.address = address;
         }
+    }
+
+    @Entity
+    static class ExplicitBasicEmbeddableEntity {
+        @Id
+        private Long id;
+        @Convert(converter = ImplicitAddressConverter.class)
+        private ImplicitAddress converted;
+        @Json
+        private ImplicitAddress json;
+        @Basic
+        private ImplicitAddress basic;
+    }
+
+    static class ImplicitAddressConverter
+            implements jakarta.persistence.AttributeConverter<ImplicitAddress, String> {
+        @Override
+        public String convertToDatabaseColumn(ImplicitAddress value) {
+            return value == null ? null : value.street;
+        }
+
+        @Override
+        public ImplicitAddress convertToEntityAttribute(String value) {
+            return value == null ? null : new ImplicitAddress();
+        }
+    }
+
+    @Entity
+    static class ImplicitEmbeddedOverrideEntity {
+        @Id
+        private Long id;
+        @AttributeOverride(name = "geo.country", column = @Column(name = "nation"))
+        private ImplicitAddress address;
+    }
+
+    @Entity
+    static class InvalidImplicitEmbeddedOverrideEntity {
+        @Id
+        private Long id;
+        @AttributeOverride(name = "geo.zip", column = @Column(name = "postal_code"))
+        private ImplicitAddress address;
+    }
+
+    @Entity
+    static class DuplicateImplicitEmbeddedOverrideEntity {
+        @Id
+        private Long id;
+        @AttributeOverride(name = "geo.country", column = @Column(name = "nation"))
+        @AttributeOverride(name = "geo.country", column = @Column(name = "country_code"))
+        private ImplicitAddress address;
     }
 
     static class BaseListener {

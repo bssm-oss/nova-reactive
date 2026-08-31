@@ -92,6 +92,14 @@ class EntityListenersTest {
         assertTrue(exception.getMessage().contains("multiple callback methods"));
     }
 
+    @Test
+    void permitsListenerRegistrationsThatShareAnInheritedCallback() {
+        EntityMetadata<SharedInheritedListenerEntity> metadata =
+                factory.getEntityMetadata(SharedInheritedListenerEntity.class);
+
+        assertEquals(2, metadata.listenerCallbacks().prePersist().size());
+    }
+
     @Entity
     @EntityListeners(DuplicatePhaseListener.class)
     static class DuplicateListenerEntity {
@@ -107,5 +115,24 @@ class EntityListenersTest {
         @PrePersist
         void second(DuplicateListenerEntity entity) {
         }
+    }
+
+    @Entity
+    @EntityListeners({FirstInheritedListener.class, SecondInheritedListener.class})
+    static class SharedInheritedListenerEntity {
+        @Id
+        private Long id;
+    }
+
+    static class InheritedListener {
+        @PrePersist
+        void audit(SharedInheritedListenerEntity entity) {
+        }
+    }
+
+    static class FirstInheritedListener extends InheritedListener {
+    }
+
+    static class SecondInheritedListener extends InheritedListener {
     }
 }

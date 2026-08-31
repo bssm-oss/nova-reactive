@@ -250,6 +250,40 @@ class MetamodelProcessorTest {
     }
 
     @Test
+    @DisplayName("명시적 basic mapping이 붙은 @Embeddable member는 implicit embedded로 평탄화하지 않는다")
+    void doesNotFlattenExplicitBasicEmbeddableMappings() {
+        Source entity = new Source("fixtures.ExplicitBasicCustomer", """
+                package fixtures;
+                import io.nova.annotation.Json;
+                import jakarta.persistence.Basic;
+                import jakarta.persistence.Convert;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity public class ExplicitBasicCustomer {
+                    @Id private Long id;
+                    @Convert(disableConversion = true) private Address converted;
+                    @Json private Address json;
+                    @Basic private Address basic;
+                }""");
+        Source address = new Source("fixtures.Address", """
+                package fixtures;
+                import jakarta.persistence.Embeddable;
+                @Embeddable public class Address { private String street; }""");
+
+        Compilation compilation = ProcessorRunner.compile(entity, address);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.ExplicitBasicCustomer_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("converted = \"converted\";"));
+        assertTrue(generated.contains("json = \"json\";"));
+        assertTrue(generated.contains("basic = \"basic\";"));
+        assertFalse(generated.contains("converted_street"));
+        assertFalse(generated.contains("json_street"));
+        assertFalse(generated.contains("basic_street"));
+    }
+
+    @Test
     @DisplayName("@OneToMany inverse property는 컬럼이 없으므로 상수 발행 대상에서 제외된다")
     void skipsOneToManyInverseFields() {
         Source author = new Source(
