@@ -1,5 +1,7 @@
 package io.nova.metadata;
 
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.Column;
 import jakarta.persistence.ElementCollection;
@@ -152,6 +154,16 @@ class EntityMetadataFactoryMapCollectionTest {
         assertEquals(2, info.embeddableColumns().size());
         assertEquals("amount", info.embeddableColumns().get(0).columnName());
         assertEquals("currency", info.embeddableColumns().get(1).columnName());
+    }
+
+    @Test
+    void propertyAccessEmbeddableKeyAndValueKeepTheirOverrideNamespacesSeparate() {
+        ElementCollectionInfo info = info(PropertyAccessOverriddenKeyAndValueMap.class, "routes");
+
+        assertEquals("from_col", info.mapKey().embeddableKeyColumns().get(0).columnName());
+        assertEquals("to_col", info.mapKey().embeddableKeyColumns().get(1).columnName());
+        assertEquals("fare_amount", info.embeddableColumns().get(0).columnName());
+        assertEquals("fare_currency", info.embeddableColumns().get(1).columnName());
     }
 
     @Test
@@ -442,6 +454,26 @@ class EntityMetadataFactoryMapCollectionTest {
         @AttributeOverride(name = "key.origin", column = @Column(name = "from_col"))
         @AttributeOverride(name = "key.dest", column = @Column(name = "to_col"))
         Map<Leg, Fare> routes;
+    }
+
+    @Entity
+    @Table(name = "property_access_overridden_key_and_value_map")
+    @Access(AccessType.PROPERTY)
+    static class PropertyAccessOverriddenKeyAndValueMap {
+        private Long id;
+        private Map<Leg, Fare> routes;
+
+        @Id
+        Long getId() { return id; }
+        void setId(Long id) { this.id = id; }
+
+        @ElementCollection
+        @AttributeOverride(name = "key.origin", column = @Column(name = "from_col"))
+        @AttributeOverride(name = "key.dest", column = @Column(name = "to_col"))
+        @AttributeOverride(name = "amount", column = @Column(name = "fare_amount"))
+        @AttributeOverride(name = "currency", column = @Column(name = "fare_currency"))
+        Map<Leg, Fare> getRoutes() { return routes; }
+        void setRoutes(Map<Leg, Fare> routes) { this.routes = routes; }
     }
 
     @Entity

@@ -1852,16 +1852,13 @@ public final class EntityMetadataFactory {
                 }
                 Convert conversionOverride = conversionOverrides.remove(component.name());
                 Column override = columnOverrides.get(component.name());
-                PersistentProperty property = createDescriptorProperty(component, conversionOverride, embeddedId);
+                PersistentProperty property = createDescriptorProperty(component, conversionOverride, embeddedId, override);
                 String column = override != null && !override.name().isBlank()
                         ? override.name() : columnPrefix + property.columnName();
                 String propertyName = hostPath.stream().map(PersistentAttributeAccess::name)
                         .collect(java.util.stream.Collectors.joining(".")) + "." + component.name();
                 PersistentProperty mapped = property.withPropertyName(propertyName).withColumnName(column)
                         .withEmbeddedHostAccessPath(hostPath);
-                if (override != null && component.field() != null) {
-                    mapped.withColumnDdlDefinition(columnDdlDefinition(override, component.field()));
-                }
                 result.add(mapped);
             }
             if (!conversionOverrides.isEmpty()) {
@@ -2165,16 +2162,22 @@ public final class EntityMetadataFactory {
      * caused legal JPA annotations to be silently ignored.
      */
     private PersistentProperty createDescriptorProperty(PersistentAttributeAccess attribute) {
-        return createDescriptorProperty(attribute, null, false);
+        return createDescriptorProperty(attribute, null, false, null);
     }
 
     private PersistentProperty createDescriptorProperty(
             PersistentAttributeAccess attribute, Convert conversionOverride) {
-        return createDescriptorProperty(attribute, conversionOverride, false);
+        return createDescriptorProperty(attribute, conversionOverride, false, null);
     }
 
     private PersistentProperty createDescriptorProperty(
             PersistentAttributeAccess attribute, Convert conversionOverride, boolean suppressAutoApply) {
+        return createDescriptorProperty(attribute, conversionOverride, suppressAutoApply, null);
+    }
+
+    private PersistentProperty createDescriptorProperty(
+            PersistentAttributeAccess attribute, Convert conversionOverride, boolean suppressAutoApply,
+            Column effectiveColumn) {
         ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
         if (manyToOne != null) {
             JoinColumn join = attribute.annotation(JoinColumn.class);
@@ -2203,7 +2206,7 @@ public final class EntityMetadataFactory {
                     manyToOne.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(manyToOne.cascade())),
                     "", compositeForeignKey);
         }
-        Column column = attribute.annotation(Column.class);
+        Column column = effectiveColumn != null ? effectiveColumn : attribute.annotation(Column.class);
         GeneratedValue generated = attribute.annotation(GeneratedValue.class);
         boolean id = attribute.isAnnotationPresent(Id.class);
         boolean version = attribute.isAnnotationPresent(Version.class);
@@ -5072,8 +5075,9 @@ public final class EntityMetadataFactory {
         Map<String, String> overrides = new java.util.HashMap<>();
         String prefix = key ? "key." : "";
         for (AttributeOverride override : collection.annotationsByType(AttributeOverride.class)) {
-            if (key == override.name().startsWith(prefix)) {
-                overrides.put(key ? override.name().substring(prefix.length()) : override.name(), override.column().name());
+            boolean keyOverride = override.name().startsWith("key.");
+            if ((key && keyOverride) || (!key && !keyOverride)) {
+                overrides.put(key ? override.name().substring("key.".length()) : override.name(), override.column().name());
             }
         }
         java.util.Set<String> names = new java.util.HashSet<>();
@@ -5125,19 +5129,49 @@ public final class EntityMetadataFactory {
 
     private ElementValueMapping resolveDescriptorElementValueMapping(
             PersistentAttributeAccess attribute, Class<?> type, String selector, String location) {
+        Class<?> wrapped = wrapPrimitiveType(type);
         JpaConverterDescriptor explicit = attribute.getter() != null
-                ? explicitJpaConverter(attribute.getter(), wrapPrimitiveType(type), selector, location, null)
-                : explicitJpaConverter(attribute.field(), wrapPrimitiveType(type), selector, location, null);
-        if (explicit != null) return new ElementValueMapping(explicit.columnType(), explicit.instantiate());
+                ? explicitJpaConverter(attribute.getter(), wrapped, selector, location, null)
+                : explicitJpaConverter(attribute.field(), wrapped, selector, location, null);
         Enumerated enumerated = attribute.annotation(Enumerated.class);
-        if (type.isEnum()) {
-            EnumType enumType = enumerated == null ? inferredEnumType(type) : enumerated.value();
-            EnumMapping mapping = resolveEnumMapping(type, enumType);
-            return new ElementValueMapping(mapping.customColumnType() != null ? mapping.customColumnType()
-                    : enumType == EnumType.STRING ? String.class : Integer.class, mapping.converter());
-        }
         Temporal temporal = attribute.annotation(Temporal.class);
+        boolean json = attribute.isAnnotationPresent(Json.class);
+        AttributeConverter<?, ?> registered = converters.get(type);
+        if (json) {
+            if (enumerated != null || temporal != null || explicit != null || registered != null) {
+                throw new IllegalStateException(location + " cannot combine @Json with @Enumerated/@Temporal/@Convert");
+            }
+            return new ElementValueMapping(String.class,
+                    castConverter(new JsonAttributeConverter(jsonCodec, type)));
+        }
+        if (enumerated != null) {
+            if (!type.isEnum()) {
+                throw new IllegalArgumentException(location + " is annotated with @Enumerated but its type "
+                        + type.getName() + " is not an enum");
+            }
+            if (explicit != null || temporal != null || registered != null) {
+                throw new IllegalStateException(location + " cannot combine @Enumerated with @Convert/@Temporal");
+            }
+            EnumMapping mapping = resolveEnumMapping(type, enumerated.value());
+            return new ElementValueMapping(mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumerated.value() == EnumType.STRING ? String.class : Integer.class, mapping.converter());
+        }
+        if (explicit != null) {
+            if (temporal != null || registered != null) {
+                throw new IllegalStateException(location + " cannot combine @Convert with @Temporal or a registered AttributeConverter");
+            }
+            return new ElementValueMapping(explicit.columnType(), explicit.instantiate());
+        }
+        boolean utilDate = type == java.util.Date.class;
+        boolean calendar = java.util.Calendar.class.isAssignableFrom(type);
         if (temporal != null) {
+            if (registered != null) {
+                throw new IllegalStateException(location + " cannot combine @Temporal with a registered AttributeConverter");
+            }
+            if (!utilDate && !calendar) {
+                throw new IllegalArgumentException(location + " is annotated with @Temporal but its type "
+                        + type.getName() + " is not java.util.Date or java.util.Calendar");
+            }
             Class<?> stored = switch (temporal.value()) {
                 case DATE -> java.time.LocalDate.class;
                 case TIME -> java.time.LocalTime.class;
@@ -5145,8 +5179,28 @@ public final class EntityMetadataFactory {
             };
             return new ElementValueMapping(stored, castConverter(new TemporalAttributeConverter(type, temporal.value())));
         }
-        ElementValueMapping storage = resolveBasicStorageMapping(wrapPrimitiveType(type));
-        return storage.converter() == null ? new ElementValueMapping(wrapPrimitiveType(type), null) : storage;
+        if (utilDate || calendar) {
+            throw new IllegalArgumentException(location + " maps a java.util.Date/Calendar @ElementCollection element but is missing @Temporal");
+        }
+        if (registered != null) {
+            return new ElementValueMapping(wrapped, castConverter(registered));
+        }
+        boolean disabled = attribute.getter() != null
+                ? conversionDisabled(attribute.getter(), selector, null)
+                : conversionDisabled(attribute.field(), selector, null);
+        if (!disabled) {
+            JpaConverterDescriptor automatic = uniqueJpaConverter(wrapped, true, location);
+            if (automatic != null) {
+                return new ElementValueMapping(automatic.columnType(), automatic.instantiate());
+            }
+        }
+        if (type.isEnum()) {
+            EnumType enumType = inferredEnumType(type);
+            EnumMapping mapping = resolveEnumMapping(type, enumType);
+            return new ElementValueMapping(mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class, mapping.converter());
+        }
+        return resolveBasicStorageMapping(wrapped);
     }
 
     /**
