@@ -13,6 +13,7 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 | [JPA compatibility](jpa-compatibility.md) | `jakarta.persistence` feature matrix — supported / reactive-equivalent / fail-fast |
 | [Queries](queries.md)                 | CRUD, Query DSL, Updater, Projection, Aggregations, Page/Slice, Cursor, NativeQuery, CompiledQuery |
 | [Transactions](transactions.md)       | `inTransaction`, Propagation / Isolation / readOnly, pessimistic locking, retry  |
+| [Caching](caching.md)                 | `nova-cache`, transaction isolation, invalidation, and consistency trade-offs    |
 | [Dialects & Schema](dialects.md)      | `Dialect` interface, the five bundled dialects, `SchemaGenerator`, alter helpers |
 | [Spring](spring.md)                   | Spring Boot starter (auto-detect, properties), `nova-spring-data` repositories   |
 | [Observability](observability.md)     | `SqlExecutionListener`, Micrometer adapter, pool reachability probe              |
