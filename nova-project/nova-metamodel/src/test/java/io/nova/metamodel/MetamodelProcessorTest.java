@@ -418,6 +418,60 @@ class MetamodelProcessorTest {
                 () -> "missing EmbeddedId number leaf in:\n" + generated);
     }
 
+    @Test
+    @DisplayName("PROPERTY getter @Embedded의 mutable leaf는 host getter 이름으로 평탄화된다")
+    void flattensMutablePropertyEmbeddedGetter() {
+        Source entity = new Source(
+                "fixtures.PropertyCustomer",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Embedded;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+
+                @Entity
+                @Access(AccessType.PROPERTY)
+                public class PropertyCustomer {
+                    private Long key;
+                    private Address stored;
+
+                    @Id public Long getId() { return key; }
+                    public void setId(Long id) { key = id; }
+
+                    @Embedded public Address getAddress() { return stored; }
+                    public void setAddress(Address address) { stored = address; }
+                }
+                """);
+        Source address = new Source(
+                "fixtures.Address",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Embeddable;
+
+                @Embeddable
+                @Access(AccessType.PROPERTY)
+                public class Address {
+                    private String cityValue;
+                    public String getCity() { return cityValue; }
+                    public void setCity(String city) { cityValue = city; }
+                }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(entity, address);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.PropertyCustomer_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String address_city = \"address.city\";"),
+                () -> "missing getter embedded leaf in:\n" + generated);
+    }
+
     @Nested
     @DisplayName("오류 경로")
     class ErrorCases {
