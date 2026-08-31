@@ -1,9 +1,18 @@
 package io.nova.spring.data.derived;
 
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
 import io.nova.query.Slice;
 import io.nova.query.Sort;
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.MappedSuperclass;
+import jakarta.persistence.Transient;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -30,6 +39,46 @@ class DerivedQueryParserTest {
         boolean active;
         Instant createdAt;
         int loginCount;
+    }
+
+    private static final EntityMetadataFactory METADATA_FACTORY =
+            new EntityMetadataFactory(new DefaultNamingStrategy());
+    private static final EntityMetadata<Account> ACCOUNT_METADATA =
+            METADATA_FACTORY.getEntityMetadata(Account.class);
+
+
+    @MappedSuperclass
+    @Access(AccessType.PROPERTY)
+    static class LogicalPropertyBase {
+        private String inheritedName;
+
+        public String getInheritedName() {
+            return inheritedName;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static final class LogicalPropertyAccount extends LogicalPropertyBase {
+        private Long id;
+        private String getterOnly;
+        @SuppressWarnings("unused")
+        private String inactiveField;
+        private String temporary;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public String getGetterOnly() {
+            return getterOnly;
+        }
+
+        @Transient
+        public String getTemporary() {
+            return temporary;
+        }
     }
 
     interface AccountRepository {
@@ -121,7 +170,19 @@ class DerivedQueryParserTest {
         Flux<Account> findFirst2ByActiveTrue(Pageable pageable);
     }
 
-    private final DerivedQueryParser parser = new DerivedQueryParser(Account.class);
+    private final DerivedQueryParser parser = new DerivedQueryParser(ACCOUNT_METADATA);
+    private final DerivedQueryParser logicalPropertiesParser = new DerivedQueryParser(
+            METADATA_FACTORY.getEntityMetadata(LogicalPropertyAccount.class));
+
+    interface LogicalPropertyRepository {
+        Flux<LogicalPropertyAccount> findByGetterOnly(String value);
+
+        Flux<LogicalPropertyAccount> findByInheritedName(String value);
+
+        Flux<LogicalPropertyAccount> findByInactiveField(String value);
+
+        Flux<LogicalPropertyAccount> findByTemporary(String value);
+    }
 
     private Method method(String name, Class<?>... params) {
         try {
@@ -451,6 +512,28 @@ class DerivedQueryParserTest {
             // "EmailAddress"는 "Email" + "Address"로 잘못 잘리면 안 된다.
             DerivedQuery q = parse("findByEmailAddress", String.class);
             assertEquals("emailAddress", q.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        @DisplayName("metadata의 getter-only 및 상속 logical property를 사용한다")
+        void getterOnlyAndInheritedLogicalPropertiesParse() throws NoSuchMethodException {
+            DerivedQuery getterOnly = logicalPropertiesParser.tryParse(
+                    LogicalPropertyRepository.class.getMethod("findByGetterOnly", String.class)).orElseThrow();
+            DerivedQuery inherited = logicalPropertiesParser.tryParse(
+                    LogicalPropertyRepository.class.getMethod("findByInheritedName", String.class)).orElseThrow();
+
+            assertEquals("getterOnly", getterOnly.orGroups().get(0).get(0).propertyName());
+            assertEquals("inheritedName", inherited.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        @DisplayName("metadata에서 제외된 field와 Transient getter를 property로 허용하지 않는다")
+        void inactiveFieldAndTransientGetterAreRejected() throws NoSuchMethodException {
+            Method inactive = LogicalPropertyRepository.class.getMethod("findByInactiveField", String.class);
+            Method temporary = LogicalPropertyRepository.class.getMethod("findByTemporary", String.class);
+
+            assertThrows(IllegalArgumentException.class, () -> logicalPropertiesParser.tryParse(inactive));
+            assertThrows(IllegalArgumentException.class, () -> logicalPropertiesParser.tryParse(temporary));
         }
 
         @Test

@@ -10,6 +10,9 @@ import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
 import io.nova.fetch.FetchGroup;
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadataFactory;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -31,13 +34,20 @@ class NovaRepositoryFactoryBeanTest {
 
     static final class Account {
         final long id;
+        final String name;
 
         Account(long id) {
             this.id = id;
+            this.name = "";
         }
     }
 
     interface AccountRepository extends ReactiveCrudRepository<Account, Long> {
+        Flux<Account> findByName(String name);
+    }
+
+    private static EntityMetadataFactory metadataFactory() {
+        return new EntityMetadataFactory(new DefaultNamingStrategy());
     }
 
     @Test
@@ -45,6 +55,7 @@ class NovaRepositoryFactoryBeanTest {
         StubEntityOperations operations = new StubEntityOperations();
         NovaRepositoryFactoryBean factoryBean = new NovaRepositoryFactoryBean(AccountRepository.class);
         factoryBean.setEntityOperations(operations);
+        factoryBean.setEntityMetadataFactory(metadataFactory());
         factoryBean.afterPropertiesSet();
 
         Object proxy = factoryBean.getObject();
@@ -74,11 +85,47 @@ class NovaRepositoryFactoryBeanTest {
         StubEntityOperations operations = new StubEntityOperations();
         NovaRepositoryFactoryBean factoryBean = new NovaRepositoryFactoryBean(AccountRepository.class);
         factoryBean.setEntityOperations(operations);
+        factoryBean.setEntityMetadataFactory(metadataFactory());
         factoryBean.afterPropertiesSet();
 
         Object first = factoryBean.getObject();
         Object second = factoryBean.getObject();
         assertSame(first, second, "factory bean must return same proxy instance for singletons");
+    }
+
+    @Test
+    void afterPropertiesSetWithoutMetadataFactoryThrows() {
+        NovaRepositoryFactoryBean factoryBean = new NovaRepositoryFactoryBean(AccountRepository.class);
+        factoryBean.setEntityOperations(new StubEntityOperations());
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, factoryBean::afterPropertiesSet);
+        assertTrue(exception.getMessage().contains("No unique EntityMetadataFactory"));
+    }
+
+    @Test
+    void afterPropertiesSetWithNonuniqueMetadataFactoriesThrows() {
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("firstMetadataFactory", metadataFactory());
+        beanFactory.addBean("secondMetadataFactory", metadataFactory());
+        NovaRepositoryFactoryBean factoryBean = new NovaRepositoryFactoryBean(AccountRepository.class);
+        factoryBean.setEntityOperations(new StubEntityOperations());
+        factoryBean.setBeanFactory(beanFactory);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, factoryBean::afterPropertiesSet);
+        assertTrue(exception.getMessage().contains("No unique EntityMetadataFactory"));
+    }
+
+    @Test
+    void explicitlyWiredMetadataFactoryBuildsDerivedRepository() {
+        EntityMetadataFactory metadataFactory = metadataFactory();
+        NovaRepositoryFactoryBean factoryBean = new NovaRepositoryFactoryBean(AccountRepository.class);
+        factoryBean.setEntityOperations(new StubEntityOperations());
+        factoryBean.setEntityMetadataFactory(metadataFactory);
+        factoryBean.afterPropertiesSet();
+
+        AccountRepository repository = (AccountRepository) factoryBean.getObject();
+        StepVerifier.create(repository.findByName("Ada")).verifyComplete();
+        assertNotNull(metadataFactory.getEntityMetadata(Account.class).findProperty("name"));
     }
 
     @Test

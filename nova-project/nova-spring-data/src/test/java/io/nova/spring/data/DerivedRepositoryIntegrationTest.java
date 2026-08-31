@@ -2,6 +2,9 @@ package io.nova.spring.data;
 
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.Condition;
@@ -35,6 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * derived 경로로 정상 디스패치되어야 한다.
  */
 class DerivedRepositoryIntegrationTest {
+    private static final EntityMetadataFactory METADATA_FACTORY =
+            new EntityMetadataFactory(new DefaultNamingStrategy());
+
 
     static final class Account {
         Long id;
@@ -48,6 +54,9 @@ class DerivedRepositoryIntegrationTest {
             this.active = active;
         }
     }
+
+    private static final EntityMetadata<Account> ACCOUNT_METADATA =
+            METADATA_FACTORY.getEntityMetadata(Account.class);
 
     interface AccountRepository extends ReactiveCrudRepository<Account, Long> {
         Mono<Account> findByEmail(String email);
@@ -67,7 +76,8 @@ class DerivedRepositoryIntegrationTest {
     }
 
     private static AccountRepository newProxy(Operations operations) {
-        SimpleReactiveRepository handler = new SimpleReactiveRepository(Account.class, Long.class, operations);
+        SimpleReactiveRepository handler = new SimpleReactiveRepository(
+                Account.class, Long.class, operations, null, null, ACCOUNT_METADATA);
         return (AccountRepository) Proxy.newProxyInstance(
                 AccountRepository.class.getClassLoader(),
                 new Class<?>[]{AccountRepository.class},
@@ -181,7 +191,8 @@ class DerivedRepositoryIntegrationTest {
         interface OtherRepo extends ReactiveCrudRepository<Account, Long> {
             Mono<Account> totallyUnknownMethod(String x);
         }
-        SimpleReactiveRepository handler = new SimpleReactiveRepository(Account.class, Long.class, ops);
+        SimpleReactiveRepository handler = new SimpleReactiveRepository(
+                Account.class, Long.class, ops, null, null, ACCOUNT_METADATA);
         OtherRepo other = (OtherRepo) Proxy.newProxyInstance(
                 OtherRepo.class.getClassLoader(),
                 new Class<?>[]{OtherRepo.class},

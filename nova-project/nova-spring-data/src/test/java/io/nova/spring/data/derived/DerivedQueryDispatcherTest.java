@@ -2,6 +2,9 @@ package io.nova.spring.data.derived;
 
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadata;
+import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateRow;
 import io.nova.query.AggregateSpec;
 import io.nova.query.CompoundPredicate;
@@ -47,6 +50,11 @@ class DerivedQueryDispatcherTest {
         int loginCount;
     }
 
+    private static final EntityMetadataFactory METADATA_FACTORY =
+            new EntityMetadataFactory(new DefaultNamingStrategy());
+    private static final EntityMetadata<Account> ACCOUNT_METADATA =
+            METADATA_FACTORY.getEntityMetadata(Account.class);
+
     interface AccountRepository {
         Flux<Account> findByEmail(String email);
 
@@ -85,7 +93,7 @@ class DerivedQueryDispatcherTest {
     }
 
     private final CapturingOperations operations = new CapturingOperations();
-    private final DerivedQueries derived = new DerivedQueries(Account.class, operations);
+    private final DerivedQueries derived = new DerivedQueries(ACCOUNT_METADATA, operations);
 
     private Method method(String name, Class<?>... params) {
         try {
