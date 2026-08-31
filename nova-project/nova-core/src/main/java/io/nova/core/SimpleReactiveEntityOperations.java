@@ -350,20 +350,34 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     if (oldKey == null || java.util.Objects.equals(oldKey, toOneSnapshotValue(property, owner))) {
                         return Mono.empty();
                     }
-                    Object queryValue = property.isCompositeToOne() ? oldKey : property.toPropertyValue(oldKey);
-                    return this.<Object>exists((Class<Object>) (Class<?>) metadata.entityType(),
-                                    QuerySpec.empty().where(Criteria.eq(property.propertyName(), queryValue)))
-                            .flatMap(shared -> {
-                                if (shared) {
-                                    return Mono.empty();
-                                }
-                                EntityMetadata target = metadataFactory.getEntityMetadata(property.manyToOneTargetType());
-                                Object id = property.isCompositeToOne()
-                                        ? target.readIdValue(property.toOneForeignKey().assembleStub((List<Object>) oldKey))
-                                        : target.idProperty().toPropertyValue(oldKey);
-                                return findByIdInternal(target, id).flatMap(this::delete).then();
-                            });
+                    EntityMetadata target = metadataFactory.getEntityMetadata(property.manyToOneTargetType());
+                    Object id = property.isCompositeToOne()
+                            ? target.readIdValue(property.toOneForeignKey().assembleStub((List<Object>) oldKey))
+                            : target.idProperty().toPropertyValue(oldKey);
+                    return findByIdInternal(target, id)
+                            .flatMap(orphan -> owningOneToOneTargetIsShared(metadata, orphan)
+                                    .flatMap(shared -> shared ? Mono.empty() : delete(orphan).then()))
+                            .then();
                 }).then();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Mono<Boolean> owningOneToOneTargetIsShared(EntityMetadata<?> ownerMetadata, Object target) {
+        EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(target.getClass());
+        return Flux.fromIterable(ownerMetadata.manyToOneProperties())
+                .filter(PersistentProperty::owningOneToOne)
+                .filter(property -> property.manyToOneTargetType().isInstance(target))
+                .concatMap(property -> {
+                    Object queryValue = property.isCompositeToOne()
+                            ? property.toOneForeignKey().columns().stream()
+                                    .map(column -> column.readReferencedValue(target))
+                                    .toList()
+                            : targetMetadata.idProperty().read(target);
+                    return this.<Object>exists(
+                            (Class<Object>) (Class<?>) ownerMetadata.entityType(),
+                            QuerySpec.empty().where(Criteria.eq(property.propertyName(), queryValue)));
+                })
+                .any(Boolean.TRUE::equals);
     }
 
     /**
@@ -1931,22 +1945,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     if (oldKey == null || java.util.Objects.equals(oldKey, toOneSnapshotValue(property, owner))) {
                         return Mono.empty();
                     }
-                    Object queryValue = property.isCompositeToOne() ? oldKey : property.toPropertyValue(oldKey);
-                    return this.<Object>exists((Class<Object>) (Class<?>) metadata.entityType(),
-                                    QuerySpec.empty().where(Criteria.eq(property.propertyName(), queryValue)))
-                            .flatMap(shared -> {
-                                if (shared) {
-                                    return Mono.empty();
-                                }
-                                EntityMetadata target = metadataFactory.getEntityMetadata(property.manyToOneTargetType());
-                                Object id;
-                                if (property.isCompositeToOne()) {
-                                    id = target.readIdValue(property.toOneForeignKey().assembleStub((List<Object>) oldKey));
-                                } else {
-                                    id = target.idProperty().toPropertyValue(oldKey);
-                                }
-                                return findByIdInternal(target, id).flatMap(this::delete).then();
-                            });
+                    EntityMetadata target = metadataFactory.getEntityMetadata(property.manyToOneTargetType());
+                    Object id = property.isCompositeToOne()
+                            ? target.readIdValue(property.toOneForeignKey().assembleStub((List<Object>) oldKey))
+                            : target.idProperty().toPropertyValue(oldKey);
+                    return findByIdInternal(target, id)
+                            .flatMap(orphan -> owningOneToOneTargetIsShared(metadata, orphan)
+                                    .flatMap(shared -> shared ? Mono.empty() : delete(orphan).then()))
+                            .then();
                 }).then();
     }
 

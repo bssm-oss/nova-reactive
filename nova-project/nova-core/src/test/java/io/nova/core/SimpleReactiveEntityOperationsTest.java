@@ -3137,8 +3137,8 @@ class SimpleReactiveEntityOperationsTest {
         ONE_TO_ONE_REMOVAL_TRACE.clear();
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "target_id", 10L)));
-        executor.queryOneResults.addLast(NO_QUERY_ROW);
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 10L)));
+        executor.queryOneResults.addLast(NO_QUERY_ROW);
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, null);
 
