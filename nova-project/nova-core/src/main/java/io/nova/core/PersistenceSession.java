@@ -48,16 +48,18 @@ final class PersistenceSession {
 
         private final Object entity;
         private final EntityMetadata<?> metadata;
+        private final boolean loaded;
         private Map<String, Object> snapshot;
         private State state = State.MANAGED;
         // propertyName -> 컬렉션의 영속 baseline 정규 표현(ops가 만들어 넣는다: multiset Map / ordered List /
         // Map / FORCE_FULL). 키가 없으면 "아직 baseline 미캡처"(로드 hydration 전 등)다.
         private final Map<String, Object> collectionSnapshots = new LinkedHashMap<>();
 
-        private ManagedEntry(Object entity, EntityMetadata<?> metadata, Map<String, Object> snapshot) {
+        private ManagedEntry(Object entity, EntityMetadata<?> metadata, Map<String, Object> snapshot, boolean loaded) {
             this.entity = entity;
             this.metadata = metadata;
             this.snapshot = snapshot;
+            this.loaded = loaded;
         }
 
         Object entity() {
@@ -70,6 +72,10 @@ final class PersistenceSession {
 
         boolean isRemoved() {
             return state == State.REMOVED;
+        }
+
+        boolean loaded() {
+            return loaded;
         }
 
         void markRemoved() {
@@ -159,7 +165,7 @@ final class PersistenceSession {
         if (existing != null) {
             return (T) existing.entity();
         }
-        identityMap.put(key, new ManagedEntry(entity, metadata, buildSnapshot(metadata, entity)));
+        identityMap.put(key, new ManagedEntry(entity, metadata, buildSnapshot(metadata, entity), true));
         return entity;
     }
 
@@ -180,7 +186,7 @@ final class PersistenceSession {
             existing.refreshSnapshot();
             return;
         }
-        identityMap.put(key, new ManagedEntry(entity, metadata, buildSnapshot(metadata, entity)));
+        identityMap.put(key, new ManagedEntry(entity, metadata, buildSnapshot(metadata, entity), false));
     }
 
     /**

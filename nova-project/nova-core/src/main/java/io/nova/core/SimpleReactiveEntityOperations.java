@@ -1979,6 +1979,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             // null 컬렉션 = 이번 세션에서 이 관계를 관리하지 않음 → 건드리지 않는다(현행 reconcile과 동일 의미).
             return Mono.empty();
         }
+        if (entry.loaded() && !entry.hasCollectionSnapshot(property.propertyName())) {
+            // A partially hydrated managed row has no database baseline for an unrequested collection.
+            // Treat it as unloaded rather than as a detached full-replacement request.
+            return Mono.empty();
+        }
         if (property.oneToMany()) {
             // @OneToMany는 M2M/EC의 값-기반 최소 diff(collectionRepresentation/removedKeys/addedKeys)와 의미가
             // 달라(신규 child는 null id라 키가 없고, 잔존 child는 SQL 없이 자기 flushEntry가 처리) 별도 경로를 탄다.
@@ -3905,7 +3910,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.empty();
         }
         Predicate predicate = compositeToOnePredicate(idProperties, distinctTuples);
-        return findAllInternal(targetMetadata, QuerySpec.empty().where(predicate))
+        return Mono.deferContextual(contextView -> findAllInternal(targetMetadata, QuerySpec.empty().where(predicate))
+                .map(target -> manage(currentSession(contextView), target))
                 .collectList()
                 .doOnNext(targets -> {
                     Map<List<Object>, C> targetByTuple = new LinkedHashMap<>();
@@ -3924,7 +3930,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         }
                         // full == null(dangling FK): 기존 id-stub을 보존한다.
                     }
-                })
+                }))
                 .then();
     }
 
@@ -4567,7 +4573,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // child fetch는 내부 경로로만 수행해 cyclical 관계가 무한 재귀를 일으키지 않게 한다.
         // 호출자가 child entity의 추가 관계까지 자동으로 hydrate되길 원하면 명시적 FetchGroup을 별도로 추가해야 한다.
         List<Object> orderedParentIds = new ArrayList<>(parentIds);
-        return findAllInternal(childMetadata, querySpec)
+        QuerySpec finalQuerySpec = querySpec;
+        return Mono.deferContextual(contextView -> findAllInternal(childMetadata, finalQuerySpec)
+                .map(child -> manage(currentSession(contextView), child))
                 .collectList()
                 .flatMap(children -> {
                     if (spec.orderColumn() == null) {
@@ -4580,7 +4588,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     return sortChildrenByOrderColumn(childMetadata, spec, orderedParentIds, children)
                             .doOnNext(sorted -> assignChildrenToParents(parents, sorted, spec, fkProperty))
                             .then();
-                })
+                }))
                 .then();
     }
 
