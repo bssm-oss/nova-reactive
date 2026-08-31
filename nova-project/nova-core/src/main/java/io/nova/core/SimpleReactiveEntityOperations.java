@@ -3,6 +3,7 @@ package io.nova.core;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.FlushModeType;
 import jakarta.persistence.GenerationType;
+import jakarta.persistence.OrderBy;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.fetch.AnnotationFetchGroupBuilder;
 import io.nova.fetch.FetchGroup;
@@ -32,6 +33,7 @@ import io.nova.query.Projection;
 import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
 import io.nova.query.Slice;
+import io.nova.query.Sort;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
 import io.nova.sql.Dialect;
@@ -3982,8 +3984,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         return Mono.empty();
                     }
                     String targetIdName = targetMetadata.idProperty().propertyName();
-                    return findAllInternal(targetMetadata,
-                                    QuerySpec.empty().where(Criteria.in(targetIdName, new ArrayList<>(allTargetIds))))
+                    Sort orderBy = manyToManyOrderBy(property, targetMetadata, info.usesSet());
+                    QuerySpec targetQuery = QuerySpec.empty()
+                            .where(Criteria.in(targetIdName, new ArrayList<>(allTargetIds)));
+                    if (orderBy != null) {
+                        targetQuery = targetQuery.orderBy(orderBy);
+                    }
+                    return findAllInternal(targetMetadata, targetQuery)
                             .collectList()
                             .doOnNext(targets -> {
                                 Map<Object, Object> targetById = new LinkedHashMap<>();
@@ -3992,10 +3999,20 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                 }
                                 for (Map.Entry<Object, List<P>> entry : parentsById.entrySet()) {
                                     List<Object> resolved = new ArrayList<>();
-                                    for (Object targetId : targetIdsByOwner.getOrDefault(entry.getKey(), List.of())) {
-                                        Object target = targetById.get(targetId);
-                                        if (target != null) {
-                                            resolved.add(target);
+                                    if (orderBy == null) {
+                                        for (Object targetId : targetIdsByOwner.getOrDefault(entry.getKey(), List.of())) {
+                                            Object target = targetById.get(targetId);
+                                            if (target != null) {
+                                                resolved.add(target);
+                                            }
+                                        }
+                                    } else {
+                                        LinkedHashSet<Object> targetIds =
+                                                new LinkedHashSet<>(targetIdsByOwner.getOrDefault(entry.getKey(), List.of()));
+                                        for (Object target : targets) {
+                                            if (targetIds.contains(targetMetadata.idProperty().read(target))) {
+                                                resolved.add(target);
+                                            }
                                         }
                                     }
                                     for (P parent : entry.getValue()) {
@@ -4058,8 +4075,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         injectEmptyCollections(property, parents, info.usesSet());
                         return Mono.empty();
                     }
-                    return findAllInternal(targetMetadata,
-                                    QuerySpec.empty().where(compositeIdPredicate(targetMetadata, allTargetKeys)))
+                    Sort orderBy = manyToManyOrderBy(property, targetMetadata, info.usesSet());
+                    QuerySpec targetQuery = QuerySpec.empty()
+                            .where(compositeIdPredicate(targetMetadata, allTargetKeys));
+                    if (orderBy != null) {
+                        targetQuery = targetQuery.orderBy(orderBy);
+                    }
+                    return findAllInternal(targetMetadata, targetQuery)
                             .collectList()
                             .doOnNext(targets -> {
                                 Map<List<Object>, Object> targetByKey = new LinkedHashMap<>();
@@ -4068,10 +4090,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                 }
                                 for (Map.Entry<List<Object>, List<P>> entry : parentsByKey.entrySet()) {
                                     List<Object> resolved = new ArrayList<>();
-                                    for (List<Object> targetKey : targetKeysByOwner.getOrDefault(entry.getKey(), List.of())) {
-                                        Object target = targetByKey.get(targetKey);
-                                        if (target != null) {
-                                            resolved.add(target);
+                                    if (orderBy == null) {
+                                        for (List<Object> targetKey : targetKeysByOwner.getOrDefault(entry.getKey(), List.of())) {
+                                            Object target = targetByKey.get(targetKey);
+                                            if (target != null) {
+                                                resolved.add(target);
+                                            }
+                                        }
+                                    } else {
+                                        LinkedHashSet<List<Object>> targetKeys =
+                                                new LinkedHashSet<>(targetKeysByOwner.getOrDefault(entry.getKey(), List.of()));
+                                        for (Object target : targets) {
+                                            List<Object> targetKey =
+                                                    idComponentKey(targetMetadata, targetMetadata.readIdValue(target));
+                                            if (targetKeys.contains(targetKey)) {
+                                                resolved.add(target);
+                                            }
                                         }
                                     }
                                     for (P parent : entry.getValue()) {
@@ -4081,6 +4115,50 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             })
                             .then();
                 });
+    }
+
+    /**
+     * {@code @ManyToMany List}의 대상 엔티티 순서를 해석한다. Set은 순서 계약이 없으므로 기존 link-row
+     * reconstruction semantics를 유지한다. 빈 {@code @OrderBy}는 JPA 규약대로 모든 target id component의 ASC다.
+     */
+    private static Sort manyToManyOrderBy(
+            PersistentProperty property, EntityMetadata<?> targetMetadata, boolean usesSet) {
+        if (usesSet) {
+            return null;
+        }
+        OrderBy annotation = property.annotation(OrderBy.class);
+        if (annotation == null) {
+            return null;
+        }
+        String expression = annotation.value().trim();
+        List<Sort.Order> orders = new ArrayList<>();
+        if (expression.isEmpty()) {
+            for (PersistentProperty idProperty : targetMetadata.idProperties()) {
+                orders.add(Sort.Order.asc(idProperty.propertyName()));
+            }
+            return Sort.by(orders.toArray(new Sort.Order[0]));
+        }
+        for (String term : expression.split(",", -1)) {
+            String[] tokens = term.trim().split("\\s+");
+            if (term.isBlank() || tokens.length > 2) {
+                throw new IllegalArgumentException("Invalid @OrderBy value '" + annotation.value()
+                        + "' on " + property.propertyName());
+            }
+            String propertyName = tokens[0];
+            if (targetMetadata.findProperty(propertyName).isEmpty()) {
+                throw new IllegalArgumentException("@OrderBy property '" + propertyName + "' on "
+                        + property.propertyName() + " does not exist on " + targetMetadata.entityType().getName());
+            }
+            if (tokens.length == 1 || tokens[1].equalsIgnoreCase("ASC")) {
+                orders.add(Sort.Order.asc(propertyName));
+            } else if (tokens[1].equalsIgnoreCase("DESC")) {
+                orders.add(Sort.Order.desc(propertyName));
+            } else {
+                throw new IllegalArgumentException("Invalid @OrderBy direction '" + tokens[1]
+                        + "' on " + property.propertyName());
+            }
+        }
+        return Sort.by(orders.toArray(new Sort.Order[0]));
     }
 
     /**

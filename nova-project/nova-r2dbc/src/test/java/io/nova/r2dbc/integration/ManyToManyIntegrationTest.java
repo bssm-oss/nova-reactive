@@ -7,6 +7,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
+import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
@@ -14,7 +15,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
-import java.util.LinkedHashSet;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -106,6 +108,39 @@ class ManyToManyIntegrationTest {
                 .verifyComplete();
     }
 
+    @Test
+    void listOrderByRanksOwningAndInverseBucketsIndependently() {
+        Course alpha = support.operations().save(new Course("Alpha")).block();
+        Course beta = support.operations().save(new Course("Beta")).block();
+
+        Student ada = new Student("Ada");
+        ada.getCourses().add(alpha); // link insertion is the opposite of title DESC.
+        ada.getCourses().add(beta);
+        Long adaId = support.operations().save(ada).map(Student::getId).block();
+        Student zoe = new Student("Zoe");
+        zoe.getCourses().add(beta);
+        support.operations().save(zoe).block();
+
+        StepVerifier.create(support.operations().findById(Student.class, adaId))
+                .assertNext(student -> assertEquals(List.of("Beta", "Alpha"),
+                        student.getCourses().stream().map(Course::getTitle).toList()))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findAll(Student.class, io.nova.query.QuerySpec.empty()).collectList())
+                .assertNext(students -> assertEquals(List.of("Beta", "Alpha"),
+                        students.stream().filter(student -> student.getName().equals("Ada")).findFirst().orElseThrow()
+                                .getCourses().stream().map(Course::getTitle).toList()))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findById(Course.class, beta.getId()))
+                .assertNext(course -> assertEquals(List.of("Zoe", "Ada"),
+                        course.getStudents().stream().map(Student::getName).toList()))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findAll(Course.class, io.nova.query.QuerySpec.empty()).collectList())
+                .assertNext(courses -> assertEquals(List.of("Zoe", "Ada"),
+                        courses.stream().filter(course -> course.getTitle().equals("Beta")).findFirst().orElseThrow()
+                                .getStudents().stream().map(Student::getName).toList()))
+                .verifyComplete();
+    }
+
     @Entity
     @Table(name = "student")
     public static class Student {
@@ -118,7 +153,8 @@ class ManyToManyIntegrationTest {
         @JoinTable(name = "student_course",
                 joinColumns = @JoinColumn(name = "student_id"),
                 inverseJoinColumns = @JoinColumn(name = "course_id"))
-        private Set<Course> courses = new LinkedHashSet<>();
+        @OrderBy("title DESC, id ASC")
+        private List<Course> courses = new ArrayList<>();
 
         public Student() {
         }
@@ -135,7 +171,7 @@ class ManyToManyIntegrationTest {
             return name;
         }
 
-        public Set<Course> getCourses() {
+        public List<Course> getCourses() {
             return courses;
         }
     }
@@ -149,7 +185,8 @@ class ManyToManyIntegrationTest {
         private String title;
 
         @ManyToMany(mappedBy = "courses")
-        private Set<Student> students = new LinkedHashSet<>();
+        @OrderBy("name DESC, id ASC")
+        private List<Student> students = new ArrayList<>();
 
         public Course() {
         }
@@ -166,7 +203,7 @@ class ManyToManyIntegrationTest {
             return title;
         }
 
-        public Set<Student> getStudents() {
+        public List<Student> getStudents() {
             return students;
         }
     }

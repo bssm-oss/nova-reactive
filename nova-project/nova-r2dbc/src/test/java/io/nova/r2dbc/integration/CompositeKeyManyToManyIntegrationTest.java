@@ -10,6 +10,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
+import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.JoinTableDefinition;
@@ -22,7 +23,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -183,6 +186,35 @@ class CompositeKeyManyToManyIntegrationTest {
                 .verifyComplete();
     }
 
+    @Test
+    void emptyOrderBySortsCompositeTargetIdsForFindByIdAndFindAll() {
+        Book second = support.operations().save(new Book(new BookId("978", 2L), "Second")).block();
+        Book first = support.operations().save(new Book(new BookId("978", 1L), "First")).block();
+        Author ada = new Author(new AuthorId("US", 10L), "Ada");
+        ada.getBooks().add(second); // link insertion is opposite of the complete composite id order.
+        ada.getBooks().add(first);
+        support.operations().save(ada).block();
+        Author bob = new Author(new AuthorId("US", 11L), "Bob");
+        bob.getBooks().add(second);
+        support.operations().save(bob).block();
+
+        StepVerifier.create(support.operations().findById(Author.class, new AuthorId("US", 10L)))
+                .assertNext(author -> assertEquals(List.of("First", "Second"),
+                        author.getBooks().stream().map(Book::getTitle).toList()))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findAll(Author.class, QuerySpec.empty()).collectList())
+                .assertNext(authors -> {
+                    Author foundAda = authors.stream().filter(author -> author.getName().equals("Ada"))
+                            .findFirst().orElseThrow();
+                    Author foundBob = authors.stream().filter(author -> author.getName().equals("Bob"))
+                            .findFirst().orElseThrow();
+                    assertEquals(List.of("First", "Second"),
+                            foundAda.getBooks().stream().map(Book::getTitle).toList());
+                    assertEquals(List.of("Second"), foundBob.getBooks().stream().map(Book::getTitle).toList());
+                })
+                .verifyComplete();
+    }
+
     // --- mixed cardinality ---------------------------------------------------
 
     @Test
@@ -311,7 +343,8 @@ class CompositeKeyManyToManyIntegrationTest {
         @JoinTable(name = "author_book",
                 joinColumns = {@JoinColumn(name = "a_country"), @JoinColumn(name = "a_num")},
                 inverseJoinColumns = {@JoinColumn(name = "b_group"), @JoinColumn(name = "b_num")})
-        private Set<Book> books = new LinkedHashSet<>();
+        @OrderBy
+        private List<Book> books = new ArrayList<>();
 
         // 복합 owner ↔ 단일 target.
         @ManyToMany
@@ -336,7 +369,7 @@ class CompositeKeyManyToManyIntegrationTest {
             return name;
         }
 
-        public Set<Book> getBooks() {
+        public List<Book> getBooks() {
             return books;
         }
 
