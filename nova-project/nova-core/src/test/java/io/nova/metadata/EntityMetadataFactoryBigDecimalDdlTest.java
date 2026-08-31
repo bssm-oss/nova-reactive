@@ -111,6 +111,26 @@ class EntityMetadataFactoryBigDecimalDdlTest {
     }
 
     @Test
+    void rejectsRawBigDecimalColumnDefinitionsBeforeDerivedPhysicalStorageCanBeBuilt() {
+        assertRawDecimalDefinitionRejected(RawDecimalColumn.class);
+        assertRawDecimalDefinitionRejected(RawDecimalCollectionOwner.class);
+        assertRawDecimalDefinitionRejected(RawDecimalSecondaryOwner.class);
+        assertRawDecimalDefinitionRejected(RawDecimalJoinedChild.class);
+        assertRawDecimalDefinitionRejected(RawDecimalManyToManyOwner.class);
+    }
+
+    @Test
+    void rejectsRawDefinitionsInBothNestedJoinTableColumnArrays() {
+        IllegalArgumentException owner = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(RawJoinTableOwnerDefinition.class));
+        assertTrue(owner.getMessage().contains("@JoinColumn(columnDefinition)"), owner.getMessage());
+
+        IllegalArgumentException inverse = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(RawJoinTableInverseDefinition.class));
+        assertTrue(inverse.getMessage().contains("@JoinColumn(columnDefinition)"), inverse.getMessage());
+    }
+
+    @Test
     void embeddedIdHostConverterStorageIsSharedByToOne() {
         ColumnStorage expected = new ColumnStorage(String.class, 41, 0, 0);
         EntityMetadata<ConvertedEmbeddedIdTarget> target = factory.getEntityMetadata(ConvertedEmbeddedIdTarget.class);
@@ -138,6 +158,13 @@ class EntityMetadataFactoryBigDecimalDdlTest {
     private void assertMapKeyStorage(Class<?> entityType, ColumnStorage expected) {
         ElementCollectionInfo info = property(entityType, "values").elementCollectionInfo();
         assertEquals(expected, info.mapKey().embeddableKeyColumns().get(0).storage());
+    }
+
+    private void assertRawDecimalDefinitionRejected(Class<?> entityType) {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(entityType));
+        assertTrue(error.getMessage().contains("BigDecimal storage cannot use @Column(columnDefinition)"),
+                error.getMessage());
     }
 
     private PersistentProperty property(Class<?> entityType, String propertyName) {
@@ -274,6 +301,79 @@ class EntityMetadataFactoryBigDecimalDdlTest {
         @jakarta.persistence.CollectionTable(joinColumns =
                 @jakarta.persistence.JoinColumn(columnDefinition = "numeric(31, 11)"))
         List<String> values;
+    }
+
+    @jakarta.persistence.Entity
+    static class RawDecimalColumn {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
+        BigDecimal amount;
+    }
+
+    @jakarta.persistence.Entity
+    static class RawDecimalCollectionOwner {
+        @jakarta.persistence.Id
+        @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
+        BigDecimal id;
+        @jakarta.persistence.ElementCollection List<String> values;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.SecondaryTable(name = "raw_decimal_secondary_values")
+    static class RawDecimalSecondaryOwner {
+        @jakarta.persistence.Id
+        @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
+        BigDecimal id;
+        @jakarta.persistence.Column(table = "raw_decimal_secondary_values") String detail;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Inheritance(strategy = jakarta.persistence.InheritanceType.JOINED)
+    static class RawDecimalJoinedRoot {
+        @jakarta.persistence.Id
+        @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
+        BigDecimal id;
+    }
+
+    @jakarta.persistence.Entity
+    static class RawDecimalJoinedChild extends RawDecimalJoinedRoot {
+        String detail;
+    }
+
+    @jakarta.persistence.Entity
+    static class RawDecimalManyToManyTarget {
+        @jakarta.persistence.Id Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class RawDecimalManyToManyOwner {
+        @jakarta.persistence.Id
+        @jakarta.persistence.Column(columnDefinition = "numeric(31, 11)")
+        BigDecimal id;
+        @jakarta.persistence.ManyToMany List<RawDecimalManyToManyTarget> targets;
+    }
+
+    @jakarta.persistence.Entity
+    static class RawJoinTableTarget {
+        @jakarta.persistence.Id Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class RawJoinTableOwnerDefinition {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ManyToMany
+        @jakarta.persistence.JoinTable(joinColumns =
+                @jakarta.persistence.JoinColumn(columnDefinition = "bigint"))
+        List<RawJoinTableTarget> targets;
+    }
+
+    @jakarta.persistence.Entity
+    static class RawJoinTableInverseDefinition {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ManyToMany
+        @jakarta.persistence.JoinTable(inverseJoinColumns =
+                @jakarta.persistence.JoinColumn(columnDefinition = "bigint"))
+        List<RawJoinTableTarget> targets;
     }
 
     @jakarta.persistence.Embeddable
