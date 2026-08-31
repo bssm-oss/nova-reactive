@@ -31,12 +31,14 @@ import java.util.Set;
 @SupportedAnnotationTypes("jakarta.persistence.Entity")
 public final class MetamodelProcessor extends AbstractProcessor {
     private static final String ENTITY = "jakarta.persistence.Entity";
+    private static final String EMBEDDABLE = "jakarta.persistence.Embeddable";
     private static final String ACCESS = "jakarta.persistence.Access";
     private static final String ACCESS_FIELD = "FIELD";
     private static final String ACCESS_PROPERTY = "PROPERTY";
     private static final String EMBEDDED = "jakarta.persistence.Embedded";
     private static final String EMBEDDED_ID = "jakarta.persistence.EmbeddedId";
     private static final String ID = "jakarta.persistence.Id";
+    private static final String MAPPED_SUPERCLASS = "jakarta.persistence.MappedSuperclass";
     private static final String ONE_TO_MANY = "jakarta.persistence.OneToMany";
     private static final String TRANSIENT = "jakarta.persistence.Transient";
     private static final int MAX_EMBEDDED_DEPTH = 8;
@@ -78,69 +80,66 @@ public final class MetamodelProcessor extends AbstractProcessor {
         String typeKey = type.getQualifiedName().toString();
         if (!visited.add(typeKey)) throw new IllegalStateException("Metamodel detected an @Embedded cycle through " + typeKey);
         try {
-            validateIdentifierPlacement(type);
-            String access = classAccess(type);
-            if (access == null) access = inheritedAccess != null ? inheritedAccess : hierarchyDefault(type);
-            Map<String, VariableElement> fields = new LinkedHashMap<>();
-            Map<String, ExecutableElement> getters = new LinkedHashMap<>();
-            Map<String, ExecutableElement> setters = new LinkedHashMap<>();
-            for (TypeElement current : hierarchy(type)) {
-                for (Element member : current.getEnclosedElements()) {
+            List<TypeElement> declarations = hasAnnotation(type, EMBEDDABLE) ? List.of(type) : hierarchy(type);
+            validateIdentifierPlacement(declarations, type);
+            String defaultAccess = inheritedAccess != null ? inheritedAccess : hierarchyDefault(declarations, type);
+            Map<String, List<Property>> selectedProperties = new LinkedHashMap<>();
+            for (TypeElement declaration : declarations) {
+                String declarationAccess = classAccess(declaration);
+                if (declarationAccess == null) declarationAccess = defaultAccess;
+                Map<String, VariableElement> fields = new LinkedHashMap<>();
+                for (Element member : declaration.getEnclosedElements()) {
                     if (member.getKind() == ElementKind.FIELD && candidateField((VariableElement) member)) {
                         VariableElement field = (VariableElement) member;
                         fields.put(field.getSimpleName().toString(), field);
                     }
                 }
-                for (Map.Entry<String, ExecutableElement> getter : getters(current).entrySet()) {
-                    getters.put(getter.getKey(), getter.getValue());
-                }
-                setters.putAll(setters(current));
-            }
-            Set<String> selectedNames = new LinkedHashSet<>();
-            for (Map.Entry<String, VariableElement> entry : fields.entrySet()) {
-                String name = entry.getKey();
-                VariableElement field = entry.getValue();
-                String fieldAccess = accessValue(field);
-                ExecutableElement getter = getters.get(name);
-                String getterAccess = getter == null ? null : accessValue(getter);
-                if (!ACCESS_FIELD.equals(fieldAccess) && !ACCESS_FIELD.equals(getterAccess)
-                        && !ACCESS_FIELD.equals(access)) continue;
-                if (ACCESS_FIELD.equals(fieldAccess) && ACCESS_PROPERTY.equals(getterAccess)) {
-                    throw new IllegalStateException(type.getQualifiedName() + "." + name
-                            + " has conflicting member @Access declarations");
-                }
-                rejectInactive(field, getter, type, name);
-                collectSelectedProperty(type, field, name, ACCESS_FIELD, hostPath, visited, out);
-                selectedNames.add(name);
-            }
-            for (Map.Entry<String, ExecutableElement> entry : getters.entrySet()) {
-                String name = entry.getKey();
-                ExecutableElement getter = entry.getValue();
-                String getterAccess = accessValue(getter);
-                VariableElement field = fields.get(name);
-                String fieldAccess = field == null ? null : accessValue(field);
-                if (!ACCESS_PROPERTY.equals(getterAccess) && !ACCESS_PROPERTY.equals(fieldAccess)
-                        && !ACCESS_PROPERTY.equals(access)) continue;
-                if (ACCESS_PROPERTY.equals(getterAccess) && ACCESS_FIELD.equals(fieldAccess)) {
-                    throw new IllegalStateException(type.getQualifiedName() + "." + name
-                            + " has conflicting member @Access declarations");
-                }
-                if (hasAnnotation(getter, TRANSIENT)) continue;
-                if (!type.getKind().equals(ElementKind.RECORD)) {
-                    ExecutableElement setter = setters.get(name);
-                    if (setter == null) {
-                        throw new IllegalStateException(type.getQualifiedName() + "." + name
-                                + " has no JavaBean setter required by PROPERTY access");
+                Map<String, ExecutableElement> getters = getters(declaration);
+                Map<String, ExecutableElement> setters = setters(declaration);
+                Set<String> names = new LinkedHashSet<>(fields.keySet());
+                names.addAll(getters.keySet());
+                for (String name : names) {
+                    VariableElement field = fields.get(name);
+                    ExecutableElement getter = getters.get(name);
+                    String selectedAccess = memberAccess(field, getter, type, name);
+                    if (selectedAccess == null) selectedAccess = declarationAccess;
+                    List<Property> declarationProperties = new ArrayList<>();
+                    if (ACCESS_FIELD.equals(selectedAccess)) {
+                        if (field == null) {
+                            if (getter != null && hasMappingAnnotation(getter)) inactiveMember(type, name, "PROPERTY");
+                            continue;
+                        }
+                        rejectInactive(field, getter, type, name);
+                        if (hasAnnotation(field, TRANSIENT)) continue;
+                        collectSelectedProperty(type, field, name, ACCESS_FIELD, hostPath, visited, declarationProperties);
+                    } else {
+                        if (getter == null) {
+                            if (field != null && hasMappingAnnotation(field)) inactiveMember(type, name, "FIELD");
+                            if (field != null && ACCESS_PROPERTY.equals(accessValue(field))) {
+                                throw new IllegalStateException(type.getQualifiedName() + "." + name
+                                        + " declares @Access(PROPERTY) on a field; @Access(PROPERTY) belongs on a getter");
+                            }
+                            continue;
+                        }
+                        if (hasAnnotation(getter, TRANSIENT)) continue;
+                        if (!declaration.getKind().equals(ElementKind.RECORD)) {
+                            ExecutableElement setter = setters.get(name);
+                            if (setter == null) {
+                                throw new IllegalStateException(type.getQualifiedName() + "." + name
+                                        + " has no JavaBean setter required by PROPERTY access");
+                            }
+                            if (!setter.getParameters().get(0).asType().equals(getter.getReturnType())) {
+                                throw new IllegalStateException(type.getQualifiedName() + "." + name
+                                        + " getter/setter types are incompatible");
+                            }
+                        }
+                        rejectInactive(getter, field, type, name);
+                        collectSelectedProperty(type, getter, name, ACCESS_PROPERTY, hostPath, visited, declarationProperties);
                     }
-                    if (!setter.getParameters().get(0).asType().equals(getter.getReturnType())) {
-                        throw new IllegalStateException(type.getQualifiedName() + "." + name
-                                + " getter/setter types are incompatible");
-                    }
+                    selectedProperties.put(name, declarationProperties);
                 }
-                rejectInactive(getter, field, type, name);
-                if (!selectedNames.add(name)) continue;
-                collectSelectedProperty(type, getter, name, ACCESS_PROPERTY, hostPath, visited, out);
             }
+            selectedProperties.values().forEach(out::addAll);
         } finally {
             visited.remove(typeKey);
         }
@@ -167,7 +166,11 @@ public final class MetamodelProcessor extends AbstractProcessor {
         List<TypeElement> result = new ArrayList<>();
         for (TypeElement current = type; current != null
                 && !current.getQualifiedName().contentEquals(Object.class.getName());
-                current = superclass(current)) result.add(0, current);
+                current = superclass(current)) {
+            if (current.equals(type) || hasAnnotation(current, ENTITY) || hasAnnotation(current, MAPPED_SUPERCLASS)) {
+                result.add(0, current);
+            }
+        }
         return result;
     }
 
@@ -176,15 +179,15 @@ public final class MetamodelProcessor extends AbstractProcessor {
         return parent == null ? null : resolveTypeElement(parent);
     }
 
-    private String hierarchyDefault(TypeElement type) {
-        for (TypeElement current : hierarchy(type)) {
+    private String hierarchyDefault(List<TypeElement> declarations, TypeElement type) {
+        for (TypeElement current : declarations) {
             for (Element member : current.getEnclosedElements()) {
                 if (member.getKind() == ElementKind.FIELD
                         && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) return ACCESS_FIELD;
             }
         }
         boolean propertyIdentifier = false;
-        for (TypeElement current : hierarchy(type)) {
+        for (TypeElement current : declarations) {
             for (Element member : current.getEnclosedElements()) {
                 if (member.getKind() == ElementKind.METHOD
                         && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) propertyIdentifier = true;
@@ -193,10 +196,10 @@ public final class MetamodelProcessor extends AbstractProcessor {
         return propertyIdentifier ? ACCESS_PROPERTY : ACCESS_FIELD;
     }
 
-    private void validateIdentifierPlacement(TypeElement type) {
+    private void validateIdentifierPlacement(List<TypeElement> declarations, TypeElement type) {
         boolean fieldIdentifier = false;
         boolean propertyIdentifier = false;
-        for (TypeElement current : hierarchy(type)) {
+        for (TypeElement current : declarations) {
             for (Element member : current.getEnclosedElements()) {
                 if (member.getKind() == ElementKind.FIELD
                         && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) {
