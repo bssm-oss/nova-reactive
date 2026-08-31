@@ -3285,7 +3285,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
-     * SELECT(LIMIT/OFFSET 적용) 한 번과 COUNT(*) 한 번을 병렬로 발행해 {@link Page}로 합친다.
+     * SELECT(LIMIT/OFFSET 적용)를 완료한 뒤 COUNT(*)를 발행해 {@link Page}로 합친다.
+     * 순차 발행은 관리 트랜잭션의 단일 R2DBC connection에서 두 statement가 겹치지 않게 하며,
+     * content 조회의 auto-flush가 count보다 먼저 완료되도록 보장한다.
      * COUNT 경로에서는 호출자 또는 normalize가 부착했던 pageable을 제거해 predicate 전체에 대한
      * 정확한 행 수를 계산한다 — 그렇지 않으면 LIMIT으로 잘린 행 수만 세어 totalElements가 잘못된다.
      */
@@ -3296,10 +3298,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         QuerySpec normalized = normalize(querySpec);
         QuerySpec paged = normalized.page(pageable);
         QuerySpec countSpec = normalized.page(null);
-        return Mono.zip(
-                findAll(entityType, paged).collectList(),
-                count(entityType, countSpec),
-                (content, total) -> new Page<>(content, total, pageable));
+        return findAll(entityType, paged)
+                .collectList()
+                .flatMap(content -> count(entityType, countSpec)
+                        .map(total -> new Page<>(content, total, pageable)));
     }
 
     /**

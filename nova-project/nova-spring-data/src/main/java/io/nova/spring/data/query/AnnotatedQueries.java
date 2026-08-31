@@ -131,11 +131,12 @@ public final class AnnotatedQueries {
     private Mono<Page<Object>> novaPage(AnnotatedQueryMethod meta, Object[] args) {
         return Mono.defer(() -> {
             Pageable pageable = novaPageable(meta, args);
-            Mono<List<Object>> content = pagedEntityQuery(meta, args, pageable.offset(), pageable.limit())
-                    .getResultList().cast(Object.class).collectList();
-            Mono<Long> total = totalCount(meta, args);
-            return Mono.zip(content, total)
-                    .map(t -> new Page<>(t.getT1(), t.getT2(), pageable));
+            Flux<Object> contentQuery = pagedEntityQuery(meta, args, pageable.offset(), pageable.limit())
+                    .getResultList()
+                    .cast(Object.class);
+            return contentQuery.collectList()
+                    .flatMap(content -> totalCount(meta, args)
+                            .map(total -> new Page<>(content, total, pageable)));
         });
     }
 

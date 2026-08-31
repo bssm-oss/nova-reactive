@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
+import reactor.test.publisher.TestPublisher;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -111,6 +112,76 @@ class SimpleReactiveEntityOperationsPageTest {
     }
 
     @Test
+    void findAllByPageableDoesNotSubscribeToCountUntilContentCompletes() {
+        TestPublisher<MapRowAccessor> content = TestPublisher.create();
+        TestPublisher<MapRowAccessor> count = TestPublisher.create();
+
+        StepVerifier.create(newOperations(new DeferredPageExecutor(content, count)).findAll(
+                        SampleAccount.class, QuerySpec.empty(), Pageable.of(5, 0L)))
+                .then(() -> {
+                    content.assertWasSubscribed();
+                    count.assertWasNotSubscribed();
+                    content.emit(row(1L, "x@nova.io", true));
+                })
+                .then(() -> {
+                    count.assertWasSubscribed();
+                    count.emit(row(Map.of("count", 1L)));
+                })
+                .assertNext(page -> {
+                    assertEquals(1, page.content().size());
+                    assertEquals(1L, page.totalElements());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void findAllByPageableDoesNotSubscribeToCountWhenContentErrors() {
+        TestPublisher<MapRowAccessor> content = TestPublisher.create();
+        TestPublisher<MapRowAccessor> count = TestPublisher.create();
+
+        StepVerifier.create(newOperations(new DeferredPageExecutor(content, count)).findAll(
+                        SampleAccount.class, QuerySpec.empty(), Pageable.of(5, 0L)))
+                .then(() -> content.error(new IllegalStateException("content failed")))
+                .expectErrorMessage("content failed")
+                .verify();
+
+        count.assertWasNotSubscribed();
+    }
+
+    @Test
+    void findAllByPageableDoesNotSubscribeToCountWhenContentIsCancelled() {
+        TestPublisher<MapRowAccessor> content = TestPublisher.create();
+        TestPublisher<MapRowAccessor> count = TestPublisher.create();
+
+        StepVerifier.create(newOperations(new DeferredPageExecutor(content, count)).findAll(
+                        SampleAccount.class, QuerySpec.empty(), Pageable.of(5, 0L)))
+                .then(() -> {
+                    content.assertWasSubscribed();
+                    count.assertWasNotSubscribed();
+                })
+                .thenCancel()
+                .verify();
+
+        count.assertWasNotSubscribed();
+    }
+
+    @Test
+    void findAllByPageableDoesNotEmitPageWhenCountErrors() {
+        TestPublisher<MapRowAccessor> content = TestPublisher.create();
+        TestPublisher<MapRowAccessor> count = TestPublisher.create();
+
+        StepVerifier.create(newOperations(new DeferredPageExecutor(content, count)).findAll(
+                        SampleAccount.class, QuerySpec.empty(), Pageable.of(5, 0L)))
+                .then(() -> content.emit(row(1L, "x@nova.io", true)))
+                .then(() -> {
+                    count.assertWasSubscribed();
+                    count.error(new IllegalStateException("count failed"));
+                })
+                .expectErrorMessage("count failed")
+                .verify();
+    }
+
+    @Test
     void findSliceProbesOneExtraRowToDetectHasNextAndTrimsContent() {
         PageCapturingExecutor executor = new PageCapturingExecutor();
         // limit 2 요청 → 내부적으로 limit 3으로 조회. 3건 반환 → hasNext=true, content는 2건으로 잘림.
@@ -198,7 +269,7 @@ class SimpleReactiveEntityOperationsPageTest {
         return new MapRowAccessor(new HashMap<>(values));
     }
 
-    private static SimpleReactiveEntityOperations newOperations(PageCapturingExecutor executor) {
+    private static SimpleReactiveEntityOperations newOperations(SqlExecutor executor) {
         return new SimpleReactiveEntityOperations(
                 new EntityMetadataFactory(new DefaultNamingStrategy()),
                 new TestDialect(),
@@ -273,6 +344,26 @@ class SimpleReactiveEntityOperationsPageTest {
             assertNotNull(mapper, "mapper must not be null");
             List<MapRowAccessor> rows = queryManyResults.removeFirst();
             return Flux.fromIterable(rows).map(mapper);
+        }
+    }
+
+    private record DeferredPageExecutor(
+            TestPublisher<MapRowAccessor> content,
+            TestPublisher<MapRowAccessor> count
+    ) implements SqlExecutor {
+        @Override
+        public Mono<Long> execute(SqlStatement statement) {
+            return Mono.just(1L);
+        }
+
+        @Override
+        public <T> Mono<T> queryOne(SqlStatement statement, Function<RowAccessor, T> mapper) {
+            return count.flux().next().map(mapper);
+        }
+
+        @Override
+        public <T> Flux<T> queryMany(SqlStatement statement, Function<RowAccessor, T> mapper) {
+            return content.flux().map(mapper);
         }
     }
 

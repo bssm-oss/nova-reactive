@@ -9,8 +9,10 @@ import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Page;
 import io.nova.query.Pageable;
+import io.nova.query.QuerySpec;
 import io.nova.query.Slice;
 import io.nova.query.jpql.JpqlExecutor;
+import io.nova.spring.data.query.AnnotatedQueries;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
 import io.nova.sql.Dialect;
@@ -31,6 +33,7 @@ import org.springframework.data.domain.PageRequest;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
+import reactor.test.publisher.TestPublisher;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
@@ -191,6 +194,78 @@ class AnnotatedQueryIntegrationTest {
     }
 
     @Test
+    void annotatedPageFlushesManagedMutationBeforeContentAndCount() {
+        StepVerifier.create(operations.inTransaction(ignored ->
+                        operations.findById(Account.class, 2L)
+                                .doOnNext(account -> account.setScore(30))
+                                .then(repository.pageWithMinScore(30, Pageable.of(10, 0L)))))
+                .assertNext(page -> {
+                    assertEquals(4, page.content().size());
+                    assertEquals(4L, page.totalElements());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void annotatedPageDefersCountUntilContentCompletes() {
+        TestPublisher<Account> content = TestPublisher.create();
+        TestPublisher<Account> count = TestPublisher.create();
+
+        StepVerifier.create(deferredAnnotatedPage(content, count))
+                .then(() -> {
+                    content.assertWasSubscribed();
+                    count.assertWasNotSubscribed();
+                    content.emit(new Account(1L, "Ada", 30));
+                })
+                .then(() -> {
+                    count.assertWasSubscribed();
+                    count.emit(new Account(2L, "Bob", 10));
+                })
+                .assertNext(page -> {
+                    assertEquals(1, page.content().size());
+                    assertEquals(1L, page.totalElements());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void annotatedPageDoesNotSubscribeToCountWhenContentErrorsOrIsCancelled() {
+        TestPublisher<Account> errorContent = TestPublisher.create();
+        TestPublisher<Account> errorCount = TestPublisher.create();
+        StepVerifier.create(deferredAnnotatedPage(errorContent, errorCount))
+                .then(() -> errorContent.error(new IllegalStateException("content failed")))
+                .expectErrorMessage("content failed")
+                .verify();
+        errorCount.assertWasNotSubscribed();
+
+        TestPublisher<Account> cancelledContent = TestPublisher.create();
+        TestPublisher<Account> cancelledCount = TestPublisher.create();
+        StepVerifier.create(deferredAnnotatedPage(cancelledContent, cancelledCount))
+                .then(() -> {
+                    cancelledContent.assertWasSubscribed();
+                    cancelledCount.assertWasNotSubscribed();
+                })
+                .thenCancel()
+                .verify();
+        cancelledCount.assertWasNotSubscribed();
+    }
+
+    @Test
+    void annotatedPageDoesNotEmitPageWhenCountErrors() {
+        TestPublisher<Account> content = TestPublisher.create();
+        TestPublisher<Account> count = TestPublisher.create();
+
+        StepVerifier.create(deferredAnnotatedPage(content, count))
+                .then(() -> content.emit(new Account(1L, "Ada", 30)))
+                .then(() -> {
+                    count.assertWasSubscribed();
+                    count.error(new IllegalStateException("count failed"));
+                })
+                .expectErrorMessage("count failed")
+                .verify();
+    }
+
+    @Test
     @DisplayName("Pageable @Query → Nova Slice(count 없이 hasNext)")
     void pageableNovaSlice() {
         StepVerifier.create(repository.slice(Pageable.of(2, 0)))
@@ -243,6 +318,33 @@ class AnnotatedQueryIntegrationTest {
                 .verify();
     }
 
+    @SuppressWarnings("unchecked")
+    private Mono<Page<Account>> deferredAnnotatedPage(
+            TestPublisher<Account> content, TestPublisher<Account> count) {
+        EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        ReactiveEntityOperations deferredOperations = (ReactiveEntityOperations) Proxy.newProxyInstance(
+                ReactiveEntityOperations.class.getClassLoader(),
+                new Class<?>[]{ReactiveEntityOperations.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("findAll") && args.length == 2) {
+                        QuerySpec spec = (QuerySpec) args[1];
+                        return spec.pageable() == null ? count.flux() : content.flux();
+                    }
+                    throw new UnsupportedOperationException(method.toString());
+                });
+        JpqlExecutor deferredExecutor = new JpqlExecutor(
+                deferredOperations, new H2Dialect(), metadataFactory, Account.class);
+        AnnotatedQueries queries = new AnnotatedQueries(
+                Account.class, deferredOperations, () -> deferredExecutor, new H2Dialect());
+        try {
+            return (Mono<Page<Account>>) queries.tryDispatch(
+                    AccountRepository.class.getMethod("page", Pageable.class),
+                    new Object[]{Pageable.of(2, 0L)}).orElseThrow();
+        } catch (NoSuchMethodException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
     // ------------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------------
@@ -279,6 +381,10 @@ class AnnotatedQueryIntegrationTest {
         public int getScore() {
             return score;
         }
+
+        void setScore(int score) {
+            this.score = score;
+        }
     }
 
     interface AccountRepository extends ReactiveCrudRepository<Account, Long> {
@@ -309,6 +415,10 @@ class AnnotatedQueryIntegrationTest {
         @Query(value = "SELECT a FROM Account a ORDER BY a.name",
                 countQuery = "SELECT COUNT(a) FROM Account a")
         Mono<Page<Account>> pageWithCount(Pageable pageable);
+
+        @Query(value = "SELECT a FROM Account a WHERE a.score >= :min ORDER BY a.name",
+                countQuery = "SELECT COUNT(a) FROM Account a WHERE a.score >= :min")
+        Mono<Page<Account>> pageWithMinScore(@Param("min") int min, Pageable pageable);
 
         @Query("SELECT a FROM Account a ORDER BY a.name")
         Mono<Slice<Account>> slice(Pageable pageable);
