@@ -330,7 +330,8 @@ class Batch2CrossFeatureE2ETest {
         Long id = w.base().save(new AuditDoc("locked")).map(AuditDoc::getId).block();
 
         w.listener().clear();
-        StepVerifier.create(w.entityManager().find(AuditDoc.class, id, LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(w.entityManager().inTransaction(e ->
+                        e.find(AuditDoc.class, id, LockModeType.PESSIMISTIC_WRITE)))
                 .assertNext(found -> assertEquals("locked", found.getTitle()))
                 .verifyComplete();
 

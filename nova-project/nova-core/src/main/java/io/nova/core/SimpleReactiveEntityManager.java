@@ -355,7 +355,13 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
     public <T> Mono<T> refresh(T entity, LockModeType lockMode) {
         Objects.requireNonNull(entity, "entity must not be null");
         Objects.requireNonNull(lockMode, "lockMode must not be null");
-        return refresh(entity).flatMap(refreshed -> lock(refreshed, lockMode).thenReturn(refreshed));
+        return Mono.deferContextual(ctx -> {
+            if (LockModeTranslator.resolve(lockMode).lockMode() != LockMode.NONE && !hasActiveTransaction(ctx)) {
+                return Mono.error(new TransactionRequiredException(
+                        "Pessimistic lock mode " + lockMode + " requires an active transaction"));
+            }
+            return refresh(entity).flatMap(refreshed -> lock(refreshed, lockMode).thenReturn(refreshed));
+        });
     }
 
     /**
@@ -466,16 +472,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         return metadataFactory.getEntityMetadata(entity.getClass());
     }
 
-    /**
-     * A physical transaction scope, when present, is authoritative. The managed-session check preserves
-     * transaction support for legacy {@link SimpleReactiveEntityOperations.SessionBinding}-style integrations
-     * that predate physical scope propagation.
-     */
     private static boolean hasActiveTransaction(ContextView ctx) {
-        if (ctx.hasKey(PhysicalTransactionScope.CONTEXT_KEY)) {
-            return ctx.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY).isActive();
-        }
-        return currentSession(ctx).isPresent();
+        return ctx.hasKey(PhysicalTransactionScope.CONTEXT_KEY)
+                && ctx.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY).isActive();
     }
 
     private static Optional<PersistenceSession> currentSession(ContextView ctx) {

@@ -133,6 +133,10 @@ issuing a `SELECT` or version-increment `UPDATE` when no transaction is active.
 This validation applies only to the EntityManager `LockModeType` API; the raw
 `QuerySpec` lock API remains unchanged.
 
+Custom `ReactiveEntityManager` integrations must bind an active
+`PhysicalTransactionScope` owner/scope in Reactor `Context` for a transaction.
+An ambient persistence session alone does not satisfy this requirement.
+
 ```java
 import io.nova.query.LockMode;
 

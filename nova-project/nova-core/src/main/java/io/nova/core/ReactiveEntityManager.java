@@ -129,7 +129,9 @@ public interface ReactiveEntityManager {
      * {@link LockModeType}를 적용해 id 단건을 조회한다(JPA {@code find(Class, Object, LockModeType)}).
      * PESSIMISTIC_WRITE/READ는 {@code FOR UPDATE}/{@code FOR SHARE} SELECT를, OPTIMISTIC 계열은 버전 검증
      * (필요 시 강제 증분)을 적용한다. 버전 의미가 필요한 모드를 {@code @Version} 없는 엔티티에 요청하면
-     * {@link IllegalArgumentException}으로 fail-fast한다. 존재하지 않으면 빈 {@link Mono}.
+     * {@link IllegalArgumentException}으로 fail-fast한다. PESSIMISTIC_* 모드는 활성 물리 트랜잭션이
+     * 필요하며, 없으면 SQL을 발행하기 전에 {@link jakarta.persistence.TransactionRequiredException}으로
+     * 실패한다. 존재하지 않으면 빈 {@link Mono}.
      * <p><b>OPTIMISTIC 의미(설계상 의도):</b> {@code find}의 OPTIMISTIC은 별도 검증 쿼리를 발행하지 않는다 —
      * 방금 로드한 행의 버전이 곧 현재 값이므로, 검증은 이후 write(낙관락 UPDATE)나 명시적
      * {@link #lock(Object, LockModeType)}에서 이뤄진다. 이미 로드한 엔티티를 즉시 검증하려면 {@code lock}을 쓴다.
@@ -152,7 +154,9 @@ public interface ReactiveEntityManager {
      * 이미 조회한(관리 중인) 엔티티에 주어진 {@link LockModeType}를 적용한다(JPA {@code lock}). OPTIMISTIC은
      * 현재 버전이 DB와 일치하는지 검증하고, *_FORCE_INCREMENT는 버전을 강제 증분하며, PESSIMISTIC_*는 해당
      * 행을 {@code FOR UPDATE}/{@code FOR SHARE}로 재조회해 잠근다. 버전 모드를 {@code @Version} 없는 엔티티에
-     * 요청하면 fail-fast한다. 세션 밖에서도 SQL 기반 잠금/검증은 발행되지만 identity/dirty 의미는 없다.
+     * 요청하면 fail-fast한다. PESSIMISTIC_* 모드는 활성 물리 트랜잭션이 필요하며, 없으면 SQL을 발행하기 전에
+     * {@link jakarta.persistence.TransactionRequiredException}으로 실패한다. OPTIMISTIC 계열은 세션 밖에서도
+     * SQL 기반 검증을 발행할 수 있지만 identity/dirty 의미는 없다.
      */
     default Mono<Void> lock(Object entity, LockModeType lockMode) {
         return Mono.error(new UnsupportedOperationException(
@@ -174,7 +178,9 @@ public interface ReactiveEntityManager {
     /**
      * DB 재조회로 엔티티를 재적재({@link #refresh(Object)})한 뒤 주어진 {@link LockModeType}를 적용한다
      * (JPA {@code refresh(Object, LockModeType)}).
-     * <p><b>기록:</b> PESSIMISTIC_* 모드는 refresh reload SELECT 후 잠금 재조회 SELECT가 이어져 SELECT를 두 번
+     * PESSIMISTIC_* 모드는 활성 물리 트랜잭션이 필요하며, 없으면 refresh SELECT 전에
+     * {@link jakarta.persistence.TransactionRequiredException}으로 실패한다.
+     * <p><b>기록:</b> 활성 트랜잭션에서는 refresh reload SELECT 후 잠금 재조회 SELECT가 이어져 SELECT를 두 번
      * 발행한다(refresh SELECT 안에서 바로 잠그는 최적화는 후속 과제).
      */
     default <T> Mono<T> refresh(T entity, LockModeType lockMode) {

@@ -4,6 +4,7 @@ import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.QuerySpec;
+import io.nova.tx.PhysicalTransactionScope;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
@@ -13,6 +14,7 @@ import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.FlushModeType;
 import jakarta.persistence.Id;
 import jakarta.persistence.LockModeType;
+import jakarta.persistence.TransactionRequiredException;
 import jakarta.persistence.Version;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -293,7 +295,7 @@ class SimpleReactiveEntityManagerTest {
         Widget widget = new Widget(4L, "d");
         operations.findAllResults = List.of(widget);
 
-        StepVerifier.create(manager.find(Widget.class, 4L, LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(withActiveTransaction(manager.find(Widget.class, 4L, LockModeType.PESSIMISTIC_WRITE)))
                 .expectNext(widget)
                 .verifyComplete();
 
@@ -306,7 +308,7 @@ class SimpleReactiveEntityManagerTest {
         Widget widget = new Widget(4L, "d");
         operations.findAllResults = List.of(widget);
 
-        StepVerifier.create(manager.find(Widget.class, 4L, LockModeType.PESSIMISTIC_READ))
+        StepVerifier.create(withActiveTransaction(manager.find(Widget.class, 4L, LockModeType.PESSIMISTIC_READ)))
                 .expectNext(widget)
                 .verifyComplete();
 
@@ -321,8 +323,8 @@ class SimpleReactiveEntityManagerTest {
         CompositeWidget widget = new CompositeWidget(new CompositeWidgetKey("A", 1));
         operations.findAllResults = List.of(widget);
 
-        StepVerifier.create(manager.find(CompositeWidget.class,
-                        new CompositeWidgetKey("A", 1), LockModeType.PESSIMISTIC_READ))
+        StepVerifier.create(withActiveTransaction(manager.find(CompositeWidget.class,
+                        new CompositeWidgetKey("A", 1), LockModeType.PESSIMISTIC_READ)))
                 .expectNext(widget)
                 .verifyComplete();
 
@@ -432,9 +434,61 @@ class SimpleReactiveEntityManagerTest {
         VersionedWidget widget = new VersionedWidget(1L, 3L);
         operations.findAllResults = List.of(widget);
 
-        StepVerifier.create(manager.lock(widget, LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(withActiveTransaction(manager.lock(widget, LockModeType.PESSIMISTIC_WRITE)))
                 .verifyComplete();
         assertEquals(io.nova.query.LockMode.FOR_UPDATE, operations.findAllSpecs.get(0).lockMode());
+    }
+
+    @Test
+    void pessimisticFindAndLockRequireExplicitActivePhysicalTransactionScope() {
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        for (LockModeType mode : List.of(
+                LockModeType.PESSIMISTIC_READ,
+                LockModeType.PESSIMISTIC_WRITE,
+                LockModeType.PESSIMISTIC_FORCE_INCREMENT)) {
+            StepVerifier.create(withSession(manager.find(VersionedWidget.class, 1L, mode), new PersistenceSession()))
+                    .expectError(TransactionRequiredException.class)
+                    .verify();
+            StepVerifier.create(withSession(manager.lock(widget, mode), new PersistenceSession()))
+                    .expectError(TransactionRequiredException.class)
+                    .verify();
+        }
+        assertTrue(operations.findAllSpecs.isEmpty(), "no-scope pessimistic operations must not select");
+        assertTrue(operations.updated.isEmpty(), "no-scope force increment must not update");
+    }
+
+    @Test
+    void inactivePhysicalTransactionScopeDoesNotAuthorizePessimisticLocking() {
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        Context inactive = Context.of(PhysicalTransactionScope.CONTEXT_KEY, PhysicalTransactionScope.inactive());
+
+        StepVerifier.create(manager.find(VersionedWidget.class, 1L, LockModeType.PESSIMISTIC_WRITE)
+                        .contextWrite(inactive))
+                .expectError(TransactionRequiredException.class)
+                .verify();
+        StepVerifier.create(manager.lock(widget, LockModeType.PESSIMISTIC_FORCE_INCREMENT).contextWrite(inactive))
+                .expectError(TransactionRequiredException.class)
+                .verify();
+
+        assertTrue(operations.findAllSpecs.isEmpty(), "inactive scope must not select");
+        assertTrue(operations.updated.isEmpty(), "inactive scope must not update");
+    }
+
+    @Test
+    void activePhysicalTransactionScopeAuthorizesAllPessimisticModes() {
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        operations.findAllResults = List.of(widget);
+        for (LockModeType mode : List.of(
+                LockModeType.PESSIMISTIC_READ,
+                LockModeType.PESSIMISTIC_WRITE,
+                LockModeType.PESSIMISTIC_FORCE_INCREMENT)) {
+            StepVerifier.create(withActiveTransaction(manager.find(VersionedWidget.class, 1L, mode)))
+                    .expectNext(widget)
+                    .verifyComplete();
+            StepVerifier.create(withActiveTransaction(manager.lock(widget, mode)))
+                    .verifyComplete();
+        }
+        assertEquals(2, operations.updated.size(), "force increment find and lock each update once");
     }
 
     @Test
@@ -461,6 +515,11 @@ class SimpleReactiveEntityManagerTest {
 
     private <T> Mono<T> withSession(Mono<T> mono, PersistenceSession session) {
         return mono.contextWrite(Context.of(SimpleReactiveEntityOperations.SESSION_KEY, session));
+    }
+
+    private <T> Mono<T> withActiveTransaction(Mono<T> mono) {
+        return mono.contextWrite(Context.of(
+                PhysicalTransactionScope.CONTEXT_KEY, PhysicalTransactionScope.newOwner().scope()));
     }
 
     @Entity

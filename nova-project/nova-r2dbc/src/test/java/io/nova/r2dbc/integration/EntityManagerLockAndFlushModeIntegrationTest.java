@@ -93,6 +93,23 @@ class EntityManagerLockAndFlushModeIntegrationTest {
     }
 
     @Test
+    void pessimisticRefreshOutsideTransactionFailsWithoutSql() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(VersionedAccount.class));
+
+        VersionedAccount account = new VersionedAccount("lock@nova.io");
+        StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
+
+        listener.clear();
+        StepVerifier.create(h.manager.refresh(account, LockModeType.PESSIMISTIC_WRITE))
+                .expectErrorSatisfies(error -> assertEquals(TransactionRequiredException.class, error.getClass()))
+                .verify();
+
+        assertTrue(listener.snapshot().isEmpty(),
+                "pessimistic refresh outside a transaction must fail before SQL: " + listener.snapshot());
+    }
+
+    @Test
     void pessimisticFindInsideTransactionIssuesForUpdate() {
         EntityManagerHarness h = harness();
         h.support.execute(h.support.operations().createTableSql(VersionedAccount.class));

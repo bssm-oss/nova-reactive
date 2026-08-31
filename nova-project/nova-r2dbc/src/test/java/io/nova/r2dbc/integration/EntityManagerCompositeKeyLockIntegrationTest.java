@@ -55,7 +55,8 @@ class EntityManagerCompositeKeyLockIntegrationTest {
                 .expectNextCount(1).verifyComplete();
 
         listener.clear();
-        StepVerifier.create(h.manager.find(SeatReservation.class, new SeatId("A", 1), LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(SeatReservation.class, new SeatId("A", 1), LockModeType.PESSIMISTIC_WRITE)))
                 .assertNext(found -> {
                     assertEquals("A", found.getId().getSection());
                     assertEquals(1, found.getId().getSeatNo());
@@ -81,10 +82,12 @@ class EntityManagerCompositeKeyLockIntegrationTest {
 
         // 각 복합키가 정확히 자기 행으로만 해석돼야 한다. 첫 컴포넌트만 매칭하면 두 find가 같은 행을 반환해
         // 아래 두 단언 중 하나는 반드시 깨진다(행 순서와 무관한 teeth).
-        StepVerifier.create(h.manager.find(SeatReservation.class, new SeatId("A", 1), LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(SeatReservation.class, new SeatId("A", 1), LockModeType.PESSIMISTIC_WRITE)))
                 .assertNext(found -> assertEquals("alice", found.getHolder()))
                 .verifyComplete();
-        StepVerifier.create(h.manager.find(SeatReservation.class, new SeatId("A", 2), LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(SeatReservation.class, new SeatId("A", 2), LockModeType.PESSIMISTIC_WRITE)))
                 .assertNext(found -> assertEquals("bob", found.getHolder()))
                 .verifyComplete();
     }
@@ -130,7 +133,8 @@ class EntityManagerCompositeKeyLockIntegrationTest {
                 .expectNextCount(1).verifyComplete();
 
         listener.clear();
-        StepVerifier.create(h.manager.find(Ticket.class, new TicketId(10L, "X1"), LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(Ticket.class, new TicketId(10L, "X1"), LockModeType.PESSIMISTIC_WRITE)))
                 .assertNext(found -> {
                     assertEquals(10L, found.getEventId());
                     assertEquals("X1", found.getCode());
@@ -154,10 +158,12 @@ class EntityManagerCompositeKeyLockIntegrationTest {
                                 .then(h.support.operations().save(new Ticket(10L, "X2", "erin"))))
                 .expectNextCount(1).verifyComplete();
 
-        StepVerifier.create(h.manager.find(Ticket.class, new TicketId(10L, "X1"), LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(Ticket.class, new TicketId(10L, "X1"), LockModeType.PESSIMISTIC_WRITE)))
                 .assertNext(found -> assertEquals("dave", found.getHolder()))
                 .verifyComplete();
-        StepVerifier.create(h.manager.find(Ticket.class, new TicketId(10L, "X2"), LockModeType.PESSIMISTIC_WRITE))
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(Ticket.class, new TicketId(10L, "X2"), LockModeType.PESSIMISTIC_WRITE)))
                 .assertNext(found -> assertEquals("erin", found.getHolder()))
                 .verifyComplete();
     }
