@@ -4087,17 +4087,13 @@ public final class EntityMetadataFactory {
         int length = column == null ? 255 : column.length();
         int precision = column == null ? 0 : column.precision();
         int scale = column == null ? 0 : column.scale();
-        if (domainType == java.math.BigDecimal.class && column != null && !column.columnDefinition().isBlank()) {
-            throw new IllegalArgumentException("BigDecimal identifier " + id.declaringType().getName() + "."
-                    + id.name() + " cannot use @Column(columnDefinition): referenced storage must be reusable");
-        }
         Convert convert = conversionOverride != null ? conversionOverride : id.annotation(Convert.class);
         if (convert != null && !convert.disableConversion()) {
             Class<?>[] attributeAndColumn = resolveJpaConverterTypeArguments(convert.converter());
             AttributeConverter<Object, Object> converter =
                     new JpaAttributeConverterAdapter<>(instantiateJpaConverter(convert.converter()));
-            return new ForeignKeyStorage(domainType, converter, attributeAndColumn[1],
-                    new ColumnStorage(attributeAndColumn[1], length, precision, scale));
+            return checkedIdentifierStorage(id, column, new ForeignKeyStorage(domainType, converter, attributeAndColumn[1],
+                    new ColumnStorage(attributeAndColumn[1], length, precision, scale)));
         }
         Enumerated enumerated = id.annotation(Enumerated.class);
         if (enumerated != null || id.javaType().isEnum()) {
@@ -4105,14 +4101,28 @@ public final class EntityMetadataFactory {
             EnumMapping mapping = resolveEnumMapping(id.javaType(), enumType);
             Class<?> storageType = mapping.customColumnType() != null ? mapping.customColumnType()
                     : enumType == EnumType.STRING ? String.class : Integer.class;
-            return new ForeignKeyStorage(domainType, mapping.converter(), storageType,
-                    new ColumnStorage(storageType, length, precision, scale));
+            return checkedIdentifierStorage(id, column, new ForeignKeyStorage(domainType, mapping.converter(), storageType,
+                    new ColumnStorage(storageType, length, precision, scale)));
         }
         ElementValueMapping basic = resolveBasicStorageMapping(domainType);
         Class<?> columnType = basic.converter() == null ? domainType : basic.columnType();
-        return new ForeignKeyStorage(domainType, basic.converter(),
+        return checkedIdentifierStorage(id, column, new ForeignKeyStorage(domainType, basic.converter(),
                 basic.converter() == null ? null : basic.columnType(),
-                new ColumnStorage(columnType, length, precision, scale));
+                new ColumnStorage(columnType, length, precision, scale)));
+    }
+
+    private static ForeignKeyStorage checkedIdentifierStorage(
+            PersistentAttributeAccess id, Column column, ForeignKeyStorage storage) {
+        rejectRawBigDecimalDefinition(column, storage.storage().javaType(),
+                "BigDecimal identifier " + id.declaringType().getName() + "." + id.name());
+        return storage;
+    }
+
+    private static void rejectRawBigDecimalDefinition(Column column, Class<?> storageType, String location) {
+        if (storageType == java.math.BigDecimal.class && column != null && !column.columnDefinition().isBlank()) {
+            throw new IllegalArgumentException(location + " cannot use @Column(columnDefinition):"
+                    + " BigDecimal storage requires a reusable exact numeric shape");
+        }
     }
 
     private static void rejectJoinColumnDefinition(JoinColumn joinColumn, String location) {
@@ -5134,6 +5144,7 @@ public final class EntityMetadataFactory {
             // 해석한다 — enum(@Enumerated)/UUID/@Convert/@Temporal은 저장 표현으로, 순수 기본 타입은 그대로.
             ElementValueMapping valueMapping = resolveBasicElementValueMapping(
                     entityType, field, elementType, location, isMap ? "value" : null);
+            rejectRawBigDecimalDefinition(column, valueMapping.columnType(), location);
             info = new ElementCollectionInfo(
                     tableName, ownerForeignKeyColumn, valueColumn, wrapPrimitiveType(elementType), usesSet,
                     List.of(), orderColumn, mapKey,
@@ -5213,6 +5224,7 @@ public final class EntityMetadataFactory {
         String valueColumn = column != null && !column.name().isBlank() ? column.name()
                 : namingStrategy.columnName(attribute.name());
         ElementValueMapping mapping = resolveDescriptorElementValueMapping(attribute, valueType, map ? "value" : null, location);
+        rejectRawBigDecimalDefinition(column, mapping.columnType(), location);
         rejectOrderColumnCollision(order, ownerColumn, List.of(valueColumn), location);
         rejectMapKeyCollision(key, ownerColumn, List.of(valueColumn), location);
         ElementCollectionInfo info = new ElementCollectionInfo(tableName, ownerColumn, valueColumn,
@@ -5388,6 +5400,10 @@ public final class EntityMetadataFactory {
     }
 
     private static ColumnStorage mapKeyStorage(MapKeyColumn column, Class<?> javaType) {
+        if (javaType == java.math.BigDecimal.class && column != null && !column.columnDefinition().isBlank()) {
+            throw new IllegalArgumentException("@MapKeyColumn cannot use columnDefinition for BigDecimal storage:"
+                    + " the numeric shape must remain reusable");
+        }
         return new ColumnStorage(javaType, column == null ? 255 : column.length(),
                 column == null ? 0 : column.precision(), column == null ? 0 : column.scale());
     }
@@ -6127,6 +6143,7 @@ public final class EntityMetadataFactory {
     }
 
     private static ColumnStorage columnStorage(Column column, Class<?> javaType) {
+        rejectRawBigDecimalDefinition(column, javaType, "collection embeddable component");
         return new ColumnStorage(javaType, column == null ? 255 : column.length(),
                 column == null ? 0 : column.precision(), column == null ? 0 : column.scale());
     }
