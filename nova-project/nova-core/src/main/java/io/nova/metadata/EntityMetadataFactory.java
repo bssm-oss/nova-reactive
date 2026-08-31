@@ -2757,7 +2757,29 @@ public final class EntityMetadataFactory {
                 return classAccess.value() == AccessType.PROPERTY;
             }
         }
-        return false;
+        boolean fieldIdentifier = false;
+        boolean propertyIdentifier = false;
+        for (Class<?> type = field.getDeclaringClass(); type != null && type != Object.class;
+                type = type.getSuperclass()) {
+            if (type != field.getDeclaringClass()
+                    && !type.isAnnotationPresent(Entity.class)
+                    && !type.isAnnotationPresent(MappedSuperclass.class)) {
+                continue;
+            }
+            for (Field candidate : type.getDeclaredFields()) {
+                fieldIdentifier |= candidate.isAnnotationPresent(Id.class)
+                        || candidate.isAnnotationPresent(EmbeddedId.class);
+            }
+            for (Method candidate : type.getDeclaredMethods()) {
+                propertyIdentifier |= candidate.isAnnotationPresent(Id.class)
+                        || candidate.isAnnotationPresent(EmbeddedId.class);
+            }
+        }
+        if (fieldIdentifier && propertyIdentifier) {
+            throw new IllegalArgumentException(field.getDeclaringClass().getName()
+                    + " mixes field and property identifier placement; declare @Access explicitly");
+        }
+        return propertyIdentifier;
     }
 
     /** Returns the selected descriptor for the effective JPA access strategy. */
