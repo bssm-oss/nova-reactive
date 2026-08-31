@@ -41,6 +41,20 @@ class PhysicalTransactionScopeTest {
     }
 
     @Test
+    void afterCommitRunsInOrderOnlyOnceAndPropagatesFailure() {
+        PhysicalTransactionScope.Owner owner = PhysicalTransactionScope.newOwner();
+        PhysicalTransactionScope scope = owner.scope();
+        ArrayList<Integer> order = new ArrayList<>();
+        scope.afterCommit(() -> Mono.fromRunnable(() -> order.add(1)));
+        scope.afterCommit(() -> Mono.fromRunnable(() -> order.add(2)));
+
+        owner.afterCommit().block();
+        owner.afterCommit().block();
+
+        assertEquals(java.util.List.of(1, 2), order);
+    }
+
+    @Test
     void sealingRejectsNewResourcesAndCallbacks() {
         PhysicalTransactionScope.Owner owner = PhysicalTransactionScope.newOwner();
         PhysicalTransactionScope scope = owner.scope();
@@ -48,6 +62,7 @@ class PhysicalTransactionScopeTest {
 
         assertThrows(IllegalStateException.class, () -> scope.getOrCreateResource(new Object(), Object::new));
         assertThrows(IllegalStateException.class, () -> scope.beforeCommit(Mono::empty));
+        assertThrows(IllegalStateException.class, () -> scope.afterCommit(Mono::empty));
     }
 
     @Test
