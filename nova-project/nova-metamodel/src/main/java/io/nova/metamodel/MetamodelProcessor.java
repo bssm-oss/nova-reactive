@@ -234,7 +234,7 @@ public final class MetamodelProcessor extends AbstractProcessor {
         }
         if (type.getKind() == ElementKind.RECORD) {
             for (RecordComponentElement component : type.getRecordComponents()) {
-                putGetter(result, component.getSimpleName().toString(), component.getAccessor(), type);
+                result.put(component.getSimpleName().toString(), component.getAccessor());
             }
         }
         return result;
