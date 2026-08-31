@@ -22,7 +22,11 @@ import io.r2dbc.spi.ConnectionFactory;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
+import java.math.BigDecimal;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * {@code @ForeignKey} 소스 호환을 실제 R2DBC H2 driver로 검증하는 통합 테스트. SQL string 단위 테스트만으로는
@@ -165,6 +169,104 @@ class ForeignKeyConstraintH2IntegrationTest {
                         .then(operations.executeNative(NativeQuery.of(
                                 "insert into \"fk_owner_tags\" (\"owner_id\", \"tag\") values (999, 'x')")))
         ).verifyError();
+    }
+
+    @Test
+    void ownerForeignKeyAndJoinTableConstraintsMatchTheCatalogExactly() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(schema.create(List.of(
+                        FkParent.class,
+                        FkChildConstrained.class,
+                        FkElementOwner.class,
+                        FkStudent.class,
+                        FkCourse.class))
+                .thenMany(operations.queryNative(NativeQuery.of(
+                                "select \"TABLE_NAME\", \"CONSTRAINT_NAME\""
+                                        + " from INFORMATION_SCHEMA.TABLE_CONSTRAINTS"
+                                        + " where \"CONSTRAINT_TYPE\" = 'FOREIGN KEY'"
+                                        + " and \"TABLE_NAME\" in"
+                                        + " ('fk_child_constrained', 'fk_owner_tags', 'fk_enrollment')"
+                                        + " order by \"TABLE_NAME\", \"CONSTRAINT_NAME\""),
+                        row -> new ForeignKeyCatalogEntry(
+                                row.get("TABLE_NAME", String.class),
+                                row.get("CONSTRAINT_NAME", String.class)))
+                        .collectList()))
+                .assertNext(constraints -> assertEquals(List.of(
+                        new ForeignKeyCatalogEntry("fk_child_constrained", "fk_child_parent"),
+                        new ForeignKeyCatalogEntry("fk_enrollment", "fk_enr_course"),
+                        new ForeignKeyCatalogEntry("fk_enrollment", "fk_enr_student"),
+                        new ForeignKeyCatalogEntry("fk_owner_tags", "fk_tags_owner")),
+                        constraints,
+                        "owner, collection, and join-table @ForeignKey names must equal the H2 catalog"))
+                .verifyComplete();
+    }
+
+    @Test
+    void bigDecimalOwnerIdIsRetainedByChildCollectionAndJoinForeignKeys() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(schema.create(List.of(
+                        DecimalForeignKeyOwner.class,
+                        DecimalForeignKeyChild.class,
+                        DecimalForeignKeyPeer.class))
+                .thenMany(operations.queryNative(NativeQuery.of(
+                                "select \"TABLE_NAME\", \"COLUMN_NAME\", \"DATA_TYPE\","
+                                        + " \"NUMERIC_PRECISION\", \"NUMERIC_SCALE\""
+                                        + " from INFORMATION_SCHEMA.COLUMNS"
+                                        + " where (\"TABLE_NAME\" = 'fk_decimal_owner' and \"COLUMN_NAME\" = 'id')"
+                                        + " or (\"TABLE_NAME\" = 'fk_decimal_child' and \"COLUMN_NAME\" = 'owner_id')"
+                                        + " or (\"TABLE_NAME\" = 'fk_decimal_owner_tags'"
+                                        + " and \"COLUMN_NAME\" = 'owner_id')"
+                                        + " or (\"TABLE_NAME\" = 'fk_decimal_owner_peers'"
+                                        + " and \"COLUMN_NAME\" = 'owner_id')"
+                                        + " order by \"TABLE_NAME\""),
+                        row -> new ColumnTypeCatalogEntry(
+                                row.get("TABLE_NAME", String.class),
+                                row.get("COLUMN_NAME", String.class),
+                                row.get("DATA_TYPE", String.class),
+                                row.get("NUMERIC_PRECISION", Integer.class),
+                                row.get("NUMERIC_SCALE", Integer.class)))
+                        .collectList()))
+                .assertNext(columns -> {
+                    assertEquals(4, columns.size());
+                    ColumnTypeCatalogEntry ownerId = columns.stream()
+                            .filter(column -> column.tableName().equals("fk_decimal_owner"))
+                            .findFirst()
+                            .orElseThrow();
+                    assertEquals(new DecimalType("NUMERIC", 12, 3), ownerId.decimalType());
+                    assertEquals(List.of(ownerId.decimalType(), ownerId.decimalType(), ownerId.decimalType()), columns.stream()
+                                    .filter(column -> !column.tableName().equals("fk_decimal_owner"))
+                                    .map(ColumnTypeCatalogEntry::decimalType)
+                                    .toList(),
+                            "every BigDecimal owner FK must retain the owner's exact numeric shape");
+                })
+                .verifyComplete();
+
+        StepVerifier.create(operations.queryNative(NativeQuery.of(
+                                "select \"CONSTRAINT_NAME\" from INFORMATION_SCHEMA.TABLE_CONSTRAINTS"
+                                        + " where \"CONSTRAINT_TYPE\" = 'FOREIGN KEY'"
+                                        + " and \"TABLE_NAME\" in"
+                                        + " ('fk_decimal_child', 'fk_decimal_owner_tags', 'fk_decimal_owner_peers')"
+                                        + " order by \"CONSTRAINT_NAME\""),
+                        row -> row.get("CONSTRAINT_NAME", String.class))
+                .collectList())
+                .assertNext(constraints -> assertEquals(List.of(
+                        "fk_decimal_child_owner",
+                        "fk_decimal_owner_peer",
+                        "fk_decimal_owner_tag"), constraints))
+                .verifyComplete();
+
+        StepVerifier.create(operations.executeNative(NativeQuery.of(
+                "insert into \"fk_decimal_child\" (\"id\", \"owner_id\") values (1, 999.999)"))).verifyError();
+        StepVerifier.create(operations.executeNative(NativeQuery.of(
+                "insert into \"fk_decimal_owner_tags\" (\"owner_id\", \"tag\") values (999.999, 'orphan')"))).verifyError();
+        StepVerifier.create(operations.executeNative(NativeQuery.of(
+                "insert into \"fk_decimal_owner_peers\" (\"owner_id\", \"peer_id\") values (999.999, 1)"))).verifyError();
     }
 
     @Test
@@ -452,5 +554,65 @@ class ForeignKeyConstraintH2IntegrationTest {
 
         public SecondaryTableDefaultForeignKey() {
         }
+    }
+
+    private record ForeignKeyCatalogEntry(String tableName, String constraintName) {
+    }
+
+    private record DecimalType(String dataType, Integer precision, Integer scale) {
+    }
+
+    private record ColumnTypeCatalogEntry(
+            String tableName,
+            String columnName,
+            String dataType,
+            Integer precision,
+            Integer scale
+    ) {
+        DecimalType decimalType() {
+            return new DecimalType(dataType, precision, scale);
+        }
+    }
+
+    @Entity
+    @Table(name = "fk_decimal_owner")
+    public static class DecimalForeignKeyOwner {
+        @Id
+        @Column(precision = 12, scale = 3)
+        private BigDecimal id;
+
+        @ElementCollection
+        @CollectionTable(
+                name = "fk_decimal_owner_tags",
+                joinColumns = @JoinColumn(name = "owner_id"),
+                foreignKey = @ForeignKey(name = "fk_decimal_owner_tag"))
+        @Column(name = "tag")
+        private java.util.Set<String> tags;
+
+        @ManyToMany(targetEntity = DecimalForeignKeyPeer.class)
+        @JoinTable(
+                name = "fk_decimal_owner_peers",
+                joinColumns = @JoinColumn(name = "owner_id"),
+                inverseJoinColumns = @JoinColumn(name = "peer_id"),
+                foreignKey = @ForeignKey(name = "fk_decimal_owner_peer"))
+        private java.util.Set<DecimalForeignKeyPeer> peers;
+    }
+
+    @Entity
+    @Table(name = "fk_decimal_child")
+    public static class DecimalForeignKeyChild {
+        @Id
+        private Long id;
+
+        @ManyToOne(targetEntity = DecimalForeignKeyOwner.class)
+        @JoinColumn(name = "owner_id", foreignKey = @ForeignKey(name = "fk_decimal_child_owner"))
+        private DecimalForeignKeyOwner owner;
+    }
+
+    @Entity
+    @Table(name = "fk_decimal_peer")
+    public static class DecimalForeignKeyPeer {
+        @Id
+        private Long id;
     }
 }
