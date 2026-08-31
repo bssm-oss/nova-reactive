@@ -72,6 +72,22 @@ class CriteriaJoinIntegrationTest {
     }
 
     @Test
+    void innerJoinEntityReturnWithMaximumPageSize() {
+        CriteriaBuilder cb = cb();
+        CriteriaQuery<Employee> cq = cb.createQuery(Employee.class);
+        Root<Employee> e = cq.from(Employee.class);
+        Join<Employee, Department> d = e.join("department");
+        cq.select(e).where(cb.equal(d.<String>get("name"), "Sales")).orderBy(cb.asc(e.<String>get("name")));
+
+        StepVerifier.create(criteria.createQuery(cq)
+                        .setFirstResult(1)
+                        .setMaxResults(Integer.MAX_VALUE)
+                        .getResultList())
+                .assertNext(x -> assertEquals("Cara", x.getName()))
+                .verifyComplete();
+    }
+
+    @Test
     void innerJoinScalarProjection() {
         CriteriaBuilder cb = cb();
         CriteriaQuery<String> cq = cb.createQuery(String.class);

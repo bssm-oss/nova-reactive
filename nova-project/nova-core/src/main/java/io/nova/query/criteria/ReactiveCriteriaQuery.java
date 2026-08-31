@@ -385,12 +385,12 @@ public final class ReactiveCriteriaQuery<T> {
 
     /** setFirstResult/setMaxResults 페이지 창을 정렬된 id 목록에 적용한다. */
     private List<Object> window(List<Object> ids) {
-        int from = firstResult == null ? 0 : firstResult;
+        long from = firstResult == null ? 0L : firstResult.longValue();
         if (from >= ids.size()) {
             return List.of();
         }
-        int to = maxResults == null ? ids.size() : Math.min(ids.size(), from + maxResults);
-        return new ArrayList<>(ids.subList(from, to));
+        long to = maxResults == null ? ids.size() : Math.min((long) ids.size(), from + maxResults.longValue());
+        return ids.subList((int) from, (int) to);
     }
 
     /** 하이드레이션 결과를 1단계 id 순서로 재배열한다(DB가 IN 절 순서를 보장하지 않으므로). */
