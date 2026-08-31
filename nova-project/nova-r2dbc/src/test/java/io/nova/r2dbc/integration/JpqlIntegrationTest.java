@@ -141,6 +141,22 @@ class JpqlIntegrationTest {
     }
 
     @Test
+    void scalarAndAggregateResultVariablesOrderByTheirGeneratedLabels() {
+        StepVerifier.create(
+                        jpql.createQuery("SELECT e.name AS DisplayName FROM Employee e ORDER BY displayname DESC",
+                                        String.class)
+                                .getResultList())
+                .expectNext("Cara", "Bob", "Ada")
+                .verifyComplete();
+
+        StepVerifier.create(
+                        jpql.createQuery("SELECT COUNT(e) AS Total FROM Employee e ORDER BY total", Long.class)
+                                .getResultList())
+                .expectNext(3L)
+                .verifyComplete();
+    }
+
+    @Test
     void betweenAndNotBetweenWorkForEntityAndScalarSelections() {
         StepVerifier.create(
                         jpql.createQuery(

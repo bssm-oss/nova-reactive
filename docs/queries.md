@@ -194,3 +194,11 @@ JPQL identification aliases are case-insensitive in every query scope. For examp
 is a correlated subquery that refers to the outer alias with different casing. Aliases
 that differ only by case in the same scope, including `JOIN FETCH` aliases, are rejected
 as duplicates. Entity names and attribute-path segments remain case-sensitive.
+
+### JPQL SELECT result variables
+
+Scalar and aggregate SELECT items may define a result variable for `ORDER BY`. Result
+variables are case-insensitive and render as Nova's generated result-column label, so
+`SELECT COUNT(e) AS Total FROM Employee e ORDER BY total DESC` is supported. A result
+variable must be unique without regard to case, cannot collide with an identification
+alias, and can order only a single-column projection.
