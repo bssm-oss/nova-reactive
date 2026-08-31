@@ -61,6 +61,8 @@ public final class PersistentProperty {
      * {@code @ManyToOne}과 동일하게({@link #manyToOne}) 모델링된다.
      */
     private final boolean inverseToOne;
+    private boolean owningOneToOne;
+    private boolean oneToOneOrphanRemoval;
     /**
      * {@code @ManyToMany} link table 매핑 메타데이터. owning/inverse 양측 모두 채워지며, 이 property는
      * 부모 테이블에 컬럼이 없는 marker다(컬렉션은 hydration 단계에서 주입, link row는 save 시 동기화). M2M가
@@ -293,7 +295,7 @@ public final class PersistentProperty {
         if (this.nullable == newNullable) {
             return this;
         }
-        return new PersistentProperty(
+        return copyOneToOneLifecycle(new PersistentProperty(
                 field,
                 propertyName,
                 columnName,
@@ -341,7 +343,7 @@ public final class PersistentProperty {
                 secondaryTableName,
                 toOneForeignKey,
                 columnDdlDefinition
-        );
+        ));
     }
 
     /**
@@ -354,7 +356,7 @@ public final class PersistentProperty {
         if (this.columnName.equals(newColumnName)) {
             return this;
         }
-        PersistentProperty copy = new PersistentProperty(
+        PersistentProperty copy = copyOneToOneLifecycle(new PersistentProperty(
                 field,
                 propertyName,
                 newColumnName,
@@ -402,7 +404,7 @@ public final class PersistentProperty {
                 secondaryTableName,
                 toOneForeignKey,
                 columnDdlDefinition
-        );
+        ));
         return copy.withEmbeddedHostAccessPath(embeddedHostAccessPath);
     }
 
@@ -411,7 +413,7 @@ public final class PersistentProperty {
         if (this.propertyName.equals(newPropertyName)) {
             return this;
         }
-        PersistentProperty copy = new PersistentProperty(
+        PersistentProperty copy = copyOneToOneLifecycle(new PersistentProperty(
                 field,
                 newPropertyName,
                 columnName,
@@ -459,7 +461,7 @@ public final class PersistentProperty {
                 secondaryTableName,
                 toOneForeignKey,
                 columnDdlDefinition
-        );
+        ));
         return copy.withEmbeddedHostAccessPath(embeddedHostAccessPath);
     }
 
@@ -473,7 +475,7 @@ public final class PersistentProperty {
         if (this.id) {
             return this;
         }
-        PersistentProperty copy = new PersistentProperty(
+        PersistentProperty copy = copyOneToOneLifecycle(new PersistentProperty(
                 field,
                 propertyName,
                 columnName,
@@ -521,7 +523,7 @@ public final class PersistentProperty {
                 secondaryTableName,
                 toOneForeignKey,
                 columnDdlDefinition
-        );
+        ));
         return copy.withEmbeddedHostAccessPath(embeddedHostAccessPath);
     }
 
@@ -796,6 +798,26 @@ public final class PersistentProperty {
      */
     public boolean manyToOne() {
         return manyToOne;
+    }
+
+    /** True only for the FK-owning form of {@code @OneToOne}. */
+    public boolean owningOneToOne() {
+        return owningOneToOne;
+    }
+
+    /** Whether this owning {@code @OneToOne} has {@code orphanRemoval=true}. */
+    public boolean oneToOneOrphanRemoval() {
+        return oneToOneOrphanRemoval;
+    }
+
+    PersistentProperty withOneToOneLifecycle(boolean owningOneToOne, boolean orphanRemoval) {
+        this.owningOneToOne = owningOneToOne;
+        this.oneToOneOrphanRemoval = orphanRemoval;
+        return this;
+    }
+
+    private PersistentProperty copyOneToOneLifecycle(PersistentProperty copy) {
+        return copy.withOneToOneLifecycle(owningOneToOne, oneToOneOrphanRemoval);
     }
 
     public Class<?> manyToOneTargetType() {

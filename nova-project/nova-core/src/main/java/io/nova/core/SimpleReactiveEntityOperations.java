@@ -314,11 +314,51 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 return Mono.error(new IllegalArgumentException(
                         "@EmbeddedId must not be null on save for " + metadata.entityType().getName()));
             }
-            return findByIdInternal(metadata, id).hasElement()
-                    .flatMap(exists -> exists ? updatePath(metadata, entity) : insertPath(metadata, entity));
+            return findByIdInternal(metadata, id)
+                    .flatMap(previous -> updateStatelessWithOwningOneToOneOrphans(metadata, entity, previous))
+                    .switchIfEmpty(insertPath(metadata, entity));
         }
         boolean isNew = entityStateDetector.isNew(entity, metadata);
-        return isNew ? insertPath(metadata, entity) : updatePath(metadata, entity);
+        if (isNew) {
+            return insertPath(metadata, entity);
+        }
+        Object id = metadata.readIdValue(entity);
+        return findByIdInternal(metadata, id)
+                .flatMap(previous -> updateStatelessWithOwningOneToOneOrphans(metadata, entity, previous))
+                .switchIfEmpty(updatePath(metadata, entity));
+    }
+
+    private <T> Mono<T> updateStatelessWithOwningOneToOneOrphans(
+            EntityMetadata<T> metadata, T entity, T previous) {
+        return updatePath(metadata, entity)
+                .flatMap(updated -> removeStatelessOwningOneToOneOrphans(metadata, updated, previous)
+                        .thenReturn(updated));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private <T> Mono<Void> removeStatelessOwningOneToOneOrphans(
+            EntityMetadata<T> metadata, T owner, T previous) {
+        return Flux.fromIterable(metadata.manyToOneProperties())
+                .filter(PersistentProperty::oneToOneOrphanRemoval)
+                .concatMap(property -> {
+                    Object oldKey = toOneSnapshotValue(property, previous);
+                    if (oldKey == null || java.util.Objects.equals(oldKey, toOneSnapshotValue(property, owner))) {
+                        return Mono.empty();
+                    }
+                    Object queryValue = property.isCompositeToOne() ? oldKey : property.toPropertyValue(oldKey);
+                    return exists((Class) metadata.entityType(),
+                                    QuerySpec.empty().where(Criteria.eq(property.propertyName(), queryValue)))
+                            .flatMap(shared -> {
+                                if (shared) {
+                                    return Mono.empty();
+                                }
+                                EntityMetadata target = metadataFactory.getEntityMetadata(property.manyToOneTargetType());
+                                Object id = property.isCompositeToOne()
+                                        ? target.readIdValue(property.toOneForeignKey().assembleStub((List<Object>) oldKey))
+                                        : target.idProperty().toPropertyValue(oldKey);
+                                return findByIdInternal(target, id).flatMap(this::delete).then();
+                            });
+                }).then();
     }
 
     /**
@@ -1782,6 +1822,14 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 // 스칼라 변경이 없어도 세션에서 지연된 컬렉션(join/collection 테이블)은 flush로 동기화한다.
                 return syncCollections(session, entry, entity, metadata);
             }
+            Mono<Void> prepareOrphans = prepareOwningOneToOneOrphans(entry, metadata, entity);
+            return prepareOrphans.then(Mono.defer(() -> flushDirtyEntry(session, entry, entity, metadata)));
+        });
+    }
+
+    private Mono<Void> flushDirtyEntry(
+            PersistenceSession session, PersistenceSession.ManagedEntry entry, Object entity, EntityMetadata<?> metadata) {
+        return Mono.defer(() -> {
             try {
                 auditApplier.applyOnUpdate(entity, metadata);
                 listenerInvoker.invokePreUpdate(entity, metadata);
@@ -1832,11 +1880,83 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Mono<Void> withSecondary = metadata.hasSecondaryTables()
                     ? primaryUpdate.then(updateSecondaryRows(metadata, entity, fields))
                     : primaryUpdate;
-            return withSecondary.doOnSuccess(ignored -> {
+            return withSecondary.then(Mono.defer(() -> {
                 listenerInvoker.invokePostUpdate(entity, metadata);
-                entry.refreshSnapshot();
-            }).then(syncCollections(session, entry, entity, metadata));
+                return removeOwningOneToOneOrphans(entry, metadata, entity)
+                        .then(syncCollections(session, entry, entity, metadata))
+                        .doOnSuccess(ignored -> entry.refreshSnapshot());
+            }));
         });
+    }
+
+    private Mono<Void> prepareOwningOneToOneOrphans(
+            PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata, Object owner) {
+        for (PersistentProperty property : metadata.manyToOneProperties()) {
+            if (!property.oneToOneOrphanRemoval()
+                    || !entry.dirtyPropertyNames().contains(property.propertyName())) {
+                continue;
+            }
+            Object reference = property.readReferenceInstance(owner);
+            if (reference == null) {
+                continue;
+            }
+            EntityMetadata<?> target = metadataFactory.getEntityMetadata(property.manyToOneTargetType());
+            if (target.readIdValue(reference) != null) {
+                continue;
+            }
+            if (!property.cascadePersistReference()) {
+                return Mono.error(new IllegalStateException(metadata.entityType().getName() + "."
+                        + property.propertyName() + " replaces an orphan-removal target with a transient reference"
+                        + " without cascade PERSIST"));
+            }
+            return cascadeSaveToOneReferences(metadata, owner);
+        }
+        return Mono.empty();
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Mono<Void> removeOwningOneToOneOrphans(
+            PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata, Object owner) {
+        return Flux.fromIterable(metadata.manyToOneProperties())
+                .filter(property -> property.oneToOneOrphanRemoval()
+                        && entry.dirtyPropertyNames().contains(property.propertyName()))
+                .concatMap(property -> {
+                    Object oldKey = entry.snapshotPropertyValue(property);
+                    if (oldKey == null || java.util.Objects.equals(oldKey, toOneSnapshotValue(property, owner))) {
+                        return Mono.empty();
+                    }
+                    Object queryValue = property.isCompositeToOne() ? oldKey : property.toPropertyValue(oldKey);
+                    return exists((Class) metadata.entityType(),
+                                    QuerySpec.empty().where(Criteria.eq(property.propertyName(), queryValue)))
+                            .flatMap(shared -> {
+                                if (shared) {
+                                    return Mono.empty();
+                                }
+                                EntityMetadata target = metadataFactory.getEntityMetadata(property.manyToOneTargetType());
+                                Object id;
+                                if (property.isCompositeToOne()) {
+                                    id = target.readIdValue(property.toOneForeignKey().assembleStub((List<Object>) oldKey));
+                                } else {
+                                    id = target.idProperty().toPropertyValue(oldKey);
+                                }
+                                return findByIdInternal(target, id).flatMap(this::delete).then();
+                            });
+                }).then();
+    }
+
+    private static Object toOneSnapshotValue(PersistentProperty property, Object owner) {
+        if (!property.isCompositeToOne()) {
+            return property.toColumnValue(property.read(owner));
+        }
+        Object reference = property.readReferenceInstance(owner);
+        if (reference == null) {
+            return null;
+        }
+        List<Object> values = new ArrayList<>();
+        for (var column : property.toOneForeignKey().columns()) {
+            values.add(column.toColumnValue(column.readReferencedValue(reference)));
+        }
+        return List.copyOf(values);
     }
 
     // ===== 세션 컬렉션 diff-at-flush =====
@@ -2872,7 +2992,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      */
     private <T> Mono<Void> cascadeRemoveToOneReferences(EntityMetadata<T> metadata, T owner) {
         List<PersistentProperty> removing = metadata.manyToOneProperties().stream()
-                .filter(PersistentProperty::cascadeRemoveReference)
+                .filter(property -> property.cascadeRemoveReference() || property.oneToOneOrphanRemoval())
                 .toList();
         if (removing.isEmpty()) {
             return Mono.empty();
