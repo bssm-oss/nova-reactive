@@ -20,14 +20,15 @@ final class EmbeddableInstantiationStrategy {
     }
 
     static void hydrateSingleValued(Object entity, List<DecodedLeaf> leaves) {
-        Map<PersistentAttributeAccess, List<DecodedLeaf>> byRoot = new LinkedHashMap<>();
+        Map<HostKey, List<DecodedLeaf>> byRoot = new LinkedHashMap<>();
         for (DecodedLeaf leaf : leaves) {
             PersistentAttributeAccess root = leaf.property().embeddedHostAccessPath().get(0);
-            byRoot.computeIfAbsent(root, ignored -> new ArrayList<>()).add(leaf);
+            byRoot.computeIfAbsent(HostKey.of(root), ignored -> new ArrayList<>()).add(leaf);
         }
-        for (Map.Entry<PersistentAttributeAccess, List<DecodedLeaf>> entry : byRoot.entrySet()) {
-            Object value = constructHost(entry.getKey(), 0, entry.getValue(), true);
-            entry.getValue().get(0).property().writeEmbeddedHost(entity, 0, value);
+        for (List<DecodedLeaf> rootLeaves : byRoot.values()) {
+            PersistentAttributeAccess root = rootLeaves.get(0).property().embeddedHostAccessPath().get(0);
+            Object value = constructHost(root, 0, rootLeaves, true);
+            rootLeaves.get(0).property().writeEmbeddedHost(entity, 0, value);
         }
     }
 
@@ -53,7 +54,7 @@ final class EmbeddableInstantiationStrategy {
             return null;
         }
         Class<?> hostType = host.javaType();
-        Map<PersistentAttributeAccess, List<DecodedLeaf>> nested = new LinkedHashMap<>();
+        Map<HostKey, List<DecodedLeaf>> nested = new LinkedHashMap<>();
         List<DecodedLeaf> direct = new ArrayList<>();
         for (DecodedLeaf leaf : leaves) {
             List<PersistentAttributeAccess> path = leaf.property().embeddedHostAccessPath();
@@ -61,15 +62,16 @@ final class EmbeddableInstantiationStrategy {
                 direct.add(leaf);
             } else {
                 PersistentAttributeAccess child = path.get(depth + 1);
-                nested.computeIfAbsent(child, ignored -> new ArrayList<>()).add(leaf);
+                nested.computeIfAbsent(HostKey.of(child), ignored -> new ArrayList<>()).add(leaf);
             }
         }
         Map<String, Object> values = new LinkedHashMap<>();
         for (DecodedLeaf leaf : direct) {
             values.put(leaf.property().leafName(), leaf.value());
         }
-        for (Map.Entry<PersistentAttributeAccess, List<DecodedLeaf>> entry : nested.entrySet()) {
-            values.put(entry.getKey().name(), constructHost(entry.getKey(), depth + 1, entry.getValue(), true));
+        for (List<DecodedLeaf> childLeaves : nested.values()) {
+            PersistentAttributeAccess child = childLeaves.get(0).property().embeddedHostAccessPath().get(depth + 1);
+            values.put(child.name(), constructHost(child, depth + 1, childLeaves, true));
         }
         if (hostType.isRecord()) {
             return instantiateRecord(hostType, values, "record embeddable " + hostType.getName());
@@ -78,9 +80,10 @@ final class EmbeddableInstantiationStrategy {
         for (DecodedLeaf leaf : direct) {
             writeMutableLeaf(instance, leaf.property(), leaf.value());
         }
-        for (Map.Entry<PersistentAttributeAccess, List<DecodedLeaf>> entry : nested.entrySet()) {
-            entry.getValue().get(0).property().writeEmbeddedHost(
-                    instance, depth + 1, values.get(entry.getKey().name()));
+        for (List<DecodedLeaf> childLeaves : nested.values()) {
+            PersistentAttributeAccess child = childLeaves.get(0).property().embeddedHostAccessPath().get(depth + 1);
+            childLeaves.get(0).property().writeEmbeddedHost(
+                    instance, depth + 1, values.get(child.name()));
         }
         return instance;
     }
@@ -141,5 +144,11 @@ final class EmbeddableInstantiationStrategy {
     }
 
     record DecodedLeaf(PersistentProperty property, Object value) {
+    }
+
+    private record HostKey(Class<?> declaringType, String name) {
+        private static HostKey of(PersistentAttributeAccess access) {
+            return new HostKey(access.declaringType(), access.name());
+        }
     }
 }
