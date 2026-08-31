@@ -23,11 +23,14 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * R2dbcTransactionManager의 propagation, isolation, readOnly 동작을 H2 in-memory로 검증한다.
@@ -365,6 +368,69 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
+    void boundReadConnectionStartsOwnedTransactionsForRequiredNestedAndRequiresNew() {
+        AtomicInteger creates = new AtomicInteger();
+        AtomicInteger begins = new AtomicInteger();
+        AtomicInteger commits = new AtomicInteger();
+        AtomicInteger closes = new AtomicInteger();
+        Connection readConnection = connectionProxy(closes, null, null);
+        ConnectionFactory factory = proxyFactory(creates, () -> connectionProxy(closes, begins, commits), readConnection);
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(factory);
+
+        StepVerifier.create(txManager.withConnection(
+                        txManager.inTransaction(TransactionDefinition.DEFAULT, required -> {
+                                    assertTrue(required.hasActiveTransaction());
+                                    return Mono.empty();
+                                })
+                                .then(txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED), nested -> {
+                                            assertTrue(nested.hasActiveTransaction());
+                                            return Mono.empty();
+                                        }))
+                                .then(txManager.inTransaction(TransactionDefinition.requiresNew(), requiresNew -> {
+                                    assertTrue(requiresNew.hasActiveTransaction());
+                                    return Mono.empty();
+                                }))))
+                .verifyComplete();
+
+        assertEquals(4, creates.get());
+        assertEquals(3, begins.get());
+        assertEquals(3, commits.get());
+        assertEquals(4, closes.get());
+    }
+
+    @Test
+    void boundReadConnectionIsReusedForNonTransactionalPropagations() {
+        AtomicInteger creates = new AtomicInteger();
+        AtomicInteger closes = new AtomicInteger();
+        AtomicReference<Connection> seenConnection = new AtomicReference<>();
+        Connection readConnection = connectionProxy(closes, null, null);
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(
+                proxyFactory(creates, () -> connectionProxy(closes, null, null), readConnection));
+
+        StepVerifier.create(txManager.withConnection(
+                        txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.SUPPORTS), supports ->
+                                        readConnectionFromContext(seenConnection, supports.hasActiveTransaction()))
+                                .then(txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED), notSupported ->
+                                                readConnectionFromContext(seenConnection,
+                                                        notSupported.hasActiveTransaction())))
+                                .then(txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NEVER), never ->
+                                                readConnectionFromContext(seenConnection,
+                                                        never.hasActiveTransaction())))))
+                .verifyComplete();
+        assertSame(readConnection, seenConnection.get());
+        assertEquals(1, creates.get());
+
+        StepVerifier.create(txManager.withConnection(
+                        txManager.inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.MANDATORY), mandatory -> Mono.empty())))
+                .expectError(IllegalStateException.class)
+                .verify();
+    }
+
+    @Test
     void closesConnectionWhenBeginIsCancelledAfterAcquisition() {
         AtomicInteger acquisitions = new AtomicInteger();
         AtomicInteger beginTransactionCalls = new AtomicInteger();
@@ -593,6 +659,63 @@ class R2dbcTransactionManagerTest {
                 .verify();
 
         assertEquals(1, closeCalls.get());
+    }
+
+    private static Mono<Void> readConnectionFromContext(AtomicReference<Connection> sink, boolean activeTransaction) {
+        assertFalse(activeTransaction);
+        return Mono.deferContextual(context -> {
+            sink.set(context.get(R2dbcTransactionManager.CONNECTION_KEY));
+            return Mono.empty();
+        });
+    }
+
+    private static ConnectionFactory proxyFactory(AtomicInteger creates,
+                                                  Supplier<Connection> transactionConnection,
+                                                  Connection readConnection) {
+        return new ConnectionFactory() {
+            @Override
+            public Mono<? extends Connection> create() {
+                return Mono.fromSupplier(() -> {
+                    int acquisition = creates.incrementAndGet();
+                    return acquisition == 1 ? readConnection : transactionConnection.get();
+                });
+            }
+
+            @Override
+            public ConnectionFactoryMetadata getMetadata() {
+                return () -> "test";
+            }
+        };
+    }
+
+    private static Connection connectionProxy(AtomicInteger closes,
+                                              AtomicInteger begins,
+                                              AtomicInteger commits) {
+        return (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit" -> Mono.empty();
+                    case "beginTransaction" -> {
+                        if (begins == null) {
+                            throw new AssertionError("Read connection must not begin a transaction");
+                        }
+                        begins.incrementAndGet();
+                        yield Mono.empty();
+                    }
+                    case "commitTransaction" -> {
+                        if (commits == null) {
+                            throw new AssertionError("Read connection must not commit a transaction");
+                        }
+                        commits.incrementAndGet();
+                        yield Mono.empty();
+                    }
+                    case "close" -> {
+                        closes.incrementAndGet();
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
     }
 
     private static R2dbcTransactionManager transactionManager(Connection connection) {
