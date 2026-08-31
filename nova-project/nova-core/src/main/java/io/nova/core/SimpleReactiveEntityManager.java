@@ -381,6 +381,10 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         Object idValue = metadata.readIdValue(entity);
         QuerySpec spec = idQuerySpec(metadata, idValue).lockMode(lockMode);
         return operations.findAll(metadata.entityType(), spec).next()
+                // Lock acquisition is an internal existence/row-lock probe, not an entity read. In particular it
+                // must not auto-flush an unchanged managed instance before the force-increment UPDATE below.
+                // Keep the transaction connection in Context while removing only session auto-flush/identity handling.
+                .contextWrite(context -> context.delete(SimpleReactiveEntityOperations.SESSION_KEY))
                 .switchIfEmpty(Mono.error(() -> new OptimisticLockingFailureException(
                         "Cannot acquire lock; row no longer exists for "
                                 + metadata.entityType().getName() + " id=" + idValue)))
