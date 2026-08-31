@@ -1707,9 +1707,8 @@ public final class EntityMetadataFactory {
             columnOverrides.put(override.name(), override.column());
         }
         List<PersistentProperty> result = new ArrayList<>();
-        PersistentTypeAccess componentPlan = new PersistentAccessResolver().resolve(
-                embeddableType, selectedAttribute(idField).accessType());
-        for (PersistentAttributeAccess componentAttribute : componentPlan.attributes()) {
+        for (PersistentAttributeAccess componentAttribute : embeddedComponentAttributes(
+                embeddableType, selectedAttribute(idField).accessType())) {
             Field subField = componentAttribute.field();
             if (subField == null) {
                 throw new IllegalArgumentException(embeddableType.getName() + "." + componentAttribute.name()
@@ -1854,9 +1853,8 @@ public final class EntityMetadataFactory {
         List<PersistentProperty> result = new ArrayList<>();
         embeddableStack.add(embeddableType);
         try {
-            PersistentTypeAccess componentPlan = new PersistentAccessResolver().resolve(
-                    embeddableType, selectedAttribute(hostField).accessType());
-            for (PersistentAttributeAccess componentAttribute : componentPlan.attributes()) {
+            for (PersistentAttributeAccess componentAttribute : embeddedComponentAttributes(
+                    embeddableType, selectedAttribute(hostField).accessType())) {
                 Field subField = componentAttribute.field();
                 if (subField == null) {
                     throw new IllegalArgumentException(embeddableType.getName() + "." + componentAttribute.name()
@@ -1918,6 +1916,33 @@ public final class EntityMetadataFactory {
         }
         return createEmbeddedProperties(entityType, attribute.field(), parentHostPath, parentColumnPrefix,
                 embeddableStack, inheritedConversionOverrides);
+    }
+
+    /**
+     * Record embeddables are immutable canonical-constructor values. Their component accessors
+     * therefore remain the selected descriptors even beneath a FIELD-access host, preserving
+     * unannotated components as canonical-constructor leaves.
+     */
+    private static List<PersistentAttributeAccess> embeddedComponentAttributes(
+            Class<?> embeddableType, AccessType inheritedAccess) {
+        if (!embeddableType.isRecord()) {
+            return new PersistentAccessResolver().resolve(embeddableType, inheritedAccess).attributes();
+        }
+        List<PersistentAttributeAccess> components = new ArrayList<>();
+        for (java.lang.reflect.RecordComponent component : embeddableType.getRecordComponents()) {
+            Field field;
+            try {
+                field = embeddableType.getDeclaredField(component.getName());
+            } catch (NoSuchFieldException exception) {
+                throw new IllegalStateException(embeddableType.getName() + " record component '"
+                        + component.getName() + "' has no matching field metadata", exception);
+            }
+            if (!isNotPersistable(field)) {
+                components.add(new PersistentAttributeAccess(
+                        component.getName(), component.getAccessor(), null, field));
+            }
+        }
+        return components;
     }
 
     private static String describeEmbeddableStack(LinkedHashSet<Class<?>> stack, Class<?> repeated) {
