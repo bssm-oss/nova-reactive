@@ -5083,15 +5083,76 @@ public final class EntityMetadataFactory {
             return ElementCollectionInfo.MapKeyInfo.embeddable(keyType,
                     expandEmbeddableCollectionColumns(keyType, attribute, location, null, true));
         }
+        if (keyType.isAnnotationPresent(Entity.class)) {
+            ForeignKeyStorage storage = resolveToOneForeignKeyStorage(keyType);
+            if (storage == null) {
+                throw new IllegalArgumentException(location + " @MapKeyClass naming an entity key class "
+                        + keyType.getName() + " with a composite @Id (@EmbeddedId/@IdClass) is not supported;"
+                        + " only a single-@Id entity map key is supported");
+            }
+            if (attribute.isAnnotationPresent(MapKeyColumn.class)) {
+                throw new IllegalArgumentException(location
+                        + " @MapKeyColumn is not valid on an entity map key; use @MapKeyJoinColumn instead");
+            }
+            MapKeyJoinColumn join = attribute.annotation(MapKeyJoinColumn.class);
+            String name = join != null && !join.name().isBlank() ? join.name()
+                    : namingStrategy.columnName(attribute.name()) + "_key";
+            return ElementCollectionInfo.MapKeyInfo.entity(name, keyType,
+                    storage.converterColumnType() != null ? storage.converterColumnType() : storage.javaType(),
+                    storage.converter());
+        }
         MapKeyColumn column = attribute.annotation(MapKeyColumn.class);
         String name = column != null && !column.name().isBlank() ? column.name() : namingStrategy.columnName(attribute.name()) + "_key";
+        MapKeyTemporal temporal = attribute.annotation(MapKeyTemporal.class);
+        boolean utilDate = keyType == java.util.Date.class;
+        boolean calendar = java.util.Calendar.class.isAssignableFrom(keyType);
+        if (temporal != null) {
+            if (!utilDate && !calendar) {
+                throw new IllegalArgumentException(location + " @MapKeyTemporal is only valid on a java.util.Date or"
+                        + " java.util.Calendar map key, but the key type is " + keyType.getName());
+            }
+            Class<?> stored = switch (temporal.value()) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+            return new ElementCollectionInfo.MapKeyInfo(name, keyType, stored, null,
+                    castConverter(new TemporalAttributeConverter(keyType, temporal.value())));
+        }
+        JpaConverterDescriptor explicit = attribute.getter() != null
+                ? explicitJpaConverter(attribute.getter(), keyType, "key", location, null)
+                : explicitJpaConverter(attribute.field(), keyType, "key", location, null);
         if (keyType.isEnum()) {
             MapKeyEnumerated enumerated = attribute.annotation(MapKeyEnumerated.class);
+            if (explicit != null) {
+                if (enumerated != null) {
+                    throw new IllegalStateException(location
+                            + " cannot combine @Convert(attributeName=\"key\") with @MapKeyEnumerated");
+                }
+                return new ElementCollectionInfo.MapKeyInfo(name, keyType, explicit.columnType(), null, explicit.instantiate());
+            }
             EnumType type = enumerated == null ? inferredEnumType(keyType) : enumerated.value();
             EnumMapping mapping = resolveEnumMapping(keyType, type);
             return new ElementCollectionInfo.MapKeyInfo(name, keyType,
                     mapping.customColumnType() != null ? mapping.customColumnType() : type == EnumType.STRING ? String.class : Integer.class,
                     type, mapping.converter());
+        }
+        if (explicit != null) {
+            return new ElementCollectionInfo.MapKeyInfo(name, keyType, explicit.columnType(), null, explicit.instantiate());
+        }
+        if (utilDate || calendar) {
+            throw new IllegalArgumentException(location + " maps a java.util.Date/Calendar map key but is missing"
+                    + " @MapKeyTemporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
+        }
+        boolean disabled = attribute.getter() != null
+                ? conversionDisabled(attribute.getter(), "key", null)
+                : conversionDisabled(attribute.field(), "key", null);
+        if (!disabled) {
+            JpaConverterDescriptor automatic = uniqueJpaConverter(wrapPrimitiveType(keyType), true, location);
+            if (automatic != null) {
+                return new ElementCollectionInfo.MapKeyInfo(name, wrapPrimitiveType(keyType), automatic.columnType(),
+                        null, automatic.instantiate());
+            }
         }
         ElementValueMapping storage = resolveBasicStorageMapping(wrapPrimitiveType(keyType));
         if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapPrimitiveType(keyType))) {
