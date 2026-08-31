@@ -13,6 +13,8 @@ import io.nova.query.Projection;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -42,7 +44,9 @@ class DerivedRepositoryIntegrationTest {
             new EntityMetadataFactory(new DefaultNamingStrategy());
 
 
+    @Entity
     static final class Account {
+        @Id
         Long id;
         String email;
         boolean active;

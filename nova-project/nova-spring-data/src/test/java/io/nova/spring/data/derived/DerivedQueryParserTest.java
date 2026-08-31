@@ -32,7 +32,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DerivedQueryParserTest {
 
+    @Entity
     static final class Account {
+        @Id
         Long id;
         String email;
         String emailAddress;

@@ -13,6 +13,8 @@ import io.nova.fetch.FetchGroup;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -32,7 +34,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class NovaRepositoryFactoryBeanTest {
 
+    @Entity
     static final class Account {
+        @Id
         final long id;
         final String name;
 

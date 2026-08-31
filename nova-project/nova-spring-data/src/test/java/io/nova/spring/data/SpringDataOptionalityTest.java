@@ -7,6 +7,8 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.QuerySpec;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
@@ -209,7 +211,9 @@ class SpringDataOptionalityTest {
 
     // --- 테스트 fixtures -------------------------------------------------------------------------
 
+    @Entity
     static final class Account {
+        @Id
         final Long id;
         final String name;
 
@@ -228,7 +232,9 @@ class SpringDataOptionalityTest {
     }
 
     /** @Query 디스패치 optionality 검증용 엔티티 POJO(메타데이터 해석 없이 parse만 검증하므로 @Entity 불필요). */
+    @Entity
     public static class QueryAccount {
+        @Id
         Long id;
         String email;
     }
