@@ -681,8 +681,8 @@ public final class EntityMetadataFactory {
      */
     private static boolean isRootTableColumn(PersistentProperty property, Class<?> rootClass) {
         Class<?> declaringClass = property.embedded()
-                ? property.embeddedHostPath().get(0).getDeclaringClass()
-                : property.field().getDeclaringClass();
+                ? property.embeddedHostAccessPath().get(0).declaringType()
+                : property.access().declaringType();
         // declaringClass가 root이거나 root의 상위면 루트 테이블. (root가 declaringClass의 하위이면)
         return declaringClass.isAssignableFrom(rootClass);
     }
@@ -1790,13 +1790,13 @@ public final class EntityMetadataFactory {
                             + " @EmbeddedId type " + embeddableType.getName()
                             + " has no persistent fields to map as key columns");
         }
-        return result;
+        return composeEmbeddedHostAccess(result);
     }
 
     private List<PersistentProperty> createEmbeddedIdProperties(
             Class<?> entityType, PersistentAttributeAccess attribute) {
         if (attribute.field() == null) {
-            return List.of(createDescriptorProperty(attribute).withId());
+            return createDescriptorEmbeddedProperties(entityType, attribute, true, "");
         }
         return createEmbeddedIdProperties(entityType, attribute.field());
     }
@@ -1947,7 +1947,20 @@ public final class EntityMetadataFactory {
         } finally {
             embeddableStack.remove(embeddableType);
         }
-        return result;
+        return composeEmbeddedHostAccess(result);
+    }
+
+    /**
+     * The Field path remains a public compatibility view; runtime traversal is always through
+     * the selected JPA access descriptor for each embedded host.
+     */
+    private static List<PersistentProperty> composeEmbeddedHostAccess(List<PersistentProperty> properties) {
+        return properties.stream()
+                .map(property -> property.withEmbeddedHostAccessPath(
+                        property.embeddedHostPath().stream()
+                                .map(EntityMetadataFactory::selectedAttribute)
+                                .toList()))
+                .toList();
     }
 
     private List<PersistentProperty> createEmbeddedProperties(
@@ -1959,10 +1972,51 @@ public final class EntityMetadataFactory {
             Map<String, Convert> inheritedConversionOverrides
     ) {
         if (attribute.field() == null) {
-            return List.of(createDescriptorProperty(attribute));
+            return createDescriptorEmbeddedProperties(entityType, attribute, false, parentColumnPrefix);
         }
         return createEmbeddedProperties(entityType, attribute.field(), parentHostPath, parentColumnPrefix,
                 embeddableStack, inheritedConversionOverrides);
+    }
+
+    /**
+     * PROPERTY access may legitimately expose an embedded host without a physical backing field.
+     * Build its simple leaves directly from selected descriptors; host traversal remains composed
+     * descriptors rather than attempting to rediscover a Field.
+     */
+    private List<PersistentProperty> createDescriptorEmbeddedProperties(
+            Class<?> entityType, PersistentAttributeAccess host, boolean embeddedId, String parentPrefix) {
+        Class<?> embeddableType = host.javaType();
+        if (!embeddableType.isAnnotationPresent(Embeddable.class)) {
+            throw new IllegalArgumentException(entityType.getName() + "." + host.name()
+                    + " is annotated as embedded but its type " + embeddableType.getName()
+                    + " is not annotated with @Embeddable");
+        }
+        List<PersistentProperty> result = new ArrayList<>();
+        String prefix = embeddedId ? "" : parentPrefix + namingStrategy.columnName(host.name()) + "_";
+        Map<String, Column> overrides = new java.util.HashMap<>();
+        for (AttributeOverride override : host.annotationsByType(AttributeOverride.class)) {
+            overrides.put(override.name(), override.column());
+        }
+        for (PersistentAttributeAccess component : embeddedComponentAttributes(embeddableType, host.accessType())) {
+            if (component.isAnnotationPresent(Embedded.class) || component.isAnnotationPresent(EmbeddedId.class)) {
+                throw new IllegalArgumentException(entityType.getName() + "." + host.name()
+                        + " uses nested embedded PROPERTY members without backing fields");
+            }
+            PersistentProperty property = createDescriptorProperty(component);
+            Column override = overrides.get(component.name());
+            String columnName = override != null && !override.name().isBlank()
+                    ? override.name() : prefix + property.columnName();
+            PersistentProperty embeddedProperty = property.withColumnName(columnName);
+            if (embeddedId) {
+                embeddedProperty = embeddedProperty.withId();
+            }
+            result.add(embeddedProperty.withEmbeddedHostAccessPath(List.of(host)));
+        }
+        if (result.isEmpty()) {
+            throw new IllegalArgumentException(entityType.getName() + "." + host.name()
+                    + " embedded type has no persistent properties");
+        }
+        return result;
     }
 
     /**

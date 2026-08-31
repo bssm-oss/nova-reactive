@@ -36,13 +36,14 @@ public final class PersistentProperty {
     private final boolean createdAt;
     private final boolean updatedAt;
     private final boolean softDelete;
-    private final boolean embedded;
+    private boolean embedded;
     /**
      * 호스트 엔티티 인스턴스에서 이 property가 가리키는 leaf field까지 traverse해야 하는
      * {@link jakarta.persistence.Embedded} 필드들의 outer → inner 순서 체인. top-level property는
      * 비어있다. nested 1-level은 길이 1, 2-level은 길이 2.
      */
     private final List<Field> embeddedHostPath;
+    private List<PersistentAttributeAccess> embeddedHostAccessPath;
     private final boolean enumerated;
     private final EnumType enumType;
     private final boolean json;
@@ -246,6 +247,9 @@ public final class PersistentProperty {
         for (Field hostField : this.embeddedHostPath) {
             hostField.setAccessible(true);
         }
+        this.embeddedHostAccessPath = this.embeddedHostPath.stream()
+                .map(hostField -> new PersistentAttributeAccess(hostField.getName(), hostField))
+                .toList();
         this.enumerated = enumerated;
         this.enumType = enumType;
         this.json = json;
@@ -642,6 +646,17 @@ public final class PersistentProperty {
         return embeddedHostPath;
     }
 
+    /** Selected access path used for embedded runtime traversal. */
+    public List<PersistentAttributeAccess> embeddedHostAccessPath() {
+        return embeddedHostAccessPath;
+    }
+
+    PersistentProperty withEmbeddedHostAccessPath(List<PersistentAttributeAccess> path) {
+        this.embeddedHostAccessPath = List.copyOf(path);
+        this.embedded = !path.isEmpty();
+        return this;
+    }
+
     /**
      * Hydration helper for a materialized embedded host. Runtime mappers keep host-field access inside the cached
      * descriptor instead of rediscovering a field from the entity type.
@@ -651,12 +666,7 @@ public final class PersistentProperty {
             throw new IllegalArgumentException("Invalid embedded host path index " + pathIndex
                     + " for " + propertyName);
         }
-        Field hostField = embeddedHostPath.get(pathIndex);
-        try {
-            hostField.set(instance, value);
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot write embedded host " + hostField.getName(), exception);
-        }
+        embeddedHostAccessPath.get(pathIndex).write(instance, value);
     }
 
     /**
@@ -1012,8 +1022,8 @@ public final class PersistentProperty {
     public Object read(Object instance) {
         try {
             Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                current = hostField.get(current);
+            for (PersistentAttributeAccess host : embeddedHostAccessPath) {
+                current = host.read(current);
                 if (current == null) {
                     return null;
                 }
@@ -1112,18 +1122,14 @@ public final class PersistentProperty {
      * 복합키 entity에서 id 값 객체(holder)를 통째로 꺼낼 때 사용한다.
      */
     public Object readHostHolder(Object instance) {
-        try {
-            Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                current = hostField.get(current);
-                if (current == null) {
-                    return null;
-                }
+        Object current = instance;
+        for (PersistentAttributeAccess host : embeddedHostAccessPath) {
+            current = host.read(current);
+            if (current == null) {
+                return null;
             }
-            return current;
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read embedded host for " + field.getName(), exception);
         }
+        return current;
     }
 
     public void write(Object instance, Object value) {
@@ -1144,11 +1150,11 @@ public final class PersistentProperty {
         }
         try {
             Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                Object next = hostField.get(current);
+            for (PersistentAttributeAccess host : embeddedHostAccessPath) {
+                Object next = host.read(current);
                 if (next == null) {
-                    next = instantiateEmbeddable(hostField.getType());
-                    hostField.set(current, next);
+                    next = instantiateEmbeddable(host.javaType());
+                    host.write(current, next);
                 }
                 current = next;
             }

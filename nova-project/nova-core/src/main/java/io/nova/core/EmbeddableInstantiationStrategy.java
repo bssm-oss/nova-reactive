@@ -1,10 +1,10 @@
 package io.nova.core;
 
 import io.nova.metadata.ElementCollectionInfo;
+import io.nova.metadata.PersistentAttributeAccess;
 import io.nova.metadata.PersistentProperty;
 
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -20,12 +20,12 @@ final class EmbeddableInstantiationStrategy {
     }
 
     static void hydrateSingleValued(Object entity, List<DecodedLeaf> leaves) {
-        Map<Field, List<DecodedLeaf>> byRoot = new LinkedHashMap<>();
+        Map<PersistentAttributeAccess, List<DecodedLeaf>> byRoot = new LinkedHashMap<>();
         for (DecodedLeaf leaf : leaves) {
-            Field root = leaf.property().embeddedHostPath().get(0);
+            PersistentAttributeAccess root = leaf.property().embeddedHostAccessPath().get(0);
             byRoot.computeIfAbsent(root, ignored -> new ArrayList<>()).add(leaf);
         }
-        for (Map.Entry<Field, List<DecodedLeaf>> entry : byRoot.entrySet()) {
+        for (Map.Entry<PersistentAttributeAccess, List<DecodedLeaf>> entry : byRoot.entrySet()) {
             Object value = constructHost(entry.getKey(), 0, entry.getValue(), true);
             entry.getValue().get(0).property().writeEmbeddedHost(entity, 0, value);
         }
@@ -47,19 +47,20 @@ final class EmbeddableInstantiationStrategy {
         return column.read(value);
     }
 
-    private static Object constructHost(Field hostField, int depth, List<DecodedLeaf> leaves, boolean nullableHost) {
+    private static Object constructHost(
+            PersistentAttributeAccess host, int depth, List<DecodedLeaf> leaves, boolean nullableHost) {
         if (nullableHost && leaves.stream().allMatch(leaf -> leaf.value() == null)) {
             return null;
         }
-        Class<?> hostType = hostField.getType();
-        Map<Field, List<DecodedLeaf>> nested = new LinkedHashMap<>();
+        Class<?> hostType = host.javaType();
+        Map<PersistentAttributeAccess, List<DecodedLeaf>> nested = new LinkedHashMap<>();
         List<DecodedLeaf> direct = new ArrayList<>();
         for (DecodedLeaf leaf : leaves) {
-            List<Field> path = leaf.property().embeddedHostPath();
+            List<PersistentAttributeAccess> path = leaf.property().embeddedHostAccessPath();
             if (path.size() == depth + 1) {
                 direct.add(leaf);
             } else {
-                Field child = path.get(depth + 1);
+                PersistentAttributeAccess child = path.get(depth + 1);
                 nested.computeIfAbsent(child, ignored -> new ArrayList<>()).add(leaf);
             }
         }
@@ -67,8 +68,8 @@ final class EmbeddableInstantiationStrategy {
         for (DecodedLeaf leaf : direct) {
             values.put(leaf.property().leafName(), leaf.value());
         }
-        for (Map.Entry<Field, List<DecodedLeaf>> entry : nested.entrySet()) {
-            values.put(entry.getKey().getName(), constructHost(entry.getKey(), depth + 1, entry.getValue(), true));
+        for (Map.Entry<PersistentAttributeAccess, List<DecodedLeaf>> entry : nested.entrySet()) {
+            values.put(entry.getKey().name(), constructHost(entry.getKey(), depth + 1, entry.getValue(), true));
         }
         if (hostType.isRecord()) {
             return instantiateRecord(hostType, values, "record embeddable " + hostType.getName());
@@ -77,9 +78,9 @@ final class EmbeddableInstantiationStrategy {
         for (DecodedLeaf leaf : direct) {
             writeMutableLeaf(instance, leaf.property(), leaf.value());
         }
-        for (Map.Entry<Field, List<DecodedLeaf>> entry : nested.entrySet()) {
+        for (Map.Entry<PersistentAttributeAccess, List<DecodedLeaf>> entry : nested.entrySet()) {
             entry.getValue().get(0).property().writeEmbeddedHost(
-                    instance, depth + 1, values.get(entry.getKey().getName()));
+                    instance, depth + 1, values.get(entry.getKey().name()));
         }
         return instance;
     }
