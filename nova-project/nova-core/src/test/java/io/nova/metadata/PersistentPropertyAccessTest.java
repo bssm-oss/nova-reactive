@@ -10,6 +10,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 
@@ -87,6 +88,56 @@ class PersistentPropertyAccessTest {
         BooleanPropertyAccount account = new BooleanPropertyAccount();
         activeProp.write(account, Boolean.TRUE);
         assertEquals(Boolean.TRUE, activeProp.read(account));
+    }
+
+    @Test
+    void booleanIsGetterWinsOverCompatibleGetGetter() {
+        EntityMetadata<DualBooleanGetterAccount> metadata =
+                factory.getEntityMetadata(DualBooleanGetterAccount.class);
+        PersistentProperty activeProp = property(metadata, "active");
+
+        assertEquals("isActive", activeProp.propertyAccessGetter().getName());
+        DualBooleanGetterAccount account = new DualBooleanGetterAccount();
+        activeProp.write(account, Boolean.TRUE);
+        assertEquals(Boolean.TRUE, activeProp.read(account));
+        assertTrue(account.isGetterInvoked);
+        assertFalse(account.getGetterInvoked);
+    }
+
+    @Test
+    void propertyAccessSelectsExactSetterOverConvenienceOverload() {
+        EntityMetadata<OverloadedSetterAccount> metadata =
+                factory.getEntityMetadata(OverloadedSetterAccount.class);
+        PersistentProperty nameProp = property(metadata, "name");
+
+        assertEquals(String.class, nameProp.propertyAccessSetter().getParameterTypes()[0]);
+        OverloadedSetterAccount account = new OverloadedSetterAccount();
+        nameProp.write(account, "alice");
+        assertEquals("alice", nameProp.read(account));
+        assertTrue(account.exactSetterInvoked);
+        assertFalse(account.convenienceSetterInvoked);
+    }
+
+    @Test
+    void rejectsAmbiguousSameRankGetters() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(AmbiguousGetterAccount.class));
+        assertTrue(exception.getMessage().contains("ambiguous getter"));
+    }
+
+    @Test
+    void covariantDerivedAccessorAndSetterReplaceInheritedAccessors() {
+        EntityMetadata<CovariantPropertyAccount> metadata =
+                factory.getEntityMetadata(CovariantPropertyAccount.class);
+        PersistentProperty nameProp = property(metadata, "name");
+
+        assertEquals(String.class, nameProp.propertyAccessGetter().getReturnType());
+        assertEquals(String.class, nameProp.propertyAccessSetter().getParameterTypes()[0]);
+        CovariantPropertyAccount account = new CovariantPropertyAccount();
+        nameProp.write(account, "alice");
+        assertEquals("alice", nameProp.read(account));
+        assertTrue(account.derivedSetterInvoked);
     }
 
     @Test
@@ -254,6 +305,137 @@ class PersistentPropertyAccessTest {
 
         public void setActive(boolean active) {
             this.active = active;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class DualBooleanGetterAccount {
+        private Long id;
+        private boolean active;
+
+        transient boolean isGetterInvoked;
+        transient boolean getGetterInvoked;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public boolean isActive() {
+            isGetterInvoked = true;
+            return active;
+        }
+
+        public boolean getActive() {
+            getGetterInvoked = true;
+            return active;
+        }
+
+        public void setActive(boolean active) {
+            this.active = active;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class OverloadedSetterAccount {
+        private Long id;
+        private String name;
+
+        transient boolean exactSetterInvoked;
+        transient boolean convenienceSetterInvoked;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(CharSequence name) {
+            convenienceSetterInvoked = true;
+            this.name = name.toString();
+        }
+
+        public void setName(String name) {
+            exactSetterInvoked = true;
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class AmbiguousGetterAccount {
+        private Long id;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public String getName() {
+            return "name";
+        }
+
+        public String getname() {
+            return "other";
+        }
+
+        public void setName(String name) {
+        }
+    }
+
+    @MappedSuperclass
+    @Access(AccessType.PROPERTY)
+    static class CovariantPropertyBase {
+        private Long id;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public CharSequence getName() {
+            return "";
+        }
+
+        public void setName(CharSequence name) {
+        }
+    }
+
+    @Entity
+    static class CovariantPropertyAccount extends CovariantPropertyBase {
+        private String name;
+
+        transient boolean derivedSetterInvoked;
+
+        @Override
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            derivedSetterInvoked = true;
+            this.name = name;
         }
     }
 

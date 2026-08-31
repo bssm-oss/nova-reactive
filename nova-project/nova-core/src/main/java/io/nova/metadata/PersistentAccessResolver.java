@@ -17,11 +17,11 @@ import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Resolves and caches the one selected annotation/state carrier for managed attributes. */
@@ -65,7 +65,7 @@ public final class PersistentAccessResolver {
             if (candidateField(field)) fields.put(field.getName(), field);
         }
         Map<String, Method> getters = getters(declaration);
-        Map<String, Method> setters = setters(declaration);
+        Map<String, List<Method>> setters = setters(declaration);
         List<String> names = new ArrayList<>(fields.keySet());
         for (String name : getters.keySet()) if (!names.contains(name)) names.add(name);
         List<PersistentAttributeAccess> attributes = new ArrayList<>();
@@ -98,10 +98,7 @@ public final class PersistentAccessResolver {
                 validateAccess(getter, AccessType.PROPERTY);
                 rejectInactive(getter, field, type, name);
                 if (!getter.isAnnotationPresent(Transient.class)) {
-                    Method setter = setters.get(name);
-                    if (setter != null && !setter.getParameterTypes()[0].equals(getter.getReturnType())) {
-                        throw new IllegalArgumentException(type.getName() + "." + name + " getter/setter types are incompatible");
-                    }
+                    Method setter = setter(type, name, getter, setters.get(name));
                     if (setter == null && !declaration.isRecord()) {
                         throw new IllegalArgumentException(type.getName() + "." + name
                                 + " has no JavaBean setter required by PROPERTY access");
@@ -174,13 +171,16 @@ public final class PersistentAccessResolver {
     }
 
     private static Map<String, Method> getters(Class<?> type) {
-        Map<String, Method> result = new HashMap<>();
+        Map<String, List<Method>> candidates = new TreeMap<>();
         for (Method method : type.getDeclaredMethods()) {
             if (method.isBridge() || method.isSynthetic() || Modifier.isStatic(method.getModifiers()) || method.getParameterCount() != 0 || method.getReturnType() == Void.TYPE) continue;
             String name = getterName(method);
             if (name == null) continue;
-            Method previous = result.put(name, method);
-            if (previous != null) throw new IllegalArgumentException(type.getName() + " has ambiguous getter for " + name);
+            candidates.computeIfAbsent(name, ignored -> new ArrayList<>()).add(method);
+        }
+        Map<String, Method> result = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Method>> entry : candidates.entrySet()) {
+            result.put(entry.getKey(), getter(type, entry.getKey(), entry.getValue()));
         }
         if (type.isRecord()) {
             for (RecordComponent component : type.getRecordComponents()) {
@@ -194,20 +194,60 @@ public final class PersistentAccessResolver {
         return result;
     }
 
-    private static Map<String, Method> setters(Class<?> type) {
-        Map<String, Method> result = new HashMap<>();
+    private static Method getter(Class<?> type, String property, List<Method> candidates) {
+        List<Method> booleanGetters = candidates.stream()
+                .filter(method -> method.getName().startsWith("is"))
+                .sorted(Comparator.comparing(Method::toGenericString))
+                .toList();
+        List<Method> regularGetters = candidates.stream()
+                .filter(method -> method.getName().startsWith("get"))
+                .sorted(Comparator.comparing(Method::toGenericString))
+                .toList();
+        if (booleanGetters.size() > 1) {
+            throw new IllegalArgumentException(type.getName() + " has ambiguous getter for " + property);
+        }
+        if (!booleanGetters.isEmpty()) {
+            Method booleanGetter = booleanGetters.get(0);
+            for (Method regularGetter : regularGetters) {
+                if (!regularGetter.getReturnType().equals(booleanGetter.getReturnType())) {
+                    throw new IllegalArgumentException(type.getName() + "." + property + " has incompatible JavaBean getters");
+                }
+            }
+            return booleanGetter;
+        }
+        if (regularGetters.size() != 1) {
+            throw new IllegalArgumentException(type.getName() + " has ambiguous getter for " + property);
+        }
+        return regularGetters.get(0);
+    }
+
+    private static Map<String, List<Method>> setters(Class<?> type) {
+        Map<String, List<Method>> result = new TreeMap<>();
         for (Method method : type.getDeclaredMethods()) {
             if (method.isBridge() || method.isSynthetic() || Modifier.isStatic(method.getModifiers()) || method.getParameterCount() != 1 || method.getReturnType() != Void.TYPE || !method.getName().startsWith("set") || method.getName().length() == 3) continue;
             String name = Introspector.decapitalize(method.getName().substring(3));
-            if (result.put(name, method) != null) throw new IllegalArgumentException(type.getName() + " has overloaded setter for " + name);
+            result.computeIfAbsent(name, ignored -> new ArrayList<>()).add(method);
         }
         return result;
+    }
+
+    private static Method setter(Class<?> type, String property, Method getter, List<Method> candidates) {
+        if (candidates == null) return null;
+        List<Method> exactMatches = candidates.stream()
+                .filter(method -> method.getParameterTypes()[0].equals(getter.getReturnType()))
+                .sorted(Comparator.comparing(Method::toGenericString))
+                .toList();
+        if (exactMatches.size() == 1) return exactMatches.get(0);
+        if (exactMatches.size() > 1) {
+            throw new IllegalArgumentException(type.getName() + " has ambiguous setter for " + property);
+        }
+        throw new IllegalArgumentException(type.getName() + "." + property + " getter/setter types are incompatible");
     }
 
     private static String getterName(Method method) {
         String name = method.getName();
         if (name.startsWith("get") && name.length() > 3) return Introspector.decapitalize(name.substring(3));
-        if (name.startsWith("is") && name.length() > 2 && (method.getReturnType() == boolean.class || method.getReturnType() == Boolean.class)) return Introspector.decapitalize(name.substring(2));
+        if (name.startsWith("is") && name.length() > 2 && method.getReturnType() == boolean.class) return Introspector.decapitalize(name.substring(2));
         return null;
     }
 
