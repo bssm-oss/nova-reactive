@@ -33,8 +33,8 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@PreRemove`      | Invoked just before delete (soft or hard).                                                |
 | `@PostRemove`     | Invoked right after a successful delete (soft or hard).                                    |
 | `@EntityListeners` | TYPE-level marker registering external listener classes whose methods carry the same lifecycle annotations. Listener callbacks take the entity as a single argument and fire **before** the entity's own callbacks. See [Entity listeners](#entity-listeners). |
-| `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; columns flatten into the host entity's table. Mutable classes and Java records are supported; records hydrate through their canonical constructor. |
-| `@Embedded`       | FIELD-level marker indicating that an entity field is an `@Embeddable` flattened into host columns. Nested ordinary record values are supported; nested `@EmbeddedId` remains fail-fast. |
+| `@Embeddable`     | TYPE-level marker for a composite value type with no identifier of its own; an otherwise-unmapped attribute of this type is implicitly embedded. Mutable classes and Java records are supported; records hydrate through their canonical constructor. |
+| `@Embedded`       | FIELD/PROPERTY marker explicitly flattening an `@Embeddable` into host columns. Nested ordinary record values are supported; nested `@EmbeddedId` remains fail-fast. |
 | `@MappedSuperclass` | TYPE-level marker on a non-entity base class. Its fields (e.g. an inherited id / audit columns) are mapped into every entity that extends it. |
 | `@Inheritance`    | TYPE-level marker on a hierarchy root. `SINGLE_TABLE` (the JPA default), `JOINED`, and `TABLE_PER_CLASS` are supported for single-level hierarchies. Optional — an `@Entity` extending another `@Entity` defaults to SINGLE_TABLE. |
 | `@DiscriminatorColumn` | On the hierarchy root, names the discriminator column (default `dtype`) and its type (`STRING` default, `CHAR`, `INTEGER`). |
@@ -420,6 +420,9 @@ fires once. `@ExcludeSuperclassListeners` on an entity or mapped superclass cuts
 listener hosts above that type while inherited entity callbacks remain active. Nova has no XML
 default listeners, so `@ExcludeDefaultListeners` is recognized (including inheritance from a
 mapped superclass) but is a no-op: explicit `@EntityListeners` and entity callbacks remain active.
+Each entity, mapped-superclass, or listener class may declare at most one callback method for a
+given lifecycle phase; duplicate declarations fail during metadata construction. One method may
+carry multiple different lifecycle annotations.
 
 ---
 

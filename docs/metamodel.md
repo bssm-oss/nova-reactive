@@ -117,6 +117,9 @@ public class Address {
 }
 ```
 
+An otherwise-unmapped FIELD or PROPERTY whose declared type is `@Embeddable` is treated as
+embedded even without `@Embedded`; generated constants still use the same dotted leaf paths.
+
 ```java
 @Generated("io.nova.metamodel.MetamodelProcessor")
 public final class Customer_ {

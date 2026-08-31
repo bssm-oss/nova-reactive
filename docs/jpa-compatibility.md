@@ -38,7 +38,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@Id` + `@GeneratedValue` | ✅ | `IDENTITY`, `SEQUENCE`, `TABLE` (`@TableGenerator`), `AUTO` (maps to `IDENTITY`), `UUID` |
 | `@Basic` | ✅ | `optional = false` enforced as `NOT NULL` (combines with `@Column(nullable)`); `fetch` is accepted but inert |
 | `@EmbeddedId` / `@IdClass` composite keys | ✅ | `findById` / `deleteById` / soft-delete / batch-delete / optimistic + pessimistic lock |
-| `@Embeddable` / `@Embedded` / `@AttributeOverride` | ✅ | Mutable and Java record value types are flattened into the owner table; records use their canonical constructor during hydration |
+| `@Embeddable` / `@Embedded` / `@AttributeOverride` | ✅ | Mutable and Java record value types are flattened into the owner table; otherwise-unmapped embeddable-typed attributes are implicit; nested outer overrides take precedence |
 | `@Enumerated` (`STRING` / `ORDINAL`) | ✅ | |
 | `@EnumeratedValue` (JPA 3.2) | ✅ | Enum constant field values are used as the stored representation; requires a supported `String`/numeric value type |
 | `@Temporal` (`java.util.Date` / `Calendar`) | ✅ | `DATE` / `TIME` / `TIMESTAMP`; `java.time.*` supported natively |
@@ -50,7 +50,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@Access(FIELD)` | ✅ | Default |
 | `@Access(PROPERTY)` | ✅ | Basic **and** `@ManyToOne` / `@OneToOne` relations (JavaBean getter/setter) |
 | `@SecondaryTable` / `@PrimaryKeyJoinColumn` | ✅ | `foreignKey` mode/name supported: `PROVIDER_DEFAULT` keeps the existing unnamed FK, `NO_CONSTRAINT` suppresses it, and an explicit name is quoted. These options apply only when creating a new secondary table; migrate existing secondary-table constraints externally. |
-| Auditing (`@CreatedAt` / `@UpdatedAt`), lifecycle callbacks, `@EntityListeners` | ✅ | 7 lifecycle phases; listener + superclass inheritance |
+| Auditing (`@CreatedAt` / `@UpdatedAt`), lifecycle callbacks, `@EntityListeners` | ✅ | 7 lifecycle phases; listener + superclass inheritance; duplicate same-phase callbacks per declaring class fail fast |
 | `@ExcludeSuperclassListeners` | ✅ | Excludes external listener hosts above the annotated entity or mapped-superclass host; entity callbacks remain inherited |
 | `@ExcludeDefaultListeners` | ✅ | No-op without XML default listeners; explicit `@EntityListeners` and entity callbacks remain active |
 
