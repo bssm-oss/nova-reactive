@@ -13,11 +13,15 @@ import jakarta.persistence.FlushModeType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Inheritance;
+import jakarta.persistence.InheritanceType;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.PostUpdate;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import jakarta.persistence.DiscriminatorColumn;
+import jakarta.persistence.DiscriminatorValue;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
@@ -152,6 +156,30 @@ class EntityManagerLockAndFlushModeIntegrationTest {
                                 })))
                 .expectError(OptimisticLockingFailureException.class)
                 .verify();
+    }
+
+    @Test
+    void rootTypedForceIncrementReconcilesSubtypeAuditSnapshot() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(ForceIncrementAuditedSubtype.class));
+        ForceIncrementAuditedSubtype.callbacks.set(0);
+
+        ForceIncrementAuditedSubtype account = new ForceIncrementAuditedSubtype("subtype@nova.io");
+        StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
+
+        listener.clear();
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(ForceIncrementRoot.class, account.getId(), LockModeType.OPTIMISTIC_FORCE_INCREMENT)))
+                .assertNext(found -> {
+                    ForceIncrementAuditedSubtype subtype = (ForceIncrementAuditedSubtype) found;
+                    assertEquals(1L, subtype.getVersion());
+                    assertNotNull(subtype.getUpdatedAt());
+                })
+                .verifyComplete();
+
+        assertEquals(1, listener.countMatching("update "),
+                "subtype @UpdatedAt baseline must prevent a second commit flush: " + listener.snapshot());
+        assertEquals(2, ForceIncrementAuditedSubtype.callbacks.get());
     }
 
     // -------------------------------------------------------------------------------------------
@@ -378,6 +406,64 @@ class EntityManagerLockAndFlushModeIntegrationTest {
 
         void setEmail(String email) {
             this.email = email;
+        }
+
+        @PreUpdate
+        void preUpdate() {
+            callbacks.incrementAndGet();
+        }
+
+        @PostUpdate
+        void postUpdate() {
+            callbacks.incrementAndGet();
+        }
+    }
+
+    @Entity
+    @Table(name = "force_increment_roots")
+    @Inheritance(strategy = InheritanceType.SINGLE_TABLE)
+    @DiscriminatorColumn(name = "kind")
+    public static abstract class ForceIncrementRoot {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Version
+        private Long version;
+
+        ForceIncrementRoot() {
+        }
+
+        Long getId() {
+            return id;
+        }
+
+        Long getVersion() {
+            return version;
+        }
+    }
+
+    @Entity
+    @DiscriminatorValue("AUDITED")
+    public static class ForceIncrementAuditedSubtype extends ForceIncrementRoot {
+        private static final AtomicInteger callbacks = new AtomicInteger();
+
+        @Column(name = "email_address")
+        private String email;
+
+        @UpdatedAt
+        @Column(name = "updated_at")
+        private LocalDateTime updatedAt;
+
+        public ForceIncrementAuditedSubtype() {
+        }
+
+        ForceIncrementAuditedSubtype(String email) {
+            this.email = email;
+        }
+
+        LocalDateTime getUpdatedAt() {
+            return updatedAt;
         }
 
         @PreUpdate

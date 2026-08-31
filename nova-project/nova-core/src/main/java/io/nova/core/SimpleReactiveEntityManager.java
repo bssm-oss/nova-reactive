@@ -288,7 +288,7 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
             if (resolved.forceIncrement()) {
                 PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
                 return found.flatMap(entity -> operations.update(entity, List.of(versionProperty.propertyName()))
-                        .doOnNext(updated -> reconcileForceIncrementSnapshot(session, metadata, updated)));
+                        .doOnNext(updated -> reconcileForceIncrementSnapshot(session, updated)));
             }
             return found;
         });
@@ -316,7 +316,7 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                 // *_FORCE_INCREMENT: 버전을 강제 증분하는 UPDATE 발행(낙관락 검증 포함).
                 PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
                 chain = chain.then(operations.update(entity, List.of(versionProperty.propertyName()))
-                        .doOnNext(updated -> reconcileForceIncrementSnapshot(session, metadata, updated))
+                        .doOnNext(updated -> reconcileForceIncrementSnapshot(session, updated))
                         .then());
             } else if (resolved.versionCheck()) {
                 // OPTIMISTIC/READ: 현재 버전이 DB와 일치하는지 검증한다.
@@ -414,15 +414,15 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
      * force-increment의 직접 SQL은 version과 update audit timestamp만 쓴다. 성공 후 이 정확한 관리
      * 인스턴스의 두 baseline만 맞춰 commit flush가 같은 UPDATE/callback을 반복하지 않게 한다.
      */
-    private static void reconcileForceIncrementSnapshot(
-            Optional<PersistenceSession> session, EntityMetadata<?> metadata, Object entity) {
+    private void reconcileForceIncrementSnapshot(Optional<PersistenceSession> session, Object entity) {
         if (session.isEmpty()) {
             return;
         }
+        EntityMetadata<?> concreteMetadata = metadataFactory.getEntityMetadata(entity.getClass());
         List<PersistentProperty> writtenProperties = new ArrayList<>();
-        metadata.versionProperty().ifPresent(writtenProperties::add);
-        metadata.updatedAtProperty().ifPresent(writtenProperties::add);
-        session.get().refreshManagedExactInstanceSnapshot(metadata, entity, writtenProperties);
+        concreteMetadata.versionProperty().ifPresent(writtenProperties::add);
+        concreteMetadata.updatedAtProperty().ifPresent(writtenProperties::add);
+        session.get().refreshManagedExactInstanceSnapshot(concreteMetadata, entity, writtenProperties);
     }
 
     /**
