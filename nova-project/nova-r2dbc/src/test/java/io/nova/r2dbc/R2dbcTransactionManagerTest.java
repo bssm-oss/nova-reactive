@@ -9,6 +9,7 @@ import io.nova.tx.IsolationLevel;
 import io.nova.tx.PhysicalTransactionScope;
 import io.nova.tx.Propagation;
 import io.nova.tx.TransactionDefinition;
+import io.nova.tx.UnexpectedRollbackException;
 import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
@@ -221,6 +222,63 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
+    void caughtParticipatingFailureRollsBackAndSkipsBeforeCommit() {
+        List<String> calls = new java.util.ArrayList<>();
+        AtomicBoolean beforeCommitRan = new AtomicBoolean();
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit", "beginTransaction", "commitTransaction", "rollbackTransaction", "close" -> {
+                        calls.add(method.getName());
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        Mono.deferContextual(reactorContext -> {
+                            reactorContext.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY)
+                                    .beforeCommit(() -> {
+                                        beforeCommitRan.set(true);
+                                        return Mono.empty();
+                                    });
+                            return txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                            inner -> Mono.error(new IllegalStateException("inner failed")))
+                                    .onErrorResume(ignored -> Mono.just("outer result"));
+                        })))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(UnexpectedRollbackException.class, error.getClass());
+                    assertEquals("Transaction rolled back because it was marked rollback-only by a participating transaction",
+                            error.getMessage());
+                })
+                .verify();
+
+        assertFalse(beforeCommitRan.get());
+        assertEquals(List.of("setAutoCommit", "beginTransaction", "rollbackTransaction", "close"), calls);
+    }
+
+    @Test
+    void caughtParticipatingFailureAlsoRollsBackEmptyOuterCompletion() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.empty(), Mono.empty(), rollbackCalls, closeCalls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                        inner -> Mono.error(new IllegalStateException("inner failed")))
+                                .onErrorResume(ignored -> Mono.empty())))
+                .expectError(UnexpectedRollbackException.class)
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
     void mandatoryWithoutActiveTransactionFailsWithIllegalState() {
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
 
@@ -384,6 +442,31 @@ class R2dbcTransactionManagerTest {
         assertEquals(1, created.get(),
                 "NESTED는 부모 connection을 재사용해야 한다");
         assertNotNull(seenConn.get());
+    }
+
+    @Test
+    void caughtParticipatingFailureInsideNestedRollsBackOnlyTheSavepoint() {
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
+        R2dbcSqlExecutor txExecutor = new R2dbcSqlExecutor(connectionFactory, NOOP_DIALECT);
+
+        Mono<Void> work = txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                txExecutor.execute(new SqlStatement(
+                                "insert into accounts (id, email) values (?, ?)",
+                                List.of(20L, "outer@nova.io")))
+                        .then(txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                        nested -> txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                                        joined -> Mono.error(new IllegalStateException("joined failed")))
+                                                .onErrorResume(ignored -> Mono.empty()))
+                                .onErrorResume(UnexpectedRollbackException.class, ignored -> Mono.empty()))
+                        .then());
+
+        StepVerifier.create(work).verifyComplete();
+        StepVerifier.create(executor.queryOne(
+                        new SqlStatement("select count(*) as cnt from accounts", List.of()),
+                        row -> row.get("cnt", Long.class)))
+                .expectNext(1L)
+                .verifyComplete();
     }
 
     @Test

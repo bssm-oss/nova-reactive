@@ -7,6 +7,7 @@ import io.nova.tx.ReactiveConnectionOperations;
 import io.nova.tx.ReactiveTransactionManager;
 import io.nova.tx.TransactionContext;
 import io.nova.tx.TransactionDefinition;
+import io.nova.tx.UnexpectedRollbackException;
 import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactory;
 import io.r2dbc.spi.R2dbcException;
@@ -107,7 +108,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         return switch (definition.propagation()) {
             case REQUIRED -> !activeTransaction
                     ? runInNewTransaction(definition, callback)
-                    : joinActive(connection, callback);
+                    : joinActive(connection, owner, callback);
             case REQUIRES_NEW -> runInNewTransaction(definition, callback);
             case NESTED -> !activeTransaction
                     ? runInNewTransaction(definition, callback)
@@ -115,10 +116,10 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
             case MANDATORY -> !activeTransaction
                     ? Mono.error(new IllegalStateException(
                             "Propagation MANDATORY requires an active transaction, but none was found"))
-                    : joinActive(connection, callback);
+                    : joinActive(connection, owner, callback);
             case SUPPORTS -> !activeTransaction
                     ? runWithoutTransaction(callback, false)
-                    : joinActive(connection, callback);
+                    : joinActive(connection, owner, callback);
             case NOT_SUPPORTED -> runWithoutTransaction(callback, activeTransaction);
             case NEVER -> activeTransaction
                     ? Mono.error(new IllegalStateException(
@@ -136,10 +137,9 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                 begin(definition),
                 ctx -> Mono.defer(() -> callback.apply(ctx))
                         .doOnCancel(owner::cancelQueued)
-                        .flatMap(result -> physicalOwner.seal()
-                                .then(physicalOwner.beforeCommit()).thenReturn(result))
-                        .switchIfEmpty(Mono.defer(() -> physicalOwner.seal()
-                                .then(physicalOwner.beforeCommit()).then(Mono.empty())))
+                        .flatMap(result -> prepareRootSuccess(owner, physicalOwner).thenReturn(result))
+                        .switchIfEmpty(Mono.defer(() -> prepareRootSuccess(owner, physicalOwner)
+                                .then(Mono.empty())))
                         .contextWrite(c -> c.put(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())
                                 .put(ACTIVE_TRANSACTION_KEY, owner)
                                 .put(PhysicalTransactionScope.CONTEXT_KEY, scope)),
@@ -149,16 +149,26 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                 .onErrorMap(R2dbcTransactionManager::unwrapCleanupFailure);
     }
 
-    private <T> Mono<T> joinActive(Connection active, Function<TransactionContext, Mono<T>> callback) {
+    private Mono<Void> prepareRootSuccess(BoundaryOwner owner,
+                                          PhysicalTransactionScope.Owner physicalOwner) {
+        return owner.seal().then(Mono.defer(() -> owner.isRollbackOnly()
+                ? Mono.error(new UnexpectedRollbackException())
+                : physicalOwner.seal().then(physicalOwner.beforeCommit())));
+    }
+
+    private <T> Mono<T> joinActive(Connection active, BoundaryOwner owner,
+                                   Function<TransactionContext, Mono<T>> callback) {
         TransactionContext ctx = new R2dbcTransactionContext(active);
         return Mono.defer(() -> callback.apply(ctx))
+                .doOnError(ignored -> owner.markRollbackOnly())
+                .doOnCancel(owner::markRollbackOnly)
                 .contextWrite(c -> c.put(CONNECTION_KEY, active));
     }
 
     private <T> Mono<T> runInSavepoint(Connection active, BoundaryOwner parent,
                                        Function<TransactionContext, Mono<T>> callback) {
         return Mono.defer(() -> {
-            SavepointScope scope = new SavepointScope(active, parent.admit());
+            SavepointScope scope = new SavepointScope(active, parent, parent.admit());
             TransactionContext ctx = new R2dbcTransactionContext(active);
             return Mono.usingWhen(
                     Mono.just(scope),
@@ -226,7 +236,16 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
     private static final class BoundaryOwner {
         private Mono<Void> tail = Mono.empty();
         private final java.util.List<Lease> leases = new java.util.ArrayList<>();
+        private final AtomicBoolean rollbackOnly = new AtomicBoolean();
         private boolean sealed;
+
+        void markRollbackOnly() {
+            rollbackOnly.set(true);
+        }
+
+        boolean isRollbackOnly() {
+            return rollbackOnly.get();
+        }
 
         synchronized Lease admit() {
             if (sealed) {
@@ -287,14 +306,16 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
     private static final class SavepointScope {
         private final Connection connection;
         private final String name = "nova_sp_" + SAVEPOINT_COUNTER.incrementAndGet();
+        private final BoundaryOwner parent;
         private final Lease lease;
         private final BoundaryOwner owner = new BoundaryOwner();
         private final AtomicReference<SavepointState> state = new AtomicReference<>(SavepointState.QUEUED);
         private final AtomicBoolean created = new AtomicBoolean();
         private final Mono<Void> create;
 
-        private SavepointScope(Connection connection, Lease lease) {
+        private SavepointScope(Connection connection, BoundaryOwner parent, Lease lease) {
             this.connection = connection;
+            this.parent = parent;
             this.lease = lease;
             lease.onQueuedCancellation(this::cancelQueued);
             this.create = Mono.defer(() -> {
@@ -328,9 +349,16 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
                 return owner.seal().doFinally(ignored -> lease.complete());
             }
             return owner.seal()
-                    .then(releaseSavepointIfSupported(connection, name))
+                    .then(Mono.defer(() -> owner.isRollbackOnly()
+                            ? rollbackAfterMarkedSuccess()
+                            : releaseSavepointIfSupported(connection, name)))
                     .doFinally(ignored -> lease.complete())
                     .onErrorMap(CleanupFailure::new);
+        }
+
+        private Mono<Void> rollbackAfterMarkedSuccess() {
+            UnexpectedRollbackException unexpectedRollback = new UnexpectedRollbackException();
+            return rollbackAndRelease(unexpectedRollback).then(Mono.error(unexpectedRollback));
         }
 
         Mono<Void> error(Throwable callbackFailure) {
@@ -382,12 +410,15 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         private Mono<Void> rollbackAndRelease(Throwable callbackFailure) {
             Mono<Void> rollback = Mono.defer(() -> Mono.from(connection.rollbackTransactionToSavepoint(name)));
             Mono<Void> release = releaseSavepointIfSupported(connection, name);
-            return rollback.onErrorResume(rollbackFailure -> release
+            return rollback.onErrorResume(rollbackFailure -> {
+                        parent.markRollbackOnly();
+                        return release
                             .onErrorMap(releaseFailure -> {
                                 releaseFailure.addSuppressed(rollbackFailure);
                                 return withSuppressed(releaseFailure, callbackFailure);
                             })
-                            .then(Mono.error(withSuppressed(rollbackFailure, callbackFailure))))
+                            .then(Mono.error(withSuppressed(rollbackFailure, callbackFailure)));
+                    })
                     .then(release.onErrorMap(releaseFailure ->
                             withSuppressed(releaseFailure, callbackFailure)));
         }
