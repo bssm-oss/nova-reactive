@@ -1,9 +1,13 @@
 package io.nova.metadata;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.ConstraintMode;
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
+import jakarta.persistence.ForeignKey;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -38,6 +42,8 @@ class EntityMetadataFactorySecondaryTableTest {
         // pkJoinColumn / referencedColumn 모두 primary @Id 컬럼 이름으로 기본 설정된다.
         assertEquals("id", info.pkJoinColumn());
         assertEquals("id", info.primaryKeyColumn());
+        assertEquals(ConstraintMode.PROVIDER_DEFAULT, info.foreignKeyMode());
+        assertEquals("", info.foreignKeyName());
 
         // bio/avatar는 보조 테이블로, name은 primary로 라우팅된다.
         PersistentProperty bio = metadata.findProperty("bio").orElseThrow();
@@ -69,6 +75,24 @@ class EntityMetadataFactorySecondaryTableTest {
         assertEquals("account_audit", info.tableName());
         assertEquals("account_fk", info.pkJoinColumn());
         assertEquals("id", info.primaryKeyColumn());
+    }
+
+    @Test
+    void extractsPrimaryKeyJoinForeignKeyMetadataForPropertyAccess() {
+        SecondaryTableInfo info = factory.getEntityMetadata(PropertyAccessForeignKey.class)
+                .secondaryTables().get(0);
+
+        assertEquals(ConstraintMode.CONSTRAINT, info.foreignKeyMode());
+        assertEquals("fk_property_details", info.foreignKeyName());
+    }
+
+    @Test
+    void extractsNoConstraintPrimaryKeyJoinForeignKeyMetadata() {
+        SecondaryTableInfo info = factory.getEntityMetadata(NoConstraintForeignKey.class)
+                .secondaryTables().get(0);
+
+        assertEquals(ConstraintMode.NO_CONSTRAINT, info.foreignKeyMode());
+        assertEquals("", info.foreignKeyName());
     }
 
     @Test
@@ -149,6 +173,48 @@ class EntityMetadataFactorySecondaryTableTest {
         private Long id;
         @Column(table = "account_audit")
         private String note;
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    @Table(name = "property_access_fk")
+    @SecondaryTable(name = "property_access_fk_details",
+            pkJoinColumns = @PrimaryKeyJoinColumn(
+                    foreignKey = @ForeignKey(name = "fk_property_details")))
+    static class PropertyAccessForeignKey {
+        private Long id;
+        private String detail;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @Column(table = "property_access_fk_details")
+        public String getDetail() {
+            return detail;
+        }
+
+        public void setDetail(String detail) {
+            this.detail = detail;
+        }
+    }
+
+    @Entity
+    @Table(name = "no_constraint_fk")
+    @SecondaryTable(name = "no_constraint_fk_details",
+            pkJoinColumns = @PrimaryKeyJoinColumn(
+                    foreignKey = @ForeignKey(value = ConstraintMode.NO_CONSTRAINT)))
+    static class NoConstraintForeignKey {
+        @Id
+        private Long id;
+
+        @Column(table = "no_constraint_fk_details")
+        private String detail;
     }
 
     @Entity

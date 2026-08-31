@@ -28,8 +28,12 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import jakarta.persistence.Entity;
+import jakarta.persistence.ConstraintMode;
+import jakarta.persistence.ForeignKey;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
+import jakarta.persistence.PrimaryKeyJoinColumn;
+import jakarta.persistence.SecondaryTable;
 import jakarta.persistence.Table;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -143,6 +147,35 @@ class AbstractSchemaGeneratorTest {
                 dialect.schemaGenerator().createComments(factory.getEntityMetadata(JoinedDdlChild.class),
                         layout.subtypes().stream().filter(s -> s.metadata().entityType() == JoinedDdlChild.class)
                                 .findFirst().orElseThrow().ownTableColumns()));
+    }
+
+    @Test
+    void rendersSecondaryTablePrimaryKeyForeignKeyModes() {
+        assertEquals(
+                "create table secondary_default_fk_details (id bigint not null primary key,"
+                        + " detail varchar(255), foreign key (id) references secondary_default_fk (id))",
+                dialect.schemaGenerator().createSecondaryTable(
+                        factory.getEntityMetadata(DefaultSecondaryForeignKey.class),
+                        factory.getEntityMetadata(DefaultSecondaryForeignKey.class).secondaryTables().get(0)));
+        assertEquals(
+                "create table secondary_named_fk_details (id bigint not null primary key,"
+                        + " detail varchar(255), constraint fk_secondary_details foreign key (id) references secondary_named_fk (id))",
+                dialect.schemaGenerator().createSecondaryTable(
+                        factory.getEntityMetadata(NamedSecondaryForeignKey.class),
+                        factory.getEntityMetadata(NamedSecondaryForeignKey.class).secondaryTables().get(0)));
+        assertEquals(
+                "create table secondary_no_fk_details (id bigint not null primary key, detail varchar(255))",
+                dialect.schemaGenerator().createSecondaryTable(
+                        factory.getEntityMetadata(NoConstraintSecondaryForeignKey.class),
+                        factory.getEntityMetadata(NoConstraintSecondaryForeignKey.class).secondaryTables().get(0)));
+        Dialect quotedDialect = new QuotedTestDialect();
+        assertEquals(
+                "create table \"secondary_named_fk_details\" (\"id\" bigint not null primary key,"
+                        + " \"detail\" varchar(255), constraint \"fk_secondary_details\" foreign key (\"id\")"
+                        + " references \"secondary_named_fk\" (\"id\"))",
+                quotedDialect.schemaGenerator().createSecondaryTable(
+                        factory.getEntityMetadata(NamedSecondaryForeignKey.class),
+                        factory.getEntityMetadata(NamedSecondaryForeignKey.class).secondaryTables().get(0)));
     }
 
     @Test
@@ -777,6 +810,34 @@ class AbstractSchemaGeneratorTest {
         @jakarta.persistence.Column(table = "secondary_ddl", check = @jakarta.persistence.CheckConstraint(
                 constraint = "secondary_value >= 0"), comment = "secondary")
         Integer secondaryValue;
+    }
+
+    @Entity
+    @Table(name = "secondary_default_fk")
+    @SecondaryTable(name = "secondary_default_fk_details")
+    static class DefaultSecondaryForeignKey {
+        @Id Long id;
+        @jakarta.persistence.Column(table = "secondary_default_fk_details") String detail;
+    }
+
+    @Entity
+    @Table(name = "secondary_named_fk")
+    @SecondaryTable(name = "secondary_named_fk_details",
+            pkJoinColumns = @PrimaryKeyJoinColumn(
+                    foreignKey = @ForeignKey(name = "fk_secondary_details")))
+    static class NamedSecondaryForeignKey {
+        @Id Long id;
+        @jakarta.persistence.Column(table = "secondary_named_fk_details") String detail;
+    }
+
+    @Entity
+    @Table(name = "secondary_no_fk")
+    @SecondaryTable(name = "secondary_no_fk_details",
+            pkJoinColumns = @PrimaryKeyJoinColumn(
+                    foreignKey = @ForeignKey(value = ConstraintMode.NO_CONSTRAINT)))
+    static class NoConstraintSecondaryForeignKey {
+        @Id Long id;
+        @jakarta.persistence.Column(table = "secondary_no_fk_details") String detail;
     }
 
     private static final class QuotedTestDialect implements Dialect {
