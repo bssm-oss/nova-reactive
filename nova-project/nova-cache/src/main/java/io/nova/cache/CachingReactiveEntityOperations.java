@@ -221,7 +221,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         return delegate.findAll(entityType, querySpec, pageable)
                 .flatMap(page -> Flux.fromIterable(page.content())
                         .concatMap(this::trackTransactionalLoad)
-                        .thenReturn(page));
+                        .then(Mono.just(page)));
     }
 
     @Override
@@ -229,7 +229,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         return delegate.findSlice(entityType, querySpec, pageable)
                 .flatMap(slice -> Flux.fromIterable(slice.content())
                         .concatMap(this::trackTransactionalLoad)
-                        .thenReturn(slice));
+                        .then(Mono.just(slice)));
     }
 
     @Override
