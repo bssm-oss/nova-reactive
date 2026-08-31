@@ -16,8 +16,7 @@ import java.util.List;
 public final class ToOneForeignKeyColumn {
     private final String columnName;
     private final String referencedColumnName;
-    private final Class<?> columnType;
-    private final int length;
+    private final ColumnStorage storage;
     private final boolean nullable;
     private final AttributeConverter<Object, Object> converter;
     /**
@@ -30,15 +29,13 @@ public final class ToOneForeignKeyColumn {
     public ToOneForeignKeyColumn(
             String columnName,
             String referencedColumnName,
-            Class<?> columnType,
-            int length,
+            ColumnStorage storage,
             boolean nullable,
             AttributeConverter<Object, Object> converter,
             List<PersistentAttributeAccess> referencedPath) {
         this.columnName = columnName;
         this.referencedColumnName = referencedColumnName;
-        this.columnType = columnType;
-        this.length = length;
+        this.storage = java.util.Objects.requireNonNull(storage, "storage");
         this.nullable = nullable;
         this.converter = converter;
         this.referencedPath = List.copyOf(referencedPath);
@@ -53,16 +50,10 @@ public final class ToOneForeignKeyColumn {
     }
 
     /**
-     * 이 FK 컬럼의 저장 표현 타입. row 디코딩({@code row.get})과 schema 컬럼 SQL 타입 유도에 함께 쓰인다
-     * — 참조 {@code @Id} 컴포넌트의 도메인 타입이 아니라 {@code @Convert}/{@code @Enumerated}/UUID 등이 반영된
-     * 저장타입이다(read-source-type 함정 회피).
+     * 이 FK 컬럼의 완전한 물리 저장 특성. row 디코딩과 schema 컬럼 SQL 타입 유도에 함께 쓰인다.
      */
-    public Class<?> columnType() {
-        return columnType;
-    }
-
-    public int length() {
-        return length;
+    public ColumnStorage storage() {
+        return storage;
     }
 
     public boolean nullable() {

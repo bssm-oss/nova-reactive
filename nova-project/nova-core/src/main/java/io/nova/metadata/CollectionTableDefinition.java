@@ -4,9 +4,9 @@ import java.util.List;
 
 /**
  * {@code @ElementCollection} collection table의 물리 정의 — DDL 생성과 row SQL 렌더링에 쓰인다. owner FK
- * 컬럼과 값 컬럼(들), 그리고 각 Java 타입(owner {@code @Id} 타입 / 원소 값 타입)을 담는다.
+ * 컬럼과 값 컬럼(들), 그리고 각 물리 저장 특성을 담는다.
  * <p>
- * 기본 타입 원소는 단일 값 컬럼({@link #valueColumn()}/{@link #valueType()})으로 표현하며
+ * 기본 타입 원소는 단일 값 컬럼({@link #valueColumn()}/{@link #valueStorage()})으로 표현하며
  * {@link #elementColumns()}는 빈 리스트다. {@code @Embeddable} 원소는 {@link #elementColumns()}에 펼쳐진
  * 컬럼들을 담으며, 이때 {@link #valueColumn()}은 의미가 없다. {@code Map<K,V>}는 {@link #mapKey()}가 non-null이며
  * key 컬럼이 추가된다.
@@ -14,34 +14,40 @@ import java.util.List;
 public record CollectionTableDefinition(
         String tableName,
         String ownerForeignKeyColumn,
-        Class<?> ownerForeignKeyType,
+        ColumnStorage ownerForeignKeyStorage,
         String valueColumn,
-        Class<?> valueType,
+        ColumnStorage valueStorage,
         List<ElementColumn> elementColumns,
         OrderColumnInfo orderColumn,
         MapKeyColumn mapKey,
         List<ElementColumn> mapKeyColumns
 ) {
     public CollectionTableDefinition {
+        java.util.Objects.requireNonNull(ownerForeignKeyStorage, "ownerForeignKeyStorage");
         elementColumns = elementColumns == null ? List.of() : List.copyOf(elementColumns);
+        if (elementColumns.isEmpty()) {
+            java.util.Objects.requireNonNull(valueStorage, "valueStorage");
+        } else {
+            valueStorage = null;
+        }
         // @Embeddable(다중 컬럼) map key의 펼침 key 컬럼들. 단일 컬럼 key({@link #mapKey()})나 비-map은 빈 리스트다.
         mapKeyColumns = mapKeyColumns == null ? List.of() : List.copyOf(mapKeyColumns);
     }
 
     /**
-     * 단일 컬럼 map key({@link #mapKey()})까지 받는 이전 형태의 생성자 — {@code @Embeddable} 다중 컬럼 key가 없는
+     * 단일 컬럼 map key({@link #mapKey()})까지 받는 생성자 — {@code @Embeddable} 다중 컬럼 key가 없는
      * 경우(기본/enum/temporal/UUID key 또는 비-map)에 쓴다.
      */
     public CollectionTableDefinition(
             String tableName,
             String ownerForeignKeyColumn,
-            Class<?> ownerForeignKeyType,
+            ColumnStorage ownerForeignKeyStorage,
             String valueColumn,
-            Class<?> valueType,
+            ColumnStorage valueStorage,
             List<ElementColumn> elementColumns,
             OrderColumnInfo orderColumn,
             MapKeyColumn mapKey) {
-        this(tableName, ownerForeignKeyColumn, ownerForeignKeyType, valueColumn, valueType,
+        this(tableName, ownerForeignKeyColumn, ownerForeignKeyStorage, valueColumn, valueStorage,
                 elementColumns, orderColumn, mapKey, List.of());
     }
 
@@ -51,10 +57,10 @@ public record CollectionTableDefinition(
     public CollectionTableDefinition(
             String tableName,
             String ownerForeignKeyColumn,
-            Class<?> ownerForeignKeyType,
+            ColumnStorage ownerForeignKeyStorage,
             String valueColumn,
-            Class<?> valueType) {
-        this(tableName, ownerForeignKeyColumn, ownerForeignKeyType, valueColumn, valueType, List.of(), null, null);
+            ColumnStorage valueStorage) {
+        this(tableName, ownerForeignKeyColumn, ownerForeignKeyStorage, valueColumn, valueStorage, List.of(), null, null);
     }
 
     /**
@@ -63,11 +69,11 @@ public record CollectionTableDefinition(
     public CollectionTableDefinition(
             String tableName,
             String ownerForeignKeyColumn,
-            Class<?> ownerForeignKeyType,
+            ColumnStorage ownerForeignKeyStorage,
             String valueColumn,
-            Class<?> valueType,
+            ColumnStorage valueStorage,
             List<ElementColumn> elementColumns) {
-        this(tableName, ownerForeignKeyColumn, ownerForeignKeyType, valueColumn, valueType, elementColumns, null, null);
+        this(tableName, ownerForeignKeyColumn, ownerForeignKeyStorage, valueColumn, valueStorage, elementColumns, null, null);
     }
 
     /**
@@ -76,12 +82,12 @@ public record CollectionTableDefinition(
     public CollectionTableDefinition(
             String tableName,
             String ownerForeignKeyColumn,
-            Class<?> ownerForeignKeyType,
+            ColumnStorage ownerForeignKeyStorage,
             String valueColumn,
-            Class<?> valueType,
+            ColumnStorage valueStorage,
             List<ElementColumn> elementColumns,
             OrderColumnInfo orderColumn) {
-        this(tableName, ownerForeignKeyColumn, ownerForeignKeyType, valueColumn, valueType,
+        this(tableName, ownerForeignKeyColumn, ownerForeignKeyStorage, valueColumn, valueStorage,
                 elementColumns, orderColumn, null);
     }
 
@@ -116,17 +122,24 @@ public record CollectionTableDefinition(
     }
 
     /**
-     * {@code @Embeddable} 원소를 펼친 collection table 컬럼 하나의 물리 정의(컬럼 이름 + 저장 Java 타입).
+     * {@code @Embeddable} 원소를 펼친 collection table 컬럼 하나의 물리 정의.
      */
-    public record ElementColumn(String columnName, Class<?> columnType, boolean json) {
-        public ElementColumn(String columnName, Class<?> columnType) {
-            this(columnName, columnType, false);
+    public record ElementColumn(String columnName, ColumnStorage storage, boolean json) {
+        public ElementColumn {
+            java.util.Objects.requireNonNull(storage, "storage");
+        }
+
+        public ElementColumn(String columnName, ColumnStorage storage) {
+            this(columnName, storage, false);
         }
     }
 
     /**
-     * {@code Map<K,V>} collection table의 key 컬럼 물리 정의(컬럼 이름 + 저장 Java 타입). DDL/SQL 렌더링에 쓴다.
+     * {@code Map<K,V>} collection table의 key 컬럼 물리 정의. DDL/SQL 렌더링에 쓴다.
      */
-    public record MapKeyColumn(String columnName, Class<?> columnType) {
+    public record MapKeyColumn(String columnName, ColumnStorage storage) {
+        public MapKeyColumn {
+            java.util.Objects.requireNonNull(storage, "storage");
+        }
     }
 }
