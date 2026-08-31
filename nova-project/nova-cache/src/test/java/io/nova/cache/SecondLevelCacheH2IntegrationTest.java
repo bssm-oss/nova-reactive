@@ -212,7 +212,7 @@ class SecondLevelCacheH2IntegrationTest {
     }
 
     @Test
-    void originalDecoratorSaveUpdateAndDeleteReplayEvictionAfterCommit() {
+    void originalDecoratorUpdateAndDeleteReplayEvictionAfterCommit() {
         ConnectionFactory cf = freshConnectionFactory();
         Wiring w = wire(cf);
 
@@ -221,7 +221,7 @@ class SecondLevelCacheH2IntegrationTest {
         CacheKey key = new CacheKey(Widget.class.getName(), Widget.class, id);
         Widget alpha = w.cached().findById(Widget.class, id).block();
 
-        w.cached().inTransaction(ignored -> w.cached().save(new Widget(id, "beta"))
+        w.cached().inTransaction(ignored -> w.cached().update(new Widget(id, "beta"), List.of("name"))
                 .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, alpha))).block();
         assertForcedReload(w, id, "beta");
 
@@ -249,10 +249,13 @@ class SecondLevelCacheH2IntegrationTest {
         Widget alpha = w.cached().findById(Widget.class, id).block();
         CacheKey key = new CacheKey(Widget.class.getName(), Widget.class, id);
 
-        entityManager.inTransaction(em -> em.merge(new Widget(id, "beta"))
+        entityManager.inTransaction(em -> em.remove(alpha)
                 .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, alpha))).block();
 
-        assertForcedReload(w, id, "beta");
+        long beforeReload = w.listener().selects();
+        assertNull(w.cached().findById(Widget.class, id).block());
+        assertTrue(w.listener().selects() > beforeReload,
+                "captured EntityManager write must replay eviction after commit");
     }
 
     private static void assertForcedReload(Wiring wiring, Long id, String expectedName) {
