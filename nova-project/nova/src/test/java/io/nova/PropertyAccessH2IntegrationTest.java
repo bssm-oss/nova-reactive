@@ -254,7 +254,7 @@ class PropertyAccessH2IntegrationTest {
                 .flatMap(ids -> operations.findById(PropertyChild.class, ids[0])
                         .zipWith(operations.findById(PropertyParent.class, second.getId()))
                         .flatMap(pair -> operations.findById(PropertyChild.class, ids[1]).hasElement()
-                                .map(orphanExists -> new Object[]{pair.getT1(), pair.getT2(), orphanExists})))
+                                .map(orphanExists -> new Object[]{pair.getT1(), pair.getT2(), orphanExists}))))
                 .assertNext(result -> {
                     PropertyChild reloadedMoved = (PropertyChild) result[0];
                     PropertyParent reloadedSecond = (PropertyParent) result[1];
