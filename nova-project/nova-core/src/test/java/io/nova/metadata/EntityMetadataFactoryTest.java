@@ -941,7 +941,7 @@ class EntityMetadataFactoryTest {
         assertEquals(List.of("id", "address_street", "address_geo_country"),
                 metadata.properties().stream().map(PersistentProperty::columnName).toList());
         assertEquals(AccessType.PROPERTY, metadata.findProperty("address.geo.country").orElseThrow()
-                .embeddedHostPath().get(0).accessType());
+                .embeddedHostAccessPath().get(0).accessType());
     }
 
     @Test
@@ -970,8 +970,9 @@ class EntityMetadataFactoryTest {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(InvalidImplicitEmbeddedOverrideEntity.class));
 
-        assertTrue(exception.getMessage().contains("@AttributeOverride"));
-        assertTrue(exception.getMessage().contains("geo.zip"));
+        assertTrue(exception.getMessage().contains("@AttributeOverride"), exception::getMessage);
+        assertTrue(exception.getMessage().contains(".geo"), exception::getMessage);
+        assertTrue(exception.getMessage().contains("'zip'"), exception::getMessage);
     }
 
     @Test
