@@ -78,6 +78,7 @@ public final class MetamodelProcessor extends AbstractProcessor {
         String typeKey = type.getQualifiedName().toString();
         if (!visited.add(typeKey)) throw new IllegalStateException("Metamodel detected an @Embedded cycle through " + typeKey);
         try {
+            validateIdentifierPlacement(type);
             String access = classAccess(type);
             if (access == null) access = inheritedAccess != null ? inheritedAccess : hierarchyDefault(type);
             Map<String, VariableElement> fields = new LinkedHashMap<>();
@@ -124,6 +125,7 @@ public final class MetamodelProcessor extends AbstractProcessor {
                     throw new IllegalStateException(type.getQualifiedName() + "." + name
                             + " has conflicting member @Access declarations");
                 }
+                if (hasAnnotation(getter, TRANSIENT)) continue;
                 if (!type.getKind().equals(ElementKind.RECORD)) {
                     ExecutableElement setter = setters.get(name);
                     if (setter == null) {
@@ -175,11 +177,10 @@ public final class MetamodelProcessor extends AbstractProcessor {
     }
 
     private String hierarchyDefault(TypeElement type) {
-        boolean fieldIdentifier = false;
         for (TypeElement current : hierarchy(type)) {
             for (Element member : current.getEnclosedElements()) {
                 if (member.getKind() == ElementKind.FIELD
-                        && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) fieldIdentifier = true;
+                        && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) return ACCESS_FIELD;
             }
         }
         boolean propertyIdentifier = false;
@@ -189,11 +190,28 @@ public final class MetamodelProcessor extends AbstractProcessor {
                         && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) propertyIdentifier = true;
             }
         }
+        return propertyIdentifier ? ACCESS_PROPERTY : ACCESS_FIELD;
+    }
+
+    private void validateIdentifierPlacement(TypeElement type) {
+        boolean fieldIdentifier = false;
+        boolean propertyIdentifier = false;
+        for (TypeElement current : hierarchy(type)) {
+            for (Element member : current.getEnclosedElements()) {
+                if (member.getKind() == ElementKind.FIELD
+                        && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) {
+                    fieldIdentifier = true;
+                }
+                if (member.getKind() == ElementKind.METHOD
+                        && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) {
+                    propertyIdentifier = true;
+                }
+            }
+        }
         if (fieldIdentifier && propertyIdentifier) {
             throw new IllegalStateException(type.getQualifiedName()
-                    + " mixes field and property identifier placement; declare @Access explicitly");
+                    + " mixes field and property identifier placement; use one consistent access strategy");
         }
-        return propertyIdentifier ? ACCESS_PROPERTY : ACCESS_FIELD;
     }
 
     private Map<String, ExecutableElement> getters(TypeElement type) {
