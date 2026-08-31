@@ -133,6 +133,7 @@ class ReadSessionIntegrationTest {
                                 .then(transactionManager.inTransaction(
                                         TransactionDefinition.DEFAULT.with(Propagation.NEVER),
                                         ctx -> insertPropagationRow(6L)))))
+                .expectNextCount(1)
                 .verifyComplete();
         assertEquals(4, counting.creates(),
                 "read connection 하나와 REQUIRED/NESTED/REQUIRES_NEW의 owned transaction 세 개만 acquire해야 한다");
