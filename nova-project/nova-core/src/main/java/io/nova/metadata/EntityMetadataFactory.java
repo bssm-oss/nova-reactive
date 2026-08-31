@@ -4640,7 +4640,61 @@ public final class EntityMetadataFactory {
         if (attribute.field() != null) {
             return createManyToManyProperty(entityType, ownerTableName, attribute.field());
         }
-        return createDescriptorCollectionMarker(attribute);
+        Class<?> collectionType = attribute.javaType();
+        String location = entityType.getName() + "." + attribute.name();
+        if (!List.class.isAssignableFrom(collectionType) && !Set.class.isAssignableFrom(collectionType)) {
+            throw new IllegalArgumentException(location + " @ManyToMany must map to a List or Set; got "
+                    + collectionType.getName());
+        }
+        ManyToMany annotation = attribute.annotation(ManyToMany.class);
+        Class<?> target = annotation.targetEntity() == void.class
+                ? collectionElementType(entityType, attribute.name(), attribute.genericType(), ManyToMany.class)
+                : annotation.targetEntity();
+        boolean usesSet = Set.class.isAssignableFrom(collectionType);
+        String mappedBy = annotation.mappedBy();
+        boolean owning = mappedBy == null || mappedBy.isBlank();
+        Set<CascadeType> cascades = Set.of(annotation.cascade());
+        if (!owning && !cascades.isEmpty()) {
+            throw new IllegalArgumentException(location + " @ManyToMany cascade must be declared on the owning side"
+                    + " (the @JoinTable side), not the mappedBy side");
+        }
+        ManyToManyInfo info = owning
+                ? resolveDescriptorOwningManyToManyInfo(entityType, ownerTableName, attribute, target, usesSet)
+                        .withCascade(cascades)
+                : resolveDescriptorInverseManyToManyInfo(entityType, attribute, target, mappedBy, usesSet);
+        return new PersistentProperty(null, attribute.name(), "", collectionType, false, false, true,
+                255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                false, null, true, false, null, "", true, true, false, "", false, null, false,
+                info, null, null, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                ColumnDdlDefinition.EMPTY);
+    }
+
+    private ManyToManyInfo resolveDescriptorOwningManyToManyInfo(
+            Class<?> ownerType, String ownerTable, PersistentAttributeAccess attribute, Class<?> target, boolean usesSet) {
+        JoinTable joinTable = attribute.annotation(JoinTable.class);
+        String location = ownerType.getName() + "." + attribute.name();
+        String tableName = joinTable != null && !joinTable.name().isBlank()
+                ? joinTable.name() : namingStrategy.joinTableName(ownerTable, resolveTableName(target));
+        return new ManyToManyInfo(true, target, tableName,
+                resolveManyToManyJoinColumnRefs(ownerType, joinTable == null ? null : joinTable.joinColumns(),
+                        ownerType.getSimpleName(), location + " @JoinTable.joinColumns"),
+                resolveManyToManyJoinColumnRefs(target, joinTable == null ? null : joinTable.inverseJoinColumns(),
+                        target.getSimpleName(), location + " @JoinTable.inverseJoinColumns"),
+                "", usesSet);
+    }
+
+    private ManyToManyInfo resolveDescriptorInverseManyToManyInfo(
+            Class<?> entityType, PersistentAttributeAccess attribute, Class<?> target, String mappedBy, boolean usesSet) {
+        PersistentAttributeAccess owning = new PersistentAccessResolver().resolve(target).attribute(mappedBy);
+        String location = entityType.getName() + "." + attribute.name();
+        if (owning == null || !owning.isAnnotationPresent(ManyToMany.class)) {
+            throw new IllegalArgumentException(location + " @ManyToMany(mappedBy=\"" + mappedBy
+                    + "\") must point to an owning @ManyToMany on " + target.getName());
+        }
+        ManyToManyInfo owner = resolveDescriptorOwningManyToManyInfo(
+                target, resolveTableName(target), owning, entityType, usesSet);
+        return new ManyToManyInfo(false, target, owner.joinTableName(), owner.targetForeignKeyColumns(),
+                owner.ownerForeignKeyColumns(), mappedBy, usesSet);
     }
 
     /**
@@ -4986,7 +5040,145 @@ public final class EntityMetadataFactory {
         if (attribute.field() != null) {
             return createElementCollectionProperty(entityType, ownerTableName, attribute.field());
         }
-        return createDescriptorCollectionMarker(attribute);
+        Class<?> collectionType = attribute.javaType();
+        String location = entityType.getName() + "." + attribute.name();
+        boolean map = Map.class.isAssignableFrom(collectionType);
+        if (!map && !List.class.isAssignableFrom(collectionType) && !Set.class.isAssignableFrom(collectionType)) {
+            throw new IllegalArgumentException(location + " @ElementCollection must map to a List, Set, or Map; got "
+                    + collectionType.getName());
+        }
+        Class<?> valueType = descriptorCollectionValueType(attribute, map, location);
+        CollectionTable table = attribute.annotation(CollectionTable.class);
+        String ownerId = resolveSingleIdColumn(entityType, location);
+        String tableName = table != null && !table.name().isBlank() ? table.name()
+                : namingStrategy.joinTableName(ownerTableName, namingStrategy.columnName(attribute.name()));
+        String ownerColumn = resolveSingleJoinColumn(table == null ? null : table.joinColumns(),
+                namingStrategy.joinColumnName(entityType.getSimpleName(), ownerId), location + " @CollectionTable.joinColumns");
+        boolean usesSet = Set.class.isAssignableFrom(collectionType);
+        OrderColumnInfo order = null;
+        if (map) {
+            if (attribute.isAnnotationPresent(jakarta.persistence.OrderColumn.class)) {
+                throw new IllegalArgumentException(location + " @OrderColumn is not valid on a Map @ElementCollection (maps are unordered)");
+            }
+        } else {
+            order = resolveDescriptorElementCollectionOrderColumn(attribute, usesSet, location);
+        }
+        ElementCollectionInfo.MapKeyInfo key = map ? resolveDescriptorMapKeyInfo(attribute, location) : null;
+        if (valueType.isAnnotationPresent(Embeddable.class)) {
+            throw new IllegalArgumentException(location + " descriptor-only @ElementCollection @Embeddable values require"
+                    + " descriptor component expansion");
+        }
+        Column column = attribute.annotation(Column.class);
+        String valueColumn = column != null && !column.name().isBlank() ? column.name()
+                : namingStrategy.columnName(attribute.name());
+        ElementValueMapping mapping = resolveDescriptorElementValueMapping(attribute, valueType, map ? "value" : null, location);
+        rejectOrderColumnCollision(order, ownerColumn, List.of(valueColumn), location);
+        rejectMapKeyCollision(key, ownerColumn, List.of(valueColumn), location);
+        ElementCollectionInfo info = new ElementCollectionInfo(tableName, ownerColumn, valueColumn,
+                wrapPrimitiveType(valueType), usesSet, List.of(), order, key, mapping.columnType(), mapping.converter());
+        return new PersistentProperty(null, attribute.name(), "", collectionType, false, false, true,
+                255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
+                false, null, true, false, null, "", true, true, false, "", false, null, false,
+                null, info, null, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                ColumnDdlDefinition.EMPTY);
+    }
+
+    private static Class<?> descriptorCollectionValueType(
+            PersistentAttributeAccess attribute, boolean map, String location) {
+        ElementCollection annotation = attribute.annotation(ElementCollection.class);
+        if (annotation.targetClass() != void.class) {
+            return annotation.targetClass();
+        }
+        if (attribute.genericType() instanceof ParameterizedType parameterized) {
+            Type[] arguments = parameterized.getActualTypeArguments();
+            int valueIndex = map ? 1 : 0;
+            if (arguments.length == (map ? 2 : 1) && arguments[valueIndex] instanceof Class<?> valueType) {
+                return valueType;
+            }
+        }
+        throw new IllegalArgumentException(location + " @ElementCollection cannot infer the "
+                + (map ? "Map value type from a raw map; specify targetClass" : "element type from a raw collection; specify targetClass"));
+    }
+
+    private OrderColumnInfo resolveDescriptorElementCollectionOrderColumn(
+            PersistentAttributeAccess attribute, boolean usesSet, String location) {
+        jakarta.persistence.OrderColumn order = attribute.annotation(jakarta.persistence.OrderColumn.class);
+        if (order == null) return null;
+        if (usesSet) {
+            throw new IllegalArgumentException(location + " @OrderColumn is only valid on an ordered List, not on a Set @ElementCollection");
+        }
+        if (attribute.isAnnotationPresent(jakarta.persistence.OrderBy.class)) {
+            throw new IllegalArgumentException(location + " cannot declare both @OrderColumn and @OrderBy; the two ordering strategies conflict");
+        }
+        return new OrderColumnInfo(order.name().isBlank() ? namingStrategy.columnName(attribute.name()) + "_order" : order.name());
+    }
+
+    private ElementCollectionInfo.MapKeyInfo resolveDescriptorMapKeyInfo(
+            PersistentAttributeAccess attribute, String location) {
+        if (attribute.isAnnotationPresent(MapKey.class)) {
+            throw new IllegalArgumentException(location + " @MapKey (using an associated entity property as the map key) is not supported;"
+                    + " use a basic or enum map key with @MapKeyColumn");
+        }
+        Class<?> keyType = null;
+        if (attribute.genericType() instanceof ParameterizedType parameterized
+                && parameterized.getActualTypeArguments().length == 2
+                && parameterized.getActualTypeArguments()[0] instanceof Class<?> type) keyType = type;
+        MapKeyClass declared = attribute.annotation(MapKeyClass.class);
+        if (declared != null) {
+            if (declared.value() == void.class || declared.value() == Void.class) {
+                throw new IllegalArgumentException(location + " @MapKeyClass requires a key class");
+            }
+            if (keyType != null && keyType != declared.value()) {
+                throw new IllegalArgumentException(location + " @MapKeyClass " + declared.value().getName()
+                        + " does not match the parameterized Map key type " + keyType.getName());
+            }
+            keyType = declared.value();
+        }
+        if (keyType == null) throw new IllegalArgumentException(location + " @ElementCollection cannot infer the Map key type from a raw map;"
+                + " use a parameterized Map<K,V> or specify @MapKeyClass");
+        if (keyType.isAnnotationPresent(Embeddable.class)) {
+            throw new IllegalArgumentException(location + " descriptor-only @MapKeyClass @Embeddable keys require descriptor component expansion");
+        }
+        MapKeyColumn column = attribute.annotation(MapKeyColumn.class);
+        String name = column != null && !column.name().isBlank() ? column.name() : namingStrategy.columnName(attribute.name()) + "_key";
+        if (keyType.isEnum()) {
+            MapKeyEnumerated enumerated = attribute.annotation(MapKeyEnumerated.class);
+            EnumType type = enumerated == null ? inferredEnumType(keyType) : enumerated.value();
+            EnumMapping mapping = resolveEnumMapping(keyType, type);
+            return new ElementCollectionInfo.MapKeyInfo(name, keyType,
+                    mapping.customColumnType() != null ? mapping.customColumnType() : type == EnumType.STRING ? String.class : Integer.class,
+                    type, mapping.converter());
+        }
+        ElementValueMapping storage = resolveBasicStorageMapping(wrapPrimitiveType(keyType));
+        if (!SUPPORTED_MAP_KEY_BASIC_TYPES.contains(wrapPrimitiveType(keyType))) {
+            throw new IllegalArgumentException(location + " @ElementCollection Map key type " + keyType.getName()
+                    + " is not supported; supported key types: String, Integer, Long, Short, Boolean, UUID, or an enum");
+        }
+        return new ElementCollectionInfo.MapKeyInfo(name, wrapPrimitiveType(keyType), storage.columnType(), null, storage.converter());
+    }
+
+    private ElementValueMapping resolveDescriptorElementValueMapping(
+            PersistentAttributeAccess attribute, Class<?> type, String selector, String location) {
+        JpaConverterDescriptor explicit = explicitJpaConverter(attribute.getter(), wrapPrimitiveType(type), selector, location, null);
+        if (explicit != null) return new ElementValueMapping(explicit.columnType(), explicit.instantiate());
+        Enumerated enumerated = attribute.annotation(Enumerated.class);
+        if (type.isEnum()) {
+            EnumType enumType = enumerated == null ? inferredEnumType(type) : enumerated.value();
+            EnumMapping mapping = resolveEnumMapping(type, enumType);
+            return new ElementValueMapping(mapping.customColumnType() != null ? mapping.customColumnType()
+                    : enumType == EnumType.STRING ? String.class : Integer.class, mapping.converter());
+        }
+        Temporal temporal = attribute.annotation(Temporal.class);
+        if (temporal != null) {
+            Class<?> stored = switch (temporal.value()) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+            return new ElementValueMapping(stored, castConverter(new TemporalAttributeConverter(type, temporal.value())));
+        }
+        ElementValueMapping storage = resolveBasicStorageMapping(wrapPrimitiveType(type));
+        return storage.converter() == null ? new ElementValueMapping(wrapPrimitiveType(type), null) : storage;
     }
 
     /**
