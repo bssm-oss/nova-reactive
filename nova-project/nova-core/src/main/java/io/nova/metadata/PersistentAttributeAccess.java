@@ -92,6 +92,10 @@ public final class PersistentAttributeAccess {
 
     public Annotation[] annotations() { return annotatedElement.getAnnotations(); }
 
+    public <A extends Annotation> A[] annotationsByType(Class<A> annotationType) {
+        return annotatedElement.getAnnotationsByType(annotationType);
+    }
+
     public Object read(Object instance) {
         try {
             return reader.invoke(instance);
