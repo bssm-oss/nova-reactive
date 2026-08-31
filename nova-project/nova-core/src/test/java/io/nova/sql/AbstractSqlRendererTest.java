@@ -6,6 +6,7 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.AggregateSpec;
 import io.nova.query.Aggregation;
 import io.nova.query.Criteria;
+import io.nova.query.CompoundPredicate;
 import io.nova.query.Cursor;
 import io.nova.query.CursorField;
 import io.nova.query.LockMode;
@@ -149,6 +150,30 @@ class AbstractSqlRendererTest {
                 statement.sql()
         );
         assertEquals(java.util.List.of("a@nova.io", true, 5, 10L), statement.bindings());
+    }
+
+    @Test
+    void rendersEmptyCompoundPredicateBooleanIdentities() {
+        SqlStatement emptyAnd = dialect.sqlRenderer().select(
+                metadata, QuerySpec.empty().where(Criteria.and())
+        );
+        SqlStatement emptyOr = dialect.sqlRenderer().select(
+                metadata, QuerySpec.empty().where(Criteria.or())
+        );
+
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where 1 = 1",
+                emptyAnd.sql());
+        assertEquals(
+                "select id as id, email_address as email_address, active as active from accounts where 1 = 0",
+                emptyOr.sql());
+        assertTrue(emptyAnd.bindings().isEmpty());
+        assertTrue(emptyOr.bindings().isEmpty());
+    }
+
+    @Test
+    void compoundPredicateRejectsNullOperator() {
+        assertThrows(NullPointerException.class, () -> new CompoundPredicate(null, java.util.List.of()));
     }
 
     @Test

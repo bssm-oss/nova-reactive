@@ -193,6 +193,10 @@ final class CriteriaSqlBuilder {
 
     private void renderJunction(Ctx ctx, CriteriaPredicate predicate, String separator) {
         List<CriteriaPredicate> children = predicate.children();
+        if (children.isEmpty()) {
+            ctx.sql.append(predicate.kind() == CriteriaPredicate.Kind.AND ? "1 = 1" : "1 = 0");
+            return;
+        }
         ctx.sql.append('(');
         for (int i = 0; i < children.size(); i++) {
             if (i > 0) {
