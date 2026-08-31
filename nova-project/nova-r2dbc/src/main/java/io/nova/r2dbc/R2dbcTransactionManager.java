@@ -11,10 +11,13 @@ import io.r2dbc.spi.ConnectionFactory;
 import io.r2dbc.spi.R2dbcException;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.util.context.Context;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -89,15 +92,17 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         Objects.requireNonNull(callback, "callback");
         return Mono.deferContextual(ctxView -> {
             Connection connection = ctxView.hasKey(CONNECTION_KEY) ? ctxView.get(CONNECTION_KEY) : null;
-            boolean activeTransaction = ctxView.hasKey(ACTIVE_TRANSACTION_KEY);
-            return runWithPropagation(definition, connection, activeTransaction, callback);
+            BoundaryOwner owner = ctxView.hasKey(ACTIVE_TRANSACTION_KEY)
+                    ? ctxView.get(ACTIVE_TRANSACTION_KEY) : null;
+            return runWithPropagation(definition, connection, owner, callback);
         });
     }
 
     private <T> Mono<T> runWithPropagation(TransactionDefinition definition,
                                            Connection connection,
-                                           boolean activeTransaction,
+                                           BoundaryOwner owner,
                                            Function<TransactionContext, Mono<T>> callback) {
+        boolean activeTransaction = owner != null;
         return switch (definition.propagation()) {
             case REQUIRED -> !activeTransaction
                     ? runInNewTransaction(definition, callback)
@@ -105,7 +110,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
             case REQUIRES_NEW -> runInNewTransaction(definition, callback);
             case NESTED -> !activeTransaction
                     ? runInNewTransaction(definition, callback)
-                    : runInSavepoint(connection, callback);
+                    : runInSavepoint(connection, owner, callback);
             case MANDATORY -> !activeTransaction
                     ? Mono.error(new IllegalStateException(
                             "Propagation MANDATORY requires an active transaction, but none was found"))
@@ -123,36 +128,43 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
 
     private <T> Mono<T> runInNewTransaction(TransactionDefinition definition,
                                             Function<TransactionContext, Mono<T>> callback) {
+        BoundaryOwner owner = new BoundaryOwner();
         return Mono.usingWhen(
                 begin(definition),
                 ctx -> Mono.defer(() -> callback.apply(ctx))
+                        .doOnCancel(owner::cancelQueued)
                         .contextWrite(c -> c.put(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())
-                                .put(ACTIVE_TRANSACTION_KEY, true)),
-                ctx -> commitAfterSuccess(ctx).onErrorMap(CleanupFailure::new),
-                this::rollbackAfterError,
-                this::rollback)
+                                .put(ACTIVE_TRANSACTION_KEY, owner)),
+                ctx -> owner.seal().then(commitAfterSuccess(ctx)).onErrorMap(CleanupFailure::new),
+                (ctx, error) -> owner.seal().then(rollbackAfterError(ctx, error)),
+                ctx -> owner.seal().then(rollback(ctx)))
                 .onErrorMap(R2dbcTransactionManager::unwrapCleanupFailure);
     }
 
     private <T> Mono<T> joinActive(Connection active, Function<TransactionContext, Mono<T>> callback) {
         TransactionContext ctx = new R2dbcTransactionContext(active);
         return Mono.defer(() -> callback.apply(ctx))
-                .contextWrite(c -> c.put(CONNECTION_KEY, active).put(ACTIVE_TRANSACTION_KEY, true));
+                .contextWrite(c -> c.put(CONNECTION_KEY, active));
     }
 
-    private <T> Mono<T> runInSavepoint(Connection active, Function<TransactionContext, Mono<T>> callback) {
-        String name = "nova_sp_" + SAVEPOINT_COUNTER.incrementAndGet();
-        TransactionContext ctx = new R2dbcTransactionContext(active);
-        return Mono.from(active.createSavepoint(name))
-                .then(Mono.defer(() -> callback.apply(ctx))
-                        .contextWrite(c -> c.put(CONNECTION_KEY, active).put(ACTIVE_TRANSACTION_KEY, true))
-                        .flatMap(result -> releaseSavepointIfSupported(active, name).thenReturn(result))
-                        .onErrorResume(error -> Mono.defer(() -> Mono.from(active.rollbackTransactionToSavepoint(name)))
-                                .onErrorMap(rollbackFailure -> {
-                                    rollbackFailure.addSuppressed(error);
-                                    return rollbackFailure;
-                                })
-                                .then(Mono.error(error))));
+    private <T> Mono<T> runInSavepoint(Connection active, BoundaryOwner parent,
+                                       Function<TransactionContext, Mono<T>> callback) {
+        return Mono.defer(() -> {
+            SavepointScope scope = new SavepointScope(active, parent.admit());
+            TransactionContext ctx = new R2dbcTransactionContext(active);
+            return Mono.usingWhen(
+                    Mono.just(scope),
+                    ignored -> scope.awaitTurn()
+                            .then(scope.create())
+                            .then(Mono.defer(() -> scope.active() ? callback.apply(ctx) : Mono.empty())
+                                    .doOnCancel(scope.owner::cancelQueued)
+                                    .contextWrite(c -> c.put(CONNECTION_KEY, active)
+                                            .put(ACTIVE_TRANSACTION_KEY, scope.owner))),
+                    SavepointScope::success,
+                    SavepointScope::error,
+                    SavepointScope::cancel)
+                    .onErrorMap(R2dbcTransactionManager::unwrapCleanupFailure);
+        });
     }
 
     private Mono<Void> rollbackAfterError(TransactionContext context, Throwable error) {
@@ -196,6 +208,192 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         private CleanupFailure(Throwable cause) {
             super(cause);
         }
+    }
+
+    /**
+     * Coordinates only transaction boundaries on a shared physical connection. Each
+     * child owns a lease in its parent; descendants use a new owner so they do not
+     * wait for their own ancestor's lease.
+     */
+    private static final class BoundaryOwner {
+        private Mono<Void> tail = Mono.empty();
+        private final java.util.List<Lease> leases = new java.util.ArrayList<>();
+        private boolean sealed;
+
+        synchronized Lease admit() {
+            if (sealed) {
+                throw new IllegalStateException("Transaction boundary is already completing");
+            }
+            Lease lease = new Lease(tail);
+            leases.add(lease);
+            tail = lease.awaitCompletion();
+            return lease;
+        }
+
+        synchronized Mono<Void> seal() {
+            sealed = true;
+            return tail;
+        }
+
+        synchronized void cancelQueued() {
+            sealed = true;
+            for (Lease lease : leases) {
+                lease.cancelQueued();
+            }
+        }
+    }
+
+    private static final class Lease {
+        private final Mono<Void> predecessor;
+        private final Sinks.One<Void> completion = Sinks.one();
+        private final AtomicBoolean completed = new AtomicBoolean();
+        private volatile Runnable queuedCancellation = () -> {};
+
+        private Lease(Mono<Void> predecessor) {
+            this.predecessor = predecessor;
+        }
+
+        Mono<Void> awaitTurn() {
+            return predecessor;
+        }
+
+        Mono<Void> awaitCompletion() {
+            return predecessor.then(completion.asMono());
+        }
+
+        void complete() {
+            if (completed.compareAndSet(false, true)) {
+                completion.tryEmitEmpty();
+            }
+        }
+
+        void onQueuedCancellation(Runnable cancellation) {
+            queuedCancellation = cancellation;
+        }
+
+        void cancelQueued() {
+            queuedCancellation.run();
+        }
+    }
+
+    private static final class SavepointScope {
+        private final Connection connection;
+        private final String name = "nova_sp_" + SAVEPOINT_COUNTER.incrementAndGet();
+        private final Lease lease;
+        private final BoundaryOwner owner = new BoundaryOwner();
+        private final AtomicReference<SavepointState> state = new AtomicReference<>(SavepointState.QUEUED);
+        private final AtomicBoolean created = new AtomicBoolean();
+        private final Mono<Void> create;
+
+        private SavepointScope(Connection connection, Lease lease) {
+            this.connection = connection;
+            this.lease = lease;
+            lease.onQueuedCancellation(this::cancelQueued);
+            this.create = Mono.defer(() -> {
+                        if (!state.compareAndSet(SavepointState.QUEUED, SavepointState.CREATING)) {
+                            return Mono.empty();
+                        }
+                        return Mono.from(connection.createSavepoint(name));
+                    })
+                    .doOnSuccess(ignored -> {
+                        created.set(true);
+                        state.compareAndSet(SavepointState.CREATING, SavepointState.ACTIVE);
+                    })
+                    .doOnError(ignored -> state.compareAndSet(SavepointState.CREATING, SavepointState.CREATE_FAILED))
+                    .cache();
+        }
+
+        Mono<Void> awaitTurn() {
+            return lease.awaitTurn();
+        }
+
+        Mono<Void> create() {
+            return create;
+        }
+
+        boolean active() {
+            return state.get() == SavepointState.ACTIVE;
+        }
+
+        Mono<Void> success() {
+            if (!selectTerminal(SavepointState.SUCCESS)) {
+                return owner.seal().doFinally(ignored -> lease.complete());
+            }
+            return owner.seal()
+                    .then(releaseSavepointIfSupported(connection, name))
+                    .doFinally(ignored -> lease.complete())
+                    .onErrorMap(CleanupFailure::new);
+        }
+
+        Mono<Void> error(Throwable callbackFailure) {
+            if (!selectTerminal(SavepointState.ERROR)) {
+                return owner.seal().doFinally(ignored -> lease.complete());
+            }
+            return owner.seal()
+                    .then(state.get() == SavepointState.CREATE_FAILED
+                            ? Mono.empty()
+                            : rollbackAndRelease(callbackFailure))
+                    .doFinally(ignored -> lease.complete())
+                    .onErrorMap(CleanupFailure::new);
+        }
+
+        Mono<Void> cancel() {
+            SavepointState selected;
+            do {
+                selected = state.get();
+                if (selected == SavepointState.CREATE_FAILED) {
+                    return owner.seal()
+                            .then(create)
+                            .doFinally(ignored -> lease.complete());
+                }
+                if (selected != SavepointState.QUEUED && selected != SavepointState.CREATING
+                        && selected != SavepointState.ACTIVE) {
+                    return Mono.empty();
+                }
+            } while (!state.compareAndSet(selected, SavepointState.CANCEL));
+            if (selected == SavepointState.QUEUED) {
+                return owner.seal().doFinally(ignored -> lease.complete());
+            }
+            return owner.seal()
+                    .then(create)
+                    .then(Mono.defer(() -> created.get() ? rollbackAndRelease(null) : Mono.empty()))
+                    .doFinally(ignored -> lease.complete());
+        }
+
+        private void cancelQueued() {
+            if (state.compareAndSet(SavepointState.QUEUED, SavepointState.CANCEL)) {
+                owner.cancelQueued();
+                lease.complete();
+            }
+        }
+
+        private boolean selectTerminal(SavepointState terminal) {
+            return state.compareAndSet(SavepointState.ACTIVE, terminal);
+        }
+
+        private Mono<Void> rollbackAndRelease(Throwable callbackFailure) {
+            Mono<Void> rollback = Mono.defer(() -> Mono.from(connection.rollbackTransactionToSavepoint(name)));
+            Mono<Void> release = releaseSavepointIfSupported(connection, name);
+            return rollback.onErrorResume(rollbackFailure -> release
+                            .onErrorMap(releaseFailure -> {
+                                releaseFailure.addSuppressed(rollbackFailure);
+                                return withSuppressed(releaseFailure, callbackFailure);
+                            })
+                            .then(Mono.error(withSuppressed(rollbackFailure, callbackFailure))))
+                    .then(release.onErrorMap(releaseFailure ->
+                            withSuppressed(releaseFailure, callbackFailure)));
+        }
+
+        private static Throwable withSuppressed(Throwable failure, Throwable suppressed) {
+            if (suppressed != null) {
+                failure.addSuppressed(suppressed);
+            }
+            return failure;
+        }
+    }
+
+    private enum SavepointState {
+        QUEUED, CREATING, ACTIVE, CREATE_FAILED, SUCCESS, ERROR, CANCEL
     }
 
     private Mono<Void> close(Connection connection) {
