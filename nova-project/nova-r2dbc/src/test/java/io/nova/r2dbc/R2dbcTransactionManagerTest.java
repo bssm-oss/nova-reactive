@@ -6,6 +6,7 @@ import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
 import io.nova.sql.SqlStatement;
 import io.nova.tx.IsolationLevel;
+import io.nova.tx.PhysicalTransactionScope;
 import io.nova.tx.Propagation;
 import io.nova.tx.TransactionDefinition;
 import io.r2dbc.spi.Connection;
@@ -113,6 +114,109 @@ class R2dbcTransactionManagerTest {
         assertNotNull(innerConn.get());
         assertNotSame(outerConn.get(), innerConn.get(),
                 "REQUIRES_NEW의 inner connection은 outer와 달라야 한다");
+    }
+
+    @Test
+    void physicalScopeFollowsPropagationAndRestoresOuterScope() {
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
+        AtomicReference<PhysicalTransactionScope> outerScope = new AtomicReference<>();
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        currentPhysicalScope().doOnNext(outerScope::set)
+                                .then(txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                        required -> assertSamePhysicalScope(outerScope.get())))
+                                .then(txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.MANDATORY),
+                                        mandatory -> assertSamePhysicalScope(outerScope.get())))
+                                .then(txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.SUPPORTS),
+                                        supports -> assertSamePhysicalScope(outerScope.get())))
+                                .then(txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                        nested -> assertSamePhysicalScope(outerScope.get())))
+                                .then(txManager.inTransaction(TransactionDefinition.requiresNew(), requiresNew ->
+                                        currentPhysicalScope().doOnNext(scope -> {
+                                            assertNotSame(outerScope.get(), scope);
+                                            assertTrue(scope.isActive());
+                                        }).then()))
+                                .then(currentPhysicalScope()
+                                        .doOnNext(scope -> assertSame(outerScope.get(), scope)))
+                                .then(txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED),
+                                        notSupported -> currentPhysicalScope().doOnNext(scope -> {
+                                            assertSame(PhysicalTransactionScope.inactive(), scope);
+                                            assertFalse(scope.isActive());
+                                        }).then()))
+                                .then(currentPhysicalScope()
+                                        .doOnNext(scope -> assertSame(outerScope.get(), scope)))))
+                .verifyComplete();
+
+        StepVerifier.create(txManager.inTransaction(
+                        TransactionDefinition.DEFAULT.with(Propagation.SUPPORTS),
+                        supports -> Mono.deferContextual(context ->
+                                Mono.just(context.hasKey(PhysicalTransactionScope.CONTEXT_KEY)))))
+                .expectNext(false)
+                .verifyComplete();
+        StepVerifier.create(txManager.inTransaction(
+                        TransactionDefinition.DEFAULT.with(Propagation.NEVER),
+                        never -> Mono.deferContextual(context ->
+                                Mono.just(context.hasKey(PhysicalTransactionScope.CONTEXT_KEY)))))
+                .expectNext(false)
+                .verifyComplete();
+        StepVerifier.create(txManager.inTransaction(
+                        TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED),
+                        notSupported -> Mono.deferContextual(context ->
+                                Mono.just(context.hasKey(PhysicalTransactionScope.CONTEXT_KEY)))))
+                .expectNext(false)
+                .verifyComplete();
+        StepVerifier.create(txManager.inTransaction(
+                        TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                        nested -> currentPhysicalScope().doOnNext(scope -> assertTrue(scope.isActive()))))
+                .expectNextCount(1)
+                .verifyComplete();
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.NEVER),
+                                never -> Mono.empty())))
+                .expectError(IllegalStateException.class)
+                .verify();
+    }
+
+    @Test
+    void beforeCommitFailureRollsBackInsteadOfCommitting() {
+        List<String> calls = new java.util.ArrayList<>();
+        IllegalStateException flushFailure = new IllegalStateException("flush failed");
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit", "beginTransaction" -> Mono.empty();
+                    case "commitTransaction" -> {
+                        calls.add("commit");
+                        yield Mono.empty();
+                    }
+                    case "rollbackTransaction" -> {
+                        calls.add("rollback");
+                        yield Mono.empty();
+                    }
+                    case "close" -> {
+                        calls.add("close");
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, context ->
+                        Mono.deferContextual(reactorContext -> {
+                            reactorContext.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY)
+                                    .beforeCommit(() -> Mono.error(flushFailure));
+                            return Mono.just("work");
+                        })))
+                .expectErrorSatisfies(error -> assertSame(flushFailure, error))
+                .verify();
+
+        assertEquals(List.of("rollback", "close"), calls);
     }
 
     @Test
@@ -828,6 +932,18 @@ class R2dbcTransactionManagerTest {
 
         assertEquals(1, closeCalls.get());
         assertEquals(1, releaseCalls.get());
+    }
+
+    private static Mono<Void> assertSamePhysicalScope(PhysicalTransactionScope expected) {
+        return currentPhysicalScope().doOnNext(scope -> {
+            assertSame(expected, scope);
+            assertTrue(scope.isActive());
+        }).then();
+    }
+
+    private static Mono<PhysicalTransactionScope> currentPhysicalScope() {
+        return Mono.deferContextual(context ->
+                Mono.just(context.get(PhysicalTransactionScope.CONTEXT_KEY)));
     }
 
     private static Mono<Void> readConnectionFromContext(AtomicReference<Connection> sink, boolean activeTransaction) {

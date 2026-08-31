@@ -12,6 +12,8 @@ import io.nova.query.QuerySpec;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
 import io.nova.sql.SqlStatement;
+import io.nova.tx.Propagation;
+import io.nova.tx.TransactionDefinition;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -22,8 +24,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -147,6 +152,146 @@ class PersistenceSessionIntegrationTest {
                     assertEquals("finnegan", person.getName());
                     assertEquals(1L, person.getVersion(), "@Version은 flush UPDATE에서 1 증가해야 한다");
                 })
+                .verifyComplete();
+    }
+
+    @Test
+    void requiresNewUsesIndependentSessionAndRestoresOuterDirtyIdentity() {
+        Long id = support.operations().save(new Person("original", 30)).map(Person::getId).block();
+        AtomicReference<Person> outer = new AtomicReference<>();
+        AtomicReference<Person> inner = new AtomicReference<>();
+
+        StepVerifier.create(support.operations().inTransaction(outerOps ->
+                        outerOps.findById(Person.class, id).flatMap(outerPerson -> {
+                            outer.set(outerPerson);
+                            outerPerson.setName("outer pending");
+                            return support.transactionManager().inTransaction(
+                                    TransactionDefinition.requiresNew(), ignored ->
+                                            support.operations().findById(Person.class, id).flatMap(first ->
+                                                    support.operations().findById(Person.class, id).map(second -> {
+                                                        assertSame(first, second);
+                                                        assertNotSame(outerPerson, first);
+                                                        inner.set(first);
+                                                        first.setName("inner committed");
+                                                        return first;
+                                                    })));
+                        }).then(support.transactionManager().inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED), ignored ->
+                                        support.operations().findById(Person.class, id).doOnNext(committed ->
+                                                assertEquals("inner committed", committed.getName()))))
+                                .then(outerOps.findById(Person.class, id).doOnNext(restored -> {
+                                    assertSame(outer.get(), restored);
+                                    assertNotSame(outer.get(), inner.get());
+                                    assertEquals("outer pending", restored.getName());
+                                })))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Person.class, id))
+                .assertNext(person -> assertEquals("outer pending", person.getName()))
+                .verifyComplete();
+    }
+
+    @Test
+    void requiresNewRollbackEmptyCompletionAndCancellationDoNotLeakSessionState() {
+        Long rollbackId = support.operations().save(new Person("rollback original", 31)).map(Person::getId).block();
+        AtomicReference<Person> rollbackOuter = new AtomicReference<>();
+
+        StepVerifier.create(support.operations().inTransaction(outerOps ->
+                        outerOps.findById(Person.class, rollbackId).flatMap(outer -> {
+                            rollbackOuter.set(outer);
+                            outer.setName("outer rollback commit");
+                            return support.transactionManager().inTransaction(
+                                            TransactionDefinition.requiresNew(), ignored ->
+                                                    support.operations().findById(Person.class, rollbackId)
+                                                            .doOnNext(person -> person.setName("inner rolled back"))
+                                                            .then(Mono.error(new IllegalStateException("inner rollback"))))
+                                    .onErrorResume(IllegalStateException.class, ignored -> Mono.empty());
+                        }).then(support.transactionManager().inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED), ignored ->
+                                        support.operations().findById(Person.class, rollbackId).doOnNext(committed ->
+                                                assertEquals("rollback original", committed.getName()))))
+                                .then(outerOps.findById(Person.class, rollbackId).doOnNext(restored -> {
+                                    assertSame(rollbackOuter.get(), restored);
+                                    assertEquals("outer rollback commit", restored.getName());
+                                })))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findById(Person.class, rollbackId))
+                .assertNext(person -> assertEquals("outer rollback commit", person.getName()))
+                .verifyComplete();
+
+        Long emptyId = support.operations().save(new Person("empty original", 32)).map(Person::getId).block();
+        StepVerifier.create(support.transactionManager().inTransaction(
+                        TransactionDefinition.requiresNew(), ignored ->
+                                support.operations().findById(Person.class, emptyId)
+                                        .doOnNext(person -> person.setName("empty committed"))
+                                        .then()))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findById(Person.class, emptyId))
+                .assertNext(person -> assertEquals("empty committed", person.getName()))
+                .verifyComplete();
+
+        Long cancelId = support.operations().save(new Person("cancel original", 33)).map(Person::getId).block();
+        AtomicReference<Person> cancelOuter = new AtomicReference<>();
+        StepVerifier.create(support.operations().inTransaction(outerOps ->
+                        outerOps.findById(Person.class, cancelId).flatMap(outer -> {
+                            cancelOuter.set(outer);
+                            outer.setName("outer after cancel");
+                            return support.transactionManager().inTransaction(
+                                            TransactionDefinition.requiresNew(), ignored ->
+                                                    support.operations().findById(Person.class, cancelId)
+                                                            .doOnNext(person -> person.setName("cancelled inner"))
+                                                            .then(Mono.never()))
+                                    .timeout(Duration.ofMillis(100))
+                                    .onErrorResume(TimeoutException.class, ignored -> Mono.empty());
+                        }).then(support.transactionManager().inTransaction(
+                                TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED), ignored ->
+                                        support.operations().findById(Person.class, cancelId).doOnNext(committed ->
+                                                assertEquals("cancel original", committed.getName()))))
+                                .then(outerOps.findById(Person.class, cancelId).doOnNext(restored -> {
+                                    assertSame(cancelOuter.get(), restored);
+                                    assertEquals("outer after cancel", restored.getName());
+                                })))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findById(Person.class, cancelId))
+                .assertNext(person -> assertEquals("outer after cancel", person.getName()))
+                .verifyComplete();
+    }
+
+    @Test
+    void notSupportedIsStatelessUntilExplicitAutocommitSaveAndRestoresOuterSession() {
+        Long id = support.operations().save(new Person("committed", 34)).map(Person::getId).block();
+        AtomicReference<Person> outer = new AtomicReference<>();
+        AtomicReference<Person> firstRead = new AtomicReference<>();
+
+        StepVerifier.create(support.operations().inTransaction(outerOps ->
+                        outerOps.findById(Person.class, id).flatMap(outerPerson -> {
+                            outer.set(outerPerson);
+                            outerPerson.setName("outer pending");
+                            return support.transactionManager().inTransaction(
+                                    TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED), ignored ->
+                                            support.operations().findById(Person.class, id).flatMap(first ->
+                                                    support.operations().findById(Person.class, id).flatMap(second -> {
+                                                        firstRead.set(first);
+                                                        assertNotSame(first, second);
+                                                        assertEquals("committed", first.getName());
+                                                        first.setName("ignored mutation");
+                                                        return support.operations().findById(Person.class, id)
+                                                                .doOnNext(third -> assertEquals("committed", third.getName()))
+                                                                .then(support.operations().save(new Person("autocommit", 35)));
+                                                    })));
+                        }).then(outerOps.findById(Person.class, id).doOnNext(restored -> {
+                            assertSame(outer.get(), restored);
+                            assertNotSame(outer.get(), firstRead.get());
+                            assertEquals("outer pending", restored.getName());
+                        })))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Person.class, id))
+                .assertNext(person -> assertEquals("outer pending", person.getName()))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findAll(Person.class,
+                        QuerySpec.empty().where(Criteria.eq("name", "autocommit"))).collectList())
+                .assertNext(people -> assertEquals(1, people.size()))
                 .verifyComplete();
     }
 
