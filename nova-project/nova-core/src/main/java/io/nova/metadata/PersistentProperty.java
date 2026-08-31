@@ -536,7 +536,8 @@ public final class PersistentProperty {
 
     /** Selected logical member name used when reconstructing embeddable components. */
     public String leafName() {
-        return access.name();
+        int separator = propertyName.lastIndexOf('.');
+        return separator < 0 ? propertyName : propertyName.substring(separator + 1);
     }
 
     /** Returns a mapping annotation from the selected state carrier. */
