@@ -67,9 +67,9 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 
 | Feature | Status | Notes |
 |---|---|---|
-| `@ManyToOne` / owning `@OneToOne` | ✅ | FK column type aligned to the referenced `@Id` storage type |
+| `@ManyToOne` / owning `@OneToOne` | ✅ | FK column type aligned to the referenced `@Id` storage type; owning `@OneToOne(orphanRemoval = true)` supports replacement, nulling, and owner deletion |
 | `@ManyToOne` / `@OneToOne` → **composite-key** target | ✅ | Multi-column FK (one column per referenced `@Id` component) + composite FK constraint |
-| inverse `@OneToOne` (`mappedBy`) | ✅ | |
+| inverse `@OneToOne` (`mappedBy`) | ✅ | Hydration only; `orphanRemoval` and mutating `PERSIST`/`MERGE`/`REMOVE`/`ALL` cascades fail fast |
 | `@OneToMany` (`cascade`, `orphanRemoval`, `@OrderColumn`, `@OrderBy`) | ✅ | |
 | `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration |
 | `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK) |
@@ -148,6 +148,10 @@ These declare cleanly but are rejected with a message until implemented — Nova
   owning `@ManyToOne` foreign key is non-nullable (`optional = false` / `@JoinColumn(nullable = false)`) —
   nulling it would violate the column constraint. Use `orphanRemoval = true` or reparent explicitly instead.
 - Nested `@EmbeddedId` values and `@MapsId` targeting a record `@EmbeddedId` are rejected explicitly; flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported.
+- Owning `@OneToOne(orphanRemoval = true)` with `@MapsId` or a non-updatable join column is
+  rejected. Support includes FIELD and PROPERTY access plus scalar/composite owner and target
+  keys. The same-owner shared-reference guard is deliberately bounded; it does not discover
+  soft references from arbitrary other entity types and is not a concurrent race guarantee.
 - JPA 3.2 physical DDL members outside the supported `@Table`/`@Column` set (for example provider-specific schema-generation controls) remain unsupported and are rejected where Nova can detect them.
 
 > Composite `@Id` components should be round-trip-stable types (integers, `String`, `UUID`, enums).

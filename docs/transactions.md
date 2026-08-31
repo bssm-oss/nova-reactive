@@ -82,9 +82,20 @@ operations.inTransaction(tx ->
 - **Flush timing** — automatically **before each `findById`/`findAll`** (read-your-writes within the transaction) and **once before commit**. An error rolls the transaction back, discarding pending changes.
 - `save()` of a **new** entity still inserts immediately (to obtain the generated id); subsequent mutations are picked up by dirty checking. `save()` of an already-loaded entity issues no SQL — the change is flushed at commit.
 - `@UpdatedAt`, `@PreUpdate`/`@PostUpdate`, and `@Version` optimistic locking apply to flush UPDATEs identically to an explicit partial update.
+- For owning `@OneToOne(orphanRemoval = true)`, a managed replacement or nulling is flushed
+  before commit in this order: owner FK update, same-owner shared-reference check, then normal
+  deletion of the old target. Any callback, guard, or target-delete error fails the pre-commit
+  work and rolls back both the owner update and target work; rollback does not rewind the Java
+  object's already-mutated fields.
 - `find(..., OPTIMISTIC_FORCE_INCREMENT)` and `find`/`lock` with `PESSIMISTIC_FORCE_INCREMENT` issue one version-increment UPDATE. For an exact managed instance, its `@Version` and `@UpdatedAt` snapshot is reconciled after that successful SQL, so commit does not repeat the increment or update callbacks.
 
 **Current scope limits:** `NESTED` is a database savepoint on the same physical connection and therefore shares the outer persistence session. A savepoint rollback does **not** rewind in-memory entity mutations, identity membership, or dirty snapshots; use `REQUIRES_NEW` when isolated persistence state is required. `merge` of detached entities and a persistence session that outlives a single transaction are not supported. `update(entity, fields)` / the `Updater` API deliberately bypass the session (direct SQL). Reads other than entity-loading `findById`/`findAll` variants (for example `count` and scalar projections) are not auto-flushed. Ordinary, `FetchGroup`, and `EntityGraph` entity reads are session-managed.
+
+Outside a transaction, an explicit `save(existingOwner)` with owning one-to-one orphan removal
+loads the old reference, updates the owner, checks sharing, and removes the old target using
+normal stateless/autocommit statements. Those statements are **not atomic**. Wrap the save in
+`inTransaction(...)` whenever all-or-nothing replacement/nulling is required; Nova does not open
+a hidden transaction for it.
 
 ---
 
