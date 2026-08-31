@@ -1802,8 +1802,8 @@ public final class EntityMetadataFactory {
     }
 
     /**
-     * {@code @IdClass} 복합키를 검증한다. 엔티티는 개별 {@code @Id} 필드를 2개 이상 선언해야 하고, IdClass는
-     * 각 {@code @Id} 필드와 같은 이름·호환 타입의 필드를 가져야 하며 no-arg 생성자를 노출해야 한다. 매핑은
+     * {@code @IdClass} 복합키를 검증한다. 엔티티는 개별 {@code @Id} 속성을 2개 이상 선언해야 하고, IdClass는
+     * 각 {@code @Id} 속성과 같은 논리 이름·호환 타입의 selected descriptor를 가져야 한다. 매핑은
      * top-level {@code @Id} 컬럼을 그대로 쓰므로 별도 컬럼 생성 없이 검증만 수행한다(분해/조립은 런타임에
      * {@link EntityMetadata#idColumnValue}/{@link EntityMetadata#readIdValue}가 처리한다).
      */
@@ -1821,22 +1821,28 @@ public final class EntityMetadataFactory {
                             + " @IdClass models a composite key");
         }
         Class<?> idClass = entityType.getAnnotation(jakarta.persistence.IdClass.class).value();
-        try {
-            idClass.getDeclaredConstructor();
-        } catch (NoSuchMethodException exception) {
-            throw new IllegalArgumentException(
-                    "@IdClass " + idClass.getName() + " must expose a no-args constructor", exception);
+        PersistentTypeAccess entityAccess = new PersistentAccessResolver().resolve(entityType);
+        List<PersistentAttributeAccess> entityIds = entityAccess.attributes().stream()
+                .filter(attribute -> attribute.isAnnotationPresent(Id.class)).toList();
+        if (entityIds.size() != idProperties.size()) {
+            throw new IllegalArgumentException(entityType.getName()
+                    + " @IdClass validation could not resolve each selected @Id attribute");
         }
-        for (PersistentProperty idProperty : idProperties) {
-            String name = idProperty.propertyName();
-            PersistentAttributeAccess idClassAttribute = new PersistentAccessResolver().resolve(
-                    idClass, idProperty.propertyAccess() ? AccessType.PROPERTY : AccessType.FIELD).attribute(name);
+        AccessType idAccess = entityIds.get(0).accessType();
+        if (entityIds.stream().anyMatch(attribute -> attribute.accessType() != idAccess)) {
+            throw new IllegalArgumentException(entityType.getName()
+                    + " @IdClass requires all selected @Id attributes to use one access strategy");
+        }
+        PersistentTypeAccess idClassAccess = new PersistentAccessResolver().resolve(idClass, idAccess);
+        for (PersistentAttributeAccess entityId : entityIds) {
+            String name = entityId.name();
+            PersistentAttributeAccess idClassAttribute = idClassAccess.attribute(name);
             if (idClassAttribute == null) {
                 throw new IllegalArgumentException(
                         "@IdClass " + idClass.getName() + " is missing property '" + name
                                 + "' declared as @Id on " + entityType.getName());
             }
-            Class<?> expected = wrapPrimitiveType(idProperty.javaType());
+            Class<?> expected = wrapPrimitiveType(entityId.javaType());
             Class<?> actual = wrapPrimitiveType(idClassAttribute.javaType());
             if (!expected.equals(actual)) {
                 throw new IllegalArgumentException(
