@@ -715,6 +715,7 @@ public final class EntityMetadataFactory {
         PersistentProperty softDeleteProperty = null;
         PersistentProperty versionProperty = null;
         PersistentTypeAccess accessPlan = new PersistentAccessResolver().resolve(entityType);
+        validatePropertyAccessCompleteness(entityType);
         for (PersistentAttributeAccess attribute : accessPlan.attributes()) {
             Field field = attribute.field();
             if (field != null && isNotPersistable(field)) {
@@ -929,6 +930,37 @@ public final class EntityMetadataFactory {
         );
         registerHierarchyMember(metadata);
         return metadata;
+    }
+
+    /**
+     * The resolver intentionally omits unannotated members without a selected getter.  An entity
+     * using PROPERTY access, however, cannot silently drop an ordinary persistent field: it would
+     * produce a partial entity mapping.  Records are exempt because their component accessors are
+     * not JavaBean getters and are handled by the descriptor resolver.
+     */
+    private static void validatePropertyAccessCompleteness(Class<?> entityType) {
+        for (Class<?> type = entityType; type != null && type != Object.class; type = type.getSuperclass()) {
+            if (type != entityType && !type.isAnnotationPresent(MappedSuperclass.class)
+                    && !type.isAnnotationPresent(Entity.class)) {
+                continue;
+            }
+            if (type.isRecord()) {
+                continue;
+            }
+            for (Field field : type.getDeclaredFields()) {
+                if (isNotPersistable(field) || !resolvePropertyAccess(field)) {
+                    continue;
+                }
+                if (findPropertyGetter(field) == null) {
+                    String capitalized = capitalize(field.getName());
+                    String suffix = (field.getType() == boolean.class || field.getType() == Boolean.class)
+                            ? " or is" + capitalized : "";
+                    throw new IllegalArgumentException(type.getName() + "." + field.getName()
+                            + " uses @Access(PROPERTY) but has no JavaBean getter (expected get"
+                            + capitalized + suffix + ")");
+                }
+            }
+        }
     }
 
     /**
@@ -2766,6 +2798,12 @@ public final class EntityMetadataFactory {
      */
     private static Method resolvePropertySetter(Field field) {
         Class<?> owner = field.getDeclaringClass();
+        // Record components are immutable and are populated through their canonical constructor.
+        // Their component accessor is the selected PROPERTY reader; requiring a JavaBean setter
+        // here would reject otherwise valid record embeddables before construction can occur.
+        if (owner.isRecord()) {
+            return null;
+        }
         String setterName = "set" + capitalize(field.getName());
         for (Class<?> type = owner; type != null && type != Object.class; type = type.getSuperclass()) {
             for (Method method : type.getDeclaredMethods()) {
