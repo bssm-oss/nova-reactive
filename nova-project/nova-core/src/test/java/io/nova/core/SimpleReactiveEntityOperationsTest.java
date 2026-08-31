@@ -715,6 +715,70 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void legacyTransactionFlushesManagedValuedAndEmptySuccessOnly() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount valued = new SampleAccount(1L, "before@nova.io", true);
+        SampleAccount empty = new SampleAccount(2L, "before-empty@nova.io", true);
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(valued)
+                                .doOnNext(account -> account.setEmail("valued@nova.io"))))
+                .expectNext(valued)
+                .verifyComplete();
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(empty)
+                                .doOnNext(account -> account.setEmail("empty@nova.io"))
+                                .then()))
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size());
+        assertEquals("update accounts set email_address = ? where id = ?",
+                executor.executedStatements.get(0).sql());
+        assertEquals("update accounts set email_address = ? where id = ?",
+                executor.executedStatements.get(1).sql());
+    }
+
+    @Test
+    void legacyTransactionDoesNotFlushManagedStateOnErrorOrCancellation() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount error = new SampleAccount(3L, "before-error@nova.io", true);
+        SampleAccount cancelled = new SampleAccount(4L, "before-cancel@nova.io", true);
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(error)
+                                .doOnNext(account -> account.setEmail("error@nova.io"))
+                                .then(Mono.error(new IllegalStateException("fail")))))
+                .expectErrorMessage("fail")
+                .verify();
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(cancelled)
+                                .doOnNext(account -> account.setEmail("cancel@nova.io"))
+                                .then(Mono.never())))
+                .thenCancel()
+                .verify();
+
+        assertTrue(executor.executedStatements.isEmpty(),
+                "legacy session flush must run only after a successful valued or empty callback");
+    }
+
+    @Test
+    void nestedLegacyTransactionSharesLexicalSessionIdentity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(
+                "id", 5L, "email_address", "shared@nova.io", "active", true)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.inTransaction(outer ->
+                        outer.findById(SampleAccount.class, 5L).flatMap(first ->
+                                operations.inTransaction(inner ->
+                                        inner.findById(SampleAccount.class, 5L)
+                                                .doOnNext(second -> assertSame(first, second))))))
+                .verifyComplete();
+    }
+
+    @Test
     void saveAllBatchesNewEntitiesIntoSingleExecuteBatchCall() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());

@@ -181,6 +181,36 @@ class PersistenceSessionIntegrationTest {
     }
 
     @Test
+    void nestedSavepointSharesOuterSessionAndDoesNotRewindManagedState() {
+        Long id = support.operations().save(new Person("original", 28)).map(Person::getId).block();
+        AtomicReference<Person> outer = new AtomicReference<>();
+
+        StepVerifier.create(support.operations().inTransaction(outerOps ->
+                        outerOps.findById(Person.class, id).flatMap(person -> {
+                            outer.set(person);
+                            person.setName("outer pending");
+                            return support.transactionManager().inTransaction(
+                                            TransactionDefinition.DEFAULT.with(Propagation.NESTED), ignored ->
+                                                    support.operations().findById(Person.class, id)
+                                                            .doOnNext(nested -> {
+                                                                assertSame(person, nested);
+                                                                nested.setName("nested pending");
+                                                            })
+                                                            .then(Mono.error(new IllegalStateException("rollback savepoint"))))
+                                    .onErrorResume(IllegalStateException.class, ignored -> Mono.empty());
+                        }).then(outerOps.findById(Person.class, id).doOnNext(restored -> {
+                            assertSame(outer.get(), restored);
+                            assertEquals("nested pending", restored.getName(),
+                                    "savepoint rollback does not rewind managed Java state");
+                        }))))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Person.class, id))
+                .assertNext(person -> assertEquals("nested pending", person.getName()))
+                .verifyComplete();
+    }
+
+    @Test
     void requiresNewUsesIndependentSessionAndRestoresOuterDirtyIdentity() {
         Long id = support.operations().save(new Person("original", 30)).map(Person::getId).block();
         AtomicReference<Person> outer = new AtomicReference<>();
