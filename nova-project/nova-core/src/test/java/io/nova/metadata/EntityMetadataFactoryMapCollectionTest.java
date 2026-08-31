@@ -329,6 +329,7 @@ class EntityMetadataFactoryMapCollectionTest {
     enum Color { RED, GREEN, BLUE }
 
     @Embeddable
+    @Access(AccessType.FIELD)
     static class Leg {
         String origin;
         String dest;
@@ -399,6 +400,7 @@ class EntityMetadataFactoryMapCollectionTest {
     }
 
     @Embeddable
+    @Access(AccessType.FIELD)
     static class Fare {
         int amount;
         String currency;

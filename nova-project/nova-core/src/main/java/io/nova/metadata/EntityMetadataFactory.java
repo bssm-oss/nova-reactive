@@ -3672,7 +3672,7 @@ public final class EntityMetadataFactory {
 
     private PersistentProperty createOneToManyProperty(
             Class<?> entityType, PersistentAttributeAccess attribute) {
-        if (attribute.field() != null) {
+        if (attribute.accessType() == AccessType.FIELD) {
             return createOneToManyProperty(entityType, attribute.field());
         }
         OneToMany annotation = attribute.annotation(OneToMany.class);
@@ -4480,7 +4480,7 @@ public final class EntityMetadataFactory {
 
     private PersistentProperty createOneToOneProperty(
             Class<?> entityType, PersistentAttributeAccess attribute) {
-        if (attribute.field() != null) {
+        if (attribute.accessType() == AccessType.FIELD) {
             return createOneToOneProperty(entityType, attribute.field());
         }
         return createDescriptorToOneProperty(entityType, attribute, true);
@@ -4559,7 +4559,7 @@ public final class EntityMetadataFactory {
 
     private PersistentProperty createManyToManyProperty(
             Class<?> entityType, String ownerTableName, PersistentAttributeAccess attribute) {
-        if (attribute.field() != null) {
+        if (attribute.accessType() == AccessType.FIELD) {
             return createManyToManyProperty(entityType, ownerTableName, attribute.field());
         }
         Class<?> collectionType = attribute.javaType();
@@ -4937,7 +4937,7 @@ public final class EntityMetadataFactory {
 
     private PersistentProperty createElementCollectionProperty(
             Class<?> entityType, String ownerTableName, PersistentAttributeAccess attribute) {
-        if (attribute.field() != null) {
+        if (attribute.accessType() == AccessType.FIELD) {
             return createElementCollectionProperty(entityType, ownerTableName, attribute.field());
         }
         Class<?> collectionType = attribute.javaType();
