@@ -55,6 +55,8 @@ Supported `Propagation` values: `REQUIRED`, `REQUIRES_NEW`, `NESTED` (SAVEPOINT)
 
 - An exception or `Mono.error` inside the callback **rolls back automatically**. `NESTED` rolls back only to the SAVEPOINT. Savepoint creation, rollback, release, outer completion, and cancellation cleanup are serialized on the physical connection; empty success also releases its savepoint.
 - Transaction context propagates through the Reactor `Context`, so there is no thread leak (no `ThreadLocal`).
+- A persistence session belongs to a **physical transaction**, not merely to a lexical callback. `REQUIRED`, `MANDATORY`, transactional `SUPPORTS`, and `NESTED` share the physical session; `REQUIRES_NEW` creates an independent connection, identity map, and pre-commit flush, then restores the outer session unchanged. Its error or cancellation rolls back and discards only the inner session.
+- `NOT_SUPPORTED` suspends the physical transaction and installs no persistence session. Entity reads in that callback are stateless (repeated loads are distinct instances), unsaved mutations are ignored, and an explicit `save()` uses its normal autocommit behavior. The outer connection, identity map, and pending dirty state are restored when the callback exits.
 
 ---
 
@@ -80,7 +82,7 @@ operations.inTransaction(tx ->
 - `@UpdatedAt`, `@PreUpdate`/`@PostUpdate`, and `@Version` optimistic locking apply to flush UPDATEs identically to an explicit partial update.
 - `find(..., OPTIMISTIC_FORCE_INCREMENT)` and `find`/`lock` with `PESSIMISTIC_FORCE_INCREMENT` issue one version-increment UPDATE. For an exact managed instance, its `@Version` and `@UpdatedAt` snapshot is reconciled after that successful SQL, so commit does not repeat the increment or update callbacks.
 
-**Current scope limits:** `merge` of detached entities and a persistence session that outlives a single transaction are not supported. `update(entity, fields)` / the `Updater` API deliberately bypass the session (direct SQL). Reads other than entity-loading `findById`/`findAll` variants (for example `count` and scalar projections) are not auto-flushed. Ordinary, `FetchGroup`, and `EntityGraph` entity reads are session-managed.
+**Current scope limits:** `NESTED` is a database savepoint on the same physical connection and therefore shares the outer persistence session. A savepoint rollback does **not** rewind in-memory entity mutations, identity membership, or dirty snapshots; use `REQUIRES_NEW` when isolated persistence state is required. `merge` of detached entities and a persistence session that outlives a single transaction are not supported. `update(entity, fields)` / the `Updater` API deliberately bypass the session (direct SQL). Reads other than entity-loading `findById`/`findAll` variants (for example `count` and scalar projections) are not auto-flushed. Ordinary, `FetchGroup`, and `EntityGraph` entity reads are session-managed.
 
 ---
 

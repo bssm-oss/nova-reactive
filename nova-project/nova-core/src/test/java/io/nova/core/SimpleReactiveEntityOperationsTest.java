@@ -59,6 +59,7 @@ import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderColumn;
 import jakarta.persistence.PostRemove;
 import jakarta.persistence.PreRemove;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import org.junit.jupiter.api.Test;
@@ -711,6 +712,77 @@ class SimpleReactiveEntityOperationsTest {
                 .verifyComplete();
 
         assertEquals(List.of("begin", "callback"), transactions.events);
+    }
+
+    @Test
+    void legacyTransactionFlushesManagedValuedAndEmptySuccessOnly() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount valued = new SampleAccount(1L, "before@nova.io", true);
+        SampleAccount empty = new SampleAccount(2L, "before-empty@nova.io", true);
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(valued)
+                                .doOnNext(account -> metadata(SampleAccount.class).findProperty("email")
+                                        .orElseThrow().write(account, "valued@nova.io"))))
+                .expectNext(valued)
+                .verifyComplete();
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(empty)
+                                .doOnNext(account -> metadata(SampleAccount.class).findProperty("email")
+                                        .orElseThrow().write(account, "empty@nova.io"))
+                                .then()))
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size());
+        assertEquals("update accounts set email_address = ? where id = ?",
+                executor.executedStatements.get(0).sql());
+        assertEquals("update accounts set email_address = ? where id = ?",
+                executor.executedStatements.get(1).sql());
+    }
+
+    @Test
+    void legacyTransactionDoesNotFlushManagedStateOnErrorOrCancellation() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount error = new SampleAccount(3L, "before-error@nova.io", true);
+        SampleAccount cancelled = new SampleAccount(4L, "before-cancel@nova.io", true);
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(error)
+                                .doOnNext(account -> metadata(SampleAccount.class).findProperty("email")
+                                        .orElseThrow().write(account, "error@nova.io"))
+                                .then(Mono.error(new IllegalStateException("fail")))))
+                .expectErrorMessage("fail")
+                .verify();
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(cancelled)
+                                .doOnNext(account -> metadata(SampleAccount.class).findProperty("email")
+                                        .orElseThrow().write(account, "cancel@nova.io"))
+                                .then(Mono.never())))
+                .thenCancel()
+                .verify();
+
+        assertTrue(executor.executedStatements.isEmpty(),
+                "legacy session flush must run only after a successful valued or empty callback");
+    }
+
+    @Test
+    void nestedLegacyTransactionSharesLexicalSessionIdentity() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(
+                "id", 5L, "email_address", "shared@nova.io", "active", true)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(
+                "id", 5L, "email_address", "shared@nova.io", "active", true)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+
+        StepVerifier.create(operations.inTransaction(outer ->
+                        outer.findById(SampleAccount.class, 5L).flatMap(first ->
+                                operations.inTransaction(inner ->
+                                        inner.findById(SampleAccount.class, 5L)
+                                                .doOnNext(second -> assertSame(first, second))))))
+                .expectNextCount(1)
+                .verifyComplete();
     }
 
     @Test
@@ -2694,6 +2766,34 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void legacyCommitFlushKeepsCascadeReferenceSaveInManagedSession() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 2L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        FlushCascadeReference.preUpdateCount = 0;
+        FlushCascadeReference reference = new FlushCascadeReference(10L, "existing", 4L);
+        FlushCascadeParent parent = new FlushCascadeParent(1L);
+        FlushCascadeChild child = new FlushCascadeChild(null, "new child", reference);
+        child.parent = parent;
+
+        StepVerifier.create(operations.inTransaction(current ->
+                        current.save(parent)
+                                .then(Mono.fromRunnable(() -> parent.children.add(child)))))
+                .verifyComplete();
+
+        assertEquals(2L, child.id);
+        assertEquals(4L, reference.version,
+                "a cascade reference save during commit flush must not perform a stateless versioned update");
+        assertEquals(0, FlushCascadeReference.preUpdateCount,
+                "a managed cascade reference must not invoke an extra pre-update callback");
+        assertTrue(executor.executedStatements.stream().noneMatch(statement ->
+                        statement.sql().startsWith("update flush_cascade_references")),
+                "the reference must not receive a duplicate or full UPDATE: " + executor.executedStatements);
+        assertEquals(1, executor.chronologicalSqlCalls.stream().filter(sql ->
+                        sql.startsWith("insert into flush_cascade_children")).count());
+    }
+
+    @Test
     void sessionFlushReindexesOrderedOneToManyAfterPureReorder() {
         CapturingExecutor executor = new CapturingExecutor();
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
@@ -3390,6 +3490,66 @@ class SimpleReactiveEntityOperationsTest {
         @SuppressWarnings("unchecked")
         public <T> T get(String columnName, Class<T> type) {
             return (T) values.get(columnName);
+        }
+    }
+
+    @Entity
+    @Table(name = "flush_cascade_parents")
+    private static final class FlushCascadeParent {
+        @Id
+        private Long id;
+
+        @OneToMany(mappedBy = "parent", targetEntity = FlushCascadeChild.class, cascade = CascadeType.PERSIST)
+        private List<FlushCascadeChild> children = new ArrayList<>();
+
+        private FlushCascadeParent(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "flush_cascade_children")
+    private static final class FlushCascadeChild {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+
+        @ManyToOne(optional = false)
+        @JoinColumn(name = "parent_id", nullable = false)
+        private FlushCascadeParent parent;
+
+        @ManyToOne(cascade = CascadeType.PERSIST, optional = false)
+        @JoinColumn(name = "reference_id", nullable = false)
+        private FlushCascadeReference reference;
+
+        private FlushCascadeChild(Long id, String name, FlushCascadeReference reference) {
+            this.id = id;
+            this.name = name;
+            this.reference = reference;
+        }
+    }
+
+    @Entity
+    @Table(name = "flush_cascade_references")
+    private static final class FlushCascadeReference {
+        private static int preUpdateCount;
+
+        @Id
+        private Long id;
+        private String name;
+        @Version
+        private Long version;
+
+        private FlushCascadeReference(Long id, String name, Long version) {
+            this.id = id;
+            this.name = name;
+            this.version = version;
+        }
+
+        @PreUpdate
+        void preUpdate() {
+            preUpdateCount++;
         }
     }
 
