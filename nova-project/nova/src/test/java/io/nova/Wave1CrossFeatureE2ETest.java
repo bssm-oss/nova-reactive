@@ -108,12 +108,15 @@ class Wave1CrossFeatureE2ETest {
         JpqlExecutor jpqlOnCached =
                 new JpqlExecutor(cached, dialect, metadataFactory, Product.class, Article.class, Tag.class);
         SchemaInitializer schema = new SimpleSchemaInitializer(base, metadataFactory, dialect);
-        ProductRepository repo = newProductRepository(base);
+        ProductRepository repo = newProductRepository(base, metadataFactory);
         return new Wiring(base, cached, em, jpqlOnBase, jpqlOnCached, schema, metadataFactory, repo, listener);
     }
 
-    private static ProductRepository newProductRepository(ReactiveEntityOperations operations) {
-        SimpleReactiveRepository handler = new SimpleReactiveRepository(Product.class, Long.class, operations);
+    private static ProductRepository newProductRepository(
+            ReactiveEntityOperations operations, EntityMetadataFactory metadataFactory) {
+        SimpleReactiveRepository handler = new SimpleReactiveRepository(
+                Product.class, Long.class, operations, null, null,
+                metadataFactory.getEntityMetadata(Product.class));
         return (ProductRepository) Proxy.newProxyInstance(
                 ProductRepository.class.getClassLoader(),
                 new Class<?>[]{ProductRepository.class},
