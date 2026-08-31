@@ -839,6 +839,22 @@ class PropertyAccessH2IntegrationTest {
             this.country = country;
             this.number = number;
         }
+
+        public String getCountry() {
+            return country;
+        }
+
+        public void setCountry(String country) {
+            this.country = country;
+        }
+
+        public Long getNumber() {
+            return number;
+        }
+
+        public void setNumber(Long number) {
+            this.number = number;
+        }
     }
 
     @Entity
@@ -996,6 +1012,22 @@ class PropertyAccessH2IntegrationTest {
 
         PropertyCompositeTargetKey(Code code, Long sequence) {
             this.code = code;
+            this.sequence = sequence;
+        }
+
+        public Code getCode() {
+            return code;
+        }
+
+        public void setCode(Code code) {
+            this.code = code;
+        }
+
+        public Long getSequence() {
+            return sequence;
+        }
+
+        public void setSequence(Long sequence) {
             this.sequence = sequence;
         }
     }
