@@ -490,6 +490,37 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void emptyJunctionsRenderBooleanIdentitiesInScalarAndAliasedRoutes() {
+        CriteriaQuery<Object> scalarAnd = cb.createQuery(Object.class);
+        Root<Employee> scalarAndEmployee = scalarAnd.from(Employee.class);
+        scalarAnd.multiselect(scalarAndEmployee.<String>get("name")).where(cb.and());
+        CriteriaSql scalarAndSql = scalar(scalarAnd);
+        assertEquals("select \"name\" as \"c0\" from \"employee\" where 1 = 1", scalarAndSql.sql());
+        assertTrue(scalarAndSql.bindings().isEmpty());
+
+        CriteriaQuery<Object> scalarOr = cb.createQuery(Object.class);
+        Root<Employee> scalarOrEmployee = scalarOr.from(Employee.class);
+        scalarOr.multiselect(scalarOrEmployee.<String>get("name")).where(cb.or());
+        CriteriaSql scalarOrSql = scalar(scalarOr);
+        assertEquals("select \"name\" as \"c0\" from \"employee\" where 1 = 0", scalarOrSql.sql());
+        assertTrue(scalarOrSql.bindings().isEmpty());
+
+        CriteriaQuery<Object> aliasedAnd = cb.createQuery(Object.class);
+        Root<Employee> aliasedAndEmployee = aliasedAnd.from(Employee.class);
+        aliasedAnd.multiselect(aliasedAndEmployee.<String>get("name")).where(cb.and());
+        CriteriaSql aliasedAndSql = aliased(aliasedAnd);
+        assertEquals("select \"t0\".\"name\" as \"c0\" from \"employee\" \"t0\" where 1 = 1", aliasedAndSql.sql());
+        assertTrue(aliasedAndSql.bindings().isEmpty());
+
+        CriteriaQuery<Object> aliasedOr = cb.createQuery(Object.class);
+        Root<Employee> aliasedOrEmployee = aliasedOr.from(Employee.class);
+        aliasedOr.multiselect(aliasedOrEmployee.<String>get("name")).where(cb.or());
+        CriteriaSql aliasedOrSql = aliased(aliasedOr);
+        assertEquals("select \"t0\".\"name\" as \"c0\" from \"employee\" \"t0\" where 1 = 0", aliasedOrSql.sql());
+        assertTrue(aliasedOrSql.bindings().isEmpty());
+    }
+
+    @Test
     void pathLevelEqualToNullBecomesIsNull() {
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
         Root<Employee> e = cq.from(Employee.class);

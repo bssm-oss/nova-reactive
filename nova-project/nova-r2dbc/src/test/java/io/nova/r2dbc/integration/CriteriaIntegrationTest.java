@@ -138,6 +138,41 @@ class CriteriaIntegrationTest {
     }
 
     @Test
+    void emptyJunctionsReturnAllForAndAndNoneForOrAcrossEntityAndScalarQueries() {
+        CriteriaBuilder entityAndBuilder = cb();
+        CriteriaQuery<Employee> entityAnd = entityAndBuilder.createQuery(Employee.class);
+        Root<Employee> entityAndEmployee = entityAnd.from(Employee.class);
+        entityAnd.select(entityAndEmployee)
+                .where(entityAndBuilder.and())
+                .orderBy(entityAndBuilder.asc(entityAndEmployee.<String>get("name")));
+        StepVerifier.create(criteria.createQuery(entityAnd).getResultList())
+                .expectNextCount(4)
+                .verifyComplete();
+
+        CriteriaBuilder entityOrBuilder = cb();
+        CriteriaQuery<Employee> entityOr = entityOrBuilder.createQuery(Employee.class);
+        Root<Employee> entityOrEmployee = entityOr.from(Employee.class);
+        entityOr.select(entityOrEmployee).where(entityOrBuilder.or());
+        StepVerifier.create(criteria.createQuery(entityOr).getResultList()).verifyComplete();
+
+        CriteriaBuilder scalarAndBuilder = cb();
+        CriteriaQuery<String> scalarAnd = scalarAndBuilder.createQuery(String.class);
+        Root<Employee> scalarAndEmployee = scalarAnd.from(Employee.class);
+        scalarAnd.select(scalarAndEmployee.<String>get("name"))
+                .where(scalarAndBuilder.and())
+                .orderBy(scalarAndBuilder.asc(scalarAndEmployee.<String>get("name")));
+        StepVerifier.create(criteria.createQuery(scalarAnd).getResultList())
+                .expectNext("Ada", "Bob", "Cara", "Dan")
+                .verifyComplete();
+
+        CriteriaBuilder scalarOrBuilder = cb();
+        CriteriaQuery<String> scalarOr = scalarOrBuilder.createQuery(String.class);
+        Root<Employee> scalarOrEmployee = scalarOr.from(Employee.class);
+        scalarOr.select(scalarOrEmployee.<String>get("name")).where(scalarOrBuilder.or());
+        StepVerifier.create(criteria.createQuery(scalarOr).getResultList()).verifyComplete();
+    }
+
+    @Test
     void countAggregateAsSingleResult() {
         CriteriaBuilder cb = cb();
         CriteriaQuery<Object> cq = cb.createQuery(Object.class);
