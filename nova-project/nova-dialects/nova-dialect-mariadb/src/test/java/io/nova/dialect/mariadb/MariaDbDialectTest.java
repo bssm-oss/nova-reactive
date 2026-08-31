@@ -248,19 +248,19 @@ class MariaDbDialectTest {
 
         String stringColorsDdl = dialect.schemaGenerator().createCollectionTable(
                 holder.findProperty("stringColors").orElseThrow()
-                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+                        .elementCollectionInfo().toCollectionTableDefinition(new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0)));
         org.junit.jupiter.api.Assertions.assertTrue(
                 stringColorsDdl.contains("`string_colors` varchar(255)"), stringColorsDdl);
 
         String ordinalColorsDdl = dialect.schemaGenerator().createCollectionTable(
                 holder.findProperty("ordinalColors").orElseThrow()
-                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+                        .elementCollectionInfo().toCollectionTableDefinition(new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0)));
         org.junit.jupiter.api.Assertions.assertTrue(
                 ordinalColorsDdl.contains("`ordinal_colors` integer"), ordinalColorsDdl);
 
         String refsDdl = dialect.schemaGenerator().createCollectionTable(
                 holder.findProperty("refs").orElseThrow()
-                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+                        .elementCollectionInfo().toCollectionTableDefinition(new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0)));
         org.junit.jupiter.api.Assertions.assertTrue(refsDdl.contains("`refs` varchar(255)"), refsDdl);
     }
 
@@ -283,19 +283,35 @@ class MariaDbDialectTest {
         assertTrue(scalarDdl.contains("`explicit_amount` decimal(65, 38)"), scalarDdl);
         assertTrue(scalarDdl.contains("`whole_amount` decimal(12, 0)"), scalarDdl);
 
+        String scaleOnlyScalarDdl =
+                dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleOnlyDecimal.class));
+        assertTrue(scaleOnlyScalarDdl.contains("`amount` decimal(65, 2)"), scaleOnlyScalarDdl);
+
         EntityMetadata<DecimalCollectionHolder> collectionHolder =
                 factory.getEntityMetadata(DecimalCollectionHolder.class);
         String collectionDdl = dialect.schemaGenerator().createCollectionTable(
                 collectionHolder.findProperty("amounts").orElseThrow()
-                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+                        .elementCollectionInfo().toCollectionTableDefinition(new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0)));
         assertTrue(collectionDdl.contains("`amounts` decimal(65, 38)"), collectionDdl);
+
+        EntityMetadata<ScaleOnlyDecimalCollectionHolder> scaleOnlyCollectionHolder =
+                factory.getEntityMetadata(ScaleOnlyDecimalCollectionHolder.class);
+        String scaleOnlyCollectionDdl = dialect.schemaGenerator().createCollectionTable(
+                scaleOnlyCollectionHolder.findProperty("amounts").orElseThrow()
+                        .elementCollectionInfo().toCollectionTableDefinition(
+                                new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0)));
+        assertTrue(scaleOnlyCollectionDdl.contains("`amounts` decimal(65, 38)"), scaleOnlyCollectionDdl);
 
         String relationDdl = dialect.schemaGenerator().createTable(factory.getEntityMetadata(DecimalChild.class));
         assertTrue(relationDdl.contains("`parent_id` decimal(65, 38)"), relationDdl);
+
+        String scaleOnlyRelationDdl =
+                dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleOnlyDecimalChild.class));
+        assertTrue(scaleOnlyRelationDdl.contains("`parent_id` decimal(65, 38)"), scaleOnlyRelationDdl);
     }
 
     @Test
-    void rejectsUnspecifiedScaleOnlyAndOutOfRangeBigDecimalShapes() {
+    void rejectsUnspecifiedAndOutOfRangeBigDecimalShapes() {
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
 
         IllegalArgumentException unspecified = assertThrows(IllegalArgumentException.class,
@@ -303,11 +319,11 @@ class MariaDbDialectTest {
         assertTrue(unspecified.getMessage().contains("@Column(precision = ..., scale = ...)"),
                 unspecified.getMessage());
         assertThrows(IllegalArgumentException.class,
-                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleOnlyDecimal.class)));
-        assertThrows(IllegalArgumentException.class,
                 () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(TooPreciseDecimal.class)));
         assertThrows(IllegalArgumentException.class,
                 () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(TooScaledDecimal.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleOnlyTooScaledDecimal.class)));
         assertThrows(IllegalArgumentException.class,
                 () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(ScaleExceedsPrecisionDecimal.class)));
     }
@@ -392,6 +408,15 @@ class MariaDbDialectTest {
     }
 
     @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "scale_only_decimal_collection_holder")
+    static class ScaleOnlyDecimalCollectionHolder {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ElementCollection
+        @jakarta.persistence.Column(scale = 38)
+        java.util.Set<java.math.BigDecimal> amounts;
+    }
+
+    @jakarta.persistence.Entity
     @jakarta.persistence.Table(name = "decimal_parent")
     static class DecimalParent {
         @jakarta.persistence.Id
@@ -406,6 +431,23 @@ class MariaDbDialectTest {
         @jakarta.persistence.ManyToOne(targetEntity = DecimalParent.class)
         @jakarta.persistence.JoinColumn(name = "parent_id")
         DecimalParent parent;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "scale_only_decimal_parent")
+    static class ScaleOnlyDecimalParent {
+        @jakarta.persistence.Id
+        @jakarta.persistence.Column(scale = 38)
+        java.math.BigDecimal id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "scale_only_decimal_child")
+    static class ScaleOnlyDecimalChild {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.ManyToOne(targetEntity = ScaleOnlyDecimalParent.class)
+        @jakarta.persistence.JoinColumn(name = "parent_id")
+        ScaleOnlyDecimalParent parent;
     }
 
     @jakarta.persistence.Entity
@@ -432,6 +474,13 @@ class MariaDbDialectTest {
     static class TooScaledDecimal {
         @jakarta.persistence.Id Long id;
         @jakarta.persistence.Column(precision = 65, scale = 39)
+        java.math.BigDecimal amount;
+    }
+
+    @jakarta.persistence.Entity
+    static class ScaleOnlyTooScaledDecimal {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(scale = 39)
         java.math.BigDecimal amount;
     }
 

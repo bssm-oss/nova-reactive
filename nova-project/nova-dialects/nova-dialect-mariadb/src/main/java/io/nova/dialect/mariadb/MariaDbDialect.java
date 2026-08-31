@@ -146,18 +146,20 @@ public final class MariaDbDialect implements Dialect {
         protected String bigDecimalColumnType(ColumnStorage storage) {
             int precision = storage.precision();
             int scale = storage.scale();
-            if (precision <= 0) {
-                throw new IllegalArgumentException(
-                        "MariaDB BigDecimal column requires @Column(precision = ..., scale = ...);"
-                                + " scale alone is not supported");
-            }
-            if (precision > 65) {
-                throw new IllegalArgumentException(
-                        "MariaDB DECIMAL precision must be between 1 and 65: " + precision);
-            }
             if (scale < 0 || scale > 38) {
                 throw new IllegalArgumentException(
                         "MariaDB DECIMAL scale must be between 0 and 38: " + scale);
+            }
+            if (precision == 0) {
+                if (scale > 0) {
+                    return "decimal(65, " + scale + ")";
+                }
+                throw new IllegalArgumentException(
+                        "MariaDB BigDecimal column requires @Column(precision = ..., scale = ...)");
+            }
+            if (precision < 0 || precision > 65) {
+                throw new IllegalArgumentException(
+                        "MariaDB DECIMAL precision must be between 1 and 65: " + precision);
             }
             if (scale > precision) {
                 throw new IllegalArgumentException(

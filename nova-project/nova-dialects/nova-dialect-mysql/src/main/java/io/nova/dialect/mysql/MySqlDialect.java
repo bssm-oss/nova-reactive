@@ -145,10 +145,13 @@ public final class MySqlDialect implements Dialect {
         protected String bigDecimalColumnType(ColumnStorage storage) {
             int precision = storage.precision();
             int scale = storage.scale();
-            if (precision <= 0) {
+            if (precision <= 0 && scale <= 0) {
                 throw new IllegalArgumentException(
-                        "MySQL BigDecimal column requires @Column(precision = ..., scale = ...);"
-                                + " scale alone is not supported");
+                        "MySQL BigDecimal column requires @Column(precision = ..., scale = ...)"
+                                + " or @Column(scale = ...)");
+            }
+            if (precision <= 0) {
+                precision = 65;
             }
             if (precision > 65) {
                 throw new IllegalArgumentException(
