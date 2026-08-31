@@ -3,6 +3,7 @@ package io.nova.metadata;
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
 import jakarta.persistence.EmbeddedId;
+import jakarta.persistence.Embeddable;
 import jakarta.persistence.Id;
 import jakarta.persistence.Entity;
 import jakarta.persistence.MappedSuperclass;
@@ -37,24 +38,35 @@ public final class PersistentAccessResolver {
     }
 
     private PersistentTypeAccess create(Class<?> type, AccessType inheritedAccess) {
+        List<Class<?>> declarations = type.isAnnotationPresent(Embeddable.class)
+                ? List.of(type)
+                : hierarchy(type);
+        AccessType defaultAccess = inheritedAccess != null ? inheritedAccess : hierarchyDefault(declarations, type);
         AccessType access = explicitAccess(type);
-        if (access == null) {
-            access = inheritedAccess != null ? inheritedAccess : hierarchyDefault(type);
-        }
-        List<Class<?>> hierarchy = hierarchy(type);
-        Map<String, Field> fields = new LinkedHashMap<>();
-        Map<String, Method> getters = new LinkedHashMap<>();
-        Map<String, Method> setters = new HashMap<>();
-        for (Class<?> current : hierarchy) {
-            for (Field field : current.getDeclaredFields()) {
-                if (candidateField(field)) fields.put(field.getName(), field);
+        if (access == null) access = defaultAccess;
+
+        Map<String, PersistentAttributeAccess> attributes = new LinkedHashMap<>();
+        for (Class<?> declaration : declarations) {
+            AccessType declarationAccess = explicitAccess(declaration);
+            if (declarationAccess == null) declarationAccess = defaultAccess;
+            for (PersistentAttributeAccess attribute : declarationAttributes(declaration, declarationAccess, type)) {
+                // A declaration in a more-derived managed type legally hides or
+                // overrides an inherited logical attribute.
+                attributes.put(attribute.name(), attribute);
             }
-            Map<String, Method> localGetters = getters(current);
-            for (Map.Entry<String, Method> entry : localGetters.entrySet()) getters.put(entry.getKey(), entry.getValue());
-            setters.putAll(setters(current));
         }
-        List<String> names = new ArrayList<>();
-        names.addAll(fields.keySet());
+        return new PersistentTypeAccess(type, access, new ArrayList<>(attributes.values()));
+    }
+
+    private static List<PersistentAttributeAccess> declarationAttributes(
+            Class<?> declaration, AccessType access, Class<?> type) {
+        Map<String, Field> fields = new LinkedHashMap<>();
+        for (Field field : declaration.getDeclaredFields()) {
+            if (candidateField(field)) fields.put(field.getName(), field);
+        }
+        Map<String, Method> getters = getters(declaration);
+        Map<String, Method> setters = setters(declaration);
+        List<String> names = new ArrayList<>(fields.keySet());
         for (String name : getters.keySet()) if (!names.contains(name)) names.add(name);
         List<PersistentAttributeAccess> attributes = new ArrayList<>();
         for (String name : names) {
@@ -90,7 +102,7 @@ public final class PersistentAccessResolver {
                     if (setter != null && !setter.getParameterTypes()[0].equals(getter.getReturnType())) {
                         throw new IllegalArgumentException(type.getName() + "." + name + " getter/setter types are incompatible");
                     }
-                    if (setter == null && !type.isRecord()) {
+                    if (setter == null && !declaration.isRecord()) {
                         throw new IllegalArgumentException(type.getName() + "." + name
                                 + " has no JavaBean setter required by PROPERTY access");
                     }
@@ -98,7 +110,7 @@ public final class PersistentAccessResolver {
                 }
             }
         }
-        return new PersistentTypeAccess(type, access, attributes);
+        return attributes;
     }
 
     private static void rejectInactive(java.lang.reflect.AnnotatedElement selected,
@@ -111,22 +123,18 @@ public final class PersistentAccessResolver {
         }
     }
 
-    private static AccessType hierarchyDefault(Class<?> type) {
-        // JPA's implicit strategy is determined by identifier placement. A field
-        // identifier wins before getter identifiers are considered, so an inactive
-        // getter annotation is diagnosed by the selected-member validation rather
-        // than changing a FIELD mapping into PROPERTY.
-        for (Class<?> current : hierarchy(type)) {
+    private static AccessType hierarchyDefault(List<Class<?>> declarations, Class<?> type) {
+        AccessType found = null;
+        for (Class<?> current : declarations) {
             for (Field field : current.getDeclaredFields()) {
                 if (field.isAnnotationPresent(Id.class) || field.isAnnotationPresent(EmbeddedId.class)) {
-                    return AccessType.FIELD;
+                    found = mergeIdentifierAccess(found, AccessType.FIELD, type);
                 }
             }
-        }
-        AccessType found = null;
-        for (Class<?> current : hierarchy(type)) {
             for (Method method : current.getDeclaredMethods()) {
-                if (method.isAnnotationPresent(Id.class) || method.isAnnotationPresent(EmbeddedId.class)) found = mergeIdentifierAccess(found, AccessType.PROPERTY, type);
+                if (method.isAnnotationPresent(Id.class) || method.isAnnotationPresent(EmbeddedId.class)) {
+                    found = mergeIdentifierAccess(found, AccessType.PROPERTY, type);
+                }
             }
         }
         return found == null ? AccessType.FIELD : found;
