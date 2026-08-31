@@ -117,7 +117,7 @@ class EntityMetadataFactoryBigDecimalDdlTest {
         PersistentProperty toOne = property(ConvertedEmbeddedIdReference.class, "target");
 
         assertEquals(expected, ColumnStorage.from(target.idProperty()));
-        assertEquals(expected, ColumnStorage.from(toOne));
+        assertEquals(expected, toOne.toOneForeignKey().columns().get(0).storage());
     }
 
     @Test

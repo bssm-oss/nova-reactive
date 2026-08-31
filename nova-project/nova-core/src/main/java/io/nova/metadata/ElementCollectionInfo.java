@@ -123,9 +123,6 @@ public record ElementCollectionInfo(
                 valueColumn, valueStorage, elementColumns, orderColumn, keyColumn, mapKeyColumns);
     }
 
-    public CollectionTableDefinition toCollectionTableDefinition(Class<?> ownerForeignKeyType) {
-        return toCollectionTableDefinition(new ColumnStorage(ownerForeignKeyType, 255, 0, 0));
-    }
 
     /**
      * {@code valueConverter}는 저장 표현 인코딩/디코딩을 담당하는 전략 객체일 뿐 매핑 identity의 일부가 아니다.

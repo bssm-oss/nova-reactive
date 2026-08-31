@@ -4145,7 +4145,7 @@ public final class EntityMetadataFactory {
     private ToOneForeignKey resolveCompositeToOneForeignKey(
             Class<?> entityType, Class<?> targetType, PersistentAttributeAccess attribute) {
         List<ReferencedIdComponent> components = resolveReferencedIdComponents(targetType);
-        if (components == null || components.size() < 2) {
+        if (components == null || components.isEmpty()) {
             return null;
         }
         JoinColumn[] perComponent = alignJoinColumns(entityType, attribute, components);
@@ -4408,6 +4408,7 @@ public final class EntityMetadataFactory {
                 ? new ToOneCascadeInfo(Set.of(manyToOne.cascade()))
                 : null;
         JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
+        rejectJoinColumnDefinition(joinColumn, entityType.getName() + "." + field.getName());
         Class<?> targetType = manyToOne.targetEntity();
         if (targetType == void.class) {
             targetType = field.getType();
@@ -5045,6 +5046,7 @@ public final class EntityMetadataFactory {
         if (columns.length > 1) {
             throw new IllegalArgumentException(location + " with multiple columns (composite keys) is not supported");
         }
+        rejectJoinColumnDefinition(columns[0], location);
         String name = columns[0].name();
         return name == null || name.isBlank() ? defaultName : name;
     }

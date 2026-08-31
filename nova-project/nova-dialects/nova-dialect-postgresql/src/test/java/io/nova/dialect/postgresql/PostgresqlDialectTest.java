@@ -339,7 +339,8 @@ class PostgresqlDialectTest {
                                 new io.nova.metadata.CollectionTableDefinition.ElementColumn("explicit", explicit),
                                 new io.nova.metadata.CollectionTableDefinition.ElementColumn("precision_only", precisionOnly),
                                 new io.nova.metadata.CollectionTableDefinition.ElementColumn("scale_only", scaleOnly),
-                                new io.nova.metadata.CollectionTableDefinition.ElementColumn("unspecified", unspecified))));
+                                new io.nova.metadata.CollectionTableDefinition.ElementColumn("unspecified", unspecified)),
+                        null, null)));
 
         assertEquals(
                 "create table \"decimal_map\" (\"owner_id\" bigint not null, \"scale_key\" numeric(1000, 4) not null, "
