@@ -313,20 +313,24 @@ class MetamodelProcessorTest {
                 }""");
         Source address = new Source("fixtures.Address", """
                 package fixtures;
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
                 import jakarta.persistence.Embeddable;
-                @Embeddable public class Address { private Geo geo; }""");
+                @Embeddable @Access(AccessType.FIELD) public class Address { private Geo geo; }""");
         Source geo = new Source("fixtures.Geo", """
                 package fixtures;
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
                 import jakarta.persistence.Embeddable;
-                @Embeddable public class Geo { private String country; }""");
+                @Embeddable @Access(AccessType.FIELD) public class Geo { private String country; }""");
 
         Compilation compilation = ProcessorRunner.compile(fieldEntity, propertyEntity, address, geo);
 
         assertCompilationSucceeded(compilation);
-        assertTrue(compilation.generatedSources().get("fixtures.ConvertedFieldCustomer_")
-                .contains("address_geo_country = \"address.geo.country\";"));
-        assertTrue(compilation.generatedSources().get("fixtures.ConvertedPropertyCustomer_")
-                .contains("address_geo_country = \"address.geo.country\";"));
+        String fieldSource = compilation.generatedSources().get("fixtures.ConvertedFieldCustomer_");
+        String propertySource = compilation.generatedSources().get("fixtures.ConvertedPropertyCustomer_");
+        assertTrue(fieldSource.contains("address_geo_country = \"address.geo.country\";"), fieldSource);
+        assertTrue(propertySource.contains("address_geo_country = \"address.geo.country\";"), propertySource);
     }
 
     @Test
