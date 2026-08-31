@@ -2455,6 +2455,13 @@ public final class EntityMetadataFactory {
                 converterColumnType = storage.columnType();
             }
         }
+        Class<?> storageType = converterColumnType == null ? wrapPrimitiveType(javaType) : converterColumnType;
+        if (storageType == java.math.BigDecimal.class
+                && column != null && !column.columnDefinition().isBlank()) {
+            throw new IllegalArgumentException(location
+                    + " BigDecimal storage cannot use @Column(columnDefinition):"
+                    + " derived identifier and relationship columns must reuse an exact numeric shape");
+        }
         return new PersistentProperty(attribute.field(), attribute.name(), columnName, javaType, id,
                 version, nullable,
                 column == null ? 255 : column.length(), column == null ? 0 : column.precision(),
@@ -2913,6 +2920,13 @@ public final class EntityMetadataFactory {
         boolean updatable = column == null || column.updatable();
         boolean unique = column != null && column.unique();
         String columnDefinition = column == null ? "" : column.columnDefinition();
+        Class<?> storageType = converterColumnType == null
+                ? wrapPrimitiveType(field.getType()) : converterColumnType;
+        if (storageType == java.math.BigDecimal.class && !columnDefinition.isBlank()) {
+            throw new IllegalArgumentException(declaringType.getName() + "." + field.getName()
+                    + " BigDecimal storage cannot use @Column(columnDefinition):"
+                    + " derived identifier and relationship columns must reuse an exact numeric shape");
+        }
         boolean lob = memberPresent(field, Lob.class);
         // @Basic(optional=false)은 @Column(nullable=false)과 동일하게 NOT NULL 제약으로 반영한다. JPA에서 basic
         // 속성의 nullability는 @Column.nullable / @Basic.optional 중 하나라도 false면 NOT NULL이다. (@Basic.fetch는
@@ -4936,6 +4950,9 @@ public final class EntityMetadataFactory {
         JoinColumn[] result = new JoinColumn[referencedColumns.size()];
         if (declared == null || declared.length == 0) {
             return result;
+        }
+        for (JoinColumn joinColumn : declared) {
+            rejectJoinColumnDefinition(joinColumn, location);
         }
         if (referencedColumns.size() == 1) {
             // 단일키: 레거시 동작 보존 — referencedColumnName은 여기서 검증하지 않는다(FK 해석에서 별도로 검증).
