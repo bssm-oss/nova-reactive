@@ -1,9 +1,12 @@
 package io.nova.dialect.oracle;
 
 import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.CollectionTableDefinition;
+import io.nova.metadata.ColumnStorage;
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.InheritanceLayout;
+import io.nova.metadata.JoinTableDefinition;
 import io.nova.metadata.PersistentProperty;
 import io.nova.metadata.SecondaryTableInfo;
 import io.nova.metadata.TableGeneratorInfo;
@@ -21,6 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OracleSchemaGeneratorTest {
@@ -88,9 +92,46 @@ class OracleSchemaGeneratorTest {
                         + "\"short_name\" varchar2(64), "
                         + "\"description\" varchar2(255), "
                         + "\"price\" number(12, 2), "
-                        + "\"default_decimal\" number(19, 2))",
+                        + "\"whole_units\" number(12, 0), "
+                        + "\"fractional_only\" number(*, 4), "
+                        + "\"default_decimal\" number)",
                 dialect.schemaGenerator().createTable(metadata)
         );
+    }
+
+    @Test
+    void preservesBigDecimalStorageShapeAcrossIdentityForeignKeyAndCollectionDdl() {
+        ColumnStorage precise = new ColumnStorage(java.math.BigDecimal.class, 255, 12, 2);
+        ColumnStorage scaleOnly = new ColumnStorage(java.math.BigDecimal.class, 255, 0, 4);
+
+        EntityMetadata<OracleDecimalIdentity> identity =
+                metadataFactory.getEntityMetadata(OracleDecimalIdentity.class);
+        assertEquals(
+                "create table \"decimal_identity\" (\"id\" number(12, 0) generated always as identity primary key)",
+                dialect.schemaGenerator().createTable(identity));
+
+        JoinTableDefinition join = new JoinTableDefinition(
+                "decimal_links",
+                java.util.List.of(new JoinTableDefinition.ForeignKeyColumn("owner_id", precise)),
+                java.util.List.of(new JoinTableDefinition.ForeignKeyColumn("target_id", scaleOnly)));
+        assertEquals(
+                "create table \"decimal_links\" (\"owner_id\" number(12, 2) not null, "
+                        + "\"target_id\" number(*, 4) not null, primary key (\"owner_id\", \"target_id\"))",
+                dialect.schemaGenerator().createJoinTable(join));
+
+        CollectionTableDefinition collection = new CollectionTableDefinition(
+                "decimal_values", "owner_id", precise, "value", scaleOnly);
+        assertEquals(
+                "create table \"decimal_values\" (\"owner_id\" number(12, 2) not null, \"value\" number(*, 4))",
+                dialect.schemaGenerator().createCollectionTable(collection));
+    }
+
+    @Test
+    void rejectsBigDecimalPrecisionAndScaleOutsideOracleNumberBounds() {
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(metadataFactory.getEntityMetadata(OracleTooPreciseDecimal.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(metadataFactory.getEntityMetadata(OracleScaleOutOfRangeDecimal.class)));
     }
 
     @Test
@@ -258,5 +299,34 @@ class OracleSchemaGeneratorTest {
     static class SchemaQualifiedAccount {
         @Id
         Long id;
+    }
+
+    @Entity
+    @Table(name = "decimal_identity")
+    static class OracleDecimalIdentity {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @jakarta.persistence.Column(precision = 12)
+        java.math.BigDecimal id;
+    }
+
+    @Entity
+    @Table(name = "too_precise_decimal")
+    static class OracleTooPreciseDecimal {
+        @Id
+        Long id;
+
+        @jakarta.persistence.Column(precision = 39)
+        java.math.BigDecimal amount;
+    }
+
+    @Entity
+    @Table(name = "scale_out_of_range_decimal")
+    static class OracleScaleOutOfRangeDecimal {
+        @Id
+        Long id;
+
+        @jakarta.persistence.Column(scale = 128)
+        java.math.BigDecimal amount;
     }
 }
