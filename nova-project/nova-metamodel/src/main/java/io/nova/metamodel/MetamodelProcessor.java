@@ -7,62 +7,40 @@ import javax.lang.model.SourceVersion;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.PackageElement;
+import javax.lang.model.element.RecordComponentElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
+import java.beans.Introspector;
 import java.io.IOException;
 import java.io.Writer;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
-/**
- * 컴파일 시점에 {@code @Entity} 클래스를 스캔해 {@code <EntityName>_} 동반 클래스를
- * 생성한다. 생성된 클래스는 엔티티의 영속 프로퍼티마다 {@code public static final String}
- * 상수를 하나씩 노출하며, 값은 {@link io.nova.query.Criteria}가 받는 property 이름
- * (예: {@code "email"}, {@code "address.city"})과 일치한다.
- *
- * <p>JPA static metamodel과 유사하지만 typed path가 아닌 단순한 문자열 상수만 발행한다
- * — typo는 컴파일 시점에 잡되, 표현력은 기존 Criteria DSL 그대로 유지된다. 본격적인
- * typed path DSL은 L3({@code nova-querydsl}) 모듈로 별도 추적된다.
- *
- * <p>필드 선택 규칙은 {@link io.nova.metadata.EntityMetadataFactory}의 동작과 정확히
- * 일치한다:
- * <ul>
- *   <li>{@code static} / {@code transient} 필드는 제외한다.
- *   <li>{@code @OneToMany}는 부모 테이블 컬럼이 없는 inverse-only marker라 제외한다.
- *   <li>{@code @Embedded}는 host 필드 이름을 prefix로 하여 leaf 필드까지 평탄화한다.
- *       Java 식별자는 {@code host_leaf}, 값은 dot-notation {@code "host.leaf"}.
- *   <li>그 밖에 모든 필드({@code @Id}, {@code @Version}, {@code @CreatedAt},
- *       {@code @ManyToOne} FK, {@code @Json}, {@code @Enumerated} 등)는 한 상수씩
- *       발행한다.
- * </ul>
- */
+/** Generates Criteria property-name constants using Nova's effective JPA access rules. */
 @SupportedAnnotationTypes("jakarta.persistence.Entity")
 public final class MetamodelProcessor extends AbstractProcessor {
-
     private static final String ENTITY = "jakarta.persistence.Entity";
+    private static final String ACCESS = "jakarta.persistence.Access";
+    private static final String ACCESS_FIELD = "FIELD";
+    private static final String ACCESS_PROPERTY = "PROPERTY";
     private static final String EMBEDDED = "jakarta.persistence.Embedded";
+    private static final String EMBEDDED_ID = "jakarta.persistence.EmbeddedId";
+    private static final String ID = "jakarta.persistence.Id";
     private static final String ONE_TO_MANY = "jakarta.persistence.OneToMany";
-
-    /**
-     * 잘못 정의된 {@code @Embedded} 사이클로 인한 무한 재귀를 방지하는 안전 한계.
-     * 실제 nested embedded는 2–3 단계를 거의 넘지 않는다.
-     */
+    private static final String TRANSIENT = "jakarta.persistence.Transient";
     private static final int MAX_EMBEDDED_DEPTH = 8;
 
-    /**
-     * Advertise the source level understood by the compiler running the
-     * processor.  A fixed RELEASE_21 value makes javac emit a warning on JDK
-     * 17 and prevents the processor from being a clean Java 17-compatible
-     * artifact.
-     */
     @Override
     public SourceVersion getSupportedSourceVersion() {
         return SourceVersion.latestSupported();
@@ -71,14 +49,9 @@ public final class MetamodelProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         for (TypeElement annotation : annotations) {
-            if (!annotation.getQualifiedName().contentEquals(ENTITY)) {
-                continue;
-            }
+            if (!annotation.getQualifiedName().contentEquals(ENTITY)) continue;
             for (Element element : roundEnv.getElementsAnnotatedWith(annotation)) {
-                if (element.getKind() != ElementKind.CLASS) {
-                    continue;
-                }
-                generateFor((TypeElement) element);
+                if (element.getKind() == ElementKind.CLASS) generateFor((TypeElement) element);
             }
         }
         return true;
@@ -87,7 +60,7 @@ public final class MetamodelProcessor extends AbstractProcessor {
     private void generateFor(TypeElement entityType) {
         List<Property> properties = new ArrayList<>();
         try {
-            collectProperties(entityType, List.of(), new LinkedHashSet<>(), properties);
+            collectProperties(entityType, null, List.of(), new LinkedHashSet<>(), properties);
         } catch (IllegalStateException ex) {
             processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, ex.getMessage(), entityType);
             return;
@@ -96,84 +69,209 @@ public final class MetamodelProcessor extends AbstractProcessor {
         emit(entityType, properties);
     }
 
-    private void collectProperties(
-            TypeElement type,
-            List<String> hostPath,
-            Set<String> visited,
-            List<Property> out) {
+    private void collectProperties(TypeElement type, String inheritedAccess, List<String> hostPath,
+            Set<String> visited, List<Property> out) {
         if (hostPath.size() > MAX_EMBEDDED_DEPTH) {
-            throw new IllegalStateException(
-                    "Metamodel @Embedded recursion exceeded " + MAX_EMBEDDED_DEPTH
-                            + " levels at " + type.getQualifiedName()
-                            + " — likely an @Embedded cycle.");
+            throw new IllegalStateException("Metamodel @Embedded recursion exceeded " + MAX_EMBEDDED_DEPTH
+                    + " levels at " + type.getQualifiedName() + " — likely an @Embedded cycle.");
         }
         String typeKey = type.getQualifiedName().toString();
-        if (!visited.add(typeKey)) {
-            throw new IllegalStateException(
-                    "Metamodel detected an @Embedded cycle through " + typeKey);
-        }
+        if (!visited.add(typeKey)) throw new IllegalStateException("Metamodel detected an @Embedded cycle through " + typeKey);
         try {
-            for (Element member : type.getEnclosedElements()) {
-                if (member.getKind() != ElementKind.FIELD) {
-                    continue;
+            String access = classAccess(type);
+            if (access == null) access = inheritedAccess != null ? inheritedAccess : hierarchyDefault(type);
+            Map<String, VariableElement> fields = new LinkedHashMap<>();
+            Map<String, ExecutableElement> getters = new LinkedHashMap<>();
+            for (TypeElement current : hierarchy(type)) {
+                for (Element member : current.getEnclosedElements()) {
+                    if (member.getKind() == ElementKind.FIELD && candidateField((VariableElement) member)) {
+                        VariableElement field = (VariableElement) member;
+                        fields.put(field.getSimpleName().toString(), field);
+                    }
                 }
-                VariableElement field = (VariableElement) member;
-                Set<Modifier> mods = field.getModifiers();
-                if (mods.contains(Modifier.STATIC) || mods.contains(Modifier.TRANSIENT)) {
-                    continue;
+                for (Map.Entry<String, ExecutableElement> getter : getters(current).entrySet()) {
+                    getters.put(getter.getKey(), getter.getValue());
                 }
-                if (hasAnnotation(field, ONE_TO_MANY)) {
-                    continue;
-                }
-                String fieldName = field.getSimpleName().toString();
-                if (hasAnnotation(field, EMBEDDED)) {
-                    TypeElement embeddedType = resolveTypeElement(field.asType());
-                    if (embeddedType == null) {
-                        processingEnv.getMessager().printMessage(
-                                Diagnostic.Kind.ERROR,
-                                "@Embedded field type cannot be resolved as a class element",
-                                field);
+            }
+            List<String> names = new ArrayList<>(fields.keySet());
+            for (String name : getters.keySet()) if (!names.contains(name)) names.add(name);
+            for (String name : names) {
+                VariableElement field = fields.get(name);
+                ExecutableElement getter = getters.get(name);
+                String memberAccess = memberAccess(field, getter, type, name);
+                String selectedAccess = memberAccess == null ? access : memberAccess;
+                Element selected;
+                if (ACCESS_FIELD.equals(selectedAccess)) {
+                    if (field == null) {
+                        if (getter != null && hasMappingAnnotation(getter)) inactiveMember(type, name, "PROPERTY");
                         continue;
                     }
-                    List<String> nextPath = new ArrayList<>(hostPath);
-                    nextPath.add(fieldName);
-                    collectProperties(embeddedType, nextPath, visited, out);
-                    continue;
+                    rejectInactive(field, getter, type, name);
+                    selected = field;
+                } else {
+                    if (getter == null) {
+                        if (field != null && hasMappingAnnotation(field)) inactiveMember(type, name, "FIELD");
+                        if (field != null) throw new IllegalStateException(type.getQualifiedName() + "." + name
+                                + " has no JavaBean getter required by PROPERTY access");
+                        continue;
+                    }
+                    rejectInactive(getter, field, type, name);
+                    selected = getter;
                 }
-                out.add(toProperty(hostPath, fieldName));
+                if (hasAnnotation(selected, TRANSIENT) || hasAnnotation(selected, ONE_TO_MANY)) continue;
+                if (hasAnnotation(selected, EMBEDDED)) {
+                    TypeElement embeddedType = resolveTypeElement(memberType(selected));
+                    if (embeddedType == null) {
+                        throw new IllegalStateException("@Embedded member type cannot be resolved as a class element: "
+                                + type.getQualifiedName() + "." + name);
+                    }
+                    List<String> nextPath = new ArrayList<>(hostPath);
+                    nextPath.add(name);
+                    collectProperties(embeddedType, selectedAccess, nextPath, visited, out);
+                } else {
+                    out.add(toProperty(hostPath, name));
+                }
             }
         } finally {
             visited.remove(typeKey);
         }
     }
 
-    private static Property toProperty(List<String> hostPath, String fieldName) {
-        if (hostPath.isEmpty()) {
-            return new Property(fieldName, fieldName);
+    private List<TypeElement> hierarchy(TypeElement type) {
+        List<TypeElement> result = new ArrayList<>();
+        for (TypeElement current = type; current != null
+                && !current.getQualifiedName().contentEquals(Object.class.getName());
+                current = superclass(current)) result.add(0, current);
+        return result;
+    }
+
+    private TypeElement superclass(TypeElement type) {
+        TypeMirror parent = type.getSuperclass();
+        return parent == null ? null : resolveTypeElement(parent);
+    }
+
+    private String hierarchyDefault(TypeElement type) {
+        for (TypeElement current : hierarchy(type)) {
+            for (Element member : current.getEnclosedElements()) {
+                if (member.getKind() == ElementKind.FIELD
+                        && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) return ACCESS_FIELD;
+            }
         }
+        boolean identifierGetter = false;
+        for (TypeElement current : hierarchy(type)) {
+            for (Element member : current.getEnclosedElements()) {
+                if (member.getKind() == ElementKind.METHOD
+                        && (hasAnnotation(member, ID) || hasAnnotation(member, EMBEDDED_ID))) identifierGetter = true;
+            }
+        }
+        return identifierGetter ? ACCESS_PROPERTY : ACCESS_FIELD;
+    }
+
+    private Map<String, ExecutableElement> getters(TypeElement type) {
+        Map<String, ExecutableElement> result = new LinkedHashMap<>();
+        for (Element member : type.getEnclosedElements()) {
+            if (member.getKind() != ElementKind.METHOD) continue;
+            ExecutableElement method = (ExecutableElement) member;
+            String name = getterName(method);
+            if (name == null) continue;
+            putGetter(result, name, method, type);
+        }
+        if (type.getKind() == ElementKind.RECORD) {
+            for (RecordComponentElement component : type.getRecordComponents()) {
+                putGetter(result, component.getSimpleName().toString(), component.getAccessor(), type);
+            }
+        }
+        return result;
+    }
+
+    private static void putGetter(Map<String, ExecutableElement> getters, String name,
+            ExecutableElement getter, TypeElement type) {
+        ExecutableElement previous = getters.put(name, getter);
+        if (previous != null && !previous.equals(getter)) {
+            throw new IllegalStateException(type.getQualifiedName() + " has ambiguous getter for " + name);
+        }
+    }
+
+    private static String getterName(ExecutableElement method) {
+        Set<Modifier> modifiers = method.getModifiers();
+        if (modifiers.contains(Modifier.STATIC) || method.getParameters().size() != 0
+                || method.getReturnType().getKind().name().equals("VOID")) return null;
+        String name = method.getSimpleName().toString();
+        if (name.startsWith("get") && name.length() > 3) return Introspector.decapitalize(name.substring(3));
+        if (name.startsWith("is") && name.length() > 2
+                && (method.getReturnType().toString().equals("boolean") || method.getReturnType().toString().equals("java.lang.Boolean"))) {
+            return Introspector.decapitalize(name.substring(2));
+        }
+        return null;
+    }
+
+    private static boolean candidateField(VariableElement field) {
+        Set<Modifier> modifiers = field.getModifiers();
+        return !modifiers.contains(Modifier.STATIC) && !modifiers.contains(Modifier.TRANSIENT);
+    }
+
+    private String memberAccess(VariableElement field, ExecutableElement getter, TypeElement type, String name) {
+        String fieldAccess = field == null ? null : accessValue(field);
+        String getterAccess = getter == null ? null : accessValue(getter);
+        if (fieldAccess != null && getterAccess != null && !fieldAccess.equals(getterAccess)) {
+            throw new IllegalStateException(type.getQualifiedName() + "." + name + " has conflicting member @Access declarations");
+        }
+        return fieldAccess != null ? fieldAccess : getterAccess;
+    }
+
+    private void rejectInactive(Element selected, Element inactive, TypeElement type, String name) {
+        if (inactive != null && hasMappingAnnotation(inactive) && accessValue(inactive) == null) {
+            throw new IllegalStateException(type.getQualifiedName() + "." + name + " has mapping annotations on inactive access member");
+        }
+    }
+
+    private static void inactiveMember(TypeElement type, String name, String memberKind) {
+        throw new IllegalStateException(type.getQualifiedName() + "." + name
+                + " has mapping annotations on inactive " + memberKind + " member");
+    }
+
+    private String classAccess(TypeElement type) {
+        return accessValue(type);
+    }
+
+    private String accessValue(Element element) {
+        for (AnnotationMirror mirror : element.getAnnotationMirrors()) {
+            Element annotation = mirror.getAnnotationType().asElement();
+            if (!(annotation instanceof TypeElement type) || !type.getQualifiedName().contentEquals(ACCESS)) continue;
+            for (Map.Entry<? extends ExecutableElement, ? extends javax.lang.model.element.AnnotationValue> value
+                    : processingEnv.getElementUtils().getElementValuesWithDefaults(mirror).entrySet()) {
+                if (value.getKey().getSimpleName().contentEquals("value")) {
+                    return value.getValue().getValue().toString();
+                }
+            }
+        }
+        return null;
+    }
+
+    private static TypeMirror memberType(Element member) {
+        return member instanceof VariableElement field ? field.asType() : ((ExecutableElement) member).getReturnType();
+    }
+
+    private static Property toProperty(List<String> hostPath, String name) {
+        if (hostPath.isEmpty()) return new Property(name, name);
         StringBuilder path = new StringBuilder();
         StringBuilder safe = new StringBuilder();
         for (String host : hostPath) {
             path.append(host).append('.');
             safe.append(host).append('_');
         }
-        path.append(fieldName);
-        safe.append(fieldName);
-        return new Property(safe.toString(), path.toString());
+        return new Property(safe.append(name).toString(), path.append(name).toString());
     }
 
     private void rejectDuplicateSafeNames(TypeElement entityType, List<Property> properties) {
         Set<String> seen = new LinkedHashSet<>();
-        for (Iterator<Property> it = properties.iterator(); it.hasNext(); ) {
+        for (Iterator<Property> it = properties.iterator(); it.hasNext();) {
             Property property = it.next();
             if (!seen.add(property.safeName())) {
-                processingEnv.getMessager().printMessage(
-                        Diagnostic.Kind.ERROR,
+                processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
                         "Metamodel name collision on " + entityType.getQualifiedName()
-                                + ": property paths produce the same Java identifier '"
-                                + property.safeName()
-                                + "'. Rename the conflicting embedded host or leaf field.",
-                        entityType);
+                                + ": property paths produce the same Java identifier '" + property.safeName()
+                                + "'. Rename the conflicting embedded host or leaf field.", entityType);
                 it.remove();
             }
         }
@@ -181,19 +279,24 @@ public final class MetamodelProcessor extends AbstractProcessor {
 
     private TypeElement resolveTypeElement(TypeMirror typeMirror) {
         Element element = processingEnv.getTypeUtils().asElement(typeMirror);
-        if (element instanceof TypeElement typeElement) {
-            return typeElement;
-        }
-        return null;
+        return element instanceof TypeElement typeElement ? typeElement : null;
     }
 
     private static boolean hasAnnotation(Element element, String qualifiedName) {
         for (AnnotationMirror mirror : element.getAnnotationMirrors()) {
-            Element annotationElement = mirror.getAnnotationType().asElement();
-            if (annotationElement instanceof TypeElement typeElement
-                    && typeElement.getQualifiedName().contentEquals(qualifiedName)) {
-                return true;
-            }
+            Element annotation = mirror.getAnnotationType().asElement();
+            if (annotation instanceof TypeElement type && type.getQualifiedName().contentEquals(qualifiedName)) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasMappingAnnotation(Element element) {
+        for (AnnotationMirror mirror : element.getAnnotationMirrors()) {
+            Element annotation = mirror.getAnnotationType().asElement();
+            if (!(annotation instanceof TypeElement type)) continue;
+            String name = type.getQualifiedName().toString();
+            if ((name.startsWith("jakarta.persistence.") || name.startsWith("io.nova.annotation."))
+                    && !name.equals(ACCESS) && !name.equals(TRANSIENT)) return true;
         }
         return false;
     }
@@ -202,54 +305,34 @@ public final class MetamodelProcessor extends AbstractProcessor {
         PackageElement pkg = processingEnv.getElementUtils().getPackageOf(entityType);
         String packageName = pkg.getQualifiedName().toString();
         String simpleName = entityType.getSimpleName() + "_";
-        String qualifiedName = packageName.isEmpty()
-                ? simpleName
-                : packageName + "." + simpleName;
-
-        String source = renderSource(packageName, simpleName, properties);
+        String qualifiedName = packageName.isEmpty() ? simpleName : packageName + "." + simpleName;
         try {
             JavaFileObject file = processingEnv.getFiler().createSourceFile(qualifiedName, entityType);
             try (Writer writer = file.openWriter()) {
-                writer.write(source);
+                writer.write(renderSource(packageName, simpleName, properties));
             }
         } catch (IOException e) {
-            processingEnv.getMessager().printMessage(
-                    Diagnostic.Kind.ERROR,
-                    "Failed to write metamodel companion " + qualifiedName + ": " + e.getMessage(),
-                    entityType);
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
+                    "Failed to write metamodel companion " + qualifiedName + ": " + e.getMessage(), entityType);
         }
     }
 
     private static String renderSource(String packageName, String simpleName, List<Property> properties) {
         StringBuilder out = new StringBuilder(256 + properties.size() * 64);
-        if (!packageName.isEmpty()) {
-            out.append("package ").append(packageName).append(";\n\n");
-        }
+        if (!packageName.isEmpty()) out.append("package ").append(packageName).append(";\n\n");
         out.append("import javax.annotation.processing.Generated;\n\n");
-        out.append("/**\n");
-        out.append(" * Metamodel companion generated by Nova for type-safe Criteria property references.\n");
-        out.append(" * Each constant maps to the property name accepted by {@code io.nova.query.Criteria}.\n");
-        out.append(" * Do not edit by hand.\n");
-        out.append(" */\n");
-        out.append("@Generated(\"io.nova.metamodel.MetamodelProcessor\")\n");
-        out.append("public final class ").append(simpleName).append(" {\n");
-        out.append("    private ").append(simpleName).append("() {\n");
-        out.append("    }\n");
+        out.append("/**\n * Metamodel companion generated by Nova for type-safe Criteria property references.\n")
+                .append(" * Each constant maps to the property name accepted by {@code io.nova.query.Criteria}.\n")
+                .append(" * Do not edit by hand.\n */\n")
+                .append("@Generated(\"io.nova.metamodel.MetamodelProcessor\")\n")
+                .append("public final class ").append(simpleName).append(" {\n")
+                .append("    private ").append(simpleName).append("() {\n    }\n");
         for (Property property : properties) {
-            out.append("\n    public static final String ")
-                    .append(property.safeName())
-                    .append(" = \"")
-                    .append(property.path())
-                    .append("\";\n");
+            out.append("\n    public static final String ").append(property.safeName()).append(" = \"")
+                    .append(property.path()).append("\";\n");
         }
-        out.append("}\n");
-        return out.toString();
+        return out.append("}\n").toString();
     }
 
-    /**
-     * 발행할 단일 상수 정보. {@code safeName}은 Java 식별자, {@code path}는 Criteria 호출에
-     * 그대로 사용 가능한 dot-notation 문자열이다.
-     */
-    private record Property(String safeName, String path) {
-    }
+    private record Property(String safeName, String path) { }
 }
