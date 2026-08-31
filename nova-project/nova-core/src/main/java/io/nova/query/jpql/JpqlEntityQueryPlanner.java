@@ -40,6 +40,7 @@ public final class JpqlEntityQueryPlanner {
      * 연관은 기존 배치 hydration으로 로드된다. 일반(non-fetch) 조인이 하나라도 있으면 엔티티 경로가 아니다.
      */
     public boolean isEntitySelect(JpqlStatement.Select select) {
+        validateAliasDeclarations(select);
         if (select.selectItems().size() != 1) {
             return false;
         }
@@ -68,6 +69,7 @@ public final class JpqlEntityQueryPlanner {
      * 먼저 뽑고 그 id 집합을 IN 조건으로 하이드레이션하는 2단계 경로로 처리한다. group/having/집계는 제외한다.
      */
     public boolean isJoinedEntitySelect(JpqlStatement.Select select) {
+        validateAliasDeclarations(select);
         if (select.selectItems().size() != 1) {
             return false;
         }
@@ -102,8 +104,7 @@ public final class JpqlEntityQueryPlanner {
      * 동일하게 동작한다(cartesian 중복도 없음). EntityGraph와 동일한 always-eager 정합이다.
      */
     private void validateFetchJoins(JpqlStatement.Select select, EntityMetadata<?> rootMetadata) {
-        Set<String> aliases = new HashSet<>();
-        bindAlias(aliases, select.rootAlias());
+        validateAliasDeclarations(select);
         for (JoinClause join : select.joins()) {
             if (!join.fetch()) {
                 throw unsupported("a non-fetch JOIN in an entity-returning query");
@@ -121,6 +122,14 @@ public final class JpqlEntityQueryPlanner {
                 throw new JpqlException("JOIN FETCH " + join.ownerAlias() + "." + join.relation()
                         + " is not an association on entity " + rootMetadata.entityType().getSimpleName());
             }
+        }
+    }
+
+    /** Validates all local alias declarations before selecting an execution path. */
+    private static void validateAliasDeclarations(JpqlStatement.Select select) {
+        Set<String> aliases = new HashSet<>();
+        bindAlias(aliases, select.rootAlias());
+        for (JoinClause join : select.joins()) {
             if (join.alias() != null) {
                 bindAlias(aliases, join.alias());
             }

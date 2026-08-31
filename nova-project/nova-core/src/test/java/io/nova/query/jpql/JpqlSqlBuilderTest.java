@@ -157,10 +157,19 @@ class JpqlSqlBuilderTest {
                 + "WHERE d.name = :name AND EXISTS (SELECT 1 FROM Employee M WHERE m.age > E.age)");
 
         assertEquals(
-                "select E.\"name\" as \"c0\" from \"employee\" e join \"department\" D on E.\"dept_id\" = D.\"id\" "
-                        + "where (d.\"name\" = ? and exists (select ? from \"employee\" M where m.\"age\" > E.\"age\"))",
+                "select e.\"name\" as \"c0\" from \"employee\" e join \"department\" D on e.\"dept_id\" = D.\"id\" "
+                        + "where (D.\"name\" = ? and exists (select ? from \"employee\" M where M.\"age\" > e.\"age\"))",
                 t.sql());
         assertEquals(2, t.bindings().size());
+    }
+
+    @Test
+    void preservesDeclaredAliasesWhenNestedScopeShadowsDifferentCasing() {
+        TranslatedSql t = scalar("SELECT E.name FROM Employee e WHERE EXISTS "
+                + "(SELECT 1 FROM Employee E WHERE E.age > 18)");
+
+        assertEquals("select e.\"name\" as \"c0\" from \"employee\" e where exists "
+                + "(select ? from \"employee\" E where E.\"age\" > ?)", t.sql());
     }
 
     @Test
@@ -173,6 +182,17 @@ class JpqlSqlBuilderTest {
                 () -> scalar("SELECT e.name FROM Employee e WHERE EXISTS "
                         + "(SELECT 1 FROM Employee m JOIN m.department M WHERE M.name = e.name)"));
         assertEquals("Duplicate alias 'M' in JPQL query", correlatedJoin.getMessage());
+    }
+
+    @Test
+    void keepsEntityAndAttributeNamesCaseSensitive() {
+        JpqlException entity = assertThrows(JpqlException.class,
+                () -> scalar("SELECT e.name FROM employee e"));
+        assertTrue(entity.getMessage().contains("Unknown JPQL entity 'employee'"));
+
+        JpqlException attribute = assertThrows(JpqlException.class,
+                () -> scalar("SELECT e.NAME FROM Employee e"));
+        assertTrue(attribute.getMessage().contains("Unknown field 'NAME'"));
     }
 
     @Test

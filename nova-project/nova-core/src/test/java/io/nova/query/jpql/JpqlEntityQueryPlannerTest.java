@@ -115,6 +115,16 @@ class JpqlEntityQueryPlannerTest {
     }
 
     @Test
+    void rejectsCaseOnlyAliasCollisionBeforeMixedJoinRouting() {
+        JpqlStatement.Select select = (JpqlStatement.Select) new JpqlParser(
+                "SELECT c FROM CompositeJoinChild c JOIN FETCH c.parent p JOIN c.parent P WHERE P.label = 'x'")
+                .parse();
+
+        JpqlException ex = assertThrows(JpqlException.class, () -> planner.isJoinedEntitySelect(select));
+        assertEquals("Duplicate alias 'P' in JPQL query", ex.getMessage());
+    }
+
+    @Test
     void preservesNotBetweenForEntityQuerySpecs() {
         Condition between = assertInstanceOf(Condition.class,
                 assertInstanceOf(NegationPredicate.class,
