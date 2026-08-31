@@ -1035,6 +1035,26 @@ public final class PersistentProperty {
         return propertyAccess;
     }
 
+    public Method propertyAccessGetter() {
+        return propertyAccessGetter;
+    }
+
+    public Method propertyAccessSetter() {
+        return propertyAccessSetter;
+    }
+
+    public boolean inverseToOne() {
+        return inverseToOne;
+    }
+
+    public Object read(Object instance) {
+        Object holder = readHostHolder(instance);
+        if (holder == null) {
+            return null;
+        }
+        Object value = access.read(holder);
+        return manyToOne && value != null ? extractReferencedId(value) : value;
+    }
 
     /**
      * to-one 참조 대상 클래스에서 단일 {@link jakarta.persistence.Id} 필드를 찾는다. 대상 자신의 선언 필드를

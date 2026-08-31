@@ -5090,8 +5090,8 @@ public final class EntityMetadataFactory {
         }
         for (String override : overrides.keySet()) {
             if (!names.contains(override)) {
-                throw new IllegalArgumentException(location + " @AttributeOverride(name="" + prefix + override
-                        + "") does not match an @Embeddable component");
+                throw new IllegalArgumentException(location + " @AttributeOverride(name='" + prefix + override
+                        + "') does not match an @Embeddable component");
             }
         }
         if (result.isEmpty()) {
