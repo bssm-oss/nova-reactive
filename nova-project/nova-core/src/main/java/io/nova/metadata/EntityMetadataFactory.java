@@ -1837,13 +1837,16 @@ public final class EntityMetadataFactory {
             hostPath = List.copyOf(hostPath);
             String columnPrefix = embeddedId ? parentColumnPrefix
                     : parentColumnPrefix + namingStrategy.columnName(host.name()) + "_";
-            Map<String, Column> columnOverrides = new LinkedHashMap<>(inheritedColumnOverrides);
+            Map<String, Column> columnOverrides = new LinkedHashMap<>();
             for (AttributeOverride override : host.annotationsByType(AttributeOverride.class)) {
                 if (columnOverrides.putIfAbsent(override.name(), override.column()) != null) {
                     throw new IllegalArgumentException(location + " declares duplicate @AttributeOverride path '"
                             + override.name() + "'");
                 }
             }
+            // The reusable embeddable's own overrides establish its default mapping.  An outer
+            // embedding site can override those defaults with a dotted path and therefore wins.
+            columnOverrides.putAll(inheritedColumnOverrides);
             Map<String, Convert> conversionOverrides = new LinkedHashMap<>(inheritedConversionOverrides);
             for (Convert convert : host.annotationsByType(Convert.class)) {
                 if (convert.attributeName().isBlank()) {

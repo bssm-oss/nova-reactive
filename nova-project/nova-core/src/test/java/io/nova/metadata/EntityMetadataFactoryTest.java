@@ -966,6 +966,22 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
+    void outerFieldOverrideWinsOverNestedEmbeddableOverride() {
+        EntityMetadata<OuterFieldOverrideEntity> metadata =
+                factory.getEntityMetadata(OuterFieldOverrideEntity.class);
+
+        assertEquals("outer_country", metadata.findProperty("address.geo.country").orElseThrow().columnName());
+    }
+
+    @Test
+    void outerPropertyOverrideWinsOverNestedEmbeddableOverride() {
+        EntityMetadata<OuterPropertyOverrideEntity> metadata =
+                factory.getEntityMetadata(OuterPropertyOverrideEntity.class);
+
+        assertEquals("outer_country", metadata.findProperty("address.geo.country").orElseThrow().columnName());
+    }
+
+    @Test
     void rejectsUnmatchedNestedAttributeOverridesOnImplicitEmbeddables() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(InvalidImplicitEmbeddedOverrideEntity.class));
@@ -1728,6 +1744,81 @@ class EntityMetadataFactoryTest {
         @AttributeOverride(name = "geo.country", column = @Column(name = "nation"))
         @AttributeOverride(name = "geo.country", column = @Column(name = "country_code"))
         private ImplicitAddress address;
+    }
+
+    @Embeddable
+    @Access(AccessType.FIELD)
+    static class FieldOverrideGeo {
+        private String country;
+    }
+
+    @Embeddable
+    @Access(AccessType.FIELD)
+    static class FieldOverrideAddress {
+        @AttributeOverride(name = "country", column = @Column(name = "inner_country"))
+        private FieldOverrideGeo geo;
+    }
+
+    @Entity
+    static class OuterFieldOverrideEntity {
+        @Id
+        private Long id;
+        @AttributeOverride(name = "geo.country", column = @Column(name = "outer_country"))
+        private FieldOverrideAddress address;
+    }
+
+    @Embeddable
+    @Access(AccessType.PROPERTY)
+    static class PropertyOverrideGeo {
+        private String country;
+
+        public String getCountry() {
+            return country;
+        }
+
+        public void setCountry(String country) {
+            this.country = country;
+        }
+    }
+
+    @Embeddable
+    @Access(AccessType.PROPERTY)
+    static class PropertyOverrideAddress {
+        private PropertyOverrideGeo geo;
+
+        @AttributeOverride(name = "country", column = @Column(name = "inner_country"))
+        public PropertyOverrideGeo getGeo() {
+            return geo;
+        }
+
+        public void setGeo(PropertyOverrideGeo geo) {
+            this.geo = geo;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class OuterPropertyOverrideEntity {
+        private Long id;
+        private PropertyOverrideAddress address;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @AttributeOverride(name = "geo.country", column = @Column(name = "outer_country"))
+        public PropertyOverrideAddress getAddress() {
+            return address;
+        }
+
+        public void setAddress(PropertyOverrideAddress address) {
+            this.address = address;
+        }
     }
 
     static class BaseListener {
