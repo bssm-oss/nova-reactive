@@ -29,6 +29,7 @@ final class TransactionEvictionBuffer {
     private final Set<CacheKey> keys = new LinkedHashSet<>();
     private final Set<String> regions = new LinkedHashSet<>();
     private final Set<Class<?>> queryTypes = new LinkedHashSet<>();
+    private boolean providerClearAll;
     private boolean queryClearAll;
 
     synchronized void recordKey(CacheKey key) {
@@ -53,6 +54,10 @@ final class TransactionEvictionBuffer {
         queryClearAll = true;
     }
 
+    synchronized void recordProviderClearAll() {
+        providerClearAll = true;
+    }
+
     /**
      * 기록된 엔티티 캐시 region clear/key evict와 쿼리 캐시 무효화를 순서대로 재적용한다. commit 성공 후 호출한다.
      *
@@ -63,19 +68,23 @@ final class TransactionEvictionBuffer {
         List<String> regionSnapshot;
         List<CacheKey> keySnapshot;
         List<Class<?>> queryTypeSnapshot;
+        boolean providerClearAllSnapshot;
         boolean clearAllSnapshot;
         synchronized (this) {
             regionSnapshot = new ArrayList<>(regions);
             keySnapshot = new ArrayList<>(keys);
             queryTypeSnapshot = new ArrayList<>(queryTypes);
+            providerClearAllSnapshot = providerClearAll;
             clearAllSnapshot = queryClearAll;
         }
-        Mono<Void> clearRegions = Flux.fromIterable(regionSnapshot)
-                .concatMap(region -> provider.getCache(region).clear())
-                .then();
-        Mono<Void> evictKeys = Flux.fromIterable(keySnapshot)
-                .concatMap(key -> provider.getCache(key.region()).evict(key))
-                .then();
+        Mono<Void> entityEvict = providerClearAllSnapshot
+                ? provider.clearAll()
+                : Flux.fromIterable(regionSnapshot)
+                        .concatMap(region -> provider.getCache(region).clear())
+                        .then()
+                        .thenMany(Flux.fromIterable(keySnapshot)
+                                .concatMap(key -> provider.getCache(key.region()).evict(key)))
+                        .then();
         Mono<Void> queryEvict;
         if (queryCache == null) {
             queryEvict = Mono.empty();
@@ -86,6 +95,6 @@ final class TransactionEvictionBuffer {
                     .concatMap(queryCache::invalidate)
                     .then();
         }
-        return clearRegions.then(evictKeys).then(queryEvict);
+        return entityEvict.then(queryEvict);
     }
 }

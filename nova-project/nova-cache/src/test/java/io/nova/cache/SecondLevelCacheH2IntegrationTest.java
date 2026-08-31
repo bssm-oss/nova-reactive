@@ -52,7 +52,7 @@ class SecondLevelCacheH2IntegrationTest {
     }
 
     private record Wiring(ReactiveEntityOperations cached, SchemaInitializer schema, SelectCountingListener listener,
-                          ReactiveCacheProvider cacheProvider) {
+                          ReactiveCacheProvider cacheProvider, EntityMetadataFactory metadataFactory) {
     }
 
     private Wiring wire(ConnectionFactory cf) {
@@ -66,7 +66,7 @@ class SecondLevelCacheH2IntegrationTest {
         ReactiveCacheProvider cacheProvider = new SimpleReactiveCacheProvider();
         ReactiveEntityOperations cached = NovaCache.caching(base, cacheProvider, metadataFactory);
         SchemaInitializer schema = new SimpleSchemaInitializer(base, metadataFactory, dialect);
-        return new Wiring(cached, schema, listener, cacheProvider);
+        return new Wiring(cached, schema, listener, cacheProvider, metadataFactory);
     }
 
     @Test
@@ -185,6 +185,28 @@ class SecondLevelCacheH2IntegrationTest {
         assertTrue(w.listener().updates() > 0, "managed mutation must flush an UPDATE at commit");
         assertTrue(w.listener().selects() > beforeReload, "post-commit eviction must force a DB reload");
         assertEquals("beta", afterCommit.name());
+    }
+
+    @Test
+    void entityManagerCapturedDecoratorBypassesWarmCacheAndFlushesDirtyCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+        SimpleReactiveEntityManager entityManager = new SimpleReactiveEntityManager(w.cached(), w.metadataFactory());
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        long beforeTransaction = w.listener().selects();
+        entityManager.inTransaction(em -> em.find(Widget.class, id)
+                .doOnNext(widget -> widget.name = "beta"))
+                .block();
+
+        long beforeReload = w.listener().selects();
+        Widget reloaded = w.cached().findById(Widget.class, id).block();
+        assertTrue(beforeReload > beforeTransaction, "captured EntityManager must bypass warm cache in a transaction");
+        assertTrue(w.listener().selects() > beforeReload, "commit must replay the shared cache clear");
+        assertEquals("beta", reloaded.name());
     }
 
     @Test
