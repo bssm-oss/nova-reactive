@@ -3735,6 +3735,15 @@ public final class EntityMetadataFactory {
             return null;
         }
         String location = entityType.getName() + "." + relation.name();
+        Class<?> relationTarget = relation.javaType();
+        ManyToOne manyToOne = relation.annotation(ManyToOne.class);
+        if (manyToOne != null && manyToOne.targetEntity() != void.class) {
+            relationTarget = manyToOne.targetEntity();
+        }
+        OneToOne oneToOne = relation.annotation(OneToOne.class);
+        if (oneToOne != null && oneToOne.targetEntity() != void.class) {
+            relationTarget = oneToOne.targetEntity();
+        }
         String value = mapsId.value();
         // 파생 대상 @Id 구조 파악: top-level @Id 필드들과 @EmbeddedId holder를 수집한다.
         List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(entityType);
@@ -3774,11 +3783,11 @@ public final class EntityMetadataFactory {
             // 파생 값은 연관 엔티티의 PK 전체(readIdValue)에서 온다. 그 타겟이 복합 @Id면 어느 컴포넌트를
             // owner의 어느 컴포넌트로 매핑할지 모호하고 holder 객체를 스칼라 컬럼에 쓰려다 런타임에 던진다.
             // 조용한 런타임 실패 대신 build 시점에 명확히 거부한다(단일 @Id 타겟만 지원).
-            if (declaresCompositeId(relation.javaType())) {
+            if (declaresCompositeId(relationTarget)) {
                 throw new IllegalArgumentException(
                         location
                                 + " @MapsId(\"" + value + "\") derives an id component from "
-                                + relation.javaType().getName() + ", but deriving from a composite-key associated"
+                                + relationTarget.getName() + ", but deriving from a composite-key associated"
                                 + " entity is not supported; the associated entity must declare a single @Id");
             }
             return value;
@@ -4321,10 +4330,10 @@ public final class EntityMetadataFactory {
 
     private PersistentProperty createManyToOneProperty(
             Class<?> entityType, PersistentAttributeAccess attribute) {
-        if (attribute.field() == null) {
-            return createDescriptorManyToOneProperty(entityType, attribute);
+        if (attribute.accessType() == AccessType.FIELD) {
+            return createManyToOneProperty(entityType, attribute.field());
         }
-        return createManyToOneProperty(entityType, attribute.field());
+        return createDescriptorManyToOneProperty(entityType, attribute);
     }
 
     private PersistentProperty createDescriptorManyToOneProperty(
@@ -5079,6 +5088,13 @@ public final class EntityMetadataFactory {
         }
         if (keyType == null) throw new IllegalArgumentException(location + " @ElementCollection cannot infer the Map key type from a raw map;"
                 + " use a parameterized Map<K,V> or specify @MapKeyClass");
+        MapKeyTemporal temporal = attribute.annotation(MapKeyTemporal.class);
+        boolean utilDate = keyType == java.util.Date.class;
+        boolean calendar = java.util.Calendar.class.isAssignableFrom(keyType);
+        if (temporal != null && !utilDate && !calendar) {
+            throw new IllegalArgumentException(location + " @MapKeyTemporal is only valid on a java.util.Date or"
+                    + " java.util.Calendar map key, but the key type is " + keyType.getName());
+        }
         if (keyType.isAnnotationPresent(Embeddable.class)) {
             return ElementCollectionInfo.MapKeyInfo.embeddable(keyType,
                     expandEmbeddableCollectionColumns(keyType, attribute, location, null, true));
@@ -5103,33 +5119,27 @@ public final class EntityMetadataFactory {
         }
         MapKeyColumn column = attribute.annotation(MapKeyColumn.class);
         String name = column != null && !column.name().isBlank() ? column.name() : namingStrategy.columnName(attribute.name()) + "_key";
-        MapKeyTemporal temporal = attribute.annotation(MapKeyTemporal.class);
-        boolean utilDate = keyType == java.util.Date.class;
-        boolean calendar = java.util.Calendar.class.isAssignableFrom(keyType);
-        if (temporal != null) {
-            if (!utilDate && !calendar) {
-                throw new IllegalArgumentException(location + " @MapKeyTemporal is only valid on a java.util.Date or"
-                        + " java.util.Calendar map key, but the key type is " + keyType.getName());
-            }
-            Class<?> stored = switch (temporal.value()) {
-                case DATE -> java.time.LocalDate.class;
-                case TIME -> java.time.LocalTime.class;
-                case TIMESTAMP -> java.time.LocalDateTime.class;
-            };
-            return new ElementCollectionInfo.MapKeyInfo(name, keyType, stored, null,
-                    castConverter(new TemporalAttributeConverter(keyType, temporal.value())));
-        }
         JpaConverterDescriptor explicit = attribute.getter() != null
                 ? explicitJpaConverter(attribute.getter(), keyType, "key", location, null)
                 : explicitJpaConverter(attribute.field(), keyType, "key", location, null);
+        MapKeyEnumerated enumerated = attribute.annotation(MapKeyEnumerated.class);
+        boolean disabled = attribute.getter() != null
+                ? conversionDisabled(attribute.getter(), "key", null)
+                : conversionDisabled(attribute.field(), "key", null);
         if (keyType.isEnum()) {
-            MapKeyEnumerated enumerated = attribute.annotation(MapKeyEnumerated.class);
             if (explicit != null) {
                 if (enumerated != null) {
                     throw new IllegalStateException(location
                             + " cannot combine @Convert(attributeName=\"key\") with @MapKeyEnumerated");
                 }
                 return new ElementCollectionInfo.MapKeyInfo(name, keyType, explicit.columnType(), null, explicit.instantiate());
+            }
+            if (enumerated == null && !disabled) {
+                JpaConverterDescriptor automatic = uniqueJpaConverter(keyType, true, location);
+                if (automatic != null) {
+                    return new ElementCollectionInfo.MapKeyInfo(
+                            name, keyType, automatic.columnType(), null, automatic.instantiate());
+                }
             }
             EnumType type = enumerated == null ? inferredEnumType(keyType) : enumerated.value();
             EnumMapping mapping = resolveEnumMapping(keyType, type);
@@ -5138,15 +5148,30 @@ public final class EntityMetadataFactory {
                     type, mapping.converter());
         }
         if (explicit != null) {
+            if (temporal != null) {
+                throw new IllegalStateException(location
+                        + " cannot combine @Convert(attributeName=\"key\") with @MapKeyTemporal");
+            }
             return new ElementCollectionInfo.MapKeyInfo(name, keyType, explicit.columnType(), null, explicit.instantiate());
+        }
+        if (enumerated != null) {
+            throw new IllegalArgumentException(location
+                    + " @MapKeyEnumerated is only valid on an enum map key, but the key type is "
+                    + keyType.getName());
+        }
+        if (temporal != null) {
+            Class<?> stored = switch (temporal.value()) {
+                case DATE -> java.time.LocalDate.class;
+                case TIME -> java.time.LocalTime.class;
+                case TIMESTAMP -> java.time.LocalDateTime.class;
+            };
+            return new ElementCollectionInfo.MapKeyInfo(name, keyType, stored, null,
+                    castConverter(new TemporalAttributeConverter(keyType, temporal.value())));
         }
         if (utilDate || calendar) {
             throw new IllegalArgumentException(location + " maps a java.util.Date/Calendar map key but is missing"
                     + " @MapKeyTemporal(TemporalType.DATE|TIME|TIMESTAMP); the mapping is ambiguous without it");
         }
-        boolean disabled = attribute.getter() != null
-                ? conversionDisabled(attribute.getter(), "key", null)
-                : conversionDisabled(attribute.field(), "key", null);
         if (!disabled) {
             JpaConverterDescriptor automatic = uniqueJpaConverter(wrapPrimitiveType(keyType), true, location);
             if (automatic != null) {
