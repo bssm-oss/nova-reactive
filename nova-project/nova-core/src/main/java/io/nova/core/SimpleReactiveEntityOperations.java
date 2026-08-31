@@ -346,7 +346,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         return Mono.empty();
                     }
                     Object queryValue = property.isCompositeToOne() ? oldKey : property.toPropertyValue(oldKey);
-                    return exists((Class) metadata.entityType(),
+                    return this.<Object>exists((Class<Object>) (Class<?>) metadata.entityType(),
                                     QuerySpec.empty().where(Criteria.eq(property.propertyName(), queryValue)))
                             .flatMap(shared -> {
                                 if (shared) {
@@ -1889,6 +1889,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         });
     }
 
+    @SuppressWarnings("unchecked")
     private Mono<Void> prepareOwningOneToOneOrphans(
             PersistenceSession.ManagedEntry entry, EntityMetadata<?> metadata, Object owner) {
         for (PersistentProperty property : metadata.manyToOneProperties()) {
@@ -1909,7 +1910,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         + property.propertyName() + " replaces an orphan-removal target with a transient reference"
                         + " without cascade PERSIST"));
             }
-            return cascadeSaveToOneReferences(metadata, owner);
+            return cascadeSaveToOneReferences((EntityMetadata<Object>) metadata, owner);
         }
         return Mono.empty();
     }
@@ -1926,7 +1927,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         return Mono.empty();
                     }
                     Object queryValue = property.isCompositeToOne() ? oldKey : property.toPropertyValue(oldKey);
-                    return exists((Class) metadata.entityType(),
+                    return this.<Object>exists((Class<Object>) (Class<?>) metadata.entityType(),
                                     QuerySpec.empty().where(Criteria.eq(property.propertyName(), queryValue)))
                             .flatMap(shared -> {
                                 if (shared) {
