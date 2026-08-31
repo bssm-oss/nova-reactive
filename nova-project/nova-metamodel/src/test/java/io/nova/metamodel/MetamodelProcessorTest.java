@@ -234,6 +234,148 @@ class MetamodelProcessorTest {
     }
 
     @Test
+    @DisplayName("FIELD access emits only column-backed association constants")
+    void emitsOnlyColumnBackedFieldAssociations() {
+        Source source = new Source(
+                "fixtures.FieldAssociations",
+                """
+                package fixtures;
+
+                import jakarta.persistence.ElementCollection;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                import jakarta.persistence.ManyToMany;
+                import jakarta.persistence.ManyToOne;
+                import jakarta.persistence.OneToOne;
+
+                import java.util.List;
+                import java.util.Set;
+
+                @Entity
+                public class FieldAssociations {
+                    @Id private Long id;
+                    @ManyToOne private Parent parent;
+                    @OneToOne private Profile profile;
+                    @OneToOne(mappedBy = "fieldAssociations") private Detail detail;
+                    @ManyToMany private Set<Tag> tags;
+                    @ElementCollection private List<String> aliases;
+                }
+
+                class Parent { }
+                class Profile { }
+                class Detail { }
+                class Tag { }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(source);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.FieldAssociations_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String parent = \"parent\";"));
+        assertTrue(generated.contains("public static final String profile = \"profile\";"));
+        assertFalse(generated.contains("detail"));
+        assertFalse(generated.contains("tags"));
+        assertFalse(generated.contains("aliases"));
+    }
+
+    @Test
+    @DisplayName("PROPERTY access emits only column-backed association constants")
+    void emitsOnlyColumnBackedPropertyAssociations() {
+        Source source = new Source(
+                "fixtures.PropertyAssociations",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.ElementCollection;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                import jakarta.persistence.ManyToMany;
+                import jakarta.persistence.ManyToOne;
+                import jakarta.persistence.OneToOne;
+
+                import java.util.List;
+                import java.util.Set;
+
+                @Entity
+                @Access(AccessType.PROPERTY)
+                public class PropertyAssociations {
+                    private Long id;
+                    private Parent parent;
+                    private Profile profile;
+                    private Detail detail;
+                    private Set<Tag> tags;
+                    private List<String> aliases;
+
+                    @Id public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+                    @ManyToOne public Parent getParent() { return parent; }
+                    public void setParent(Parent parent) { this.parent = parent; }
+                    @OneToOne public Profile getProfile() { return profile; }
+                    public void setProfile(Profile profile) { this.profile = profile; }
+                    @OneToOne(mappedBy = "propertyAssociations") public Detail getDetail() { return detail; }
+                    public void setDetail(Detail detail) { this.detail = detail; }
+                    @ManyToMany public Set<Tag> getTags() { return tags; }
+                    public void setTags(Set<Tag> tags) { this.tags = tags; }
+                    @ElementCollection public List<String> getAliases() { return aliases; }
+                    public void setAliases(List<String> aliases) { this.aliases = aliases; }
+                }
+
+                class Parent { }
+                class Profile { }
+                class Detail { }
+                class Tag { }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(source);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.PropertyAssociations_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String parent = \"parent\";"));
+        assertTrue(generated.contains("public static final String profile = \"profile\";"));
+        assertFalse(generated.contains("detail"));
+        assertFalse(generated.contains("tags"));
+        assertFalse(generated.contains("aliases"));
+    }
+
+    @Test
+    @DisplayName("PROPERTY access accepts matching generic getter and setter type variables")
+    void acceptsMatchingGenericPropertyAccessors() {
+        Source source = new Source(
+                "fixtures.GenericProperty",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+
+                @Entity
+                @Access(AccessType.PROPERTY)
+                public class GenericProperty<T> {
+                    private Long id;
+                    private T value;
+
+                    @Id public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+                    public T getValue() { return value; }
+                    public void setValue(T value) { this.value = value; }
+                }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(source);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.GenericProperty_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String value = \"value\";"));
+    }
+
+    @Test
     @DisplayName("static / transient / 합성 필드는 모두 무시된다")
     void ignoresStaticAndTransientFields() {
         Source source = new Source(

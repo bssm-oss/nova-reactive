@@ -59,7 +59,7 @@ String safeDrop = dialect.schemaGenerator().dropTableIfExists(metadata);
 // "drop table if exists ..."
 ```
 
-**Oracle caveat**: Oracle has no `IF [NOT] EXISTS` syntax on `CREATE TABLE` / `DROP TABLE`. `OracleSchemaGenerator` wraps the raw DDL in a PL/SQL anonymous block that swallows `ORA-00955` (object already exists) on create and `ORA-00942` (table or view does not exist) on drop, re-raising any other error. The `dropTableIfExists` variant also appends `purge` so the recycle bin stays clean and a follow-up `CREATE TABLE` of the same name does not collide.
+**Oracle caveat**: Oracle has no `IF [NOT] EXISTS` syntax on `CREATE TABLE` / `DROP TABLE`. `OracleSchemaGenerator` wraps the raw DDL in a PL/SQL anonymous block that swallows `ORA-00955` (object already exists) on create and `ORA-00942` (table or view does not exist) on drop, re-raising any other error. The `dropTableIfExists` variant also appends `purge` so the recycle bin stays clean and a follow-up `CREATE TABLE` of the same name does not collide. When `@Table(schema = ...)` is present, its drop target remains schema-qualified and quoted (for example, `"audit"."accounts"`).
 
 ```sql
 -- Oracle dropTableIfExists output (formatted)

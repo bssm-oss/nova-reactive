@@ -270,8 +270,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         Objects.requireNonNull(entityType, "entityType must not be null");
         Objects.requireNonNull(id, "id must not be null");
         Objects.requireNonNull(lockMode, "lockMode must not be null");
-        return Mono.defer(() -> {
+        return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
+            Optional<PersistenceSession> session = currentSession(ctx);
             LockModeTranslator.ResolvedLock resolved = LockModeTranslator.resolve(lockMode);
             if (resolved.versionCheck() || resolved.forceIncrement()) {
                 if (metadata.versionProperty().isEmpty()) {
@@ -286,7 +287,8 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                     : operations.findAll(entityType, idQuerySpec(metadata, id).lockMode(resolved.lockMode())).next();
             if (resolved.forceIncrement()) {
                 PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
-                return found.flatMap(entity -> operations.update(entity, List.of(versionProperty.propertyName())));
+                return found.flatMap(entity -> operations.update(entity, List.of(versionProperty.propertyName()))
+                        .doOnNext(updated -> reconcileForceIncrementSnapshot(session, updated)));
             }
             return found;
         });
@@ -296,8 +298,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
     public Mono<Void> lock(Object entity, LockModeType lockMode) {
         Objects.requireNonNull(entity, "entity must not be null");
         Objects.requireNonNull(lockMode, "lockMode must not be null");
-        return Mono.defer(() -> {
+        return Mono.deferContextual(ctx -> {
             EntityMetadata<?> metadata = metadataFor(entity);
+            Optional<PersistenceSession> session = currentSession(ctx);
             LockModeTranslator.ResolvedLock resolved = LockModeTranslator.resolve(lockMode);
             if ((resolved.versionCheck() || resolved.forceIncrement()) && metadata.versionProperty().isEmpty()) {
                 return Mono.error(new IllegalArgumentException(
@@ -312,7 +315,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
             if (resolved.forceIncrement()) {
                 // *_FORCE_INCREMENT: 버전을 강제 증분하는 UPDATE 발행(낙관락 검증 포함).
                 PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
-                chain = chain.then(operations.update(entity, List.of(versionProperty.propertyName())).then());
+                chain = chain.then(operations.update(entity, List.of(versionProperty.propertyName()))
+                        .doOnNext(updated -> reconcileForceIncrementSnapshot(session, updated))
+                        .then());
             } else if (resolved.versionCheck()) {
                 // OPTIMISTIC/READ: 현재 버전이 DB와 일치하는지 검증한다.
                 chain = chain.then(verifyVersion(metadata, entity));
@@ -376,6 +381,10 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         Object idValue = metadata.readIdValue(entity);
         QuerySpec spec = idQuerySpec(metadata, idValue).lockMode(lockMode);
         return operations.findAll(metadata.entityType(), spec).next()
+                // Lock acquisition is an internal existence/row-lock probe, not an entity read. In particular it
+                // must not auto-flush an unchanged managed instance before the force-increment UPDATE below.
+                // Keep the transaction connection in Context while removing only session auto-flush/identity handling.
+                .contextWrite(context -> context.delete(SimpleReactiveEntityOperations.SESSION_KEY))
                 .switchIfEmpty(Mono.error(() -> new OptimisticLockingFailureException(
                         "Cannot acquire lock; row no longer exists for "
                                 + metadata.entityType().getName() + " id=" + idValue)))
@@ -399,6 +408,21 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                         : Mono.error(new OptimisticLockingFailureException(
                                 "Optimistic lock verification failed for " + metadata.entityType().getName()
                                         + " id=" + idValue + " version=" + currentVersion)));
+    }
+
+    /**
+     * force-increment의 직접 SQL은 version과 update audit timestamp만 쓴다. 성공 후 이 정확한 관리
+     * 인스턴스의 두 baseline만 맞춰 commit flush가 같은 UPDATE/callback을 반복하지 않게 한다.
+     */
+    private void reconcileForceIncrementSnapshot(Optional<PersistenceSession> session, Object entity) {
+        if (session.isEmpty()) {
+            return;
+        }
+        EntityMetadata<?> concreteMetadata = metadataFactory.getEntityMetadata(entity.getClass());
+        List<PersistentProperty> writtenProperties = new ArrayList<>();
+        concreteMetadata.versionProperty().ifPresent(writtenProperties::add);
+        concreteMetadata.updatedAtProperty().ifPresent(writtenProperties::add);
+        session.get().refreshManagedExactInstanceSnapshot(concreteMetadata, entity, writtenProperties);
     }
 
     /**

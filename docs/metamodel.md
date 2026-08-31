@@ -140,9 +140,10 @@ same field is either a column in both worlds, or in neither:
 | Field shape | Emitted? |
 |---|---|
 | Regular field, `@Id`, `@Version`, `@CreatedAt`, `@UpdatedAt`, `@SoftDelete`, `@Json`, `@Enumerated`, `@Column` | yes |
-| `@ManyToOne` (owning side, FK column) | yes |
+| `@ManyToOne`, owning `@OneToOne` (`mappedBy` blank; FK column) | yes |
 | `@Embedded` host | no — recursed into |
-| `@OneToMany` inverse | no — no column on this side |
+| `@OneToMany`, `@ManyToMany`, `@ElementCollection` | no — values are stored outside the entity table |
+| Inverse `@OneToOne` (`mappedBy` nonblank) | no — the FK belongs to the owning side |
 | `static`, `transient`, synthetic | no |
 
 Identifier collisions (for example, an `@Embedded host` named `address` plus a
