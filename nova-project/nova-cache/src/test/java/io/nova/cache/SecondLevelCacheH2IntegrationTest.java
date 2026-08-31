@@ -4,6 +4,8 @@ import io.nova.core.EntityStateDetector;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.core.SqlExecutionListener;
+import io.nova.cache.spi.CacheKey;
+import io.nova.cache.spi.ReactiveCacheProvider;
 import io.nova.dialect.h2.H2Dialect;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
@@ -49,7 +51,8 @@ class SecondLevelCacheH2IntegrationTest {
         return ConnectionFactories.get("r2dbc:h2:mem:///slcache" + seq + "?options=DB_CLOSE_DELAY=-1");
     }
 
-    private record Wiring(ReactiveEntityOperations cached, SchemaInitializer schema, SelectCountingListener listener) {
+    private record Wiring(ReactiveEntityOperations cached, SchemaInitializer schema, SelectCountingListener listener,
+                          ReactiveCacheProvider cacheProvider) {
     }
 
     private Wiring wire(ConnectionFactory cf) {
@@ -60,9 +63,10 @@ class SecondLevelCacheH2IntegrationTest {
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(cf);
         SimpleReactiveEntityOperations base = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
-        ReactiveEntityOperations cached = NovaCache.caching(base, new SimpleReactiveCacheProvider(), metadataFactory);
+        ReactiveCacheProvider cacheProvider = new SimpleReactiveCacheProvider();
+        ReactiveEntityOperations cached = NovaCache.caching(base, cacheProvider, metadataFactory);
         SchemaInitializer schema = new SimpleSchemaInitializer(base, metadataFactory, dialect);
-        return new Wiring(cached, schema, listener);
+        return new Wiring(cached, schema, listener, cacheProvider);
     }
 
     @Test
@@ -159,10 +163,57 @@ class SecondLevelCacheH2IntegrationTest {
         assertEquals("alpha", reloaded.name());
     }
 
+    @Test
+    void managedTransactionBypassesWarmCacheAndEvictsAfterDirtyCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        long beforeTransaction = w.listener().selects();
+        w.cached().inTransaction(tx -> tx.findById(Widget.class, id)
+                .doOnNext(widget -> widget.name = "beta"))
+                .block();
+
+        long beforeReload = w.listener().selects();
+        Widget afterCommit = w.cached().findById(Widget.class, id).block();
+
+        assertTrue(beforeReload > beforeTransaction,
+                "managed transaction must SELECT instead of returning the warm cache value");
+        assertTrue(w.listener().updates() > 0, "managed mutation must flush an UPDATE at commit");
+        assertTrue(w.listener().selects() > beforeReload, "post-commit eviction must force a DB reload");
+        assertEquals("beta", afterCommit.name());
+    }
+
+    @Test
+    void nestedParticipatingLoadRetainsEvictionUntilPhysicalCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        Widget stale = w.cached().findById(Widget.class, id).block();
+        CacheKey key = new CacheKey(Widget.class.getName(), Widget.class, id);
+
+        w.cached().inTransaction(outer -> outer.inTransaction(inner ->
+                        inner.findById(Widget.class, id)
+                                .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, stale)))
+                .then())
+                .block();
+
+        long beforeReload = w.listener().selects();
+        w.cached().findById(Widget.class, id).block();
+        assertTrue(w.listener().selects() > beforeReload,
+                "nested invalidation must still run after the outer physical commit");
+    }
+
     // --- SQL 실행 카운터 -----------------------------------------------------
 
     static final class SelectCountingListener implements SqlExecutionListener {
         private final AtomicLong selectCount = new AtomicLong();
+        private final AtomicLong updateCount = new AtomicLong();
 
         @Override
         public void onBeforeExecution(SqlStatement statement) {
@@ -170,10 +221,17 @@ class SecondLevelCacheH2IntegrationTest {
             if (sql.regionMatches(true, 0, "select", 0, "select".length())) {
                 selectCount.incrementAndGet();
             }
+            if (sql.regionMatches(true, 0, "update", 0, "update".length())) {
+                updateCount.incrementAndGet();
+            }
         }
 
         long selects() {
             return selectCount.get();
+        }
+
+        long updates() {
+            return updateCount.get();
         }
     }
 

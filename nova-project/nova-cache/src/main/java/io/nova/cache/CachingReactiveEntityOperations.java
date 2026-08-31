@@ -19,8 +19,10 @@ import io.nova.query.QuerySpec;
 import io.nova.query.Slice;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
+import io.nova.tx.PhysicalTransactionScope;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.context.ContextView;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -83,13 +85,14 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     private final boolean populateOnRead;
     /** 트랜잭션 스코프에서만 non-null. write 무효화를 기록해 commit 후 재적용한다. */
     private final TransactionEvictionBuffer evictionBuffer;
+    private final Object transactionEvictionResourceKey;
 
     public CachingReactiveEntityOperations(
             ReactiveEntityOperations delegate,
             EntityMetadataFactory metadataFactory,
             CacheConfigurationResolver resolver,
             ReactiveCacheProvider provider) {
-        this(delegate, metadataFactory, resolver, provider, null, true, null);
+        this(delegate, metadataFactory, resolver, provider, null, true, null, new Object());
     }
 
     /**
@@ -102,7 +105,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             CacheConfigurationResolver resolver,
             ReactiveCacheProvider provider,
             ReactiveQueryCache queryCache) {
-        this(delegate, metadataFactory, resolver, provider, queryCache, true, null);
+        this(delegate, metadataFactory, resolver, provider, queryCache, true, null, new Object());
     }
 
     private CachingReactiveEntityOperations(
@@ -112,7 +115,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             ReactiveCacheProvider provider,
             ReactiveQueryCache queryCache,
             boolean populateOnRead,
-            TransactionEvictionBuffer evictionBuffer) {
+            TransactionEvictionBuffer evictionBuffer,
+            Object transactionEvictionResourceKey) {
         this.delegate = Objects.requireNonNull(delegate, "delegate must not be null");
         this.metadataFactory = Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
         this.resolver = Objects.requireNonNull(resolver, "resolver must not be null");
@@ -120,12 +124,13 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         this.queryCache = queryCache; // nullable — opt-in
         this.populateOnRead = populateOnRead;
         this.evictionBuffer = evictionBuffer;
+        this.transactionEvictionResourceKey = transactionEvictionResourceKey;
     }
 
     private CachingReactiveEntityOperations withDelegate(
             ReactiveEntityOperations inner, boolean populate, TransactionEvictionBuffer buffer) {
         return new CachingReactiveEntityOperations(
-                inner, metadataFactory, resolver, provider, queryCache, populate, buffer);
+                inner, metadataFactory, resolver, provider, queryCache, populate, buffer, transactionEvictionResourceKey);
     }
 
     // --- read-through ------------------------------------------------------
@@ -134,8 +139,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @SuppressWarnings("unchecked")
     public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
         CacheConfiguration config = resolver.resolve(entityType);
-        if (!config.cacheable() || id == null) {
-            return delegate.findById(entityType, id);
+        if (!config.cacheable() || id == null || !populateOnRead) {
+            return delegate.findById(entityType, id).flatMap(this::trackTransactionalLoad);
         }
         // 키 타입은 canonical(정규) 타입으로 — 다형 findById(base)와 save(subtype)가 같은 키를 공유하게 한다.
         CacheKey key = new CacheKey(config.region(), config.keyType(), id);
@@ -150,7 +155,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @Override
     public <T, ID> Mono<Boolean> existsById(Class<T> entityType, ID id) {
         CacheConfiguration config = resolver.resolve(entityType);
-        if (!config.cacheable() || id == null) {
+        if (!config.cacheable() || id == null || !populateOnRead) {
             return delegate.existsById(entityType, id);
         }
         CacheKey key = new CacheKey(config.region(), config.keyType(), id);
@@ -164,7 +169,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         CacheConfiguration config = resolver.resolve(entityType);
         Flux<T> result = delegate.findAllById(entityType, ids);
         if (!config.cacheable() || !populateOnRead) {
-            return result;
+            return result.concatMap(this::trackTransactionalLoad);
         }
         return result.concatMap(entity -> putEntity(entity).thenReturn(entity));
     }
@@ -200,7 +205,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         }
         Flux<T> result = delegate.findAll(entityType, querySpec);
         if (!warmEntityCache) {
-            return result;
+            return result.concatMap(this::trackTransactionalLoad);
         }
         // 조회된 엔티티를 캐시에 채워 이후 findById가 히트하도록 한다(쿼리 캐시 미배선 시 결과 자체는 캐시 안 함).
         return result.concatMap(entity -> putEntity(entity).thenReturn(entity));
@@ -213,12 +218,18 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
 
     @Override
     public <T> Mono<Page<T>> findAll(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
-        return delegate.findAll(entityType, querySpec, pageable);
+        return delegate.findAll(entityType, querySpec, pageable)
+                .flatMap(page -> Flux.fromIterable(page.content())
+                        .concatMap(this::trackTransactionalLoad)
+                        .thenReturn(page));
     }
 
     @Override
     public <T> Mono<Slice<T>> findSlice(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
-        return delegate.findSlice(entityType, querySpec, pageable);
+        return delegate.findSlice(entityType, querySpec, pageable)
+                .flatMap(slice -> Flux.fromIterable(slice.content())
+                        .concatMap(this::trackTransactionalLoad)
+                        .thenReturn(slice));
     }
 
     @Override
@@ -234,29 +245,29 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @Override
     public <P> Mono<P> findById(Class<P> entityType, Object id, FetchGroup<P> fetchGroup) {
         // FetchGroup 경로는 자식 hydration이 달라질 수 있어 v1에서는 캐시를 우회한다(read/put 모두 없음).
-        return delegate.findById(entityType, id, fetchGroup);
+        return delegate.findById(entityType, id, fetchGroup).flatMap(this::trackTransactionalLoad);
     }
 
     @Override
     public <P> Flux<P> findAll(Class<P> entityType, FetchGroup<P> fetchGroup) {
-        return delegate.findAll(entityType, fetchGroup);
+        return delegate.findAll(entityType, fetchGroup).concatMap(this::trackTransactionalLoad);
     }
 
     @Override
     public <T, ID> Mono<T> findById(Class<T> entityType, ID id, io.nova.graph.EntityGraph<T> entityGraph) {
         // EntityGraph(중첩 subgraph 포함) 경로는 delegate가 depth>1 hydration을 담당하므로 그대로 위임한다
         // (interface default 로 fallback 하면 flat FetchGroup 으로만 풀려 중첩 fetch 가 유실됨).
-        return delegate.findById(entityType, id, entityGraph);
+        return delegate.findById(entityType, id, entityGraph).flatMap(this::trackTransactionalLoad);
     }
 
     @Override
     public <T> Flux<T> findAll(Class<T> entityType, io.nova.graph.EntityGraph<T> entityGraph) {
-        return delegate.findAll(entityType, entityGraph);
+        return delegate.findAll(entityType, entityGraph).concatMap(this::trackTransactionalLoad);
     }
 
     @Override
     public <T> Flux<T> findAll(Class<T> entityType, CompiledQuery query, Object... bindings) {
-        return delegate.findAll(entityType, query, bindings);
+        return delegate.findAll(entityType, query, bindings).concatMap(this::trackTransactionalLoad);
     }
 
     // --- write invalidation -------------------------------------------------
@@ -371,11 +382,17 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
 
     @Override
     public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
-        TransactionEvictionBuffer buffer = new TransactionEvictionBuffer();
-        Mono<R> body = delegate.inTransaction(inner -> callback.apply(withDelegate(inner, false, buffer)));
-        // commit 성공 후 무효화 재적용(post-commit re-evict). 값이 없거나 있어도 반드시 한 번 flush.
-        return body.flatMap(result -> buffer.flush(provider, queryCache).thenReturn(result))
-                .switchIfEmpty(Mono.defer(() -> buffer.flush(provider, queryCache).then(Mono.empty())));
+        return Mono.deferContextual(context -> {
+            boolean participating = hasActivePhysicalScope(context);
+            TransactionEvictionBuffer localBuffer = new TransactionEvictionBuffer();
+            Mono<R> body = delegate.inTransaction(inner -> Mono.deferContextual(transactionContext ->
+                    callback.apply(withDelegate(inner, false, transactionBuffer(transactionContext, localBuffer)))));
+            if (participating) {
+                return body;
+            }
+            return body.flatMap(result -> localBuffer.flush(provider, queryCache).thenReturn(result))
+                    .switchIfEmpty(Mono.defer(() -> localBuffer.flush(provider, queryCache).then(Mono.empty())));
+        });
     }
 
     @Override
@@ -400,6 +417,24 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         }
         // canonical 키 타입으로 evict — findById(base)가 심은 키와 일치시켜 다형 stale read를 막는다.
         return invalidate(new CacheKey(config.region(), config.keyType(), id));
+    }
+
+    private <T> Mono<T> trackTransactionalLoad(T entity) {
+        return evictionBuffer == null ? Mono.justOrEmpty(entity)
+                : invalidateEntity(entity).thenReturn(entity);
+    }
+
+    private TransactionEvictionBuffer transactionBuffer(ContextView context, TransactionEvictionBuffer fallback) {
+        if (!hasActivePhysicalScope(context)) {
+            return fallback;
+        }
+        PhysicalTransactionScope scope = context.get(PhysicalTransactionScope.CONTEXT_KEY);
+        return scope.getOrCreateResource(transactionEvictionResourceKey, () -> fallback);
+    }
+
+    private static boolean hasActivePhysicalScope(ContextView context) {
+        return context.hasKey(PhysicalTransactionScope.CONTEXT_KEY)
+                && context.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY).isActive();
     }
 
     private Mono<Void> putEntity(Object entity) {
