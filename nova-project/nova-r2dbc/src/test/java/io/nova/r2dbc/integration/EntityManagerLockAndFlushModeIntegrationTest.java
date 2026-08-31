@@ -19,6 +19,7 @@ import jakarta.persistence.LockModeType;
 import jakarta.persistence.PostUpdate;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.TransactionRequiredException;
 import jakarta.persistence.Version;
 import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorValue;
@@ -53,11 +54,11 @@ class EntityManagerLockAndFlushModeIntegrationTest {
     }
 
     // -------------------------------------------------------------------------------------------
-    // find(Class, id, LockModeType) — PESSIMISTIC_WRITE는 FOR UPDATE 발행
+    // find(Class, id, LockModeType) — PESSIMISTIC_WRITE는 활성 트랜잭션과 FOR UPDATE 필요
     // -------------------------------------------------------------------------------------------
 
     @Test
-    void findWithPessimisticWriteIssuesForUpdate() {
+    void pessimisticFindOutsideTransactionFailsWithoutSql() {
         EntityManagerHarness h = harness();
         h.support.execute(h.support.operations().createTableSql(VersionedAccount.class));
 
@@ -67,6 +68,59 @@ class EntityManagerLockAndFlushModeIntegrationTest {
 
         listener.clear();
         StepVerifier.create(h.manager.find(VersionedAccount.class, id, LockModeType.PESSIMISTIC_WRITE))
+                .expectErrorSatisfies(error -> assertEquals(TransactionRequiredException.class, error.getClass()))
+                .verify();
+
+        assertTrue(listener.snapshot().isEmpty(),
+                "pessimistic find outside a transaction must fail before SQL: " + listener.snapshot());
+    }
+
+    @Test
+    void pessimisticLockOutsideTransactionFailsWithoutSql() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(VersionedAccount.class));
+
+        VersionedAccount account = new VersionedAccount("lock@nova.io");
+        StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
+
+        listener.clear();
+        StepVerifier.create(h.manager.lock(account, LockModeType.PESSIMISTIC_FORCE_INCREMENT))
+                .expectErrorSatisfies(error -> assertEquals(TransactionRequiredException.class, error.getClass()))
+                .verify();
+
+        assertTrue(listener.snapshot().isEmpty(),
+                "pessimistic lock outside a transaction must fail before SQL: " + listener.snapshot());
+    }
+
+    @Test
+    void pessimisticRefreshOutsideTransactionFailsWithoutSql() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(VersionedAccount.class));
+
+        VersionedAccount account = new VersionedAccount("lock@nova.io");
+        StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
+
+        listener.clear();
+        StepVerifier.create(h.manager.refresh(account, LockModeType.PESSIMISTIC_WRITE))
+                .expectErrorSatisfies(error -> assertEquals(TransactionRequiredException.class, error.getClass()))
+                .verify();
+
+        assertTrue(listener.snapshot().isEmpty(),
+                "pessimistic refresh outside a transaction must fail before SQL: " + listener.snapshot());
+    }
+
+    @Test
+    void pessimisticFindInsideTransactionIssuesForUpdate() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(VersionedAccount.class));
+
+        VersionedAccount account = new VersionedAccount("lock@nova.io");
+        StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
+        Long id = account.getId();
+
+        listener.clear();
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(VersionedAccount.class, id, LockModeType.PESSIMISTIC_WRITE)))
                 .assertNext(found -> assertTrue(found.getId().equals(id)))
                 .verifyComplete();
 
