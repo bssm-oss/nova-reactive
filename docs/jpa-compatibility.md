@@ -71,7 +71,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@ManyToOne` / `@OneToOne` → **composite-key** target | ✅ | Multi-column FK (one column per referenced `@Id` component) + composite FK constraint |
 | inverse `@OneToOne` (`mappedBy`) | ✅ | |
 | `@OneToMany` (`cascade`, `orphanRemoval`, `@OrderColumn`, `@OrderBy`) | ✅ | |
-| `@ManyToMany` (owning + inverse, `cascade`) | ✅ | Join-table row diffing; owning + inverse delete cleanup |
+| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration |
 | `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK) |
 | `@ElementCollection` | ✅ | Basic / enum / `UUID` elements, mutable and record `@Embeddable` values, `Map` keys/values (including records), `@OrderColumn`, `List` |
 | `@MapKeyColumn` / `@MapKeyEnumerated` / `@MapKeyTemporal` / `@MapKeyClass` | ✅ | `@MapKeyClass` supports basic / enum / `@Embeddable` / single-`@Id` **entity** key classes (entity key stored as its `@Id` FK column, batch-hydrated); composite-`@Id` entity key classes fail-fast |
@@ -85,7 +85,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 
 | Feature | Status | Notes |
 |---|---|---|
-| Automatic relationship hydration (`FetchGroup`) | ✅ | Batched (one IN-query per association, no N+1) |
+| Automatic relationship hydration (`FetchGroup`) | ✅ | Batched (one IN-query per association, no N+1); explicit FetchGroup/EntityGraph reads share transaction-bound identity and dirty tracking |
 | Composite-key to-one eager hydration | ✅ | Batched via OR-of-ANDs predicate; hydrated as a leaf at nested `EntityGraph` subgraph depth too |
 | `@NamedEntityGraph` / `EntityGraph` + JPQL `JOIN FETCH` | ✅ | Always-eager (graph ⊇ default) |
 | Nested `@NamedSubgraph` (depth > 1) | ✅ | Recursive plan tree, per-level reactive batching; cycle fail-fast |

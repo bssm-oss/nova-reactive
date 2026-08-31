@@ -53,7 +53,7 @@ In a Spring Boot application, the `novaTransactionManager` bean already is this
 
 Supported `Propagation` values: `REQUIRED`, `REQUIRES_NEW`, `NESTED` (SAVEPOINT), `MANDATORY`, `SUPPORTS`, `NOT_SUPPORTED`, `NEVER` — Spring semantics.
 
-- An exception or `Mono.error` inside the callback **rolls back automatically**. `NESTED` rolls back only to the SAVEPOINT.
+- An exception or `Mono.error` inside the callback **rolls back automatically**. `NESTED` rolls back only to the SAVEPOINT. Savepoint creation, rollback, release, outer completion, and cancellation cleanup are serialized on the physical connection; empty success also releases its savepoint.
 - Transaction context propagates through the Reactor `Context`, so there is no thread leak (no `ThreadLocal`).
 
 ---
@@ -79,7 +79,7 @@ operations.inTransaction(tx ->
 - `save()` of a **new** entity still inserts immediately (to obtain the generated id); subsequent mutations are picked up by dirty checking. `save()` of an already-loaded entity issues no SQL — the change is flushed at commit.
 - `@UpdatedAt`, `@PreUpdate`/`@PostUpdate`, and `@Version` optimistic locking apply to flush UPDATEs identically to an explicit partial update.
 
-**v1 scope / not yet covered:** cascade, `@ManyToMany` join-table management, `merge` of detached entities, a session that outlives a single transaction, and FetchGroup-loaded children are not session-managed. `update(entity, fields)` / the `Updater` API deliberately bypass the session (direct SQL). Reads other than `findById`/`findAll` (e.g. `count`, projections) are not auto-flushed in v1.
+**Current scope limits:** `merge` of detached entities and a persistence session that outlives a single transaction are not supported. `update(entity, fields)` / the `Updater` API deliberately bypass the session (direct SQL). Reads other than entity-loading `findById`/`findAll` variants (for example `count` and scalar projections) are not auto-flushed. Ordinary, `FetchGroup`, and `EntityGraph` entity reads are session-managed.
 
 ---
 
@@ -110,7 +110,9 @@ operations.inReadSession(ops ->
   scope-level atomicity**. Mixing writes is allowed but each autocommits independently; use
   `inTransaction(...)` when you need atomicity.
 - **Nesting** — calling `inReadSession` inside an `inTransaction` (or another read session) reuses
-  the already-bound connection; it never opens a second one.
+  the already-bound connection; it never opens a second one. In the reverse direction, a bound read-session
+  connection is not mistaken for an active transaction: `REQUIRED` and `NESTED` open a separately owned
+  transaction, `MANDATORY` fails, and nontransactional `SUPPORTS` / `NEVER` reuse the read connection.
 - Requires a connection-scope-aware wiring (the default `Nova.create` one). Other wirings fall
   back to per-operation acquire transparently.
 

@@ -47,7 +47,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. `fetch = LAZY` is accepted and treated as eager (no lazy proxy); `cascade` (`PERSIST` / `MERGE` / `REMOVE`) propagates to the referenced entity on `save` / `delete`. |
 | `@ManyToMany` / `@JoinTable` | Many-to-many via a link table. **Owning** side (`@JoinTable`, no `mappedBy`) defines the table + join columns; **inverse** side (`@ManyToMany(mappedBy = "...")`) reuses it. Both `List` and `Set` are supported, including composite-key owners and targets. The link table is auto-created by the schema initializer. `save(owner)` reconciles link-row diffs; both sides hydrate eagerly via a 2-hop IN-query and owner/inverse deletion cleans up link rows. Owning-side `cascade` (`PERSIST` / `MERGE`) propagates to the target entities on `save`; inverse-side `cascade` is rejected fail-fast. |
 | `@ElementCollection` / `@CollectionTable` | Basic values and flat mutable/record `@Embeddable` values (`List`/`Set`/`Map`) are stored in a separate collection table, auto-created by the schema initializer. `@CollectionTable` / `@JoinColumn` / `@Column` override table, owner-FK, and value column names. `save(owner)` reconciles rows (full-replace); `findById` / `findAll` hydrate via one IN-query. Nested `@EmbeddedId` collection values remain unsupported. |
-| `@OrderBy`        | On `@OneToMany`, orders hydrated children. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY` to the child query; an empty `@OrderBy` sorts by the child's `@Id` ascending. |
+| `@OrderBy`        | On `@OneToMany` and `@ManyToMany`, orders hydrated targets. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY`; an empty `@OrderBy` sorts by every target `@Id` component ascending. |
 | `@AttributeOverride` | On an `@Embedded` field, overrides a sub-property's column name with an absolute name (e.g. `@AttributeOverride(name = "city", column = @Column(name = "ship_city"))`). |
 | `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
 | `@Enumerated`     | Enum column mapping. `EnumType.ORDINAL` (default) or `EnumType.STRING`.                    |
@@ -222,11 +222,12 @@ public static class Book {
 }
 ```
 
-- For explicit fetch control, pass a `FetchGroup` to `findById(Class, ID, FetchGroup)` / `findAll(Class, FetchGroup)`. User-supplied and annotation-derived specs are deduped by `(childType, FK column)` with the user spec winning, so each child is fetched exactly once.
+- For explicit fetch control, pass a `FetchGroup` to `findById(Class, ID, FetchGroup)` / `findAll(Class, FetchGroup)`. User-supplied and annotation-derived specs are deduped by `(childType, FK column)` with the user spec winning, so each child is fetched exactly once. Inside a transaction-bound persistence session, explicit `FetchGroup` and `EntityGraph` reads participate in the same identity map and dirty checking as ordinary reads, including runtime subtype state.
 - If the FK column seen by `@ManyToOne` clashes with another `@Column(name)` on the same entity, `EntityMetadataFactory` raises an explicit error rather than silently merging them.
 - Ordinary operations are stateless; an opt-in transaction-bound persistence session provides an identity map,
   dirty checking, and flush. There is no lazy proxy in either mode. For partial collections, drive `FetchGroup`
-  explicitly.
+  explicitly. Collections omitted by a partial nested fetch remain unloaded and are never interpreted as
+  empty/full-replacement state during flush.
 
 ### `@OneToOne`
 
