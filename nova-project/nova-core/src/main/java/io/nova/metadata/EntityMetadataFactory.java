@@ -715,7 +715,7 @@ public final class EntityMetadataFactory {
         PersistentProperty softDeleteProperty = null;
         PersistentProperty versionProperty = null;
         PersistentTypeAccess accessPlan = new PersistentAccessResolver().resolve(entityType);
-        validatePropertyAccessCompleteness(entityType);
+
         for (PersistentAttributeAccess attribute : accessPlan.attributes()) {
             Field field = attribute.field();
             if (field != null && isNotPersistable(field)) {
@@ -2770,11 +2770,19 @@ public final class EntityMetadataFactory {
     }
 
     private static <A extends Annotation> A memberAnnotation(Field field, Class<A> annotationType) {
-        return selectedAttribute(field).annotation(annotationType);
+        if (!resolvePropertyAccess(field)) {
+            return field.getAnnotation(annotationType);
+        }
+        Method getter = findPropertyGetter(field);
+        return getter == null ? null : getter.getAnnotation(annotationType);
     }
 
     private static boolean memberPresent(Field field, Class<? extends Annotation> annotationType) {
-        return selectedAttribute(field).isAnnotationPresent(annotationType);
+        if (!resolvePropertyAccess(field)) {
+            return field.isAnnotationPresent(annotationType);
+        }
+        Method getter = findPropertyGetter(field);
+        return getter != null && getter.isAnnotationPresent(annotationType);
     }
 
     private static AnnotatedElement selectedMember(Field field) {

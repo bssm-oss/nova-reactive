@@ -90,12 +90,10 @@ class PersistentPropertyAccessTest {
     }
 
     @Test
-    void rejectsPropertyAccessWithoutGetter() {
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(MissingGetterAccount.class));
-        assertTrue(exception.getMessage().contains("no JavaBean getter"),
-                "getter 부재는 fail-fast로 거부되어야 한다: " + exception.getMessage());
+    void ignoresSetterOnlyStateUnderPropertyAccess() {
+        EntityMetadata<MissingGetterAccount> metadata =
+                factory.getEntityMetadata(MissingGetterAccount.class);
+        assertTrue(metadata.findProperty("name").isEmpty());
     }
 
     @Test
