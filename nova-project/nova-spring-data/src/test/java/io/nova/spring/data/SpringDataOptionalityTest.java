@@ -49,12 +49,14 @@ class SpringDataOptionalityTest {
 
         Class<?> plainRepo = loader.loadClass(
                 "io.nova.spring.data.SpringDataOptionalityTest$PlainAccountRepository");
+        Class<?> entityClass = loader.loadClass(
+                "io.nova.spring.data.SpringDataOptionalityTest$Account");
 
         StubOperations ops = new StubOperations();
         ops.nextFindAll = Flux.just(new Account(1L, "a"), new Account(2L, "b"));
         SimpleReactiveRepository handler =
-                new SimpleReactiveRepository(Account.class, Long.class, ops, null, null,
-                        METADATA_FACTORY.getEntityMetadata(Account.class));
+                new SimpleReactiveRepository(entityClass, Long.class, ops, null, null,
+                        METADATA_FACTORY.getEntityMetadata(entityClass));
 
         // 핵심: eager proxy 생성이 Spring 타입을 resolve하지 않아야 성공한다.
         Object proxy = Proxy.newProxyInstance(loader, new Class<?>[]{plainRepo}, handler);
@@ -77,11 +79,13 @@ class SpringDataOptionalityTest {
 
         Class<?> springRepo = loader.loadClass(
                 "io.nova.spring.data.SpringDataOptionalityTest$SpringAccountRepository");
+        Class<?> entityClass = loader.loadClass(
+                "io.nova.spring.data.SpringDataOptionalityTest$Account");
 
         StubOperations ops = new StubOperations();
         SimpleReactiveRepository handler =
-                new SimpleReactiveRepository(Account.class, Long.class, ops, null, null,
-                        METADATA_FACTORY.getEntityMetadata(Account.class));
+                new SimpleReactiveRepository(entityClass, Long.class, ops, null, null,
+                        METADATA_FACTORY.getEntityMetadata(entityClass));
 
         // proxy 생성 과정에서 org.springframework.data.domain.Pageable/Sort 파라미터 타입을
         // resolve하려다 실패한다 → 이것이 바로 이 메서드들을 opt-in 서브인터페이스로 격리해야 하는 이유.
@@ -211,13 +215,14 @@ class SpringDataOptionalityTest {
 
     // --- 테스트 fixtures -------------------------------------------------------------------------
 
-    @Entity
-    static final class Account {
+    @Entity(name = "SpringDataOptionalityAccount")
+    @jakarta.persistence.Table(name = "spring_data_optionality_accounts")
+    public static final class Account {
         @Id
-        final Long id;
-        final String name;
+        public final Long id;
+        public final String name;
 
-        Account(Long id, String name) {
+        public Account(Long id, String name) {
             this.id = id;
             this.name = name;
         }
@@ -231,12 +236,13 @@ class SpringDataOptionalityTest {
     interface SpringAccountRepository extends SpringDataReactiveCrudRepository<Account, Long> {
     }
 
-    /** @Query 디스패치 optionality 검증용 엔티티 POJO(메타데이터 해석 없이 parse만 검증하므로 @Entity 불필요). */
-    @Entity
+    /** @Query 디스패치 optionality 검증용 엔티티 POJO. */
+    @Entity(name = "QueryAccount")
+    @jakarta.persistence.Table(name = "spring_data_optionality_query_accounts")
     public static class QueryAccount {
         @Id
-        Long id;
-        String email;
+        public Long id;
+        public String email;
     }
 
     /** Spring 타입을 전혀 참조하지 않는 nova-only @Query repository(JPQL 엔티티+Nova Pageable / 스칼라). */

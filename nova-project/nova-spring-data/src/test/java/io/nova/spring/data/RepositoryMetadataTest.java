@@ -1,5 +1,10 @@
 package io.nova.spring.data;
 
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadataFactory;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 
@@ -11,8 +16,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * {@link RepositoryMetadata#resolve(Class)}가 두 가지 generic을 정확히 풀어내는지 검증한다.
  */
 class RepositoryMetadataTest {
+    private static final EntityMetadataFactory METADATA_FACTORY =
+            new EntityMetadataFactory(new DefaultNamingStrategy());
 
+    @Entity(name = "RepositoryMetadataUser")
+    @Table(name = "repository_metadata_users")
     static final class User {
+        @Id
         final long id;
 
         User(long id) {
@@ -36,6 +46,8 @@ class RepositoryMetadataTest {
         assertSame(User.class, metadata.entityType(), "entityType must be User");
         assertSame(Long.class, metadata.idType(), "idType must be Long");
         assertSame(UserRepository.class, metadata.repositoryInterface(), "repositoryInterface preserved");
+        assertSame(User.class, METADATA_FACTORY.getEntityMetadata(metadata.entityType()).entityType(),
+                "repository domain must build EntityMetadata");
     }
 
     @Test
