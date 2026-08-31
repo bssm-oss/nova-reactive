@@ -17,6 +17,7 @@ import reactor.util.context.Context;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -260,7 +261,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         private final String name = "nova_sp_" + SAVEPOINT_COUNTER.incrementAndGet();
         private final Lease lease;
         private final BoundaryOwner owner = new BoundaryOwner();
-        private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicReference<SavepointState> state = new AtomicReference<>(SavepointState.QUEUED);
         private final AtomicBoolean created = new AtomicBoolean();
         private final Mono<Void> create;
 
@@ -268,10 +269,16 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
             this.connection = connection;
             this.lease = lease;
             this.create = Mono.defer(() -> {
-                        started.set(true);
+                        if (!state.compareAndSet(SavepointState.QUEUED, SavepointState.CREATING)) {
+                            return Mono.empty();
+                        }
                         return Mono.from(connection.createSavepoint(name));
                     })
-                    .doOnSuccess(ignored -> created.set(true))
+                    .doOnSuccess(ignored -> {
+                        created.set(true);
+                        state.compareAndSet(SavepointState.CREATING, SavepointState.ACTIVE);
+                    })
+                    .doOnError(ignored -> state.compareAndSet(SavepointState.CREATING, SavepointState.CREATE_FAILED))
                     .cache();
         }
 
@@ -284,6 +291,7 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         }
 
         Mono<Void> success() {
+            selectTerminal(SavepointState.SUCCESS);
             return owner.seal()
                     .then(releaseSavepointIfSupported(connection, name))
                     .doFinally(ignored -> lease.complete())
@@ -291,22 +299,37 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
         }
 
         Mono<Void> error(Throwable callbackFailure) {
+            if (!selectTerminal(SavepointState.ERROR)) {
+                return owner.seal().doFinally(ignored -> lease.complete());
+            }
             return owner.seal()
-                    .then(create.then(rollbackAndRelease(callbackFailure))
-                            .onErrorResume(ignored -> Mono.empty()))
+                    .then(state.get() == SavepointState.CREATE_FAILED
+                            ? Mono.empty()
+                            : rollbackAndRelease(callbackFailure))
                     .doFinally(ignored -> lease.complete())
                     .onErrorMap(CleanupFailure::new);
         }
 
         Mono<Void> cancel() {
-            if (!started.get()) {
-                lease.complete();
-                return Mono.empty();
+            SavepointState selected;
+            do {
+                selected = state.get();
+                if (selected != SavepointState.QUEUED && selected != SavepointState.CREATING
+                        && selected != SavepointState.ACTIVE) {
+                    return Mono.empty();
+                }
+            } while (!state.compareAndSet(selected, SavepointState.CANCEL));
+            if (selected == SavepointState.QUEUED) {
+                return owner.seal().doFinally(ignored -> lease.complete());
             }
-            return create
+            return owner.seal()
+                    .then(create.onErrorResume(ignored -> Mono.empty()))
                     .then(Mono.defer(() -> created.get() ? rollbackAndRelease(null) : Mono.empty()))
-                    .onErrorResume(ignored -> Mono.empty())
                     .doFinally(ignored -> lease.complete());
+        }
+
+        private boolean selectTerminal(SavepointState terminal) {
+            return state.compareAndSet(SavepointState.ACTIVE, terminal);
         }
 
         private Mono<Void> rollbackAndRelease(Throwable callbackFailure) {
@@ -328,6 +351,10 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
             }
             return failure;
         }
+    }
+
+    private enum SavepointState {
+        QUEUED, CREATING, ACTIVE, CREATE_FAILED, SUCCESS, ERROR, CANCEL
     }
 
     private Mono<Void> close(Connection connection) {

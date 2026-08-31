@@ -15,6 +15,7 @@ import io.r2dbc.spi.ConnectionFactoryMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 
 import java.lang.reflect.Proxy;
@@ -663,6 +664,56 @@ class R2dbcTransactionManagerTest {
                 .verifyComplete();
 
         assertEquals(List.of("create", "release", "commit", "close"), calls);
+    }
+
+    @Test
+    void cancellingQueuedSiblingDoesNotCreateItsSavepoint() {
+        AtomicInteger creates = new AtomicInteger();
+        List<String> calls = new java.util.concurrent.CopyOnWriteArrayList<>();
+        Sinks.Empty<Void> firstCallback = Sinks.empty();
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit", "beginTransaction" -> Mono.empty();
+                    case "createSavepoint" -> {
+                        creates.incrementAndGet();
+                        calls.add("create");
+                        yield Mono.empty();
+                    }
+                    case "rollbackTransactionToSavepoint" -> {
+                        calls.add("rollback-savepoint");
+                        yield Mono.empty();
+                    }
+                    case "releaseSavepoint" -> {
+                        calls.add("release");
+                        yield Mono.empty();
+                    }
+                    case "rollbackTransaction" -> {
+                        calls.add("rollback");
+                        yield Mono.empty();
+                    }
+                    case "close" -> {
+                        calls.add("close");
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        Mono.deferContextual(context -> Mono.when(
+                                txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                        inner -> firstCallback.asMono()),
+                                txManager.inTransaction(
+                                        TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                        inner -> Mono.never())))))
+                .thenCancel()
+                .verify();
+
+        assertEquals(1, creates.get());
+        assertEquals(List.of("create", "rollback-savepoint", "release", "rollback", "close"), calls);
     }
 
     @Test
