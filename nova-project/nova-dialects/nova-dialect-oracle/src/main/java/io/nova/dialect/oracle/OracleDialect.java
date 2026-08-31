@@ -389,7 +389,7 @@ public final class OracleDialect implements Dialect {
          */
         @Override
         public String dropTableIfExists(io.nova.metadata.EntityMetadata<?> metadata) {
-            return dropIfExistsBlock("drop table " + dialect().quote(metadata.tableName()) + " purge");
+            return dropIfExistsBlock("drop table " + qualifiedTable(metadata) + " purge");
         }
 
         // --- @ManyToMany link-table idempotent DDL --------------------------

@@ -149,6 +149,30 @@ class OracleSchemaGeneratorTest {
         assertFalse(drop.contains("if exists"), drop);
     }
 
+    @Test
+    void dropsUnqualifiedTableInGuardedPlSqlBlock() {
+        EntityMetadata<OracleSampleAccount> metadata = metadataFactory.getEntityMetadata(OracleSampleAccount.class);
+
+        assertEquals(
+                "begin execute immediate 'drop table \"accounts\" purge'; "
+                        + "exception when others then if sqlcode != -942 then raise; end if; end;",
+                dialect.schemaGenerator().dropTableIfExists(metadata));
+    }
+
+    @Test
+    void dropsSchemaQualifiedTableInGuardedPlSqlBlock() {
+        EntityMetadata<SchemaQualifiedAccount> metadata =
+                metadataFactory.getEntityMetadata(SchemaQualifiedAccount.class);
+
+        String drop = dialect.schemaGenerator().dropTableIfExists(metadata);
+
+        assertEquals(
+                "begin execute immediate 'drop table \"audit\".\"schema_accounts\" purge'; "
+                        + "exception when others then if sqlcode != -942 then raise; end if; end;",
+                drop);
+        assertFalse(drop.contains("drop table \"schema_accounts\" purge"), drop);
+    }
+
     // --- ddl-auto=UPDATE column additions (ORA-00905 on ANSI `ADD COLUMN`) ---
 
     @Test
@@ -227,5 +251,12 @@ class OracleSchemaGeneratorTest {
     @DiscriminatorValue("CAR")
     static class JoinedCar extends JoinedVehicle {
         int doors;
+    }
+
+    @Entity
+    @Table(name = "schema_accounts", schema = "audit")
+    static class SchemaQualifiedAccount {
+        @Id
+        Long id;
     }
 }
