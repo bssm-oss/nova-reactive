@@ -49,6 +49,10 @@ public final class ToOneForeignKeyColumn {
         return referencedColumnName;
     }
 
+    public Class<?> columnType() {
+        return storage.javaType();
+    }
+
     /**
      * 이 FK 컬럼의 완전한 물리 저장 특성. row 디코딩과 schema 컬럼 SQL 타입 유도에 함께 쓰인다.
      */

@@ -30,6 +30,14 @@ public record JoinTableDefinition(
         return ownerForeignKeyColumns.size() > 1 || targetForeignKeyColumns.size() > 1;
     }
 
+    public String ownerForeignKeyColumn() {
+        return ownerForeignKeyColumns.get(0).columnName();
+    }
+
+    public String targetForeignKeyColumn() {
+        return targetForeignKeyColumns.get(0).columnName();
+    }
+
     /**
      * owner/target 메타데이터와 {@link ManyToManyInfo}로부터 link table 정의를 조립한다. 단일키·복합키를 모두
      * 처리하며 DDL·runtime SQL이 동일한 정의를 공유하도록 단일 자리에서 컬럼 저장 특성/순서를 결정한다.

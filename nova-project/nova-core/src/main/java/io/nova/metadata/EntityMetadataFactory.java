@@ -4393,7 +4393,7 @@ public final class EntityMetadataFactory {
         Class<?> fkJavaType = fkStorage != null ? fkStorage.javaType() : Long.class;
         AttributeConverter<Object, Object> fkConverter = fkStorage != null ? fkStorage.converter() : null;
         Class<?> fkConverterColumnType = fkStorage != null ? fkStorage.converterColumnType() : null;
-        int fkLength = fkStorage != null ? fkStorage.length() : 255;
+        int fkLength = fkStorage != null ? fkStorage.storage().length() : 255;
         // 단일 @Id 해석 불가(복합키 @EmbeddedId/@IdClass)면 다중컬럼 FK 모델로 확장한다. 복합 FK가 있으면
         // 단일 columnName 대신 그 첫 FK 컬럼명을 대표로 두고(단일컬럼 접근자/uniqueness 표기 결정성 유지),
         // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
@@ -4589,7 +4589,7 @@ public final class EntityMetadataFactory {
         Class<?> fkJavaType = fkStorage != null ? fkStorage.javaType() : Long.class;
         AttributeConverter<Object, Object> fkConverter = fkStorage != null ? fkStorage.converter() : null;
         Class<?> fkConverterColumnType = fkStorage != null ? fkStorage.converterColumnType() : null;
-        int fkLength = fkStorage != null ? fkStorage.length() : 255;
+        int fkLength = fkStorage != null ? fkStorage.storage().length() : 255;
         // 단일 @Id 해석 불가(복합키 @EmbeddedId/@IdClass)면 다중컬럼 FK 모델로 확장한다. 복합 FK가 있으면
         // 단일 columnName 대신 그 첫 FK 컬럼명을 대표로 두고(단일컬럼 접근자/uniqueness 표기 결정성 유지),
         // 실제 N개 컬럼 emit/바인딩/디코드는 toOneForeignKey가 담당한다. 단일키 타겟은 compositeForeignKey=null로
