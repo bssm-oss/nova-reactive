@@ -141,5 +141,9 @@ public record CollectionTableDefinition(
         public MapKeyColumn {
             java.util.Objects.requireNonNull(storage, "storage");
         }
+
+        public Class<?> columnType() {
+            return storage.javaType();
+        }
     }
 }

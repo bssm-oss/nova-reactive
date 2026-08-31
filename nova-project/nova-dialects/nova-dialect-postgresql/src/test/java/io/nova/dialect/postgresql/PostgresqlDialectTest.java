@@ -272,17 +272,20 @@ class PostgresqlDialectTest {
 
         String stringColorsDdl = dialect.schemaGenerator().createCollectionTable(
                 holder.findProperty("stringColors").orElseThrow()
-                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+                        .elementCollectionInfo().toCollectionTableDefinition(
+                                new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0)));
         assertTrue(stringColorsDdl.contains("\"string_colors\" varchar(255)"), stringColorsDdl);
 
         String ordinalColorsDdl = dialect.schemaGenerator().createCollectionTable(
                 holder.findProperty("ordinalColors").orElseThrow()
-                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+                        .elementCollectionInfo().toCollectionTableDefinition(
+                                new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0)));
         assertTrue(ordinalColorsDdl.contains("\"ordinal_colors\" integer"), ordinalColorsDdl);
 
         String refsDdl = dialect.schemaGenerator().createCollectionTable(
                 holder.findProperty("refs").orElseThrow()
-                        .elementCollectionInfo().toCollectionTableDefinition(Long.class));
+                        .elementCollectionInfo().toCollectionTableDefinition(
+                                new io.nova.metadata.ColumnStorage(Long.class, 255, 0, 0)));
         assertTrue(refsDdl.contains("\"refs\" varchar(255)"), refsDdl);
     }
 

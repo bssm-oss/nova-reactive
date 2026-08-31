@@ -181,7 +181,7 @@ class EntityMetadataFactoryMapCollectionTest {
         assertNull(info.mapKey().keyEnumType());
         assertFalse(info.mapKey().enumKey());
         // toCollectionTableDefinition도 단일 key 컬럼으로 반영돼야 한다(embeddable 다중 컬럼이 아님).
-        var definition = info.toCollectionTableDefinition(Long.class);
+        var definition = info.toCollectionTableDefinition(new ColumnStorage(Long.class, 255, 0, 0));
         assertEquals("by_entity_key", definition.mapKey().columnName());
         assertEquals(Long.class, definition.mapKey().columnType());
         assertTrue(definition.mapKeyColumns().isEmpty());

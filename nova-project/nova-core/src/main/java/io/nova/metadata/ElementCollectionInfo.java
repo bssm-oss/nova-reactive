@@ -68,6 +68,10 @@ public record ElementCollectionInfo(
         return mapKey != null;
     }
 
+    public Class<?> valueColumnType() {
+        return valueStorage.javaType();
+    }
+
     /**
      * 기본 타입 원소의 도메인 값을 collection table에 바인딩할 저장 표현으로 인코딩한다 — 스칼라 프로퍼티의
      * {@link PersistentProperty#toColumnValue(Object)}와 동일한 converter 경로를 탄다. enum은 이름/ordinal로,
@@ -117,6 +121,10 @@ public record ElementCollectionInfo(
         return new CollectionTableDefinition(
                 collectionTableName, ownerForeignKeyColumn, ownerForeignKeyStorage,
                 valueColumn, valueStorage, elementColumns, orderColumn, keyColumn, mapKeyColumns);
+    }
+
+    public CollectionTableDefinition toCollectionTableDefinition(Class<?> ownerForeignKeyType) {
+        return toCollectionTableDefinition(new ColumnStorage(ownerForeignKeyType, 255, 0, 0));
     }
 
     /**
@@ -170,6 +178,10 @@ public record ElementCollectionInfo(
         /** Backing field retained for record-constructor discovery; logical access uses {@link #attribute()}. */
         public Field field() {
             return attribute.field();
+        }
+
+        public Class<?> columnType() {
+            return storage.javaType();
         }
 
         public Object encode(Object value) {
@@ -242,6 +254,10 @@ public record ElementCollectionInfo(
             } else {
                 keyStorage = null;
             }
+        }
+
+        public Class<?> keyColumnType() {
+            return keyStorage.javaType();
         }
 
         /**

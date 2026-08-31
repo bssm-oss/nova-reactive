@@ -173,7 +173,7 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         if (valueType == java.time.LocalDateTime.class) {
             return dialect.timestampColumnType();
         }
-        throw new IllegalArgumentException("Unsupported @ElementCollection element type: " + valueType.getName());
+        throw new IllegalArgumentException("Unsupported column type: " + valueType.getName());
     }
 
     @Override

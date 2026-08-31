@@ -65,8 +65,8 @@ class EntityMetadataFactoryBigDecimalDdlTest {
         JoinTableDefinition join = JoinTableDefinition.of(relation, manyToMany.manyToManyInfo(), target);
 
         assertEquals(DECIMAL_STORAGE, ColumnStorage.from(target.idProperty()));
-        assertEquals(DECIMAL_STORAGE, many.toOneForeignKey().columns().get(0).storage());
-        assertEquals(DECIMAL_STORAGE, one.toOneForeignKey().columns().get(0).storage());
+        assertEquals(DECIMAL_STORAGE, ColumnStorage.from(many));
+        assertEquals(DECIMAL_STORAGE, ColumnStorage.from(one));
         assertEquals(DECIMAL_STORAGE, join.targetForeignKeyColumns().get(0).storage());
         assertEquals(DECIMAL_STORAGE,
                 ColumnStorage.from(factory.getEntityMetadata(DecimalSecondaryEntity.class).idProperty()));

@@ -706,7 +706,7 @@ class AbstractSchemaGeneratorTest {
     void unsupportedPojoElementFailsFastInSchema() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> collectionTableDdl(UnsupportedEcEntity.class, "pojos"));
-        assertTrue(error.getMessage().contains("Unsupported @ElementCollection element type"), error.getMessage());
+        assertTrue(error.getMessage().contains("Unsupported column type"), error.getMessage());
     }
 
     @Test
