@@ -1834,6 +1834,10 @@ public final class EntityMetadataFactory {
             List<PersistentProperty> result = new ArrayList<>();
             for (PersistentAttributeAccess component : embeddedComponentAttributes(embeddableType, host.accessType())) {
                 rejectIllegalEmbeddedComponent(location, component);
+                if (embeddedId && component.isAnnotationPresent(Embedded.class)) {
+                    throw new IllegalArgumentException(location + " @EmbeddedId component " + component.name()
+                            + " must be a simple (non-embedded) field");
+                }
                 if (component.isAnnotationPresent(Embedded.class)) {
                     String nestedPrefix = component.name() + ".";
                     Map<String, Convert> nestedConversions = new LinkedHashMap<>();
@@ -1848,13 +1852,17 @@ public final class EntityMetadataFactory {
                 }
                 Convert conversionOverride = conversionOverrides.remove(component.name());
                 Column override = columnOverrides.get(component.name());
-                PersistentProperty property = createDescriptorProperty(component, conversionOverride);
+                PersistentProperty property = createDescriptorProperty(component, conversionOverride, embeddedId);
                 String column = override != null && !override.name().isBlank()
                         ? override.name() : columnPrefix + property.columnName();
                 String propertyName = hostPath.stream().map(PersistentAttributeAccess::name)
                         .collect(java.util.stream.Collectors.joining(".")) + "." + component.name();
-                result.add(property.withPropertyName(propertyName).withColumnName(column)
-                        .withEmbeddedHostAccessPath(hostPath));
+                PersistentProperty mapped = property.withPropertyName(propertyName).withColumnName(column)
+                        .withEmbeddedHostAccessPath(hostPath);
+                if (override != null && component.field() != null) {
+                    mapped.withColumnDdlDefinition(columnDdlDefinition(override, component.field()));
+                }
+                result.add(mapped);
             }
             if (!conversionOverrides.isEmpty()) {
                 throw new IllegalArgumentException(location + " @Convert attributeName '"
@@ -1871,11 +1879,20 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(location + " embedded component " + component.name()
                     + " must not declare @EmbeddedId");
         }
-        if (component.isAnnotationPresent(Id.class) || component.isAnnotationPresent(Version.class)
-                || component.isAnnotationPresent(SoftDelete.class) || component.isAnnotationPresent(CreatedAt.class)
-                || component.isAnnotationPresent(UpdatedAt.class)) {
-            throw new IllegalArgumentException(location + " embedded component " + component.name()
-                    + " must not declare an identifier, version, or audit annotation");
+        if (component.isAnnotationPresent(Id.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @Id");
+        }
+        if (component.isAnnotationPresent(Version.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @Version");
+        }
+        if (component.isAnnotationPresent(SoftDelete.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @SoftDelete");
+        }
+        if (component.isAnnotationPresent(CreatedAt.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @CreatedAt");
+        }
+        if (component.isAnnotationPresent(UpdatedAt.class)) {
+            throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @UpdatedAt");
         }
     }
 
@@ -2148,11 +2165,16 @@ public final class EntityMetadataFactory {
      * caused legal JPA annotations to be silently ignored.
      */
     private PersistentProperty createDescriptorProperty(PersistentAttributeAccess attribute) {
-        return createDescriptorProperty(attribute, null);
+        return createDescriptorProperty(attribute, null, false);
     }
 
     private PersistentProperty createDescriptorProperty(
             PersistentAttributeAccess attribute, Convert conversionOverride) {
+        return createDescriptorProperty(attribute, conversionOverride, false);
+    }
+
+    private PersistentProperty createDescriptorProperty(
+            PersistentAttributeAccess attribute, Convert conversionOverride, boolean suppressAutoApply) {
         ManyToOne manyToOne = attribute.annotation(ManyToOne.class);
         if (manyToOne != null) {
             JoinColumn join = attribute.annotation(JoinColumn.class);
@@ -2322,11 +2344,11 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(location + " maps " + javaType.getName()
                     + " but is missing @Temporal(TemporalType.DATE|TIME|TIMESTAMP); java.util.Date/Calendar mapping is ambiguous without it");
         }
-        boolean conversionDisabled = attribute.getter() != null
+        boolean conversionDisabled = convert != null ? convert.disableConversion() : attribute.getter() != null
                 ? conversionDisabled(attribute.getter(), null, null)
                 : conversionDisabled(attribute.field(), null, null);
         if (converter == null && !id && !version && enumerated == null && temporal == null && !json
-                && !conversionDisabled) {
+                && !conversionDisabled && !suppressAutoApply) {
             JpaConverterDescriptor automatic = uniqueJpaConverter(javaType, true, location);
             if (automatic != null) {
                 converter = automatic.instantiate();

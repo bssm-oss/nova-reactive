@@ -136,7 +136,7 @@ public final class PersistentProperty {
      */
     private final ToOneForeignKey toOneForeignKey;
     /** DDL-only members of the effective {@code @Column} declaration. */
-    private final ColumnDdlDefinition columnDdlDefinition;
+    private ColumnDdlDefinition columnDdlDefinition;
 
     @SuppressWarnings("unchecked")
     public PersistentProperty(
@@ -709,6 +709,11 @@ public final class PersistentProperty {
         this.embeddedHostPath = path.stream().map(PersistentAttributeAccess::field)
                 .filter(Objects::nonNull).toList();
         this.embedded = !path.isEmpty();
+        return this;
+    }
+
+    PersistentProperty withColumnDdlDefinition(ColumnDdlDefinition definition) {
+        this.columnDdlDefinition = definition;
         return this;
     }
 
