@@ -69,6 +69,7 @@ class DerivedQueryParserTest {
         Long id;
         @Column(name = "direct_address_city")
         String addressCity;
+        @Column(name = "direct_address_underscore_city")
         String address_city;
         @Embedded
         Address address;
