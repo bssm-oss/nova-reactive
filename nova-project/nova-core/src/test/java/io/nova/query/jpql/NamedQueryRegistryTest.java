@@ -221,6 +221,18 @@ class NamedQueryRegistryTest {
     }
 
     @Test
+    void treatsUnclosedQuotedNativeIdentifierAsOpaqueThroughEndOfSql() {
+        NamedQueryRegistry registry = registry(Person.class);
+        registry.createNativeQuery("Person.rawWithUnclosedQuotedIdentifier", row -> row)
+                .executeUpdate()
+                .block();
+
+        NativeQuery captured = operations.lastExecute.get();
+        assertEquals("UPDATE \"metric:tail:ignored?1 SET value = :stillIgnored", captured.sql());
+        assertEquals(List.of(), captured.bindings());
+    }
+
+    @Test
     void defaultRenderCallUsesOneBasedMarkers() {
         assertEquals("CALL procedure($1, $2)", dialect.renderCall("procedure", 2));
     }
@@ -263,6 +275,8 @@ class NamedQueryRegistryTest {
     @NamedNativeQuery(name = "Person.rawWithQuotedIdentifiers",
             query = "UPDATE \"metric:daily\" SET \"slot?1\" = :value, \"quote\"\"d:ignored?9\" = \"slot?1\""
                     + " WHERE id = ?2 AND owner = :owner")
+    @NamedNativeQuery(name = "Person.rawWithUnclosedQuotedIdentifier",
+            query = "UPDATE \"metric:tail:ignored?1 SET value = :stillIgnored")
     static class Person {
         @Id
         Long id;
