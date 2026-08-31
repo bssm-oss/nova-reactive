@@ -416,8 +416,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             if (participating) {
                 return body;
             }
-            return body.flatMap(result -> localBuffer.flush(provider, queryCache).thenReturn(result))
-                    .switchIfEmpty(Mono.defer(() -> localBuffer.flush(provider, queryCache).then(Mono.empty())));
+            return body.flatMap(result -> flushLegacyBuffer(localBuffer).thenReturn(result))
+                    .switchIfEmpty(Mono.defer(() -> flushLegacyBuffer(localBuffer).then(Mono.empty())));
         });
     }
 
@@ -450,7 +450,15 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             return fallback;
         }
         PhysicalTransactionScope scope = context.get(PhysicalTransactionScope.CONTEXT_KEY);
-        return scope.getOrCreateResource(transactionEvictionResourceKey, () -> fallback);
+        return scope.getOrCreateResource(transactionEvictionResourceKey, () -> {
+            fallback.markPhysicalReplayRegistered();
+            scope.afterCommit(() -> fallback.flush(provider, queryCache));
+            return fallback;
+        });
+    }
+
+    private Mono<Void> flushLegacyBuffer(TransactionEvictionBuffer buffer) {
+        return buffer.hasPhysicalReplayRegistered() ? Mono.empty() : buffer.flush(provider, queryCache);
     }
 
     private static boolean hasActivePhysicalScope(ContextView context) {

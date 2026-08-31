@@ -31,6 +31,8 @@ final class TransactionEvictionBuffer {
     private final Set<Class<?>> queryTypes = new LinkedHashSet<>();
     private boolean providerClearAll;
     private boolean queryClearAll;
+    private boolean flushed;
+    private boolean physicalReplayRegistered;
 
     synchronized void recordKey(CacheKey key) {
         keys.add(key);
@@ -58,6 +60,14 @@ final class TransactionEvictionBuffer {
         providerClearAll = true;
     }
 
+    synchronized void markPhysicalReplayRegistered() {
+        physicalReplayRegistered = true;
+    }
+
+    synchronized boolean hasPhysicalReplayRegistered() {
+        return physicalReplayRegistered;
+    }
+
     /**
      * 기록된 엔티티 캐시 region clear/key evict와 쿼리 캐시 무효화를 순서대로 재적용한다. commit 성공 후 호출한다.
      *
@@ -71,6 +81,10 @@ final class TransactionEvictionBuffer {
         boolean providerClearAllSnapshot;
         boolean clearAllSnapshot;
         synchronized (this) {
+            if (flushed) {
+                return Mono.empty();
+            }
+            flushed = true;
             regionSnapshot = new ArrayList<>(regions);
             keySnapshot = new ArrayList<>(keys);
             queryTypeSnapshot = new ArrayList<>(queryTypes);

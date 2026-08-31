@@ -223,6 +223,61 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
+    void afterCommitRunsInOrderOnlyAfterPhysicalCommit() {
+        List<String> calls = new java.util.ArrayList<>();
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit", "beginTransaction", "rollbackTransaction" -> {
+                        calls.add(method.getName());
+                        yield Mono.empty();
+                    }
+                    case "commitTransaction" -> {
+                        calls.add("commit");
+                        yield Mono.empty();
+                    }
+                    case "close" -> {
+                        calls.add("close");
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, context ->
+                        Mono.deferContextual(reactorContext -> {
+                            PhysicalTransactionScope scope = reactorContext.get(PhysicalTransactionScope.CONTEXT_KEY);
+                            scope.afterCommit(() -> Mono.fromRunnable(() -> calls.add("after-1")));
+                            scope.afterCommit(() -> Mono.fromRunnable(() -> calls.add("after-2")));
+                            return Mono.just("work");
+                        })))
+                .expectNext("work")
+                .verifyComplete();
+
+        assertEquals(List.of("beginTransaction", "commit", "after-1", "after-2", "close"), calls);
+    }
+
+    @Test
+    void rollbackSkipsAfterCommit() {
+        AtomicBoolean afterCommitRan = new AtomicBoolean();
+        Connection connection = transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.empty(), Mono.empty(), new AtomicInteger(), new AtomicInteger());
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, context ->
+                        Mono.deferContextual(reactorContext -> {
+                            reactorContext.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY)
+                                    .afterCommit(() -> Mono.fromRunnable(() -> afterCommitRan.set(true)));
+                            return Mono.error(new IllegalStateException("rollback"));
+                        })))
+                .expectErrorMessage("rollback")
+                .verify();
+
+        assertFalse(afterCommitRan.get());
+    }
+
+    @Test
     void caughtParticipatingFailureRollsBackAndSkipsBeforeCommit() {
         List<String> calls = new java.util.ArrayList<>();
         AtomicBoolean beforeCommitRan = new AtomicBoolean();
