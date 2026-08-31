@@ -532,7 +532,7 @@ public final class PersistentProperty {
 
     /** Java member name used for metadata-only record component matching. */
     public String leafName() {
-        return access.name();
+        return field != null ? field.getName() : access.name();
     }
 
     /** Returns a mapping annotation from the selected state carrier. */
@@ -1238,6 +1238,17 @@ public final class PersistentProperty {
             else field.set(current, value);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("Cannot write relation or collection " + field.getName(), exception);
+        }
+    }
+
+    /** Writes this leaf on an already-instantiated embedded holder, without traversing its root host path. */
+    public void writeEmbeddedLeaf(Object holder, Object value) {
+        try {
+            if (propertyAccess) invokeSetter(holder, value);
+            else if (fieldHandle != null) fieldHandle.set(holder, value);
+            else field.set(holder, value);
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException("Cannot write embedded leaf " + propertyName, exception);
         }
     }
 

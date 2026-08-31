@@ -136,7 +136,7 @@ final class EmbeddableInstantiationStrategy {
     }
 
     private static void writeMutableLeaf(Object holder, PersistentProperty property, Object value) {
-        property.writeReference(holder, value);
+        property.writeEmbeddedLeaf(holder, value);
     }
 
     record DecodedLeaf(PersistentProperty property, Object value) {
