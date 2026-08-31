@@ -772,9 +772,9 @@ public final class EntityMetadataFactory {
                 }
                 continue;
             }
-            if (attribute.isAnnotationPresent(Embedded.class)) {
+            if (isEmbeddedAttribute(attribute)) {
                 List<PersistentProperty> expanded = createEmbeddedProperties(
-                        entityType, attribute, List.of(), "", new LinkedHashSet<>(), Map.of(), false);
+                        entityType, attribute, List.of(), "", new LinkedHashSet<>(), Map.of(), Map.of(), false);
                 properties.addAll(expanded);
                 continue;
             }
@@ -1748,7 +1748,7 @@ public final class EntityMetadataFactory {
     private List<PersistentProperty> createEmbeddedIdProperties(
             Class<?> entityType, PersistentAttributeAccess attribute) {
         List<PersistentProperty> properties = createEmbeddedProperties(entityType, attribute, List.of(), "",
-                new LinkedHashSet<>(), Map.of(), true);
+                new LinkedHashSet<>(), Map.of(), Map.of(), true);
         return properties.stream().map(PersistentProperty::withId).toList();
     }
 
@@ -1810,6 +1810,7 @@ public final class EntityMetadataFactory {
             List<PersistentAttributeAccess> parentHostPath,
             String parentColumnPrefix,
             LinkedHashSet<Class<?>> embeddableStack,
+            Map<String, Column> inheritedColumnOverrides,
             Map<String, Convert> inheritedConversionOverrides,
             boolean embeddedId
     ) {
@@ -1836,10 +1837,16 @@ public final class EntityMetadataFactory {
             hostPath = List.copyOf(hostPath);
             String columnPrefix = embeddedId ? parentColumnPrefix
                     : parentColumnPrefix + namingStrategy.columnName(host.name()) + "_";
-            Map<String, Column> columnOverrides = new java.util.HashMap<>();
+            Map<String, Column> columnOverrides = new LinkedHashMap<>();
             for (AttributeOverride override : host.annotationsByType(AttributeOverride.class)) {
-                columnOverrides.put(override.name(), override.column());
+                if (columnOverrides.putIfAbsent(override.name(), override.column()) != null) {
+                    throw new IllegalArgumentException(location + " declares duplicate @AttributeOverride path '"
+                            + override.name() + "'");
+                }
             }
+            // The reusable embeddable's own overrides establish its default mapping.  An outer
+            // embedding site can override those defaults with a dotted path and therefore wins.
+            columnOverrides.putAll(inheritedColumnOverrides);
             Map<String, Convert> conversionOverrides = new LinkedHashMap<>(inheritedConversionOverrides);
             for (Convert convert : host.annotationsByType(Convert.class)) {
                 if (convert.attributeName().isBlank()) {
@@ -1853,12 +1860,18 @@ public final class EntityMetadataFactory {
             List<PersistentProperty> result = new ArrayList<>();
             for (PersistentAttributeAccess component : embeddedComponentAttributes(embeddableType, host.accessType())) {
                 rejectIllegalEmbeddedComponent(location, component);
-                if (embeddedId && component.isAnnotationPresent(Embedded.class)) {
+                if (embeddedId && isEmbeddedAttribute(component)) {
                     throw new IllegalArgumentException(location + " @EmbeddedId component " + component.name()
                             + " must be a simple (non-embedded) field");
                 }
-                if (component.isAnnotationPresent(Embedded.class)) {
+                if (isEmbeddedAttribute(component)) {
                     String nestedPrefix = component.name() + ".";
+                    Map<String, Column> nestedColumnOverrides = new LinkedHashMap<>();
+                    columnOverrides.entrySet().removeIf(entry -> {
+                        if (!entry.getKey().startsWith(nestedPrefix)) return false;
+                        nestedColumnOverrides.put(entry.getKey().substring(nestedPrefix.length()), entry.getValue());
+                        return true;
+                    });
                     Map<String, Convert> nestedConversions = new LinkedHashMap<>();
                     conversionOverrides.entrySet().removeIf(entry -> {
                         if (!entry.getKey().startsWith(nestedPrefix)) return false;
@@ -1866,11 +1879,11 @@ public final class EntityMetadataFactory {
                         return true;
                     });
                     result.addAll(createEmbeddedProperties(entityType, component, hostPath, columnPrefix,
-                            embeddableStack, nestedConversions, false));
+                            embeddableStack, nestedColumnOverrides, nestedConversions, false));
                     continue;
                 }
                 Convert conversionOverride = conversionOverrides.remove(component.name());
-                Column override = columnOverrides.get(component.name());
+                Column override = columnOverrides.remove(component.name());
                 PersistentProperty property = createDescriptorProperty(component, conversionOverride, embeddedId, override);
                 String column = override != null && !override.name().isBlank()
                         ? override.name() : columnPrefix + property.columnName();
@@ -1883,6 +1896,10 @@ public final class EntityMetadataFactory {
             if (!conversionOverrides.isEmpty()) {
                 throw new IllegalArgumentException(location + " @Convert attributeName '"
                         + conversionOverrides.keySet().iterator().next() + "' does not match an embedded leaf property");
+            }
+            if (!columnOverrides.isEmpty()) {
+                throw new IllegalArgumentException(location + " @AttributeOverride name '"
+                        + columnOverrides.keySet().iterator().next() + "' does not match an embedded leaf property");
             }
             return result;
         } finally {
@@ -1910,6 +1927,24 @@ public final class EntityMetadataFactory {
         if (component.isAnnotationPresent(UpdatedAt.class)) {
             throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @UpdatedAt");
         }
+    }
+
+    private static boolean isEmbeddedAttribute(PersistentAttributeAccess attribute) {
+        if (attribute.isAnnotationPresent(Embedded.class) || attribute.isAnnotationPresent(EmbeddedId.class)) {
+            return true;
+        }
+        return attribute.javaType().isAnnotationPresent(Embeddable.class)
+                && !hasExplicitBasicMapping(attribute);
+    }
+
+    private static boolean hasExplicitBasicMapping(PersistentAttributeAccess attribute) {
+        return attribute.isAnnotationPresent(Basic.class)
+                || attribute.isAnnotationPresent(Column.class)
+                || attribute.isAnnotationPresent(Convert.class)
+                || attribute.isAnnotationPresent(Json.class)
+                || attribute.isAnnotationPresent(Enumerated.class)
+                || attribute.isAnnotationPresent(Temporal.class)
+                || attribute.isAnnotationPresent(Lob.class);
     }
 
     private static List<PersistentAttributeAccess> embeddedComponentAttributes(
@@ -2027,6 +2062,10 @@ public final class EntityMetadataFactory {
                     label + " method " + entityType.getName() + "." + method.getName()
                             + " must be non-static, no-arg, void-returning");
         }
+        if (target.stream().anyMatch(existing -> existing.getDeclaringClass() == method.getDeclaringClass())) {
+            throw new IllegalArgumentException(label + " declares multiple callback methods on "
+                    + method.getDeclaringClass().getName());
+        }
         method.setAccessible(true);
         target.add(method);
     }
@@ -2062,20 +2101,34 @@ public final class EntityMetadataFactory {
         List<ListenerCallback> postRemove = new ArrayList<>();
         for (Class<?> listenerClass : listenerClasses) {
             Object listener = instantiateListener(listenerClass);
+            List<ListenerCallback> listenerPrePersist = new ArrayList<>();
+            List<ListenerCallback> listenerPostPersist = new ArrayList<>();
+            List<ListenerCallback> listenerPreUpdate = new ArrayList<>();
+            List<ListenerCallback> listenerPostUpdate = new ArrayList<>();
+            List<ListenerCallback> listenerPostLoad = new ArrayList<>();
+            List<ListenerCallback> listenerPreRemove = new ArrayList<>();
+            List<ListenerCallback> listenerPostRemove = new ArrayList<>();
             // JPA 규약: 리스너 클래스의 lifecycle callback은 root-to-child 순서다. Java language rules에
             // 따른 실제 override만 superclass method를 대체하며, private same-signature method는 각각 유지한다.
             for (Method method : listenerCallbackMethods(listenerClass)) {
                 if (method.isSynthetic()) {
                     continue;
                 }
-                collectListenerCallback(entityType, listenerClass, listener, method, PrePersist.class, prePersist);
-                collectListenerCallback(entityType, listenerClass, listener, method, PostPersist.class, postPersist);
-                collectListenerCallback(entityType, listenerClass, listener, method, PreUpdate.class, preUpdate);
-                collectListenerCallback(entityType, listenerClass, listener, method, PostUpdate.class, postUpdate);
-                collectListenerCallback(entityType, listenerClass, listener, method, PostLoad.class, postLoad);
-                collectListenerCallback(entityType, listenerClass, listener, method, PreRemove.class, preRemove);
-                collectListenerCallback(entityType, listenerClass, listener, method, PostRemove.class, postRemove);
+                collectListenerCallback(entityType, listenerClass, listener, method, PrePersist.class, listenerPrePersist);
+                collectListenerCallback(entityType, listenerClass, listener, method, PostPersist.class, listenerPostPersist);
+                collectListenerCallback(entityType, listenerClass, listener, method, PreUpdate.class, listenerPreUpdate);
+                collectListenerCallback(entityType, listenerClass, listener, method, PostUpdate.class, listenerPostUpdate);
+                collectListenerCallback(entityType, listenerClass, listener, method, PostLoad.class, listenerPostLoad);
+                collectListenerCallback(entityType, listenerClass, listener, method, PreRemove.class, listenerPreRemove);
+                collectListenerCallback(entityType, listenerClass, listener, method, PostRemove.class, listenerPostRemove);
             }
+            prePersist.addAll(listenerPrePersist);
+            postPersist.addAll(listenerPostPersist);
+            preUpdate.addAll(listenerPreUpdate);
+            postUpdate.addAll(listenerPostUpdate);
+            postLoad.addAll(listenerPostLoad);
+            preRemove.addAll(listenerPreRemove);
+            postRemove.addAll(listenerPostRemove);
         }
         return new EntityListenerCallbacks(
                 prePersist, postPersist, preUpdate, postUpdate, postLoad, preRemove, postRemove);
@@ -2170,6 +2223,10 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     label + " listener method " + where
                             + " must be non-static, take a single entity argument, and return void");
+        }
+        if (target.stream().anyMatch(existing -> existing.method().getDeclaringClass() == method.getDeclaringClass())) {
+            throw new IllegalArgumentException(label + " listener " + listenerClass.getName()
+                    + " declares multiple callback methods on " + method.getDeclaringClass().getName());
         }
         method.setAccessible(true);
         target.add(new ListenerCallback(listener, method));

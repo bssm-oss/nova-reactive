@@ -173,6 +173,117 @@ class MetamodelProcessorTest {
     }
 
     @Test
+    @DisplayName("@Embeddable FIELD member는 @Embedded 없이도 중첩 경로로 평탄화된다")
+    void flattensImplicitEmbeddedFields() {
+        Source entity = new Source("fixtures.ImplicitFieldCustomer", """
+                package fixtures;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity public class ImplicitFieldCustomer {
+                    @Id private Long id;
+                    private Address address;
+                }""");
+        Source address = new Source("fixtures.Address", """
+                package fixtures;
+                import jakarta.persistence.Embeddable;
+                @Embeddable public class Address {
+                    private String street;
+                    private Geo geo;
+                }""");
+        Source geo = new Source("fixtures.Geo", """
+                package fixtures;
+                import jakarta.persistence.Embeddable;
+                @Embeddable public class Geo { private String country; }""");
+
+        Compilation compilation = ProcessorRunner.compile(entity, address, geo);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.ImplicitFieldCustomer_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("address_street = \"address.street\";"));
+        assertTrue(generated.contains("address_geo_country = \"address.geo.country\";"));
+    }
+
+    @Test
+    @DisplayName("@Embeddable PROPERTY member는 @Embedded 없이도 중첩 경로로 평탄화된다")
+    void flattensImplicitEmbeddedProperties() {
+        Source entity = new Source("fixtures.ImplicitPropertyCustomer", """
+                package fixtures;
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity @Access(AccessType.PROPERTY) public class ImplicitPropertyCustomer {
+                    private Long id; private Address address;
+                    @Id public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+                    public Address getAddress() { return address; }
+                    public void setAddress(Address address) { this.address = address; }
+                }""");
+        Source address = new Source("fixtures.Address", """
+                package fixtures;
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Embeddable;
+                @Embeddable @Access(AccessType.PROPERTY) public class Address {
+                    private Geo geo;
+                    public Geo getGeo() { return geo; }
+                    public void setGeo(Geo geo) { this.geo = geo; }
+                }""");
+        Source geo = new Source("fixtures.Geo", """
+                package fixtures;
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Embeddable;
+                @Embeddable @Access(AccessType.PROPERTY) public class Geo {
+                    private String country;
+                    public String getCountry() { return country; }
+                    public void setCountry(String country) { this.country = country; }
+                }""");
+
+        Compilation compilation = ProcessorRunner.compile(entity, address, geo);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.ImplicitPropertyCustomer_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("address_geo_country = \"address.geo.country\";"));
+    }
+
+    @Test
+    @DisplayName("명시적 basic mapping이 붙은 @Embeddable member는 implicit embedded로 평탄화하지 않는다")
+    void doesNotFlattenExplicitBasicEmbeddableMappings() {
+        Source entity = new Source("fixtures.ExplicitBasicCustomer", """
+                package fixtures;
+                import io.nova.annotation.Json;
+                import jakarta.persistence.Basic;
+                import jakarta.persistence.Convert;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity public class ExplicitBasicCustomer {
+                    @Id private Long id;
+                    @Convert(disableConversion = true) private Address converted;
+                    @Json private Address json;
+                    @Basic private Address basic;
+                }""");
+        Source address = new Source("fixtures.Address", """
+                package fixtures;
+                import jakarta.persistence.Embeddable;
+                @Embeddable public class Address { private String street; }""");
+
+        Compilation compilation = ProcessorRunner.compile(entity, address);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.ExplicitBasicCustomer_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("converted = \"converted\";"));
+        assertTrue(generated.contains("json = \"json\";"));
+        assertTrue(generated.contains("basic = \"basic\";"));
+        assertFalse(generated.contains("converted_street"));
+        assertFalse(generated.contains("json_street"));
+        assertFalse(generated.contains("basic_street"));
+    }
+
+    @Test
     @DisplayName("@OneToMany inverse property는 컬럼이 없으므로 상수 발행 대상에서 제외된다")
     void skipsOneToManyInverseFields() {
         Source author = new Source(

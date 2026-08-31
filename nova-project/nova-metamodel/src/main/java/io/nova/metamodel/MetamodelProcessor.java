@@ -40,6 +40,13 @@ public final class MetamodelProcessor extends AbstractProcessor {
     private static final String ACCESS_PROPERTY = "PROPERTY";
     private static final String EMBEDDED = "jakarta.persistence.Embedded";
     private static final String EMBEDDED_ID = "jakarta.persistence.EmbeddedId";
+    private static final String BASIC = "jakarta.persistence.Basic";
+    private static final String COLUMN = "jakarta.persistence.Column";
+    private static final String CONVERT = "jakarta.persistence.Convert";
+    private static final String ENUMERATED = "jakarta.persistence.Enumerated";
+    private static final String TEMPORAL = "jakarta.persistence.Temporal";
+    private static final String LOB = "jakarta.persistence.Lob";
+    private static final String JSON = "io.nova.annotation.Json";
     private static final String ID = "jakarta.persistence.Id";
     private static final String MAPPED_SUPERCLASS = "jakarta.persistence.MappedSuperclass";
     private static final String MANY_TO_MANY = "jakarta.persistence.ManyToMany";
@@ -157,11 +164,14 @@ public final class MetamodelProcessor extends AbstractProcessor {
         if (hasAnnotation(selected, TRANSIENT) || hasAnnotation(selected, ONE_TO_MANY)
                 || hasAnnotation(selected, MANY_TO_MANY) || hasAnnotation(selected, ELEMENT_COLLECTION)
                 || isInverseOneToOne(selected)) return;
-        if (!hasAnnotation(selected, EMBEDDED) && !hasAnnotation(selected, EMBEDDED_ID)) {
+        TypeElement embeddedType = resolveTypeElement(memberType(selected));
+        boolean embedded = hasAnnotation(selected, EMBEDDED) || hasAnnotation(selected, EMBEDDED_ID)
+                || (embeddedType != null && hasAnnotation(embeddedType, EMBEDDABLE)
+                && !hasExplicitBasicMapping(selected));
+        if (!embedded) {
             out.add(toProperty(hostPath, name));
             return;
         }
-        TypeElement embeddedType = resolveTypeElement(memberType(selected));
         if (embeddedType == null) {
             throw new IllegalStateException("@Embedded member type cannot be resolved as a class element: "
                     + owner.getQualifiedName() + "." + name);
@@ -169,6 +179,13 @@ public final class MetamodelProcessor extends AbstractProcessor {
         List<String> nextPath = new ArrayList<>(hostPath);
         nextPath.add(name);
         collectProperties(embeddedType, access, nextPath, visited, out);
+    }
+
+    private boolean hasExplicitBasicMapping(Element element) {
+        return hasAnnotation(element, BASIC) || hasAnnotation(element, COLUMN)
+                || hasAnnotation(element, CONVERT) || hasAnnotation(element, JSON)
+                || hasAnnotation(element, ENUMERATED) || hasAnnotation(element, TEMPORAL)
+                || hasAnnotation(element, LOB);
     }
 
     private boolean isInverseOneToOne(Element element) {
