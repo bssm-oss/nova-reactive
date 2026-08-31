@@ -170,6 +170,7 @@ class PersistenceSessionIntegrationTest {
                                 .then(support.operations().inTransaction(secondOps ->
                                         secondOps.findById(Person.class, id).doOnNext(person ->
                                                 assertSame(first.get(), person))))))
+                .expectNextCount(1)
                 .verifyComplete();
 
         assertEquals(1, listener.updates().size(),

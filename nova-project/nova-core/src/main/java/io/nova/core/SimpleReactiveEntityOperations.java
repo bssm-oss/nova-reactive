@@ -94,6 +94,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private final AuditApplier auditApplier;
     private final EntityListenerInvoker listenerInvoker;
     private final AnnotationFetchGroupBuilder annotationFetchGroupBuilder;
+    private final Object sessionResourceKey = new Object();
     /**
      * 단순 엔티티(단일 @Id, 상속·soft-delete 없음)의 findById SELECT SQL 캐시. SQL 텍스트는 엔티티마다
      * 상수이므로 1회만 렌더해 재사용한다. 키는 factory가 캐시하는 immutable {@link EntityMetadata} 인스턴스다.
@@ -3353,7 +3354,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private static final class SessionBinding {
         private final SimpleReactiveEntityOperations operations;
-        private final Object resourceKey = new Object();
         private PersistenceSession legacySession;
 
         private SessionBinding(SimpleReactiveEntityOperations operations) {
@@ -3368,9 +3368,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             if (!scope.isActive()) {
                 return Optional.empty();
             }
-            return Optional.of(scope.getOrCreateResource(resourceKey, () -> {
+            return Optional.of(scope.getOrCreateResource(operations.sessionResourceKey, () -> {
                 PersistenceSession session = new PersistenceSession();
-                scope.beforeCommit(() -> operations.flush(session));
+                scope.beforeCommit(() -> operations.flush(session)
+                        .contextWrite(context -> context.put(SESSION_KEY, this)));
                 return session;
             }));
         }
@@ -3383,7 +3384,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
 
         private Mono<Void> flushLegacy() {
-            return legacySession == null ? Mono.empty() : operations.flush(legacySession);
+            return legacySession == null ? Mono.empty() : operations.flush(legacySession)
+                    .contextWrite(context -> context.put(SESSION_KEY, this));
         }
     }
 

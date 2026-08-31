@@ -2707,7 +2707,7 @@ class SimpleReactiveEntityOperationsTest {
 
         StepVerifier.create(operations.inTransaction(current ->
                         current.save(parent)
-                                .then(Mono.fromRunnable(() -> parent.children.add(child))))
+                                .then(Mono.fromRunnable(() -> parent.children.add(child)))))
                 .verifyComplete();
 
         assertEquals(2L, child.id);
