@@ -128,6 +128,16 @@ final class PersistenceSession {
         }
 
         /**
+         * 직접 부분 UPDATE가 성공한 뒤 실제로 기록된 컬럼만 clean baseline으로 맞춘다. 나머지 보류 변경은
+         * 유지해야 하므로 {@link #refreshSnapshot()}처럼 엔티티 전체를 다시 캡처해서는 안 된다.
+         */
+        void refreshSnapshotFields(Iterable<PersistentProperty> properties) {
+            for (PersistentProperty property : properties) {
+                snapshot.put(property.columnName(), property.toColumnValue(property.read(entity)));
+            }
+        }
+
+        /**
          * 컬렉션 property의 영속 baseline 정규 표현을 반환한다. 아직 캡처된 적이 없으면 {@code null}이다
          * ({@link #hasCollectionSnapshot}로 구분). flush가 이 값과 현재 컬렉션 표현을 비교해 변경 여부/diff를 정한다.
          */
@@ -212,6 +222,18 @@ final class PersistenceSession {
     ManagedEntry managedEntry(EntityMetadata<?> metadata, Object entity) {
         EntityKey key = keyFor(metadata, entity);
         return key == null ? null : identityMap.get(key);
+    }
+
+    /**
+     * 직접 UPDATE의 writeback은 identity map의 같은 키가 아니라 정확히 같은 관리 인스턴스에만 적용한다.
+     * 따라서 detached same-id 인스턴스의 SQL 성공이 canonical 인스턴스의 dirty baseline을 바꾸지 않는다.
+     */
+    void refreshManagedExactInstanceSnapshot(
+            EntityMetadata<?> metadata, Object entity, Iterable<PersistentProperty> properties) {
+        ManagedEntry entry = managedEntry(metadata, entity);
+        if (entry != null && !entry.isRemoved() && entry.entity() == entity) {
+            entry.refreshSnapshotFields(properties);
+        }
     }
 
     boolean isRemoved(EntityMetadata<?> metadata, Object entity) {

@@ -3,6 +3,7 @@ package io.nova.r2dbc.integration;
 import io.nova.core.ReactiveEntityManager;
 import io.nova.core.SimpleReactiveEntityManager;
 import io.nova.core.SqlExecutionListener;
+import io.nova.annotation.UpdatedAt;
 import io.nova.exception.OptimisticLockingFailureException;
 import io.nova.r2dbc.integration.IntegrationFixtures.VersionedAccount;
 import io.nova.sql.SqlStatement;
@@ -13,15 +14,22 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.LockModeType;
+import jakarta.persistence.PostUpdate;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -106,6 +114,46 @@ class EntityManagerLockAndFlushModeIntegrationTest {
                 .verify();
     }
 
+    @Test
+    void optimisticForceIncrementFindWritesOnceAndKeepsManagedSnapshotClean() {
+        assertSingleForceIncrement(LockModeType.OPTIMISTIC_FORCE_INCREMENT, false);
+    }
+
+    @Test
+    void pessimisticForceIncrementFindWritesOnceAndKeepsManagedSnapshotClean() {
+        assertSingleForceIncrement(LockModeType.PESSIMISTIC_FORCE_INCREMENT, false);
+    }
+
+    @Test
+    void optimisticForceIncrementLockWritesOnceAndKeepsManagedSnapshotClean() {
+        assertSingleForceIncrement(LockModeType.OPTIMISTIC_FORCE_INCREMENT, true);
+    }
+
+    @Test
+    void pessimisticForceIncrementLockWritesOnceAndKeepsManagedSnapshotClean() {
+        assertSingleForceIncrement(LockModeType.PESSIMISTIC_FORCE_INCREMENT, true);
+    }
+
+    @Test
+    void forceIncrementOnDetachedSameIdDoesNotCleanCanonicalSnapshot() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(ForceIncrementAccount.class));
+
+        ForceIncrementAccount account = new ForceIncrementAccount("canonical@nova.io");
+        StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
+
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(ForceIncrementAccount.class, account.getId())
+                                .flatMap(canonical -> {
+                                    canonical.setEmail("changed@nova.io");
+                                    ForceIncrementAccount detached = new ForceIncrementAccount(
+                                            canonical.getId(), "detached@nova.io", canonical.getVersion());
+                                    return e.lock(detached, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
+                                })))
+                .expectError(OptimisticLockingFailureException.class)
+                .verify();
+    }
+
     // -------------------------------------------------------------------------------------------
     // FlushMode.COMMIT — 쿼리 전 auto-flush 억제
     // -------------------------------------------------------------------------------------------
@@ -168,6 +216,42 @@ class EntityManagerLockAndFlushModeIntegrationTest {
         return probe.getId();
     }
 
+    private void assertSingleForceIncrement(LockModeType lockMode, boolean lockExistingEntity) {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(ForceIncrementAccount.class));
+        ForceIncrementAccount.callbacks.set(0);
+
+        ForceIncrementAccount account = new ForceIncrementAccount("force@nova.io");
+        StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
+        assertEquals(0L, account.getVersion());
+
+        listener.clear();
+        StepVerifier.create(h.manager.inTransaction(e -> {
+                    if (lockExistingEntity) {
+                        return e.find(ForceIncrementAccount.class, account.getId())
+                                .flatMap(managed -> e.lock(managed, lockMode).thenReturn(managed));
+                    }
+                    return e.find(ForceIncrementAccount.class, account.getId(), lockMode);
+                }))
+                .assertNext(managed -> {
+                    assertEquals(1L, managed.getVersion());
+                    assertNotNull(managed.getUpdatedAt());
+                })
+                .verifyComplete();
+
+        assertEquals(1, listener.countMatching("update "),
+                "force increment must not be repeated by commit flush: " + listener.snapshot());
+        assertEquals(2, ForceIncrementAccount.callbacks.get(),
+                "@PreUpdate and @PostUpdate must each run exactly once");
+
+        StepVerifier.create(h.manager.find(ForceIncrementAccount.class, account.getId()))
+                .assertNext(database -> {
+                    assertEquals(1L, database.getVersion());
+                    assertNotNull(database.getUpdatedAt());
+                })
+                .verifyComplete();
+    }
+
     private record EntityManagerHarness(H2IntegrationTestSupport support, ReactiveEntityManager manager) {
     }
 
@@ -209,6 +293,10 @@ class EntityManagerLockAndFlushModeIntegrationTest {
             return found;
         }
 
+        int countMatching(String needle) {
+            return (int) statements.stream().filter(s -> s.contains(needle)).count();
+        }
+
         List<String> snapshot() {
             return List.copyOf(statements);
         }
@@ -241,6 +329,65 @@ class EntityManagerLockAndFlushModeIntegrationTest {
 
         public void setName(String name) {
             this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "force_increment_accounts")
+    public static class ForceIncrementAccount {
+        private static final AtomicInteger callbacks = new AtomicInteger();
+
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(name = "email_address")
+        private String email;
+
+        @Version
+        private Long version;
+
+        @UpdatedAt
+        @Column(name = "updated_at")
+        private LocalDateTime updatedAt;
+
+        public ForceIncrementAccount() {
+        }
+
+        ForceIncrementAccount(String email) {
+            this.email = email;
+        }
+
+        ForceIncrementAccount(Long id, String email, Long version) {
+            this.id = id;
+            this.email = email;
+            this.version = version;
+        }
+
+        Long getId() {
+            return id;
+        }
+
+        Long getVersion() {
+            return version;
+        }
+
+        LocalDateTime getUpdatedAt() {
+            return updatedAt;
+        }
+
+        void setEmail(String email) {
+            this.email = email;
+        }
+
+        @PreUpdate
+        void preUpdate() {
+            callbacks.incrementAndGet();
+        }
+
+        @PostUpdate
+        void postUpdate() {
+            callbacks.incrementAndGet();
         }
     }
 }
