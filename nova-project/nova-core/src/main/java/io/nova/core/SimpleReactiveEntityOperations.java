@@ -342,7 +342,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.error(exception);
         }
         return prepareOwningOneToOneOrphans(metadata, entity)
-                .then(updateExisting(metadata, entity))
+                .then(Mono.defer(() -> updateExisting(metadata, entity)))
                 .doOnNext(saved -> listenerInvoker.invokePostUpdate(saved, metadata))
                 .flatMap(updated -> removeStatelessOwningOneToOneOrphans(metadata, updated, previous)
                         .thenReturn(updated));
