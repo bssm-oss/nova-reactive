@@ -534,9 +534,9 @@ public final class PersistentProperty {
         return propertyName;
     }
 
-    /** Java member name used for metadata-only record component matching. */
+    /** Selected logical member name used when reconstructing embeddable components. */
     public String leafName() {
-        return field != null ? field.getName() : access.name();
+        return access.name();
     }
 
     /** Returns a mapping annotation from the selected state carrier. */
