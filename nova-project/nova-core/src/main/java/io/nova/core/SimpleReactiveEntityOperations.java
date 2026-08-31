@@ -471,7 +471,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
             // 단순 @MapsId는 owner의 단일 @Id 전체를, @MapsId("component")는 복합 @Id의 named 컴포넌트를 채운다.
             PersistentProperty target = resolveMapsIdTarget(metadata, mapsIdProperty);
-            target.write(entity, target.toPropertyValue(associatedId));
+            Object derived = target.javaType().isInstance(associatedId)
+                    ? associatedId
+                    : target.toPropertyValue(associatedMetadata.idProperty().toColumnValue(associatedId));
+            target.write(entity, derived);
         }
     }
 
