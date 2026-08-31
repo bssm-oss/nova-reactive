@@ -2645,24 +2645,34 @@ public final class EntityMetadataFactory {
         return false;
     }
 
-    /** Returns the mapping member selected by the effective JPA access strategy. */
-    private static AnnotatedElement selectedMember(Field field) {
+    /** Returns the selected descriptor for the effective JPA access strategy. */
+    private static PersistentAttributeAccess selectedAttribute(Field field) {
         if (!resolvePropertyAccess(field)) {
-            return field;
+            return new PersistentAttributeAccess(field.getName(), field);
         }
-        return resolvePropertyGetter(field);
+        return new PersistentAttributeAccess(
+                field.getName(), resolvePropertyGetter(field), resolvePropertySetter(field), field);
     }
 
     private static <A extends Annotation> A memberAnnotation(Field field, Class<A> annotationType) {
-        return selectedMember(field).getAnnotation(annotationType);
+        return selectedAttribute(field).annotation(annotationType);
     }
 
     private static boolean memberPresent(Field field, Class<? extends Annotation> annotationType) {
-        return selectedMember(field).isAnnotationPresent(annotationType);
+        return selectedAttribute(field).isAnnotationPresent(annotationType);
+    }
+
+    private static AnnotatedElement selectedMember(Field field) {
+        PersistentAttributeAccess attribute = selectedAttribute(field);
+        return attribute.accessType() == AccessType.PROPERTY ? attribute.getter() : attribute.field();
     }
 
     private static <A extends Annotation> A[] memberAnnotations(Field field, Class<A> annotationType) {
         return selectedMember(field).getAnnotationsByType(annotationType);
+    }
+
+    private static Type selectedGenericType(Field field) {
+        return selectedAttribute(field).genericType();
     }
 
     private static Method findPropertyGetter(Field field) {
@@ -3088,6 +3098,7 @@ public final class EntityMetadataFactory {
      * save/delete/flush 시 child 전파를 구동하고, 둘 다 없으면 {@code null}로 두어 기존 marker-only 동작을 보존한다.
      */
     private PersistentProperty createOneToManyProperty(Class<?> entityType, Field field) {
+        RelationAccess access = resolveRelationAccess(field);
         OneToMany annotation = memberAnnotation(field, OneToMany.class);
         OrderColumnInfo orderColumn = resolveOneToManyOrderColumn(entityType, field);
         OneToManyInfo oneToManyInfo;
@@ -3114,7 +3125,7 @@ public final class EntityMetadataFactory {
                 field,
                 field.getName(),
                 "", // no column for inverse side
-                field.getType(),
+                selectedAttribute(field).javaType(),
                 false,
                 false,
                 true,
@@ -3144,9 +3155,9 @@ public final class EntityMetadataFactory {
                 "",
                 false,
                 null,
-                false,
-                null,
-                null,
+                access.propertyAccess(),
+                access.getter(),
+                access.setter(),
                 oneToManyInfo,
                 null,
                 false,
@@ -3972,8 +3983,9 @@ public final class EntityMetadataFactory {
      * raw/non-collection 필드는 fail-fast로 거부한다.
      */
     private PersistentProperty createManyToManyProperty(Class<?> entityType, String ownerTableName, Field field) {
+        RelationAccess access = resolveRelationAccess(field);
         ManyToMany annotation = memberAnnotation(field, ManyToMany.class);
-        Class<?> fieldType = field.getType();
+        Class<?> fieldType = selectedAttribute(field).javaType();
         if (!List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
             throw new IllegalArgumentException(
                     entityType.getName() + "." + field.getName()
@@ -4030,7 +4042,7 @@ public final class EntityMetadataFactory {
                 false,
                 null,
                 false,
-                info, null, null, null, false, "", false, null, null, null, "", null,
+                info, null, null, null, false, "", access.propertyAccess(), access.getter(), access.setter(), null, "", null,
                 ColumnDdlDefinition.EMPTY);
     }
 
@@ -4042,7 +4054,7 @@ public final class EntityMetadataFactory {
         if (annotation.targetEntity() != void.class) {
             return annotation.targetEntity();
         }
-        Type generic = field.getGenericType();
+        Type generic = selectedGenericType(field);
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 1 && arguments[0] instanceof Class<?> elementType) {
@@ -4285,7 +4297,8 @@ public final class EntityMetadataFactory {
      * JPA 기본 규약을 따른다. {@code @MapKey}/{@code @Embeddable} key/복합키 owner/non-collection 필드는 fail-fast로 거부한다.
      */
     private PersistentProperty createElementCollectionProperty(Class<?> entityType, String ownerTableName, Field field) {
-        Class<?> fieldType = field.getType();
+        RelationAccess access = resolveRelationAccess(field);
+        Class<?> fieldType = selectedAttribute(field).javaType();
         boolean isMap = Map.class.isAssignableFrom(fieldType);
         if (!isMap && !List.class.isAssignableFrom(fieldType) && !Set.class.isAssignableFrom(fieldType)) {
             throw new IllegalArgumentException(
@@ -4362,9 +4375,9 @@ public final class EntityMetadataFactory {
                 null,
                 false,
                 "",
-                false,
-                null,
-                null,
+                access.propertyAccess(),
+                access.getter(),
+                access.setter(),
                 null,
                 "",
                 null,
@@ -4495,7 +4508,7 @@ public final class EntityMetadataFactory {
         if (annotation.targetClass() != void.class) {
             return annotation.targetClass();
         }
-        Type generic = field.getGenericType();
+        Type generic = selectedGenericType(field);
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 2 && arguments[1] instanceof Class<?> valueType) {
@@ -4518,7 +4531,7 @@ public final class EntityMetadataFactory {
      */
     private static Class<?> resolveMapKeyType(Class<?> entityType, Field field, String location) {
         Class<?> parameterizedKeyType = null;
-        Type generic = field.getGenericType();
+        Type generic = selectedGenericType(field);
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 2 && arguments[0] instanceof Class<?> keyType) {
@@ -4935,13 +4948,13 @@ public final class EntityMetadataFactory {
                 throw new IllegalStateException(location + " cannot combine @Json with an AttributeConverter");
             }
             return new ElementCollectionInfo.EmbeddableColumn(
-                    field, columnName, String.class,
+                    selectedAttribute(field), columnName, String.class,
                     castConverter(new JsonAttributeConverter(jsonCodec, field.getType())), true);
         }
         ElementValueMapping mapping = resolveBasicElementValueMapping(
                 embeddableType, field, field.getType(), location, null);
         return new ElementCollectionInfo.EmbeddableColumn(
-                field, columnName, mapping.columnType(), mapping.converter(), false);
+                selectedAttribute(field), columnName, mapping.columnType(), mapping.converter(), false);
     }
 
     private static Class<?> resolveElementCollectionElementType(Class<?> entityType, Field field) {
@@ -4949,7 +4962,7 @@ public final class EntityMetadataFactory {
         if (annotation.targetClass() != void.class) {
             return annotation.targetClass();
         }
-        Type generic = field.getGenericType();
+        Type generic = selectedGenericType(field);
         if (generic instanceof ParameterizedType parameterized) {
             Type[] arguments = parameterized.getActualTypeArguments();
             if (arguments.length == 1 && arguments[0] instanceof Class<?> elementType) {

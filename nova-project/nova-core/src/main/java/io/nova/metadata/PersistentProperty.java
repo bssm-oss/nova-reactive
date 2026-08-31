@@ -756,18 +756,7 @@ public final class PersistentProperty {
      * 각각 꺼낼 수 있도록 raw reference를 노출한다. 관계는 항상 FIELD access로 저장되므로 field로 읽는다.
      */
     public Object readReferenceInstance(Object instance) {
-        try {
-            Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                current = hostField.get(current);
-                if (current == null) {
-                    return null;
-                }
-            }
-            return propertyAccess ? invokeGetter(current) : (fieldHandle != null ? fieldHandle.get(current) : field.get(current));
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException("Cannot read @ManyToOne/@OneToOne reference field " + field.getName(), exception);
-        }
+        return readReference(instance);
     }
 
     /**
@@ -776,30 +765,7 @@ public final class PersistentProperty {
      * 경우에 사용한다(복합키 타겟은 단일 {@code @Id} stub 경로가 성립하지 않으므로). 관계는 항상 FIELD access다.
      */
     public void writeReferenceInstance(Object instance, Object reference) {
-        try {
-            // 관계 property는 top-level이라 embeddedHostPath가 비어 있지만, readReferenceInstance와 대칭이 되도록
-            // (그리고 향후 @Embeddable 내부 to-one 매핑에서도 어긋나지 않도록) 동일한 host-path traversal을 따르고
-            // 동일한 접근 경로(fieldHandle 우선)를 쓴다.
-            Object current = instance;
-            for (Field hostField : embeddedHostPath) {
-                Object next = hostField.get(current);
-                if (next == null) {
-                    next = instantiateEmbeddable(hostField.getType());
-                    hostField.set(current, next);
-                }
-                current = next;
-            }
-            if (propertyAccess) {
-                invokeSetter(current, reference);
-            } else if (fieldHandle != null) {
-                fieldHandle.set(current, reference);
-            } else {
-                field.set(current, reference);
-            }
-        } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write @ManyToOne/@OneToOne reference field " + field.getName(), exception);
-        }
+        writeReference(instance, reference);
     }
 
     /**
@@ -1219,14 +1185,16 @@ public final class PersistentProperty {
      * {@code @Access(PROPERTY)}이면 JavaBean getter로, 아니면 field로 읽는다(관계는 embedded host-path가 없다).
      */
     public Object readReference(Object instance) {
-        if (propertyAccess) {
-            return invokeGetter(instance);
-        }
         try {
-            return fieldHandle != null ? fieldHandle.get(instance) : field.get(instance);
+            Object current = instance;
+            for (Field hostField : embeddedHostPath) {
+                current = hostField.get(current);
+                if (current == null) return null;
+            }
+            return propertyAccess ? invokeGetter(current)
+                    : (fieldHandle != null ? fieldHandle.get(current) : field.get(current));
         } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot read relation reference " + field.getName(), exception);
+            throw new IllegalStateException("Cannot read relation reference " + field.getName(), exception);
         }
     }
 
@@ -1244,15 +1212,26 @@ public final class PersistentProperty {
      * 분기한다. row 디코딩 stub 주입과 hydration이 모두 이 자리를 거쳐 일관되게 동작한다.
      */
     private void setReferenceValue(Object instance, Object reference) {
-        if (propertyAccess) {
-            invokeSetter(instance, reference);
-            return;
-        }
+        writeCollection(instance, reference);
+    }
+
+    /** Writes a logical collection marker through its selected FIELD/PROPERTY descriptor. */
+    public void writeCollection(Object instance, Object value) {
         try {
-            field.set(instance, reference);
+            Object current = instance;
+            for (Field hostField : embeddedHostPath) {
+                Object next = hostField.get(current);
+                if (next == null) {
+                    next = instantiateEmbeddable(hostField.getType());
+                    hostField.set(current, next);
+                }
+                current = next;
+            }
+            if (propertyAccess) invokeSetter(current, value);
+            else if (fieldHandle != null) fieldHandle.set(current, value);
+            else field.set(current, value);
         } catch (IllegalAccessException exception) {
-            throw new IllegalStateException(
-                    "Cannot write @ManyToOne reference field " + field.getName(), exception);
+            throw new IllegalStateException("Cannot write relation or collection " + field.getName(), exception);
         }
     }
 

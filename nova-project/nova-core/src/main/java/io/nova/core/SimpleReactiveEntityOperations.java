@@ -2142,7 +2142,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     if (childId == null || !appearedSet.contains(childId)) {
                         continue;
                     }
-                    Object currentOwnerRef = mappedByProperty.readReferenceInstance(child);
+                    Object currentOwnerRef = mappedByProperty.readReference(child);
                     Object currentOwnerId = currentOwnerRef == null ? null : metadata.readIdValue(currentOwnerRef);
                     if (!Objects.equals(currentOwnerId, ownerId)) {
                         return Mono.error(new IllegalStateException(
@@ -2261,7 +2261,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             if (candidateId == null || !removedSet.contains(candidateId)) {
                 continue;
             }
-            Object currentOwnerRef = mappedByProperty.readReferenceInstance(candidate.entity());
+            Object currentOwnerRef = mappedByProperty.readReference(candidate.entity());
             Object currentOwnerId = currentOwnerRef == null ? null : ownerMetadata.readIdValue(currentOwnerRef);
             if (currentOwnerId != null && !Objects.equals(currentOwnerId, ownerId)) {
                 moved.add(candidateId);
