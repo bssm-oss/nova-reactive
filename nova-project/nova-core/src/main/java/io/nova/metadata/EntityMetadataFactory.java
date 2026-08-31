@@ -2405,6 +2405,11 @@ public final class EntityMetadataFactory {
         Class<?> target = annotation.targetEntity() == void.class ? attribute.javaType() : annotation.targetEntity();
         String mappedBy = annotation.mappedBy();
         if (!mappedBy.isBlank()) {
+            if (attribute.isAnnotationPresent(MapsId.class)) {
+                throw new IllegalArgumentException(entityType.getName() + "." + attribute.name()
+                        + " @MapsId is only valid on the owning side of a to-one relationship;"
+                        + " it cannot be placed on an inverse @OneToOne(mappedBy)");
+            }
             return new PersistentProperty(attribute.field(), attribute.name(), "", attribute.javaType(),
                     false, false, true,
                     255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
@@ -2422,6 +2427,7 @@ public final class EntityMetadataFactory {
                 : join != null && !join.name().isBlank()
                         ? join.name()
                         : namingStrategy.columnName(attribute.name() + "_id");
+        String mapsId = resolveMapsIdMarker(entityType, attribute);
         return new PersistentProperty(attribute.field(), attribute.name(),
                 columnName,
                 storage == null ? Long.class : storage.javaType(), false, false,
@@ -2432,7 +2438,7 @@ public final class EntityMetadataFactory {
                 join == null || join.insertable(), join == null || join.updatable(), oneToOne || (join != null && join.unique()),
                 join == null ? "" : join.columnDefinition(), false,
                 storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
-                false, "",
+                mapsId != null, mapsId == null ? "" : mapsId,
                 attribute.accessType() == AccessType.PROPERTY,
                 attribute.getter(), attribute.setter(),
                 annotation.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(annotation.cascade())),
@@ -3720,10 +3726,15 @@ public final class EntityMetadataFactory {
      * application/연관-PK가 채우므로 양립 불가).
      */
     private static String resolveMapsIdMarker(Class<?> entityType, Field field) {
-        MapsId mapsId = memberAnnotation(field, MapsId.class);
+        return resolveMapsIdMarker(entityType, selectedAttribute(field));
+    }
+
+    private static String resolveMapsIdMarker(Class<?> entityType, PersistentAttributeAccess relation) {
+        MapsId mapsId = relation.annotation(MapsId.class);
         if (mapsId == null) {
             return null;
         }
+        String location = entityType.getName() + "." + relation.name();
         String value = mapsId.value();
         // 파생 대상 @Id 구조 파악: top-level @Id 필드들과 @EmbeddedId holder를 수집한다.
         List<PersistentAttributeAccess> identifiers = selectedIdentifierAttributes(entityType);
@@ -3736,7 +3747,7 @@ public final class EntityMetadataFactory {
                 || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class)
                 || idFields.size() > 1;
         if (embeddedId != null && embeddedId.javaType().isRecord()) {
-            throw new IllegalArgumentException(entityType.getName() + "." + field.getName()
+            throw new IllegalArgumentException(location
                     + " uses @MapsId with record @EmbeddedId " + embeddedId.javaType().getName()
                     + "; immutable record identifiers cannot be derived by mutation");
         }
@@ -3744,30 +3755,30 @@ public final class EntityMetadataFactory {
             // @MapsId("component"): owner는 복합 @Id여야 하고 named 컴포넌트가 존재해야 한다.
             if (!composite) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName()
+                        location
                                 + " @MapsId(\"" + value + "\") names an id component but the entity does not declare a"
                                 + " composite @Id (@EmbeddedId/@IdClass); use a simple @MapsId to derive the single @Id");
             }
             if (!compositeIdComponentExists(embeddedId, idFields, value)) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName()
+                        location
                                 + " @MapsId(\"" + value + "\") does not match any component of the composite @Id of "
                                 + entityType.getName());
             }
             if (compositeIdComponentGenerated(embeddedId, idFields, value)) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName()
+                        location
                                 + " @MapsId(\"" + value + "\") cannot be combined with @GeneratedValue on the id"
                                 + " component; a derived identifier is supplied by the associated entity's primary key");
             }
             // 파생 값은 연관 엔티티의 PK 전체(readIdValue)에서 온다. 그 타겟이 복합 @Id면 어느 컴포넌트를
             // owner의 어느 컴포넌트로 매핑할지 모호하고 holder 객체를 스칼라 컬럼에 쓰려다 런타임에 던진다.
             // 조용한 런타임 실패 대신 build 시점에 명확히 거부한다(단일 @Id 타겟만 지원).
-            if (declaresCompositeId(field.getType())) {
+            if (declaresCompositeId(relation.javaType())) {
                 throw new IllegalArgumentException(
-                        entityType.getName() + "." + field.getName()
+                        location
                                 + " @MapsId(\"" + value + "\") derives an id component from "
-                                + field.getType().getName() + ", but deriving from a composite-key associated"
+                                + relation.javaType().getName() + ", but deriving from a composite-key associated"
                                 + " entity is not supported; the associated entity must declare a single @Id");
             }
             return value;
@@ -3775,19 +3786,19 @@ public final class EntityMetadataFactory {
         // 단순 @MapsId: 정확히 하나의 단일 @Id 필드여야 하고 @GeneratedValue가 없어야 한다.
         if (composite) {
             throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
+                    location
                             + " @MapsId requires the owning entity to declare exactly one single @Id"
                             + " (a composite @Id requires @MapsId(\"component\") to derive one named component)");
         }
         if (idFields.size() != 1) {
             throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
+                    location
                             + " @MapsId requires the owning entity to declare exactly one single @Id"
                             + " (composite keys are not supported)");
         }
         if (idFields.get(0).isAnnotationPresent(GeneratedValue.class)) {
             throw new IllegalArgumentException(
-                    entityType.getName() + "." + field.getName()
+                    location
                             + " @MapsId cannot be combined with @GeneratedValue on the @Id;"
                             + " a derived identifier is supplied by the associated entity's primary key");
         }
@@ -4311,9 +4322,31 @@ public final class EntityMetadataFactory {
     private PersistentProperty createManyToOneProperty(
             Class<?> entityType, PersistentAttributeAccess attribute) {
         if (attribute.field() == null) {
-            return createDescriptorProperty(attribute);
+            return createDescriptorManyToOneProperty(entityType, attribute);
         }
         return createManyToOneProperty(entityType, attribute.field());
+    }
+
+    private PersistentProperty createDescriptorManyToOneProperty(
+            Class<?> entityType, PersistentAttributeAccess attribute) {
+        ManyToOne relation = attribute.annotation(ManyToOne.class);
+        Class<?> target = relation.targetEntity() == void.class ? attribute.javaType() : relation.targetEntity();
+        JoinColumn join = attribute.annotation(JoinColumn.class);
+        ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
+        ToOneForeignKey composite = storage == null ? resolveCompositeToOneForeignKey(entityType, target, attribute) : null;
+        String column = composite != null ? composite.columns().get(0).columnName()
+                : join != null && !join.name().isBlank() ? join.name() : namingStrategy.columnName(attribute.name() + "_id");
+        String mapsId = resolveMapsIdMarker(entityType, attribute);
+        boolean nullable = relation.optional() && (join == null || join.nullable());
+        return new PersistentProperty(null, attribute.name(), column, storage == null ? Long.class : storage.javaType(),
+                false, false, nullable, storage == null ? 255 : storage.length(), 0, 0, null, "",
+                storage == null ? null : storage.converter(), false, false, false, false, List.of(), false, null, false,
+                true, target, nullable, false, null, "", join == null || join.insertable(), join == null || join.updatable(),
+                join != null && join.unique(), join == null ? "" : join.columnDefinition(), false,
+                storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
+                mapsId != null, mapsId == null ? "" : mapsId, true, attribute.getter(), attribute.setter(),
+                relation.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(relation.cascade())), "", composite,
+                ColumnDdlDefinition.EMPTY);
     }
 
     /**
