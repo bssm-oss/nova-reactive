@@ -1640,21 +1640,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Mono.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
             Optional<PersistenceSession> session = currentSession(ctx);
-            // 세션이 없으면(트랜잭션 밖 등) auto-flush/manage 연산자 없이 곧장 조회한다(핫패스 오버헤드 제거).
-            // 세션이 있으면 SELECT 전 auto-flush(읽기 일관성)하고, 결과를 identity map에 편입(같은 PK=같은 인스턴스).
-            Mono<T> base = session.isEmpty()
-                    ? findByIdInternal(metadata, id)
-                    : autoFlushIfSession(ctx, session)
-                            .then(findByIdInternal(metadata, id).map(entity -> manage(session, entity)));
+            Mono<T> base = contextualFindById(ctx, session, metadata, id);
             if (!metadata.hasRelationProperties()) {
                 return base;
             }
             FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
             return base.flatMap(parent ->
-                    hydrateChildren(List.of(parent), annotationGroup)
-                            .then(hydrateManyToMany(List.of(parent), metadata))
-                            .then(hydrateElementCollections(List.of(parent), metadata))
-                            .doOnSuccess(ignored -> captureCollectionSnapshots(session, metadata, parent))
+                    hydrateAndTrackRoots(List.of(parent), annotationGroup, metadata, session)
                             .thenReturn(parent));
         });
     }
@@ -1664,23 +1656,44 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         return Flux.deferContextual(ctx -> {
             EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType);
             Optional<PersistenceSession> session = currentSession(ctx);
-            Flux<T> base = session.isEmpty()
-                    ? findAllInternal(metadata, querySpec)
-                    : autoFlushIfSession(ctx, session)
-                            .thenMany(findAllInternal(metadata, querySpec).map(entity -> manage(session, entity)));
+            Flux<T> base = contextualFindAll(ctx, session, metadata, querySpec);
             if (!metadata.hasRelationProperties()) {
                 return base;
             }
             FetchGroup<T> annotationGroup = annotationFetchGroupBuilder.buildFor(entityType);
             return base.collectList()
                     .flatMapMany(parents ->
-                            hydrateChildren(parents, annotationGroup)
-                                    .then(hydrateManyToMany(parents, metadata))
-                                    .then(hydrateElementCollections(parents, metadata))
-                                    .doOnSuccess(ignored ->
-                                            parents.forEach(p -> captureCollectionSnapshots(session, metadata, p)))
+                            hydrateAndTrackRoots(parents, annotationGroup, metadata, session)
                                     .thenMany(Flux.fromIterable(parents)));
         });
+    }
+
+    /**
+     * Explicit fetch plans and ordinary reads share this root path so managed transactions always auto-flush and
+     * return the session's canonical root. Stateless reads deliberately retain the direct internal path.
+     */
+    private <T, ID> Mono<T> contextualFindById(
+            ContextView ctx, Optional<PersistenceSession> session, EntityMetadata<T> metadata, ID id) {
+        return session.isEmpty()
+                ? findByIdInternal(metadata, id)
+                : autoFlushIfSession(ctx, session)
+                        .then(findByIdInternal(metadata, id).map(entity -> manage(session, entity)));
+    }
+
+    private <T> Flux<T> contextualFindAll(
+            ContextView ctx, Optional<PersistenceSession> session, EntityMetadata<T> metadata, QuerySpec querySpec) {
+        return session.isEmpty()
+                ? findAllInternal(metadata, querySpec)
+                : autoFlushIfSession(ctx, session)
+                        .thenMany(findAllInternal(metadata, querySpec).map(entity -> manage(session, entity)));
+    }
+
+    private <P> Mono<Void> hydrateAndTrackRoots(
+            List<P> parents, FetchGroup<P> fetchGroup, EntityMetadata<P> metadata, Optional<PersistenceSession> session) {
+        return hydrateChildren(parents, fetchGroup)
+                .then(hydrateManyToMany(parents, metadata))
+                .then(hydrateElementCollections(parents, metadata))
+                .doOnSuccess(ignored -> parents.forEach(parent -> captureCollectionSnapshots(session, metadata, parent)));
     }
 
     /**
@@ -1860,16 +1873,18 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return;
         }
         PersistenceSession activeSession = session.get();
-        PersistenceSession.ManagedEntry entry = activeSession.managedEntry(metadata, owner);
+        EntityMetadata<?> concreteMetadata = metadataFactory.getEntityMetadata(owner.getClass());
+        PersistenceSession.ManagedEntry entry = activeSession.managedEntry(concreteMetadata, owner);
         if (entry == null) {
             return;
         }
-        canonicalizeHydratedRelations(activeSession, metadata, owner);
-        for (PersistentProperty property : collectionSyncProperties(metadata)) {
+        canonicalizeHydratedRelations(activeSession, concreteMetadata, owner);
+        for (PersistentProperty property : collectionSyncProperties(concreteMetadata)) {
             Object collection = readCollectionField(property, owner);
             // null 컬렉션은 hydration이 채우지 않은 경우 — baseline 미설정으로 남겨 full-replace를 피하고 건드리지 않는다.
             if (collection != null) {
-                entry.putCollectionSnapshot(property.propertyName(), collectionRepresentation(metadata, property, owner));
+                entry.putCollectionSnapshot(
+                        property.propertyName(), collectionRepresentation(concreteMetadata, property, owner));
             }
         }
     }
@@ -1882,45 +1897,56 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     private void canonicalizeHydratedRelations(
             PersistenceSession session, EntityMetadata<?> ownerMetadata, Object owner) {
         for (PersistentProperty property : ownerMetadata.properties()) {
-            Class<?> targetType = associationTargetType(property);
-            if (targetType == null) {
-                continue;
-            }
-            Object related = property.readReference(owner);
-            if (related == null) {
-                continue;
-            }
-            EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(targetType);
-            if (related instanceof Iterable<?> values) {
-                List<Object> canonical = new ArrayList<>();
-                for (Object value : values) {
-                    if (value != null) {
-                        canonical.add(registerChildOnLoad(session, targetMetadata, value));
-                    }
-                }
-                Object replacement = java.util.Set.class.isAssignableFrom(property.javaType())
-                        ? new LinkedHashSet<>(canonical)
-                        : new ArrayList<>(canonical);
-                property.writeReference(owner, replacement);
-            } else {
-                property.writeReference(owner, registerChildOnLoad(session, targetMetadata, related));
-            }
+            canonicalizeHydratedRelation(session, ownerMetadata, owner, property);
         }
     }
 
-    private static Class<?> associationTargetType(PersistentProperty property) {
-        if (property.manyToMany()) {
-            return property.manyToManyInfo().targetType();
+    private void canonicalizeHydratedRelation(
+            PersistenceSession session, EntityMetadata<?> ownerMetadata, Object owner, PersistentProperty property) {
+        if (!property.manyToOne() && !property.oneToMany()
+                && !property.inverseToOne() && !property.manyToMany()) {
+            return;
         }
-        if (property.manyToOne()) {
-            return property.manyToOneTargetType();
+        Object related = property.readReference(owner);
+        if (related == null) {
+            return;
         }
-        return property.oneToMany() || property.inverseToOne() ? property.oneToManyTargetType() : null;
+        if (related instanceof Iterable<?> values) {
+            List<Object> canonical = new ArrayList<>();
+            for (Object value : values) {
+                if (value != null) {
+                    canonical.add(registerChildOnLoad(session, value));
+                }
+            }
+            Object replacement = java.util.Set.class.isAssignableFrom(property.javaType())
+                    ? new LinkedHashSet<>(canonical)
+                    : new ArrayList<>(canonical);
+            property.writeReference(owner, replacement);
+        } else {
+            property.writeReference(owner, registerChildOnLoad(session, related));
+        }
+    }
+
+    private void captureCollectionSnapshot(
+            PersistenceSession session, EntityMetadata<?> ownerMetadata, Object owner, PersistentProperty property) {
+        EntityMetadata<?> concreteMetadata = metadataFactory.getEntityMetadata(owner.getClass());
+        PersistenceSession.ManagedEntry entry = session.managedEntry(concreteMetadata, owner);
+        if (entry == null || collectionSyncProperties(concreteMetadata).stream()
+                .noneMatch(candidate -> candidate.propertyName().equals(property.propertyName()))) {
+            return;
+        }
+        PersistentProperty concreteProperty = concreteMetadata.findProperty(property.propertyName()).orElse(property);
+        Object collection = readCollectionField(concreteProperty, owner);
+        if (collection != null) {
+            entry.putCollectionSnapshot(
+                    concreteProperty.propertyName(), collectionRepresentation(concreteMetadata, concreteProperty, owner));
+        }
     }
 
     @SuppressWarnings("unchecked")
-    private <C> C registerChildOnLoad(PersistenceSession session, EntityMetadata<C> childMetadata, Object child) {
-        return session.registerOnLoad(childMetadata, (C) child);
+    private <C> C registerChildOnLoad(PersistenceSession session, Object child) {
+        EntityMetadata<C> concreteMetadata = (EntityMetadata<C>) metadataFactory.getEntityMetadata(child.getClass());
+        return session.registerOnLoad(concreteMetadata, (C) child);
     }
 
     /**
@@ -1951,6 +1977,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         Object collection = readCollectionField(property, owner);
         if (collection == null) {
             // null 컬렉션 = 이번 세션에서 이 관계를 관리하지 않음 → 건드리지 않는다(현행 reconcile과 동일 의미).
+            return Mono.empty();
+        }
+        if (entry.loaded() && !entry.hasCollectionSnapshot(property.propertyName())) {
+            // A partially hydrated managed row has no database baseline for an unrequested collection.
+            // Treat it as unloaded rather than as a detached full-replacement request.
             return Mono.empty();
         }
         if (property.oneToMany()) {
@@ -3541,11 +3572,12 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // 기본 findById와 동일하게 @ManyToMany/@ElementCollection도 hydrate해 FetchGroup 경로가 default eager와
         // 최소 동등(⊇)이 되게 한다 — EntityGraph/FetchGroup으로 조회 시 M2M/EC 미로드로 default보다 적게
         // 가져오던 비일관을 제거한다.
-        return findByIdInternal(metadata, id)
-                .flatMap(parent -> hydrateChildren(List.of(parent), merged)
-                        .then(hydrateManyToMany(List.of(parent), metadata))
-                        .then(hydrateElementCollections(List.of(parent), metadata))
-                        .thenReturn(parent));
+        return Mono.deferContextual(ctx -> {
+            Optional<PersistenceSession> session = currentSession(ctx);
+            return contextualFindById(ctx, session, metadata, id)
+                    .flatMap(parent -> hydrateAndTrackRoots(List.of(parent), merged, metadata, session)
+                            .thenReturn(parent));
+        });
     }
 
     @Override
@@ -3561,12 +3593,13 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         FetchGroup<P> merged = mergeWithAnnotationGroup(entityType, fetchGroup, metadata);
         // 기본 findAll과 동일하게 @ManyToMany/@ElementCollection도 hydrate해 FetchGroup 경로가 default eager와
         // 최소 동등(⊇)이 되게 한다(위 findById와 동일한 일관성 보정).
-        return findAllInternal(metadata, QuerySpec.empty())
-                .collectList()
-                .flatMapMany(parents -> hydrateChildren(parents, merged)
-                        .then(hydrateManyToMany(parents, metadata))
-                        .then(hydrateElementCollections(parents, metadata))
-                        .thenMany(Flux.fromIterable(parents)));
+        return Flux.deferContextual(ctx -> {
+            Optional<PersistenceSession> session = currentSession(ctx);
+            return contextualFindAll(ctx, session, metadata, QuerySpec.empty())
+                    .collectList()
+                    .flatMapMany(parents -> hydrateAndTrackRoots(parents, merged, metadata, session)
+                            .thenMany(Flux.fromIterable(parents)));
+        });
     }
 
     @Override
@@ -3664,10 +3697,28 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 .orElseThrow(() -> new IllegalStateException(
                         "EntityGraph attribute '" + attributeName + "' does not exist on " + parentType.getName()));
         if (property.manyToMany()) {
-            return hydrateOneManyToMany(parents, metadata, property);
+            return hydrateOneManyToMany(parents, metadata, property)
+                    .then(trackNestedAttribute(metadata, parents, property));
         }
         FetchGroup<P> single = annotationFetchGroupBuilder.buildForAttribute(parentType, attributeName);
-        return hydrateChildren(parents, single);
+        return hydrateChildren(parents, single)
+                .then(trackNestedAttribute(metadata, parents, property));
+    }
+
+    private <P> Mono<Void> trackNestedAttribute(
+            EntityMetadata<P> metadata, List<P> parents, PersistentProperty property) {
+        return Mono.deferContextual(ctx -> {
+            Optional<PersistenceSession> session = currentSession(ctx);
+            if (session.isEmpty()) {
+                return Mono.empty();
+            }
+            PersistenceSession activeSession = session.get();
+            for (P parent : parents) {
+                canonicalizeHydratedRelation(activeSession, metadata, parent, property);
+                captureCollectionSnapshot(activeSession, metadata, parent, property);
+            }
+            return Mono.empty();
+        });
     }
 
     /**
@@ -3859,7 +3910,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Mono.empty();
         }
         Predicate predicate = compositeToOnePredicate(idProperties, distinctTuples);
-        return findAllInternal(targetMetadata, QuerySpec.empty().where(predicate))
+        return Mono.deferContextual(contextView -> findAllInternal(targetMetadata, QuerySpec.empty().where(predicate))
+                .map(target -> manage(currentSession(contextView), target))
                 .collectList()
                 .doOnNext(targets -> {
                     Map<List<Object>, C> targetByTuple = new LinkedHashMap<>();
@@ -3878,7 +3930,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         }
                         // full == null(dangling FK): 기존 id-stub을 보존한다.
                     }
-                })
+                }))
                 .then();
     }
 
@@ -4521,7 +4573,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // child fetch는 내부 경로로만 수행해 cyclical 관계가 무한 재귀를 일으키지 않게 한다.
         // 호출자가 child entity의 추가 관계까지 자동으로 hydrate되길 원하면 명시적 FetchGroup을 별도로 추가해야 한다.
         List<Object> orderedParentIds = new ArrayList<>(parentIds);
-        return findAllInternal(childMetadata, querySpec)
+        QuerySpec finalQuerySpec = querySpec;
+        return Mono.deferContextual(contextView -> findAllInternal(childMetadata, finalQuerySpec)
+                .map(child -> manage(currentSession(contextView), child))
                 .collectList()
                 .flatMap(children -> {
                     if (spec.orderColumn() == null) {
@@ -4534,7 +4588,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     return sortChildrenByOrderColumn(childMetadata, spec, orderedParentIds, children)
                             .doOnNext(sorted -> assignChildrenToParents(parents, sorted, spec, fkProperty))
                             .then();
-                })
+                }))
                 .then();
     }
 
