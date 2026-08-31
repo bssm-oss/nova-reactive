@@ -63,6 +63,26 @@ class DerivedQueryParserTest {
         Location location;
     }
 
+    @Embeddable
+    static final class AddressWithCityName {
+        String cityName;
+    }
+
+    @Embeddable
+    static final class AddressCityWithName {
+        String name;
+    }
+
+    @Entity
+    static final class AmbiguousEmbeddedPathAccount {
+        @Id
+        Long id;
+        @Embedded
+        AddressWithCityName address;
+        @Embedded
+        AddressCityWithName addressCity;
+    }
+
     @Entity
     static final class EmbeddedPropertyAccount {
         @Id
@@ -85,6 +105,14 @@ class DerivedQueryParserTest {
         Flux<EmbeddedPropertyAccount> findByAddress_Location_CountryCode(String countryCode);
 
         Flux<EmbeddedPropertyAccount> findByAddress_city(String addressCity);
+    }
+
+    interface AmbiguousEmbeddedPathRepository {
+        Flux<AmbiguousEmbeddedPathAccount> findByAddressCityName(String value);
+
+        Flux<AmbiguousEmbeddedPathAccount> findByAddress_CityName(String value);
+
+        Flux<AmbiguousEmbeddedPathAccount> findByAddressCity_Name(String value);
     }
 
     @MappedSuperclass
@@ -231,6 +259,8 @@ class DerivedQueryParserTest {
             METADATA_FACTORY.getEntityMetadata(LogicalPropertyAccount.class));
     private final DerivedQueryParser embeddedPropertiesParser = new DerivedQueryParser(
             METADATA_FACTORY.getEntityMetadata(EmbeddedPropertyAccount.class));
+    private final DerivedQueryParser ambiguousEmbeddedPathsParser = new DerivedQueryParser(
+            METADATA_FACTORY.getEntityMetadata(AmbiguousEmbeddedPathAccount.class));
 
     interface LogicalPropertyRepository {
         Flux<LogicalPropertyAccount> findByGetterOnly(String value);
@@ -606,6 +636,24 @@ class DerivedQueryParserTest {
                             "findByAddress_Location_CountryCode", String.class)).orElseThrow();
 
             assertEquals("address.location.countryCode", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        void ambiguousFlattenedEmbeddedPathTokenIsRejectedButExplicitTokensResolve() throws NoSuchMethodException {
+            Method flattened = AmbiguousEmbeddedPathRepository.class.getMethod("findByAddressCityName", String.class);
+            DerivedQuery first = ambiguousEmbeddedPathsParser.tryParse(
+                    AmbiguousEmbeddedPathRepository.class.getMethod("findByAddress_CityName", String.class))
+                    .orElseThrow();
+            DerivedQuery second = ambiguousEmbeddedPathsParser.tryParse(
+                    AmbiguousEmbeddedPathRepository.class.getMethod("findByAddressCity_Name", String.class))
+                    .orElseThrow();
+
+            IllegalArgumentException exception = assertThrows(
+                    IllegalArgumentException.class, () -> ambiguousEmbeddedPathsParser.tryParse(flattened));
+            assertTrue(exception.getMessage().contains("unknown property"),
+                    () -> "unexpected: " + exception.getMessage());
+            assertEquals("address.cityName", first.orGroups().get(0).get(0).propertyName());
+            assertEquals("addressCity.name", second.orGroups().get(0).get(0).propertyName());
         }
 
         @Test
