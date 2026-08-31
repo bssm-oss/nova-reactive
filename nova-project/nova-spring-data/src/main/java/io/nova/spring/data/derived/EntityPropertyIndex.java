@@ -10,15 +10,17 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 단일 엔티티 클래스의 top-level property 이름 인덱스. derived query parser가 method-name token에서
- * property 이름을 greedy하게 잘라낼 때 사용한다.
+ * 단일 엔티티 클래스의 property 이름 인덱스. derived query parser가 method-name token에서 property 이름을
+ * greedy하게 잘라낼 때 사용한다.
  *
  * <p>매칭 대상은 {@link EntityMetadata#properties()}의 논리 property다. 따라서 field 접근 여부와 무관하게
  * 상속 및 PROPERTY access getter-only property를 포함하고, 메타데이터에서 제외된 inactive/transient
  * property는 포함하지 않는다.
  *
  * <p>매칭은 PascalCase form으로 비교한다 — method-name이 {@code findByEmailAddress}일 때 {@code EmailAddress}
- * 토큰을 lowerCamelCase property {@code emailAddress}에 매핑한다.
+ * 토큰을 lowerCamelCase property {@code emailAddress}에 매핑한다. Dotted embedded path는 각 segment를
+ * PascalCase로 만든 뒤 연결한다. 따라서 canonical metadata name {@code address.city}는 method token
+ * {@code AddressCity}에 매핑되지만 dispatch에는 {@code address.city}를 그대로 전달한다.
  */
 final class EntityPropertyIndex {
     /**
@@ -40,14 +42,15 @@ final class EntityPropertyIndex {
         for (String name : camel) {
             pascalSorted.add(toPascal(name));
         }
-        // 동일 length에서는 사전순 — deterministic test/error 메시지.
+        // 동일 length에서는 token, 이어 canonical metadata name 사전순 — flattening collision도 deterministic.
         List<Integer> indices = new ArrayList<>();
         for (int i = 0; i < pascalSorted.size(); i++) {
             indices.add(i);
         }
         indices.sort(Comparator
                 .comparingInt((Integer i) -> pascalSorted.get(i).length()).reversed()
-                .thenComparing(pascalSorted::get));
+                .thenComparing(pascalSorted::get)
+                .thenComparing(camel::get));
         List<String> pascalOut = new ArrayList<>(indices.size());
         List<String> camelOut = new ArrayList<>(indices.size());
         for (int idx : indices) {
@@ -83,11 +86,14 @@ final class EntityPropertyIndex {
         return camelOriginal;
     }
 
-    private static String toPascal(String camel) {
-        if (camel.isEmpty()) {
-            return camel;
+    private static String toPascal(String propertyName) {
+        StringBuilder token = new StringBuilder(propertyName.length());
+        for (String segment : propertyName.split("\\.", -1)) {
+            if (!segment.isEmpty()) {
+                token.append(Character.toUpperCase(segment.charAt(0))).append(segment.substring(1));
+            }
         }
-        return Character.toUpperCase(camel.charAt(0)) + camel.substring(1);
+        return token.toString();
     }
 
     /**

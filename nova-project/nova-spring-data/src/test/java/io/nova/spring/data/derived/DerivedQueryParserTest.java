@@ -9,6 +9,9 @@ import io.nova.query.Slice;
 import io.nova.query.Sort;
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
+import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.MappedSuperclass;
@@ -48,6 +51,36 @@ class DerivedQueryParserTest {
     private static final EntityMetadata<Account> ACCOUNT_METADATA =
             METADATA_FACTORY.getEntityMetadata(Account.class);
 
+    @Embeddable
+    static final class Location {
+        String countryCode;
+    }
+
+    @Embeddable
+    static final class Address {
+        String city;
+        @Embedded
+        Location location;
+    }
+
+    @Entity
+    static final class EmbeddedPropertyAccount {
+        @Id
+        Long id;
+        @Column(name = "direct_address_city")
+        String addressCity;
+        String address_city;
+        @Embedded
+        Address address;
+    }
+
+    interface EmbeddedPropertyRepository {
+        Flux<EmbeddedPropertyAccount> findByAddressCity(String city);
+
+        Flux<EmbeddedPropertyAccount> findByAddressLocationCountryCode(String countryCode);
+
+        Flux<EmbeddedPropertyAccount> findByAddress_city(String addressCity);
+    }
 
     @MappedSuperclass
     @Access(AccessType.PROPERTY)
@@ -191,6 +224,8 @@ class DerivedQueryParserTest {
     private final DerivedQueryParser parser = new DerivedQueryParser(ACCOUNT_METADATA);
     private final DerivedQueryParser logicalPropertiesParser = new DerivedQueryParser(
             METADATA_FACTORY.getEntityMetadata(LogicalPropertyAccount.class));
+    private final DerivedQueryParser embeddedPropertiesParser = new DerivedQueryParser(
+            METADATA_FACTORY.getEntityMetadata(EmbeddedPropertyAccount.class));
 
     interface LogicalPropertyRepository {
         Flux<LogicalPropertyAccount> findByGetterOnly(String value);
@@ -530,6 +565,32 @@ class DerivedQueryParserTest {
             // "EmailAddress"는 "Email" + "Address"로 잘못 잘리면 안 된다.
             DerivedQuery q = parse("findByEmailAddress", String.class);
             assertEquals("emailAddress", q.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        @DisplayName("embedded metadata path는 segment별 PascalCase token으로 매칭하고 canonical path를 보존한다")
+        void embeddedPathMatchesFlattenedToken() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod("findByAddressCity", String.class)).orElseThrow();
+
+            assertEquals("address.city", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        void deeplyEmbeddedPathMatchesFlattenedToken() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod(
+                            "findByAddressLocationCountryCode", String.class)).orElseThrow();
+
+            assertEquals("address.location.countryCode", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        void underscoresRemainPartOfTheirCanonicalPropertyToken() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod("findByAddress_city", String.class)).orElseThrow();
+
+            assertEquals("address_city", query.orGroups().get(0).get(0).propertyName());
         }
 
         @Test
