@@ -316,16 +316,21 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
             return findByIdInternal(metadata, id)
                     .flatMap(previous -> updateStatelessWithOwningOneToOneOrphans(metadata, entity, previous))
-                    .switchIfEmpty(insertPath(metadata, entity));
+                    .switchIfEmpty(Mono.defer(() -> insertPath(metadata, entity)));
         }
         boolean isNew = entityStateDetector.isNew(entity, metadata);
         if (isNew) {
             return insertPath(metadata, entity);
         }
+        if (metadata.manyToOneProperties().stream().noneMatch(PersistentProperty::oneToOneOrphanRemoval)) {
+            return updatePath(metadata, entity);
+        }
         Object id = metadata.readIdValue(entity);
         return findByIdInternal(metadata, id)
                 .flatMap(previous -> updateStatelessWithOwningOneToOneOrphans(metadata, entity, previous))
-                .switchIfEmpty(updatePath(metadata, entity));
+                // updatePath applies callbacks/audit state while assembling its Mono. Deferring the fallback is
+                // required: an existing owner must not receive that choreography a second time after preload.
+                .switchIfEmpty(Mono.defer(() -> updatePath(metadata, entity)));
     }
 
     private <T> Mono<T> updateStatelessWithOwningOneToOneOrphans(
