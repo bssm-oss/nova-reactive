@@ -58,6 +58,28 @@ class BigDecimalColumnRoundTripIntegrationTest {
     }
 
     @Test
+    void unannotatedBigDecimalsUseGeneratedDecfloatDdlAndPreserveDifferingNonzeroScales() {
+        H2IntegrationTestSupport support = H2IntegrationTestSupport.create();
+        support.execute(support.operations().createTableSql(BigDecimalStorageShapes.class));
+
+        BigDecimal first = new BigDecimal("12345.67");
+        BigDecimal second = new BigDecimal("0.1234567");
+
+        StepVerifier.create(support.operations().save(new BigDecimalStorageShapes(first))
+                .flatMap(savedFirst -> support.operations().save(new BigDecimalStorageShapes(second))
+                        .flatMap(savedSecond -> Mono.zip(
+                                support.operations().findById(BigDecimalStorageShapes.class, savedFirst.id),
+                                support.operations().findById(BigDecimalStorageShapes.class, savedSecond.id)))))
+                .assertNext(loaded -> {
+                    assertEquals(0, first.compareTo(loaded.getT1().defaultAmount),
+                            "generated DECFLOAT DDL must preserve the first unannotated value");
+                    assertEquals(0, second.compareTo(loaded.getT2().defaultAmount),
+                            "generated DECFLOAT DDL must preserve the differently scaled unannotated value");
+                })
+                .verifyComplete();
+    }
+
+    @Test
     void bigDecimalColumnRoundTripsThroughSaveAndFindById() {
         H2IntegrationTestSupport support = H2IntegrationTestSupport.create();
         // schema generator가 emit하는 DDL을 그대로 실행해, @Column(precision, scale)이 만든
@@ -124,6 +146,13 @@ class BigDecimalColumnRoundTripIntegrationTest {
 
         @Column(precision = 12, scale = 6)
         BigDecimal differingScaleAmount;
+
+        BigDecimalStorageShapes() {
+        }
+
+        BigDecimalStorageShapes(BigDecimal defaultAmount) {
+            this.defaultAmount = defaultAmount;
+        }
     }
 
     private record NumericColumn(String name, String type, Integer precision, Integer scale) {
