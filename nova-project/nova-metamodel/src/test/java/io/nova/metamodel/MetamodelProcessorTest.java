@@ -342,6 +342,40 @@ class MetamodelProcessorTest {
     }
 
     @Test
+    @DisplayName("PROPERTY access accepts matching generic getter and setter type variables")
+    void acceptsMatchingGenericPropertyAccessors() {
+        Source source = new Source(
+                "fixtures.GenericProperty",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+
+                @Entity
+                @Access(AccessType.PROPERTY)
+                public class GenericProperty<T> {
+                    private Long id;
+                    private T value;
+
+                    @Id public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+                    public T getValue() { return value; }
+                    public void setValue(T value) { this.value = value; }
+                }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(source);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.GenericProperty_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String value = \"value\";"));
+    }
+
+    @Test
     @DisplayName("static / transient / 합성 필드는 모두 무시된다")
     void ignoresStaticAndTransientFields() {
         Source source = new Source(
