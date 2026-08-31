@@ -80,6 +80,8 @@ class DerivedQueryParserTest {
         @Embedded
         AddressWithCityName address;
         @Embedded
+        @jakarta.persistence.AttributeOverride(
+                name = "name", column = @Column(name = "address_city_name_alt"))
         AddressCityWithName addressCity;
     }
 
