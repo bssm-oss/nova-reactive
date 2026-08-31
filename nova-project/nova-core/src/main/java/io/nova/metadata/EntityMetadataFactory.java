@@ -2482,6 +2482,7 @@ public final class EntityMetadataFactory {
         Class<?> target = annotation.targetEntity() == void.class ? attribute.javaType() : annotation.targetEntity();
         String mappedBy = annotation.mappedBy();
         if (!mappedBy.isBlank()) {
+            rejectUnsupportedInverseOneToOne(entityType, attribute.name(), annotation);
             if (attribute.isAnnotationPresent(MapsId.class)) {
                 throw new IllegalArgumentException(entityType.getName() + "." + attribute.name()
                         + " @MapsId is only valid on the owning side of a to-one relationship;"
@@ -2496,6 +2497,8 @@ public final class EntityMetadataFactory {
                     ColumnDdlDefinition.EMPTY);
         }
         JoinColumn join = attribute.annotation(JoinColumn.class);
+        rejectUnsupportedOwningOneToOne(entityType, attribute.name(), annotation, join,
+                attribute.annotation(JoinColumns.class), attribute.isAnnotationPresent(MapsId.class));
         ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
         ToOneForeignKey compositeForeignKey = storage == null
                 ? resolveCompositeToOneForeignKey(entityType, target, attribute) : null;
@@ -2519,7 +2522,7 @@ public final class EntityMetadataFactory {
                 attribute.accessType() == AccessType.PROPERTY,
                 attribute.getter(), attribute.setter(),
                 annotation.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(annotation.cascade())),
-                "", compositeForeignKey);
+                "", compositeForeignKey).withOneToOneLifecycle(oneToOne, annotation.orphanRemoval());
     }
 
     private PersistentProperty createDescriptorCollectionMarker(PersistentAttributeAccess attribute) {
@@ -2530,6 +2533,45 @@ public final class EntityMetadataFactory {
                 null, null, null, null, false, "", attribute.accessType() == AccessType.PROPERTY,
                 attribute.getter(), attribute.setter(), null, "", null,
                 ColumnDdlDefinition.EMPTY);
+    }
+
+    private static void rejectUnsupportedInverseOneToOne(
+            Class<?> entityType, String propertyName, OneToOne annotation) {
+        if (annotation.orphanRemoval()) {
+            throw new IllegalArgumentException(entityType.getName() + "." + propertyName
+                    + " orphanRemoval is supported only on the owning @OneToOne side");
+        }
+        for (CascadeType cascade : annotation.cascade()) {
+            if (cascade == CascadeType.PERSIST || cascade == CascadeType.MERGE
+                    || cascade == CascadeType.REMOVE || cascade == CascadeType.ALL) {
+                throw new IllegalArgumentException(entityType.getName() + "." + propertyName
+                        + " inverse @OneToOne cascade " + cascade + " is not supported");
+            }
+        }
+    }
+
+    private static void rejectUnsupportedOwningOneToOne(
+            Class<?> entityType, String propertyName, OneToOne annotation, JoinColumn joinColumn,
+            JoinColumns joinColumns, boolean mapsId) {
+        if (!annotation.orphanRemoval()) {
+            return;
+        }
+        if (mapsId) {
+            throw new IllegalArgumentException(entityType.getName() + "." + propertyName
+                    + " orphanRemoval cannot be combined with @MapsId");
+        }
+        if (joinColumn != null && !joinColumn.updatable()) {
+            throw new IllegalArgumentException(entityType.getName() + "." + propertyName
+                    + " orphanRemoval requires an updatable @JoinColumn");
+        }
+        if (joinColumns != null) {
+            for (JoinColumn column : joinColumns.value()) {
+                if (!column.updatable()) {
+                    throw new IllegalArgumentException(entityType.getName() + "." + propertyName
+                            + " orphanRemoval requires every @JoinColumn to be updatable");
+                }
+            }
+        }
     }
 
     /**
@@ -4458,6 +4500,7 @@ public final class EntityMetadataFactory {
         }
         String mappedBy = oneToOne.mappedBy();
         if (mappedBy != null && !mappedBy.isBlank()) {
+            rejectUnsupportedInverseOneToOne(entityType, field.getName(), oneToOne);
             // @MapsId는 FK를 소유한 owning side에서만 식별자를 파생할 수 있다. inverse(mappedBy) side에
             // @MapsId가 붙으면 조용히 무시되지 않도록 fail-fast로 거부한다.
             if (memberPresent(field, MapsId.class)) {
@@ -4519,6 +4562,8 @@ public final class EntityMetadataFactory {
         }
         // owning side — FK 컬럼을 가지는 단건 참조. @ManyToOne과 동일하게 모델링하되 FK는 unique 기본.
         JoinColumn joinColumn = memberAnnotation(field, JoinColumn.class);
+        rejectUnsupportedOwningOneToOne(entityType, field.getName(), oneToOne, joinColumn,
+                memberAnnotation(field, JoinColumns.class), memberPresent(field, MapsId.class));
         String columnName;
         if (joinColumn != null && !joinColumn.name().isBlank()) {
             columnName = joinColumn.name();
@@ -4594,7 +4639,7 @@ public final class EntityMetadataFactory {
                 toOneCascadeInfo,
                 "",
                 compositeForeignKey,
-                ColumnDdlDefinition.EMPTY);
+                ColumnDdlDefinition.EMPTY).withOneToOneLifecycle(true, oneToOne.orphanRemoval());
     }
 
     private PersistentProperty createOneToOneProperty(

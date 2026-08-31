@@ -56,6 +56,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.OrderColumn;
 import jakarta.persistence.PostRemove;
 import jakarta.persistence.PreRemove;
@@ -87,6 +88,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SimpleReactiveEntityOperationsTest {
     private static final List<String> ORDERED_REMOVAL_TRACE = new ArrayList<>();
+    private static final List<String> ONE_TO_ONE_REMOVAL_TRACE = new ArrayList<>();
+    private static final RowAccessor NO_QUERY_ROW = new MapRowAccessor(Map.of());
 
     @Test
     void saveUsesInsertWithGeneratedKeyForNewIdentityEntity() {
@@ -3129,6 +3132,162 @@ class SimpleReactiveEntityOperationsTest {
         assertEquals(1, executor.executedStatements.size());
     }
 
+    @Test
+    void statelessOwningOneToOneOrphanRemovalUpdatesOwnerBeforeDeletingOldTarget() {
+        ONE_TO_ONE_REMOVAL_TRACE.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "target_id", 10L)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 10L)));
+        executor.queryOneResults.addLast(NO_QUERY_ROW);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, null);
+
+        StepVerifier.create(operations.save(owner)).expectNext(owner).verifyComplete();
+
+        assertEquals(
+                List.of(
+                        "update one_to_one_orphan_owners set target_id = ? where id = ?",
+                        "delete from one_to_one_orphan_targets where id = ?"),
+                executor.chronologicalSqlCalls);
+        assertEquals(List.of("owner-pre-update", "pre-remove", "post-remove"), ONE_TO_ONE_REMOVAL_TRACE);
+    }
+
+    @Test
+    void ownerDeleteSkipsOneToOneOrphanWhenSharedGuardFindsLiveReference() {
+        ONE_TO_ONE_REMOVAL_TRACE.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of()));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, new OneToOneOrphanTarget(10L));
+
+        StepVerifier.create(operations.delete(owner)).expectNext(1L).verifyComplete();
+
+        assertEquals(List.of("delete from one_to_one_orphan_owners where id = ?"), executor.chronologicalSqlCalls);
+        assertTrue(ONE_TO_ONE_REMOVAL_TRACE.isEmpty(), "a shared target receives no removal callbacks");
+    }
+
+    @Test
+    void statelessTransientOneToOneReplacementWithoutCascadeFailsBeforeOwnerOrOrphanSql() {
+        ONE_TO_ONE_REMOVAL_TRACE.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "target_id", 10L)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, new OneToOneOrphanTarget());
+
+        StepVerifier.create(operations.save(owner))
+                .expectErrorSatisfies(error -> assertTrue(error.getMessage().contains("without cascade PERSIST")))
+                .verify();
+
+        assertEquals(List.of("owner-pre-update"), ONE_TO_ONE_REMOVAL_TRACE);
+        assertTrue(executor.executedStatements.isEmpty(), "validation precedes owner update and orphan delete");
+    }
+
+    @Test
+    void managedTransientOneToOneReplacementWithoutCascadeInvokesCallbackButEmitsNoSql() {
+        ONE_TO_ONE_REMOVAL_TRACE.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, new OneToOneOrphanTarget(10L));
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(OneToOneOrphanOwner.class), owner);
+        owner.target = new OneToOneOrphanTarget();
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorSatisfies(error -> assertTrue(error.getMessage().contains("without cascade PERSIST")))
+                .verify();
+
+        assertEquals(List.of("owner-pre-update"), ONE_TO_ONE_REMOVAL_TRACE);
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
+    void managedNullOrphanBaselineCascadesTransientReferenceThenUpdatesFkAndRefreshesSnapshot() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 20L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CascadingOneToOneOwner owner = new CascadingOneToOneOwner(1L, "unchanged", null);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CascadingOneToOneOwner.class), owner);
+        owner.target = new CascadingOneToOneTarget(null);
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(List.of(
+                "insert into cascading_one_to_one_targets (name) values (?)",
+                "update cascading_one_to_one_owners set target_id = ? where id = ?"), executor.chronologicalSqlCalls);
+        assertEquals(20L, owner.target.id);
+        executor.chronologicalSqlCalls.clear();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+        assertTrue(executor.chronologicalSqlCalls.isEmpty(), "successful FK update refreshes the owner snapshot");
+    }
+
+    @Test
+    void managedNullOrphanBaselineWithoutCascadeRejectsTransientReferenceBeforeSql() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, null);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(OneToOneOrphanOwner.class), owner);
+        owner.target = new OneToOneOrphanTarget();
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorSatisfies(error -> assertTrue(error.getMessage().contains("without cascade PERSIST")))
+                .verify();
+        assertTrue(executor.chronologicalSqlCalls.isEmpty());
+    }
+
+    @Test
+    void preUpdateTransientCascadeIsAssignedBeforeOwnerUpdateFieldsAreComputed() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 21L;
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CascadingOneToOneOwner owner = new CascadingOneToOneOwner(1L, "before", null);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CascadingOneToOneOwner.class), owner);
+        owner.name = "after";
+        owner.addTransientTargetInPreUpdate = true;
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(List.of(
+                "insert into cascading_one_to_one_targets (name) values (?)",
+                "update cascading_one_to_one_owners set name = ?, target_id = ? where id = ?"),
+                executor.chronologicalSqlCalls);
+        assertEquals(21L, owner.target.id);
+    }
+
+    @Test
+    void failedCascadedOwnerUpdateKeepsNullBaselineRetryable() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.generatedKey = 22L;
+        executor.executeErrors.addLast(new IllegalStateException("owner update failed"));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        CascadingOneToOneOwner owner = new CascadingOneToOneOwner(1L, "unchanged", null);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata(CascadingOneToOneOwner.class), owner);
+        owner.target = new CascadingOneToOneTarget(null);
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorMessage("owner update failed")
+                .verify();
+        executor.chronologicalSqlCalls.clear();
+
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+        assertEquals(List.of("update cascading_one_to_one_owners set target_id = ? where id = ?"),
+                executor.chronologicalSqlCalls, "failed owner update must not advance its null-FK snapshot");
+    }
+
     private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
         PersistenceSession session = new PersistenceSession();
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
@@ -3383,7 +3542,10 @@ class SimpleReactiveEntityOperationsTest {
             if (emptyQueryOne) {
                 return Mono.empty();
             }
-            return Mono.fromSupplier(() -> mapper.apply(queryOneResults.removeFirst()));
+            return Mono.defer(() -> {
+                RowAccessor row = queryOneResults.removeFirst();
+                return row == NO_QUERY_ROW ? Mono.empty() : Mono.justOrEmpty(mapper.apply(row));
+            });
         }
 
         @Override
@@ -3851,6 +4013,94 @@ class SimpleReactiveEntityOperationsTest {
         @PostRemove
         void postRemove() {
             RemovalCallbacks.events.add("child-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "one_to_one_orphan_targets")
+    private static final class OneToOneOrphanTarget {
+        @Id
+        private Long id;
+
+        private OneToOneOrphanTarget() {
+        }
+
+        private OneToOneOrphanTarget(Long id) {
+            this.id = id;
+        }
+
+        @PreRemove
+        void preRemove() {
+            ONE_TO_ONE_REMOVAL_TRACE.add("pre-remove");
+        }
+
+        @PostRemove
+        void postRemove() {
+            ONE_TO_ONE_REMOVAL_TRACE.add("post-remove");
+        }
+    }
+
+    @Entity
+    @Table(name = "one_to_one_orphan_owners")
+    private static final class OneToOneOrphanOwner {
+        @Id
+        private Long id;
+
+        @OneToOne(orphanRemoval = true)
+        @JoinColumn(name = "target_id")
+        private OneToOneOrphanTarget target;
+
+        private OneToOneOrphanOwner() {
+        }
+
+        private OneToOneOrphanOwner(Long id, OneToOneOrphanTarget target) {
+            this.id = id;
+            this.target = target;
+        }
+
+        @PreUpdate
+        void preUpdate() {
+            ONE_TO_ONE_REMOVAL_TRACE.add("owner-pre-update");
+        }
+    }
+
+    @Entity
+    @Table(name = "cascading_one_to_one_targets")
+    private static final class CascadingOneToOneTarget {
+        @Id
+        @GeneratedValue
+        private Long id;
+        private String name = "target";
+
+        private CascadingOneToOneTarget(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "cascading_one_to_one_owners")
+    private static class CascadingOneToOneOwner {
+        @Id
+        private Long id;
+        private String name;
+
+        @OneToOne(cascade = CascadeType.PERSIST, orphanRemoval = true)
+        @JoinColumn(name = "target_id")
+        private CascadingOneToOneTarget target;
+        @jakarta.persistence.Transient
+        private boolean addTransientTargetInPreUpdate;
+
+        private CascadingOneToOneOwner(Long id, String name, CascadingOneToOneTarget target) {
+            this.id = id;
+            this.name = name;
+            this.target = target;
+        }
+
+        @PreUpdate
+        void addTransientTarget() {
+            if (addTransientTargetInPreUpdate) {
+                target = new CascadingOneToOneTarget(null);
+            }
         }
     }
 

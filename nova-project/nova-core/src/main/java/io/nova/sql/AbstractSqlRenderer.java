@@ -1263,6 +1263,23 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             AggregatePredicateLookup aliasLookup
     ) {
         if (predicate instanceof Condition condition) {
+            PersistentProperty compositeProperty = metadata.findProperty(condition.property()).orElse(null);
+            if (compositeProperty != null && compositeProperty.isCompositeToOne()
+                    && (condition.operator() == ComparisonOperator.EQ || condition.operator() == ComparisonOperator.NE)) {
+                if (!(condition.value() instanceof List<?> values)
+                        || values.size() != compositeProperty.toOneForeignKey().columns().size()) {
+                    throw new IllegalArgumentException("Composite to-one equality requires one value per FK column for "
+                            + condition.property());
+                }
+                List<String> terms = new ArrayList<>(values.size());
+                for (int index = 0; index < values.size(); index++) {
+                    var column = compositeProperty.toOneForeignKey().columns().get(index);
+                    terms.add(dialect.quote(column.columnName()) + " " + condition.operator().sql() + " "
+                            + dialect.bindMarkers().marker(context.nextIndex()));
+                    context.addBinding(column.toColumnValue(values.get(index)));
+                }
+                return String.join(condition.operator() == ComparisonOperator.NE ? " or " : " and ", terms);
+            }
             ResolvedExpression expression = resolveExpression(metadata, condition.property(), aliasLookup);
             ComparisonOperator operator = condition.operator();
             if (operator == ComparisonOperator.IS_NULL || operator == ComparisonOperator.IS_NOT_NULL) {

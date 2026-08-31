@@ -7,6 +7,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadata;
@@ -175,6 +178,41 @@ class PersistenceSessionTest {
         assertTrue(session.isManaged(metadata, person));
     }
 
+    @Test
+    void scalarOneToOneSnapshotUsesReferencedIdentifierRatherThanInstanceIdentity() {
+        EntityMetadata<OneToOneOwner> metadata = factory.getEntityMetadata(OneToOneOwner.class);
+        PersistenceSession session = new PersistenceSession();
+        OneToOneOwner owner = new OneToOneOwner(1L, new OneToOneTarget(10L));
+        session.registerOnLoad(metadata, owner);
+        PersistenceSession.ManagedEntry entry = session.managedEntries().iterator().next();
+
+        owner.target = new OneToOneTarget(10L);
+        assertTrue(entry.dirtyPropertyNames().isEmpty(), "same target id is not a replacement");
+
+        owner.target = new OneToOneTarget(11L);
+        assertEquals(List.of("target"), entry.dirtyPropertyNames());
+        owner.target = null;
+        assertEquals(List.of("target"), entry.dirtyPropertyNames());
+    }
+
+    @Test
+    void compositeOneToOneSnapshotUsesOrderedForeignKeyComponents() {
+        EntityMetadata<CompositeOneToOneOwner> metadata = factory.getEntityMetadata(CompositeOneToOneOwner.class);
+        PersistenceSession session = new PersistenceSession();
+        CompositeOneToOneOwner owner = new CompositeOneToOneOwner(
+                1L, new CompositeOneToOneTarget(new CompositeOneToOneTargetId("tenant-a", 7L)));
+        session.registerOnLoad(metadata, owner);
+        PersistenceSession.ManagedEntry entry = session.managedEntries().iterator().next();
+
+        owner.target = new CompositeOneToOneTarget(new CompositeOneToOneTargetId("tenant-a", 7L));
+        assertTrue(entry.dirtyPropertyNames().isEmpty(), "equal composite FK components are clean");
+
+        owner.target = new CompositeOneToOneTarget(new CompositeOneToOneTargetId("tenant-a", 8L));
+        assertEquals(List.of("target"), entry.dirtyPropertyNames());
+        entry.refreshSnapshot();
+        assertTrue(entry.dirtyPropertyNames().isEmpty(), "refreshed composite snapshot remains normalized");
+    }
+
     private static Person person(Long id, String name, int age) {
         Person person = new Person();
         person.id = id;
@@ -231,5 +269,73 @@ class PersistenceSessionTest {
         @EmbeddedId
         OrderLineId id;
         Integer quantity;
+    }
+
+    @Entity
+    @Table(name = "one_to_one_targets")
+    static class OneToOneTarget {
+        @Id
+        Long id;
+
+        OneToOneTarget(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "one_to_one_owners")
+    static class OneToOneOwner {
+        @Id
+        Long id;
+
+        @OneToOne(orphanRemoval = true)
+        @JoinColumn(name = "target_id")
+        OneToOneTarget target;
+
+        OneToOneOwner(Long id, OneToOneTarget target) {
+            this.id = id;
+            this.target = target;
+        }
+    }
+
+    @Embeddable
+    static class CompositeOneToOneTargetId {
+        String tenant;
+        Long sequence;
+
+        CompositeOneToOneTargetId(String tenant, Long sequence) {
+            this.tenant = tenant;
+            this.sequence = sequence;
+        }
+    }
+
+    @Entity
+    @Table(name = "composite_one_to_one_targets")
+    static class CompositeOneToOneTarget {
+        @EmbeddedId
+        CompositeOneToOneTargetId id;
+
+        CompositeOneToOneTarget(CompositeOneToOneTargetId id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "composite_one_to_one_owners")
+    static class CompositeOneToOneOwner {
+        @Id
+        Long id;
+
+        @OneToOne(orphanRemoval = true)
+        @JoinColumns({
+                @JoinColumn(name = "target_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "target_sequence", referencedColumnName = "sequence")
+        })
+        CompositeOneToOneTarget target;
+
+        CompositeOneToOneOwner(Long id, CompositeOneToOneTarget target) {
+            this.id = id;
+            this.target = target;
+        }
     }
 }

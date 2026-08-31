@@ -44,7 +44,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@UniqueConstraint` | Table-level unique constraint, declared in `@Table(uniqueConstraints = ...)` with a `columnNames` array. Without `name`, generated as `uk_{table}_{cols}`. |
 | `@ManyToOne`      | Owning side of a single reference. `findById` / `findAll` automatically hydrate the parent with a single IN query. Target resolved via `targetEntity` or field type; nullability via `optional`. |
 | `@OneToMany`      | Inverse-side collection. Requires `mappedBy` naming the child's `@ManyToOne` property. `findById` / `findAll` automatically hydrate children with a single IN query. |
-| `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. `fetch = LAZY` is accepted and treated as eager (no lazy proxy); `cascade` (`PERSIST` / `MERGE` / `REMOVE`) propagates to the referenced entity on `save` / `delete`. |
+| `@OneToOne`       | Single reference. **Owning** side (`@JoinColumn`, no `mappedBy`) holds a unique FK column and hydrates like `@ManyToOne`. **Inverse** side (`@OneToOne(mappedBy = "...")`) has no column and hydrates a single entity via the owner's FK. Owning `orphanRemoval = true` deletes a replaced, cleared, or owner-deleted target after the FK change; inverse orphan removal and inverse mutating cascades fail fast. `fetch = LAZY` is accepted and treated as eager (no lazy proxy). |
 | `@ManyToMany` / `@JoinTable` | Many-to-many via a link table. **Owning** side (`@JoinTable`, no `mappedBy`) defines the table + join columns; **inverse** side (`@ManyToMany(mappedBy = "...")`) reuses it. Both `List` and `Set` are supported, including composite-key owners and targets. The link table is auto-created by the schema initializer. `save(owner)` reconciles link-row diffs; both sides hydrate eagerly via a 2-hop IN-query and owner/inverse deletion cleans up link rows. Owning-side `cascade` (`PERSIST` / `MERGE`) propagates to the target entities on `save`; inverse-side `cascade` is rejected fail-fast. |
 | `@ElementCollection` / `@CollectionTable` | Basic values and flat mutable/record `@Embeddable` values (`List`/`Set`/`Map`) are stored in a separate collection table, auto-created by the schema initializer. `@CollectionTable` / `@JoinColumn` / `@Column` override table, owner-FK, and value column names. `save(owner)` reconciles rows (full-replace); `findById` / `findAll` hydrate via one IN-query. Nested `@EmbeddedId` collection values remain unsupported. |
 | `@OrderBy`        | On `@OneToMany` and `@ManyToMany`, orders hydrated targets. `@OrderBy("title DESC, id ASC")` adds the matching `ORDER BY`; an empty `@OrderBy` sorts by every target `@Id` component ascending. |
@@ -255,7 +255,23 @@ public class Passport {
 - The **inverse** side (`mappedBy`) has no column; `findById` / `findAll` hydrate the single owner
   by querying the owning table's FK. As with `@OneToMany`, declare `targetEntity` when the type
   cannot be inferred, and the inverse field is excluded from column mapping automatically.
-- `@OneToOne(fetch = LAZY)` is accepted and treated as eager (no lazy proxy). `cascade` (`PERSIST` / `MERGE` / `REMOVE`) is supported and propagates to the referenced entity on `save` / `delete`.
+- `@OneToOne(fetch = LAZY)` is accepted and treated as eager (no lazy proxy). On the **owning**
+  side, `cascade` (`PERSIST` / `MERGE` / `REMOVE`) propagates to the referenced entity on
+  `save` / `delete`. Inverse `PERSIST`, `MERGE`, `REMOVE`, and `ALL` declarations fail fast
+  rather than being silently ignored.
+- Owning `@OneToOne(orphanRemoval = true)` treats the target as privately owned: replacing the
+  reference or setting it to `null` writes the owner FK first, then removes the old target through
+  its normal delete path (callbacks, soft delete, and version checks apply). Deleting the owner
+  also removes that target; combining `orphanRemoval` with `cascade = REMOVE` still runs one
+  target deletion/callback sequence.
+- The guard only checks compatible owning to-one references on the same owner entity before
+  removing a target. It is not a persistence-unit-wide reverse-reference catalog: references from
+  other entity types, especially soft-delete references, are outside this guarantee. The guard is
+  also check-then-delete, so applications that allow concurrent reassignment of a supposedly
+  private target must coordinate with an appropriate transaction isolation/locking strategy.
+- `orphanRemoval` is rejected on an inverse (`mappedBy`) relation, with `@MapsId`, or when its
+  join column is not updatable. Scalar and composite owner/target identifiers, including PROPERTY
+  access, are supported; assigning another instance with the same target key does not orphan it.
 
 ---
 
