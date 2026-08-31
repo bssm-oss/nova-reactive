@@ -279,6 +279,123 @@ class R2dbcTransactionManagerTest {
     }
 
     @Test
+    void absorbedJoinedCancellationMarksRootRollbackOnly() {
+        List<String> calls = new java.util.ArrayList<>();
+        AtomicBoolean joinedEntered = new AtomicBoolean();
+        Connection connection = recordingTransactionConnection(calls);
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        Mono.firstWithSignal(
+                                txManager.inTransaction(TransactionDefinition.DEFAULT, joined -> {
+                                    joinedEntered.set(true);
+                                    return Mono.never();
+                                }),
+                                Mono.just("winner"))))
+                .expectErrorSatisfies(this::assertUnexpectedRollback)
+                .verify();
+
+        assertTrue(joinedEntered.get());
+        assertEquals(List.of("begin", "rollback", "close"), calls);
+    }
+
+    @Test
+    void uncaughtJoinedErrorIsReturnedByIdentity() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException failure = new IllegalStateException("joined failed");
+        R2dbcTransactionManager txManager = transactionManager(transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.empty(), Mono.empty(), rollbackCalls, closeCalls));
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT,
+                        outer -> txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                joined -> Mono.error(failure))))
+                .expectErrorSatisfies(error -> assertSame(failure, error))
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void activeMandatoryAndSupportsFailuresMarkRootRollbackOnly() {
+        List<String> calls = new java.util.ArrayList<>();
+        R2dbcTransactionManager txManager = transactionManager(recordingTransactionConnection(calls));
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.MANDATORY),
+                                        mandatory -> Mono.error(new IllegalStateException("mandatory failed")))
+                                .onErrorResume(ignored -> Mono.empty())
+                                .then(txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.SUPPORTS),
+                                        supports -> Mono.error(new IllegalStateException("supports failed"))))
+                                .onErrorResume(ignored -> Mono.just("apparent success"))))
+                .expectErrorSatisfies(this::assertUnexpectedRollback)
+                .verify();
+
+        assertEquals(List.of("begin", "rollback", "close"), calls);
+    }
+
+    @Test
+    void rollbackFailureOutranksUnexpectedRollbackAndSuppressesIt() {
+        AtomicInteger rollbackCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        IllegalStateException rollbackFailure = new IllegalStateException("rollback failed");
+        R2dbcTransactionManager txManager = transactionManager(transactionConnection(
+                Mono.empty(), Mono.empty(), Mono.error(rollbackFailure), Mono.empty(), rollbackCalls, closeCalls));
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                        joined -> Mono.error(new IllegalStateException("joined failed")))
+                                .onErrorResume(ignored -> Mono.just("apparent success"))))
+                .expectErrorSatisfies(error -> {
+                    assertSame(rollbackFailure, error);
+                    assertEquals(1, error.getSuppressed().length);
+                    assertUnexpectedRollback(error.getSuppressed()[0]);
+                })
+                .verify();
+
+        assertEquals(1, rollbackCalls.get());
+        assertEquals(1, closeCalls.get());
+    }
+
+    @Test
+    void requiresNewUnexpectedRollbackIsIsolatedFromOuterCommit() {
+        List<String> calls = new java.util.ArrayList<>();
+        AtomicReference<Throwable> innerError = new AtomicReference<>();
+        Connection outerConnection = namedTransactionConnection("outer", calls);
+        Connection innerConnection = namedTransactionConnection("inner", calls);
+        AtomicInteger acquisitions = new AtomicInteger();
+        R2dbcTransactionManager txManager = new R2dbcTransactionManager(new ConnectionFactory() {
+            @Override
+            public Mono<? extends Connection> create() {
+                return Mono.just(acquisitions.getAndIncrement() == 0 ? outerConnection : innerConnection);
+            }
+
+            @Override
+            public ConnectionFactoryMetadata getMetadata() {
+                return () -> "test";
+            }
+        });
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.requiresNew(), inner ->
+                                        txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                                        joined -> Mono.error(new IllegalStateException("joined failed")))
+                                                .onErrorResume(ignored -> Mono.empty()))
+                                .onErrorResume(error -> {
+                                    innerError.set(error);
+                                    return Mono.empty();
+                                })
+                                .thenReturn("outer success")))
+                .expectNext("outer success")
+                .verifyComplete();
+
+        assertUnexpectedRollback(innerError.get());
+        assertEquals(List.of("outer:begin", "inner:begin", "inner:rollback", "inner:close",
+                "outer:commit", "outer:close"), calls);
+    }
+
+    @Test
     void mandatoryWithoutActiveTransactionFailsWithIllegalState() {
         R2dbcTransactionManager txManager = new R2dbcTransactionManager(connectionFactory);
 
@@ -1018,6 +1135,104 @@ class R2dbcTransactionManagerTest {
         assertEquals(1, releaseCalls.get());
     }
 
+    @Test
+    void caughtSavepointRollbackFailureMarksOuterRollbackOnly() {
+        List<String> calls = new java.util.ArrayList<>();
+        IllegalStateException savepointFailure = new IllegalStateException("savepoint rollback failed");
+        Connection connection = savepointConnection(calls, attempt -> Mono.error(savepointFailure),
+                () -> Mono.empty());
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                        nested -> Mono.error(new IllegalStateException("nested failed")))
+                                .onErrorResume(error -> {
+                                    assertSame(savepointFailure, error);
+                                    return Mono.just("outer apparent success");
+                                })))
+                .expectErrorSatisfies(this::assertUnexpectedRollback)
+                .verify();
+
+        assertEquals(List.of("begin", "create", "rollback-savepoint", "release", "rollback", "close"), calls);
+    }
+
+    @Test
+    void recursiveSavepointRollbackFailureIsContainedBySuccessfulMiddleRollback() {
+        List<String> calls = new java.util.ArrayList<>();
+        IllegalStateException innerRollbackFailure = new IllegalStateException("inner rollback failed");
+        Connection connection = savepointConnection(calls,
+                attempt -> attempt == 1 ? Mono.error(innerRollbackFailure) : Mono.empty(), () -> Mono.empty());
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.NESTED), middle ->
+                                        txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                                        inner -> Mono.error(new IllegalStateException("inner failed")))
+                                                .onErrorResume(error -> {
+                                                    assertSame(innerRollbackFailure, error);
+                                                    return Mono.empty();
+                                                }))
+                                .onErrorResume(UnexpectedRollbackException.class, ignored -> Mono.just("outer success"))))
+                .expectNext("outer success")
+                .verifyComplete();
+
+        assertEquals(List.of("begin", "create", "create", "rollback-savepoint", "release",
+                "rollback-savepoint", "release", "commit", "close"), calls);
+    }
+
+    @Test
+    void releaseOnlySavepointFailureDoesNotMarkOuterRollbackOnly() {
+        List<String> calls = new java.util.ArrayList<>();
+        IllegalStateException releaseFailure = new IllegalStateException("release failed");
+        Connection connection = savepointConnection(calls, attempt -> Mono.empty(), () -> Mono.error(releaseFailure));
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                        nested -> Mono.just("nested success"))
+                                .onErrorResume(error -> {
+                                    assertSame(releaseFailure, error);
+                                    return Mono.just("outer success");
+                                })))
+                .expectNext("outer success")
+                .verifyComplete();
+
+        assertEquals(List.of("begin", "create", "release", "commit", "close"), calls);
+    }
+
+    @Test
+    void markedNestedRollbackFailureSuppressesUnexpectedRollbackBeforeParentRollback() {
+        List<String> calls = new java.util.ArrayList<>();
+        IllegalStateException savepointFailure = new IllegalStateException("savepoint rollback failed");
+        AtomicReference<Throwable> nestedFailure = new AtomicReference<>();
+        Connection connection = savepointConnection(calls, attempt -> Mono.error(savepointFailure),
+                () -> Mono.empty());
+        R2dbcTransactionManager txManager = transactionManager(connection);
+
+        StepVerifier.create(txManager.inTransaction(TransactionDefinition.DEFAULT, outer ->
+                        txManager.inTransaction(TransactionDefinition.DEFAULT.with(Propagation.NESTED),
+                                        nested -> txManager.inTransaction(TransactionDefinition.DEFAULT,
+                                                        joined -> Mono.error(new IllegalStateException("joined failed")))
+                                                .onErrorResume(ignored -> Mono.empty()))
+                                .onErrorResume(error -> {
+                                    nestedFailure.set(error);
+                                    return Mono.just("outer apparent success");
+                                })))
+                .expectErrorSatisfies(this::assertUnexpectedRollback)
+                .verify();
+
+        assertSame(savepointFailure, nestedFailure.get());
+        assertEquals(1, nestedFailure.get().getSuppressed().length);
+        assertUnexpectedRollback(nestedFailure.get().getSuppressed()[0]);
+        assertEquals(List.of("begin", "create", "rollback-savepoint", "release", "rollback", "close"), calls);
+    }
+
+    private void assertUnexpectedRollback(Throwable error) {
+        assertEquals(UnexpectedRollbackException.class, error.getClass());
+        assertEquals("Transaction rolled back because it was marked rollback-only by a participating transaction",
+                error.getMessage());
+    }
+
     private static Mono<Void> assertSamePhysicalScope(PhysicalTransactionScope expected) {
         return currentPhysicalScope().doOnNext(scope -> {
             assertSame(expected, scope);
@@ -1099,6 +1314,78 @@ class R2dbcTransactionManagerTest {
                 return () -> "test";
             }
         });
+    }
+
+    private static Connection recordingTransactionConnection(List<String> calls) {
+        return namedTransactionConnection("", calls);
+    }
+
+    private static Connection namedTransactionConnection(String name, List<String> calls) {
+        String prefix = name.isEmpty() ? "" : name + ":";
+        return (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit" -> Mono.empty();
+                    case "beginTransaction" -> {
+                        calls.add(prefix + "begin");
+                        yield Mono.empty();
+                    }
+                    case "commitTransaction" -> {
+                        calls.add(prefix + "commit");
+                        yield Mono.empty();
+                    }
+                    case "rollbackTransaction" -> {
+                        calls.add(prefix + "rollback");
+                        yield Mono.empty();
+                    }
+                    case "close" -> {
+                        calls.add(prefix + "close");
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
+    }
+
+    private static Connection savepointConnection(List<String> calls,
+                                                  Function<Integer, Mono<Void>> rollbackSavepoint,
+                                                  Supplier<Mono<Void>> releaseSavepoint) {
+        AtomicInteger rollbackAttempts = new AtomicInteger();
+        return (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit" -> Mono.empty();
+                    case "beginTransaction" -> {
+                        calls.add("begin");
+                        yield Mono.empty();
+                    }
+                    case "createSavepoint" -> {
+                        calls.add("create");
+                        yield Mono.empty();
+                    }
+                    case "rollbackTransactionToSavepoint" -> {
+                        calls.add("rollback-savepoint");
+                        yield rollbackSavepoint.apply(rollbackAttempts.incrementAndGet());
+                    }
+                    case "releaseSavepoint" -> {
+                        calls.add("release");
+                        yield releaseSavepoint.get();
+                    }
+                    case "commitTransaction" -> {
+                        calls.add("commit");
+                        yield Mono.empty();
+                    }
+                    case "rollbackTransaction" -> {
+                        calls.add("rollback");
+                        yield Mono.empty();
+                    }
+                    case "close" -> {
+                        calls.add("close");
+                        yield Mono.empty();
+                    }
+                    default -> throw new AssertionError("Unexpected connection call: " + method.getName());
+                });
     }
 
     private static Connection transactionConnection(Mono<Void> begin,
