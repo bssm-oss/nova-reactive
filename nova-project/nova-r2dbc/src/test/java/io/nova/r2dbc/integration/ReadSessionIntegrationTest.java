@@ -18,6 +18,7 @@ import io.nova.schema.SimpleSchemaInitializer;
 import io.nova.sql.Dialect;
 import io.nova.sql.SqlStatement;
 import io.nova.tx.Propagation;
+import io.nova.tx.SimpleReactiveTransactionOperations;
 import io.nova.tx.TransactionDefinition;
 import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactories;
@@ -46,6 +47,7 @@ class ReadSessionIntegrationTest {
     private ReactiveEntityOperations operations;
     private R2dbcSqlExecutor executor;
     private R2dbcTransactionManager transactionManager;
+    private SimpleReactiveTransactionOperations transactionOperations;
 
     @BeforeEach
     void setUp() {
@@ -55,6 +57,7 @@ class ReadSessionIntegrationTest {
         EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
         this.executor = new R2dbcSqlExecutor(counting, dialect);
         this.transactionManager = new R2dbcTransactionManager(counting);
+        this.transactionOperations = new SimpleReactiveTransactionOperations(transactionManager);
         this.operations = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), transactionManager);
         new SimpleSchemaInitializer(operations, metadataFactory, dialect).create(Person.class).block();
@@ -109,7 +112,7 @@ class ReadSessionIntegrationTest {
     }
 
     @Test
-    void transactionPropagationDistinguishesReadSessionConnectionFromActiveTransaction() {
+    void helperTransactionCommitsRollsBackAndPreservesPropagationSemantics() {
         StepVerifier.create(executor.execute(new SqlStatement(
                         "create table propagation_rows (id bigint primary key)", List.of())))
                 .expectNextCount(1)
@@ -117,20 +120,20 @@ class ReadSessionIntegrationTest {
 
         counting.reset();
         StepVerifier.create(transactionManager.withConnection(
-                        transactionManager.inTransaction(TransactionDefinition.DEFAULT,
+                        transactionOperations.inTransaction(TransactionDefinition.DEFAULT,
                                         ctx -> insertPropagationRow(1L))
-                                .then(transactionManager.inTransaction(
+                                .then(transactionOperations.inTransaction(
                                         TransactionDefinition.DEFAULT.with(Propagation.NESTED),
                                         ctx -> insertPropagationRow(2L)))
-                                .then(transactionManager.inTransaction(TransactionDefinition.requiresNew(),
+                                .then(transactionOperations.inTransaction(TransactionDefinition.requiresNew(),
                                         ctx -> insertPropagationRow(3L)))
-                                .then(transactionManager.inTransaction(
+                                .then(transactionOperations.inTransaction(
                                         TransactionDefinition.DEFAULT.with(Propagation.SUPPORTS),
                                         ctx -> insertPropagationRow(4L)))
-                                .then(transactionManager.inTransaction(
+                                .then(transactionOperations.inTransaction(
                                         TransactionDefinition.DEFAULT.with(Propagation.NOT_SUPPORTED),
                                         ctx -> insertPropagationRow(5L)))
-                                .then(transactionManager.inTransaction(
+                                .then(transactionOperations.inTransaction(
                                         TransactionDefinition.DEFAULT.with(Propagation.NEVER),
                                         ctx -> insertPropagationRow(6L)))))
                 .expectNextCount(1)
@@ -145,7 +148,7 @@ class ReadSessionIntegrationTest {
                 .verifyComplete();
 
         StepVerifier.create(transactionManager.withConnection(
-                        transactionManager.inTransaction(TransactionDefinition.DEFAULT,
+                        transactionOperations.inTransaction(TransactionDefinition.DEFAULT,
                                         ctx -> insertPropagationRow(7L)
                                                 .then(Mono.error(new IllegalStateException("rollback"))))
                                 .onErrorResume(IllegalStateException.class, ignored -> Mono.empty())))
@@ -158,7 +161,7 @@ class ReadSessionIntegrationTest {
                 .verifyComplete();
 
         StepVerifier.create(transactionManager.withConnection(
-                        transactionManager.inTransaction(
+                        transactionOperations.inTransaction(
                                 TransactionDefinition.DEFAULT.with(Propagation.MANDATORY),
                                 ctx -> Mono.empty())))
                 .expectError(IllegalStateException.class)
