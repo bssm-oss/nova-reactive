@@ -4,6 +4,8 @@ import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Id;
+import jakarta.persistence.Entity;
+import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.Transient;
 
 import java.beans.Introspector;
@@ -203,7 +205,16 @@ public final class PersistentAccessResolver {
 
     private static List<Class<?>> hierarchy(Class<?> type) {
         List<Class<?>> result = new ArrayList<>();
-        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) result.add(0, current);
+        // Only managed declarations contribute inherited entity state.  An
+        // ordinary Java superclass is not a persistent superclass merely
+        // because it happens to expose fields or bean methods.
+        for (Class<?> current = type; current != null && current != Object.class;
+                current = current.getSuperclass()) {
+            if (current == type || current.isAnnotationPresent(Entity.class)
+                    || current.isAnnotationPresent(MappedSuperclass.class)) {
+                result.add(0, current);
+            }
+        }
         return result;
     }
 

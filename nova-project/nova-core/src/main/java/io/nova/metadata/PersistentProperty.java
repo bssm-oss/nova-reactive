@@ -7,6 +7,7 @@ import io.nova.convert.AttributeConverter;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Objects;
@@ -513,6 +514,23 @@ public final class PersistentProperty {
 
     public Field field() {
         return field;
+    }
+
+    /** Returns an annotation from the selected persistent member. */
+    public <A extends Annotation> A annotation(Class<A> annotationType) {
+        if (propertyAccess && propertyAccessGetter != null) {
+            A annotation = propertyAccessGetter.getAnnotation(annotationType);
+            if (annotation != null) {
+                return annotation;
+            }
+        }
+        return field.getAnnotation(annotationType);
+    }
+
+    /** The selected member's declaration, not necessarily the backing field's authority. */
+    public Class<?> declaringType() {
+        return propertyAccess && propertyAccessGetter != null
+                ? propertyAccessGetter.getDeclaringClass() : field.getDeclaringClass();
     }
 
     /** The selected state and annotation carrier for this property. */

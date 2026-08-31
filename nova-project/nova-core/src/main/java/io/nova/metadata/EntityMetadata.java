@@ -31,6 +31,8 @@ public final class EntityMetadata<T> {
      * 파생되므로 생성자 시그니처를 바꾸지 않고 자동으로 채워진다.
      */
     private final List<PersistentProperty> idProperties;
+    /** Validated, accessible @IdClass fields keyed by persistent id attribute. */
+    private final Map<String, java.lang.reflect.Field> idClassPlan;
     /**
      * 관계/값 컬렉션 property 뷰는 생성 시 한 번 계산해 캐시한다. {@link #properties}는 생성 후 불변이므로
      * 매 호출 {@code stream().filter().toList()}를 반복할 이유가 없다 — findById/findAll/save 핫패스에서
@@ -244,6 +246,7 @@ public final class EntityMetadata<T> {
         this.propertiesByName = Collections.unmodifiableMap(index);
         this.idProperty = idProperty;
         this.idProperties = this.properties.stream().filter(PersistentProperty::id).toList();
+        this.idClassPlan = buildIdClassPlan(entityType, this.idProperties);
         this.manyToOneProperties = this.properties.stream().filter(PersistentProperty::manyToOne).toList();
         this.oneToManyProperties = this.properties.stream().filter(PersistentProperty::oneToMany).toList();
         this.oneToOneInverseProperties = this.properties.stream().filter(PersistentProperty::inverseToOne).toList();
@@ -398,6 +401,43 @@ public final class EntityMetadata<T> {
             return idProperty.readFromIdHolder(idObject);
         }
         return idClassAttribute(idObject.getClass(), idProperty).read(idObject);
+    }
+
+    private static Map<String, java.lang.reflect.Field> buildIdClassPlan(
+            Class<?> entityType, List<PersistentProperty> idProperties) {
+        jakarta.persistence.IdClass annotation = entityType.getAnnotation(jakarta.persistence.IdClass.class);
+        if (annotation == null) {
+            return Map.of();
+        }
+        Map<String, java.lang.reflect.Field> plan = new LinkedHashMap<>();
+        for (PersistentProperty property : idProperties) {
+            try {
+                java.lang.reflect.Field field = annotation.value().getDeclaredField(property.propertyName());
+                if (!boxed(field.getType()).equals(boxed(property.javaType()))) {
+                    throw new IllegalStateException("@IdClass " + annotation.value().getName()
+                            + " field " + field.getName() + " is incompatible with " + property.propertyName());
+                }
+                field.setAccessible(true);
+                plan.put(property.propertyName(), field);
+            } catch (NoSuchFieldException exception) {
+                throw new IllegalStateException("@IdClass " + annotation.value().getName()
+                        + " has no field '" + property.propertyName() + "'", exception);
+            }
+        }
+        return Map.copyOf(plan);
+    }
+
+    private static Class<?> boxed(Class<?> type) {
+        if (!type.isPrimitive()) return type;
+        if (type == long.class) return Long.class;
+        if (type == int.class) return Integer.class;
+        if (type == short.class) return Short.class;
+        if (type == byte.class) return Byte.class;
+        if (type == boolean.class) return Boolean.class;
+        if (type == char.class) return Character.class;
+        if (type == float.class) return Float.class;
+        if (type == double.class) return Double.class;
+        return type;
     }
 
     private Class<?> requireIdClass() {

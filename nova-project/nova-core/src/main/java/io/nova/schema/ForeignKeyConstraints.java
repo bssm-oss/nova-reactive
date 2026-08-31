@@ -21,7 +21,7 @@ import java.util.List;
 /**
  * 엔티티 메타데이터와 원본 매핑 어노테이션으로부터 JPA {@code @ForeignKey} 소스 호환 FK 제약을 해석한다.
  * 메타데이터 구조를 변경하지 않으려고(룰: 메타데이터 불변, 충돌 표면 최소화) {@code @ForeignKey}는
- * DDL 생성 시점에 이미 보관된 {@link PersistentProperty#field()}에서 직접 읽는다.
+ * DDL 생성 시점에 이미 보관된 selected persistent member에서 읽는다.
  *
  * <p>honor 규칙(JPA 기본값 정렬):
  * <ul>
@@ -81,7 +81,7 @@ final class ForeignKeyConstraints {
             if (property.isCompositeToOne()) {
                 // 복합키 타겟 to-one: @JoinColumns(foreignKey=...)가 CONSTRAINT면 다중컬럼 복합 FK를 발행한다.
                 // FK/참조 컬럼과 순서는 이미 참조 @Id 순서로 정렬된 toOneForeignKey 모델에서 그대로 가져온다.
-                JoinColumns joinColumns = property.field().getAnnotation(JoinColumns.class);
+                JoinColumns joinColumns = property.annotation(JoinColumns.class);
                 ForeignKey foreignKey = joinColumns == null ? null : joinColumns.foreignKey();
                 if (!emit(foreignKey)) {
                     continue;
@@ -99,7 +99,7 @@ final class ForeignKeyConstraints {
                         referencedColumns));
                 continue;
             }
-            JoinColumn joinColumn = property.field().getAnnotation(JoinColumn.class);
+            JoinColumn joinColumn = property.annotation(JoinColumn.class);
             ForeignKey foreignKey = joinColumn == null ? null : joinColumn.foreignKey();
             if (!emit(foreignKey)) {
                 continue;
@@ -128,7 +128,7 @@ final class ForeignKeyConstraints {
             if (!info.owning()) {
                 continue;
             }
-            JoinTable joinTable = property.field().getAnnotation(JoinTable.class);
+            JoinTable joinTable = property.annotation(JoinTable.class);
             ForeignKey ownerForeignKey = joinTable == null ? null : joinTable.foreignKey();
             if (emit(ownerForeignKey)) {
                 String relationDesc = "@JoinTable(joinColumns) of @ManyToMany "
@@ -173,7 +173,7 @@ final class ForeignKeyConstraints {
             EntityMetadata<?> metadata, EntityMetadataFactory factory,
             LinkedHashMap<String, ForeignKeyDefinition> byKey) {
         for (PersistentProperty property : metadata.elementCollectionProperties()) {
-            CollectionTable collectionTable = property.field().getAnnotation(CollectionTable.class);
+            CollectionTable collectionTable = property.annotation(CollectionTable.class);
             ForeignKey foreignKey = collectionTable == null ? null : collectionTable.foreignKey();
             if (!emit(foreignKey)) {
                 continue;
@@ -267,7 +267,7 @@ final class ForeignKeyConstraints {
     private static void requireNoExplicitForeignKey(EntityMetadata<?> metadata) {
         boolean declared = false;
         for (PersistentProperty property : metadata.manyToOneProperties()) {
-            JoinColumn joinColumn = property.field().getAnnotation(JoinColumn.class);
+            JoinColumn joinColumn = property.annotation(JoinColumn.class);
             if (joinColumn != null && emit(joinColumn.foreignKey())) {
                 declared = true;
                 break;
@@ -278,7 +278,7 @@ final class ForeignKeyConstraints {
                 if (!property.manyToManyInfo().owning()) {
                     continue;
                 }
-                JoinTable joinTable = property.field().getAnnotation(JoinTable.class);
+                JoinTable joinTable = property.annotation(JoinTable.class);
                 if (joinTable != null && (emit(joinTable.foreignKey()) || emit(joinTable.inverseForeignKey()))) {
                     declared = true;
                     break;
@@ -287,7 +287,7 @@ final class ForeignKeyConstraints {
         }
         if (!declared) {
             for (PersistentProperty property : metadata.elementCollectionProperties()) {
-                CollectionTable collectionTable = property.field().getAnnotation(CollectionTable.class);
+                CollectionTable collectionTable = property.annotation(CollectionTable.class);
                 if (collectionTable != null && emit(collectionTable.foreignKey())) {
                     declared = true;
                     break;
