@@ -3155,6 +3155,8 @@ public final class EntityMetadataFactory {
                 "",
                 false,
                 null,
+                false,
+                null,
                 null,
                 oneToManyInfo,
                 null,
