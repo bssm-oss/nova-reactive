@@ -31,6 +31,7 @@ import jakarta.persistence.TemporalType;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.annotation.Json;
 import io.nova.json.JsonCodec;
+import io.nova.query.NativeQuery;
 import io.nova.schema.SchemaInitializer;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
@@ -333,6 +334,35 @@ class PropertyAccessH2IntegrationTest {
                     assertTrue(loaded.tagsSetterInvoked && loaded.labelsSetterInvoked && loaded.weightsSetterInvoked,
                             "getter-only collection properties must hydrate through their setters");
                 })
+                .verifyComplete();
+    }
+
+    @Test
+    void propertyElementCollectionAndMapExposeExactCatalogColumns() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(schema.create(List.of(PropertyCollectionOwner.class, PropertyCollectionTag.class))
+                .thenMany(operations.queryNative(NativeQuery.of(
+                                "select \"TABLE_NAME\", \"COLUMN_NAME\", \"IS_NULLABLE\""
+                                        + " from INFORMATION_SCHEMA.COLUMNS"
+                                        + " where \"TABLE_NAME\" in ('property_owner_labels', 'property_owner_weights')"
+                                        + " order by \"TABLE_NAME\", \"ORDINAL_POSITION\""),
+                        row -> new CatalogColumn(
+                                row.get("TABLE_NAME", String.class),
+                                row.get("COLUMN_NAME", String.class),
+                                row.get("IS_NULLABLE", String.class)))
+                        .collectList()))
+                .assertNext(columns -> assertEquals(List.of(
+                        new CatalogColumn("property_owner_labels", "owner_id", "NO"),
+                        new CatalogColumn("property_owner_labels", "labels", "YES"),
+                        new CatalogColumn("property_owner_labels", "label_order", "YES"),
+                        new CatalogColumn("property_owner_weights", "owner_id", "NO"),
+                        new CatalogColumn("property_owner_weights", "weight_name", "NO"),
+                        new CatalogColumn("property_owner_weights", "weight_value", "YES")),
+                        columns,
+                        "PROPERTY collection and map annotations must produce their exact physical columns"))
                 .verifyComplete();
     }
 
@@ -1055,6 +1085,9 @@ class PropertyAccessH2IntegrationTest {
             weightsSetterInvoked = true;
             this.weightsStorage = weights;
         }
+    }
+
+    private record CatalogColumn(String tableName, String columnName, String nullable) {
     }
 
     public static class PropertyCompositeTargetKey implements Serializable {

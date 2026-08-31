@@ -22,7 +22,10 @@ import io.r2dbc.spi.ConnectionFactory;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * {@code @ForeignKey} 소스 호환을 실제 R2DBC H2 driver로 검증하는 통합 테스트. SQL string 단위 테스트만으로는
@@ -165,6 +168,39 @@ class ForeignKeyConstraintH2IntegrationTest {
                         .then(operations.executeNative(NativeQuery.of(
                                 "insert into \"fk_owner_tags\" (\"owner_id\", \"tag\") values (999, 'x')")))
         ).verifyError();
+    }
+
+    @Test
+    void ownerForeignKeyAndJoinTableConstraintsMatchTheCatalogExactly() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(schema.create(List.of(
+                        FkParent.class,
+                        FkChildConstrained.class,
+                        FkElementOwner.class,
+                        FkStudent.class,
+                        FkCourse.class))
+                .thenMany(operations.queryNative(NativeQuery.of(
+                                "select \"TABLE_NAME\", \"CONSTRAINT_NAME\""
+                                        + " from INFORMATION_SCHEMA.TABLE_CONSTRAINTS"
+                                        + " where \"CONSTRAINT_TYPE\" = 'FOREIGN KEY'"
+                                        + " and \"TABLE_NAME\" in"
+                                        + " ('fk_child_constrained', 'fk_owner_tags', 'fk_enrollment')"
+                                        + " order by \"TABLE_NAME\", \"CONSTRAINT_NAME\""),
+                        row -> new ForeignKeyCatalogEntry(
+                                row.get("TABLE_NAME", String.class),
+                                row.get("CONSTRAINT_NAME", String.class)))
+                        .collectList()))
+                .assertNext(constraints -> assertEquals(List.of(
+                        new ForeignKeyCatalogEntry("fk_child_constrained", "fk_child_parent"),
+                        new ForeignKeyCatalogEntry("fk_enrollment", "fk_enr_course"),
+                        new ForeignKeyCatalogEntry("fk_enrollment", "fk_enr_student"),
+                        new ForeignKeyCatalogEntry("fk_owner_tags", "fk_tags_owner")),
+                        constraints,
+                        "owner, collection, and join-table @ForeignKey names must equal the H2 catalog"))
+                .verifyComplete();
     }
 
     @Test
@@ -452,5 +488,8 @@ class ForeignKeyConstraintH2IntegrationTest {
 
         public SecondaryTableDefaultForeignKey() {
         }
+    }
+
+    private record ForeignKeyCatalogEntry(String tableName, String constraintName) {
     }
 }

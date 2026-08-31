@@ -6,11 +6,13 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import io.nova.query.NativeQuery;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -26,6 +28,34 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * 디코딩한다. SQL 문자열 단위 테스트로는 잡히지 않는 driver 수용성을 in-memory driver로 고정한다.
  */
 class BigDecimalColumnRoundTripIntegrationTest {
+
+    @Test
+    void h2CatalogPreservesEveryBigDecimalStorageShapeWithoutLoss() {
+        H2IntegrationTestSupport support = H2IntegrationTestSupport.create();
+        support.execute(support.operations().createTableSql(BigDecimalStorageShapes.class));
+
+        StepVerifier.create(support.operations().queryNative(
+                        NativeQuery.of("select \"COLUMN_NAME\", \"DATA_TYPE\", \"NUMERIC_PRECISION\", \"NUMERIC_SCALE\""
+                                + " from INFORMATION_SCHEMA.COLUMNS"
+                                + " where \"TABLE_NAME\" = 'big_decimal_storage_shapes'"
+                                + " order by \"ORDINAL_POSITION\""),
+                        row -> new NumericColumn(
+                                row.get("COLUMN_NAME", String.class),
+                                row.get("DATA_TYPE", String.class),
+                                row.get("NUMERIC_PRECISION", Integer.class),
+                                row.get("NUMERIC_SCALE", Integer.class)))
+                .collectList())
+                .assertNext(columns -> assertEquals(List.of(
+                        new NumericColumn("id", "BIGINT", 64, 0),
+                        new NumericColumn("default_amount", "DECFLOAT", 100_000, null),
+                        new NumericColumn("explicit_amount", "NUMERIC", 12, 4),
+                        new NumericColumn("precision_only_amount", "NUMERIC", 9, 0),
+                        new NumericColumn("scale_only_amount", "NUMERIC", 100_000, 6),
+                        new NumericColumn("differing_scale_amount", "NUMERIC", 12, 6)),
+                        columns,
+                        "H2 catalog must expose the exact no-loss BigDecimal DDL policy"))
+                .verifyComplete();
+    }
 
     @Test
     void bigDecimalColumnRoundTripsThroughSaveAndFindById() {
@@ -72,5 +102,30 @@ class BigDecimalColumnRoundTripIntegrationTest {
         PricedItem(BigDecimal amount) {
             this.amount = amount;
         }
+    }
+
+    @Entity
+    @Table(name = "big_decimal_storage_shapes")
+    static class BigDecimalStorageShapes {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        Long id;
+
+        BigDecimal defaultAmount;
+
+        @Column(precision = 12, scale = 4)
+        BigDecimal explicitAmount;
+
+        @Column(precision = 9)
+        BigDecimal precisionOnlyAmount;
+
+        @Column(scale = 6)
+        BigDecimal scaleOnlyAmount;
+
+        @Column(precision = 12, scale = 6)
+        BigDecimal differingScaleAmount;
+    }
+
+    private record NumericColumn(String name, String type, Integer precision, Integer scale) {
     }
 }
