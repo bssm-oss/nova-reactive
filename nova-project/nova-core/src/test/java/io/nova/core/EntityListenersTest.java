@@ -8,6 +8,10 @@ import io.nova.support.fixtures.FixtureEntities.AuditingListener;
 import io.nova.support.fixtures.FixtureEntities.EntityWithBadListener;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EntityListeners;
+import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
 
 import java.util.List;
 
@@ -76,5 +80,32 @@ class EntityListenersTest {
 
         assertTrue(exception.getMessage().contains("@PrePersist"));
         assertTrue(exception.getMessage().contains("single argument"));
+    }
+
+    @Test
+    void rejectsMultipleCallbacksOfSamePhaseOnOneListenerClass() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DuplicateListenerEntity.class));
+
+        assertTrue(exception.getMessage().contains("@PrePersist"));
+        assertTrue(exception.getMessage().contains("multiple callback methods"));
+    }
+
+    @Entity
+    @EntityListeners(DuplicatePhaseListener.class)
+    static class DuplicateListenerEntity {
+        @Id
+        private Long id;
+    }
+
+    static class DuplicatePhaseListener {
+        @PrePersist
+        void first(DuplicateListenerEntity entity) {
+        }
+
+        @PrePersist
+        void second(DuplicateListenerEntity entity) {
+        }
     }
 }

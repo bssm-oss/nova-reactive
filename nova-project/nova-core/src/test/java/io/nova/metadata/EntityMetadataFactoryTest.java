@@ -95,6 +95,7 @@ import java.util.List;
 
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
+import jakarta.persistence.Embeddable;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
 import jakarta.persistence.ExcludeDefaultListeners;
@@ -104,6 +105,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
 import jakarta.persistence.EnumType;
@@ -545,17 +547,22 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void preservesDeclarationOrderForMultipleCallbacksOfSamePhase() {
-        EntityMetadata<MultipleCallbacksEntity> metadata = factory.getEntityMetadata(MultipleCallbacksEntity.class);
+    void rejectsMultipleCallbacksOfSamePhaseOnOneEntityClass() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(MultipleCallbacksEntity.class));
 
-        assertEquals(2, metadata.prePersistCallbacks().size());
-        java.util.Set<String> names = new java.util.LinkedHashSet<>();
-        for (java.lang.reflect.Method m : metadata.prePersistCallbacks()) {
-            names.add(m.getName());
-        }
-        // declaration 순서를 강제하지는 않지만 두 메서드 모두 인식되어야 한다.
-        assertTrue(names.contains("first"));
-        assertTrue(names.contains("second"));
+        assertTrue(exception.getMessage().contains("@PrePersist"));
+        assertTrue(exception.getMessage().contains("multiple callback methods"));
+    }
+
+    @Test
+    void permitsOneCallbackMethodForMultiplePhases() {
+        EntityMetadata<MultiPhaseCallbackEntity> metadata = factory.getEntityMetadata(MultiPhaseCallbackEntity.class);
+
+        assertEquals(1, metadata.prePersistCallbacks().size());
+        assertEquals(1, metadata.preUpdateCallbacks().size());
+        assertEquals("audit", metadata.prePersistCallbacks().get(0).getName());
     }
 
     @Test
@@ -910,6 +917,26 @@ class EntityMetadataFactoryTest {
         assertEquals("geo", country.embeddedHostPath().get(1).getName());
         // 가장 안쪽 host는 path의 마지막 요소와 동일하다.
         assertEquals("geo", country.embeddedHostField().getName());
+    }
+
+    @Test
+    void implicitlyEmbedsEmbeddableFieldTypesIncludingNestedTypes() {
+        EntityMetadata<ImplicitEmbeddedFieldEntity> metadata = factory.getEntityMetadata(ImplicitEmbeddedFieldEntity.class);
+
+        assertEquals(List.of("id", "address_street", "address_geo_country"),
+                metadata.properties().stream().map(PersistentProperty::columnName).toList());
+        assertTrue(metadata.findProperty("address.geo.country").orElseThrow().embedded());
+    }
+
+    @Test
+    void implicitlyEmbedsEmbeddablePropertyTypesIncludingNestedTypes() {
+        EntityMetadata<ImplicitEmbeddedPropertyEntity> metadata =
+                factory.getEntityMetadata(ImplicitEmbeddedPropertyEntity.class);
+
+        assertEquals(List.of("id", "address_street", "address_geo_country"),
+                metadata.properties().stream().map(PersistentProperty::columnName).toList());
+        assertEquals(AccessType.PROPERTY, metadata.findProperty("address.geo.country").orElseThrow()
+                .embeddedHostPath().get(0).accessType());
     }
 
     @Test
@@ -1550,6 +1577,61 @@ class EntityMetadataFactoryTest {
     static class ExcludeDefaultListenersEntity extends DefaultListenersExcludedBase {
         @PrePersist
         void entityCallback() {
+        }
+    }
+
+    @Entity
+    static class MultiPhaseCallbackEntity {
+        @Id
+        private Long id;
+
+        @PrePersist
+        @PreUpdate
+        void audit() {
+        }
+    }
+
+    @Embeddable
+    @Access(AccessType.FIELD)
+    static class ImplicitGeo {
+        private String country;
+    }
+
+    @Embeddable
+    @Access(AccessType.FIELD)
+    static class ImplicitAddress {
+        private String street;
+        private ImplicitGeo geo;
+    }
+
+    @Entity
+    static class ImplicitEmbeddedFieldEntity {
+        @Id
+        private Long id;
+        private ImplicitAddress address;
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class ImplicitEmbeddedPropertyEntity {
+        private Long id;
+        private ImplicitAddress address;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public ImplicitAddress getAddress() {
+            return address;
+        }
+
+        public void setAddress(ImplicitAddress address) {
+            this.address = address;
         }
     }
 

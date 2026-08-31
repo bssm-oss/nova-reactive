@@ -772,7 +772,7 @@ public final class EntityMetadataFactory {
                 }
                 continue;
             }
-            if (attribute.isAnnotationPresent(Embedded.class)) {
+            if (isEmbeddedAttribute(attribute)) {
                 List<PersistentProperty> expanded = createEmbeddedProperties(
                         entityType, attribute, List.of(), "", new LinkedHashSet<>(), Map.of(), false);
                 properties.addAll(expanded);
@@ -1853,11 +1853,11 @@ public final class EntityMetadataFactory {
             List<PersistentProperty> result = new ArrayList<>();
             for (PersistentAttributeAccess component : embeddedComponentAttributes(embeddableType, host.accessType())) {
                 rejectIllegalEmbeddedComponent(location, component);
-                if (embeddedId && component.isAnnotationPresent(Embedded.class)) {
+                if (embeddedId && isEmbeddedAttribute(component)) {
                     throw new IllegalArgumentException(location + " @EmbeddedId component " + component.name()
                             + " must be a simple (non-embedded) field");
                 }
-                if (component.isAnnotationPresent(Embedded.class)) {
+                if (isEmbeddedAttribute(component)) {
                     String nestedPrefix = component.name() + ".";
                     Map<String, Convert> nestedConversions = new LinkedHashMap<>();
                     conversionOverrides.entrySet().removeIf(entry -> {
@@ -1910,6 +1910,11 @@ public final class EntityMetadataFactory {
         if (component.isAnnotationPresent(UpdatedAt.class)) {
             throw new IllegalArgumentException(location + " embedded component " + component.name() + " must not declare @UpdatedAt");
         }
+    }
+
+    private static boolean isEmbeddedAttribute(PersistentAttributeAccess attribute) {
+        return attribute.isAnnotationPresent(Embedded.class)
+                || attribute.javaType().isAnnotationPresent(Embeddable.class);
     }
 
     private static List<PersistentAttributeAccess> embeddedComponentAttributes(
@@ -2026,6 +2031,10 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     label + " method " + entityType.getName() + "." + method.getName()
                             + " must be non-static, no-arg, void-returning");
+        }
+        if (target.stream().anyMatch(existing -> existing.getDeclaringClass() == method.getDeclaringClass())) {
+            throw new IllegalArgumentException(label + " declares multiple callback methods on "
+                    + method.getDeclaringClass().getName());
         }
         method.setAccessible(true);
         target.add(method);
@@ -2170,6 +2179,10 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(
                     label + " listener method " + where
                             + " must be non-static, take a single entity argument, and return void");
+        }
+        if (target.stream().anyMatch(existing -> existing.method().getDeclaringClass() == method.getDeclaringClass())) {
+            throw new IllegalArgumentException(label + " listener " + listenerClass.getName()
+                    + " declares multiple callback methods on " + method.getDeclaringClass().getName());
         }
         method.setAccessible(true);
         target.add(new ListenerCallback(listener, method));

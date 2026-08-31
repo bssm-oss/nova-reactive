@@ -157,11 +157,13 @@ public final class MetamodelProcessor extends AbstractProcessor {
         if (hasAnnotation(selected, TRANSIENT) || hasAnnotation(selected, ONE_TO_MANY)
                 || hasAnnotation(selected, MANY_TO_MANY) || hasAnnotation(selected, ELEMENT_COLLECTION)
                 || isInverseOneToOne(selected)) return;
-        if (!hasAnnotation(selected, EMBEDDED) && !hasAnnotation(selected, EMBEDDED_ID)) {
+        TypeElement embeddedType = resolveTypeElement(memberType(selected));
+        boolean embedded = hasAnnotation(selected, EMBEDDED) || hasAnnotation(selected, EMBEDDED_ID)
+                || (embeddedType != null && hasAnnotation(embeddedType, EMBEDDABLE));
+        if (!embedded) {
             out.add(toProperty(hostPath, name));
             return;
         }
-        TypeElement embeddedType = resolveTypeElement(memberType(selected));
         if (embeddedType == null) {
             throw new IllegalStateException("@Embedded member type cannot be resolved as a class element: "
                     + owner.getQualifiedName() + "." + name);
