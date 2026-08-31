@@ -78,7 +78,11 @@ class DerivedQueryParserTest {
     interface EmbeddedPropertyRepository {
         Flux<EmbeddedPropertyAccount> findByAddressCity(String city);
 
+        Flux<EmbeddedPropertyAccount> findByAddress_City(String city);
+
         Flux<EmbeddedPropertyAccount> findByAddressLocationCountryCode(String countryCode);
+
+        Flux<EmbeddedPropertyAccount> findByAddress_Location_CountryCode(String countryCode);
 
         Flux<EmbeddedPropertyAccount> findByAddress_city(String addressCity);
     }
@@ -569,10 +573,19 @@ class DerivedQueryParserTest {
         }
 
         @Test
-        @DisplayName("embedded metadata path는 segment별 PascalCase token으로 매칭하고 canonical path를 보존한다")
-        void embeddedPathMatchesFlattenedToken() throws NoSuchMethodException {
+        @DisplayName("direct property가 flattened embedded path보다 우선한다")
+        void directPropertyWinsOverFlattenedEmbeddedPath() throws NoSuchMethodException {
             DerivedQuery query = embeddedPropertiesParser.tryParse(
                     EmbeddedPropertyRepository.class.getMethod("findByAddressCity", String.class)).orElseThrow();
+
+            assertEquals("addressCity", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        @DisplayName("underscore traversal token은 embedded canonical path를 보존한다")
+        void explicitUnderscoreTokenMatchesEmbeddedPath() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod("findByAddress_City", String.class)).orElseThrow();
 
             assertEquals("address.city", query.orGroups().get(0).get(0).propertyName());
         }
@@ -582,6 +595,15 @@ class DerivedQueryParserTest {
             DerivedQuery query = embeddedPropertiesParser.tryParse(
                     EmbeddedPropertyRepository.class.getMethod(
                             "findByAddressLocationCountryCode", String.class)).orElseThrow();
+
+            assertEquals("address.location.countryCode", query.orGroups().get(0).get(0).propertyName());
+        }
+
+        @Test
+        void deeplyEmbeddedPathMatchesExplicitUnderscoreToken() throws NoSuchMethodException {
+            DerivedQuery query = embeddedPropertiesParser.tryParse(
+                    EmbeddedPropertyRepository.class.getMethod(
+                            "findByAddress_Location_CountryCode", String.class)).orElseThrow();
 
             assertEquals("address.location.countryCode", query.orGroups().get(0).get(0).propertyName());
         }

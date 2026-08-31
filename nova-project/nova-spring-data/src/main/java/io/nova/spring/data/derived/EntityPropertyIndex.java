@@ -6,7 +6,9 @@ import io.nova.metadata.PersistentProperty;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -19,8 +21,9 @@ import java.util.Optional;
  *
  * <p>매칭은 PascalCase form으로 비교한다 — method-name이 {@code findByEmailAddress}일 때 {@code EmailAddress}
  * 토큰을 lowerCamelCase property {@code emailAddress}에 매핑한다. Dotted embedded path는 각 segment를
- * PascalCase로 만든 뒤 연결한다. 따라서 canonical metadata name {@code address.city}는 method token
- * {@code AddressCity}에 매핑되지만 dispatch에는 {@code address.city}를 그대로 전달한다.
+ * PascalCase로 만든 뒤 연결한 token과 segment 사이를 underscore로 연결한 명시적 traversal token을 모두
+ * 등록한다. 따라서 canonical metadata name {@code address.city}는 {@code AddressCity} 또는
+ * {@code Address_City}에 매핑되지만 dispatch에는 {@code address.city}를 그대로 전달한다.
  */
 final class EntityPropertyIndex {
     /**
@@ -38,24 +41,26 @@ final class EntityPropertyIndex {
         List<String> camel = metadata.properties().stream()
                 .map(PersistentProperty::propertyName)
                 .toList();
-        List<String> pascalSorted = new ArrayList<>(camel.size());
+        List<Entry> entries = new ArrayList<>(camel.size());
         for (String name : camel) {
-            pascalSorted.add(toPascal(name));
+            if (name.contains(".")) {
+                entries.add(new Entry(toPascal(name), name, MatchRank.FLATTENED_PATH));
+                entries.add(new Entry(toExplicitPathPascal(name), name, MatchRank.EXPLICIT_PATH));
+            } else {
+                entries.add(new Entry(toPascal(name), name, MatchRank.DIRECT_PROPERTY));
+            }
         }
-        // 동일 length에서는 token, 이어 canonical metadata name 사전순 — flattening collision도 deterministic.
-        List<Integer> indices = new ArrayList<>();
-        for (int i = 0; i < pascalSorted.size(); i++) {
-            indices.add(i);
-        }
-        indices.sort(Comparator
-                .comparingInt((Integer i) -> pascalSorted.get(i).length()).reversed()
-                .thenComparing(pascalSorted::get)
-                .thenComparing(camel::get));
-        List<String> pascalOut = new ArrayList<>(indices.size());
-        List<String> camelOut = new ArrayList<>(indices.size());
-        for (int idx : indices) {
-            pascalOut.add(pascalSorted.get(idx));
-            camelOut.add(camel.get(idx));
+        failOnSameRankCollisions(entries);
+        entries.sort(Comparator
+                .comparingInt((Entry entry) -> entry.token().length()).reversed()
+                .thenComparing(Entry::rank)
+                .thenComparing(Entry::token)
+                .thenComparing(Entry::propertyName));
+        List<String> pascalOut = new ArrayList<>(entries.size());
+        List<String> camelOut = new ArrayList<>(entries.size());
+        for (Entry entry : entries) {
+            pascalOut.add(entry.token());
+            camelOut.add(entry.propertyName());
         }
         return new EntityPropertyIndex(
                 Collections.unmodifiableList(pascalOut),
@@ -94,6 +99,43 @@ final class EntityPropertyIndex {
             }
         }
         return token.toString();
+    }
+
+    private static String toExplicitPathPascal(String propertyName) {
+        StringBuilder token = new StringBuilder(propertyName.length());
+        for (String segment : propertyName.split("\\.", -1)) {
+            if (!segment.isEmpty()) {
+                if (!token.isEmpty()) {
+                    token.append('_');
+                }
+                token.append(Character.toUpperCase(segment.charAt(0))).append(segment.substring(1));
+            }
+        }
+        return token.toString();
+    }
+
+    private static void failOnSameRankCollisions(List<Entry> entries) {
+        Map<CollisionKey, String> propertyByTokenAndRank = new HashMap<>();
+        for (Entry entry : entries) {
+            CollisionKey key = new CollisionKey(entry.token(), entry.rank());
+            String previous = propertyByTokenAndRank.putIfAbsent(key, entry.propertyName());
+            if (previous != null && !previous.equals(entry.propertyName())) {
+                throw new IllegalArgumentException("Ambiguous derived-query property token '" + entry.token()
+                        + "' for properties '" + previous + "' and '" + entry.propertyName() + "'");
+            }
+        }
+    }
+
+    private enum MatchRank {
+        DIRECT_PROPERTY,
+        EXPLICIT_PATH,
+        FLATTENED_PATH
+    }
+
+    private record Entry(String token, String propertyName, MatchRank rank) {
+    }
+
+    private record CollisionKey(String token, MatchRank rank) {
     }
 
     /**

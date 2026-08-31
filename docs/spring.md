@@ -133,7 +133,7 @@ public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
 
 **Sort** — `OrderBy<Property>(Asc|Desc)?(And<Property>(Asc|Desc)?)*` appended after the predicate clause.
 
-**Property resolution** — greedy match against the entity's reflective top-level fields. Longer property names win to avoid prefix ambiguity. Method names use lowerCamelCase form (`findByEmailAddress` → property `emailAddress`).
+**Property resolution** — greedy match against the entity's logical properties. Longer property names win to avoid prefix ambiguity. Method names use lowerCamelCase form (`findByEmailAddress` → property `emailAddress`). Embedded paths retain their dotted canonical name and can use a concatenated token (`findByAddressCity`) when unambiguous, or an explicit underscore traversal token (`findByAddress_City` → `address.city`; deeper paths use one underscore per segment). When a direct property and a concatenated embedded path share a token, the direct property wins; direct property underscores remain literal (`findByAddress_city` → `address_city`).
 
 **Paging** — a `find…By` method may take a trailing `Pageable` parameter. The return-type shape selects the container: `Flux<T>` streams a single LIMIT/OFFSET window (no total, no `hasNext`); `Mono<Page<T>>` adds a separate `COUNT(*)` for `totalElements`; `Mono<Slice<T>>` fetches `limit + 1` to decide `hasNext` without a count query.
 
@@ -145,6 +145,6 @@ Mono<Slice<Author>> findByActiveTrue(Pageable page);          // window + hasNex
 
 A `Pageable` parameter is only valid on the `find`-all subject. Pairing it with a non-paging shape or subject — `count`/`exists`/`delete`, or a single-result `Mono<T>` / `findFirst` / `findOne` / `findTop` / `findTop<N>` — fails fast at parse time with an `IllegalArgumentException`.
 
-**Limitations** — `@Embedded` paths in method names, projections, and `@Query`-style native queries are not supported in derived names. Use `findAll(QuerySpec)` (or, with [`nova-metamodel`](metamodel.md), the generated property-name constants) for those cases.
+**Limitations** — `@Embedded` paths in projections and `@Query`-style native queries are not supported. Use `findAll(QuerySpec)` (or, with [`nova-metamodel`](metamodel.md), the generated property-name constants) for those cases.
 
 Misuse — unknown property, parameter-count mismatch, unrecognized keyword suffix — fails at the first call to that method with an `IllegalArgumentException` carrying a precise diagnostic. Method names whose subject prefix does not match (`saveAndPublish`, `magicMethod`, …) fall through to the existing `UnsupportedOperationException` as before.
