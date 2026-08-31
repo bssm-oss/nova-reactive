@@ -139,7 +139,7 @@ schema.create(Account.class)
       .block();
 ```
 
-By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
+By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. This also preserves existing `@TableGenerator` counters: only a missing generator row is seeded, so a restart never reuses identifiers. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
 
 Batch and lifecycle variants:
 

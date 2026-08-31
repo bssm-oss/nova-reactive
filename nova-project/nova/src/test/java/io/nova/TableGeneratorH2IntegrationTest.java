@@ -99,6 +99,25 @@ class TableGeneratorH2IntegrationTest {
     }
 
     @Test
+    void repeatedIdempotentCreatePreservesExistingGeneratorCounter() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(
+                schema.create(SingleAllocAccount.class)
+                        .then(operations.save(new SingleAllocAccount("first@example.com")))
+                        .flatMap(first -> {
+                            assertEquals(1L, first.getId());
+                            return schema.create(SingleAllocAccount.class);
+                        })
+                        .then(operations.save(new SingleAllocAccount("second@example.com")))
+        ).assertNext(second -> assertEquals(2L, second.getId(),
+                "idempotent schema bootstrap must not reseed an existing generator row"))
+                .verifyComplete();
+    }
+
+    @Test
     void concurrentSavesNeverHandOutDuplicateIds() {
         ConnectionFactory cf = freshConnectionFactory();
         SchemaInitializer schema = Nova.schemaInitializer(cf);
