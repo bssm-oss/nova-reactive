@@ -38,4 +38,11 @@ public record SecondaryTableInfo(
     public SecondaryTableInfo(String tableName, String pkJoinColumn, String primaryKeyColumn) {
         this(tableName, "", pkJoinColumn, primaryKeyColumn, ConstraintMode.PROVIDER_DEFAULT, "");
     }
+
+    /**
+     * 스키마를 지정하는 보조 테이블용 생성자.
+     */
+    public SecondaryTableInfo(String tableName, String schema, String pkJoinColumn, String primaryKeyColumn) {
+        this(tableName, schema, pkJoinColumn, primaryKeyColumn, ConstraintMode.PROVIDER_DEFAULT, "");
+    }
 }

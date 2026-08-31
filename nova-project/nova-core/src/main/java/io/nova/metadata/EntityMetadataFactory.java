@@ -1043,8 +1043,20 @@ public final class EntityMetadataFactory {
                         entityType.getName() + " @SecondaryTable(\"" + name + "\") declares multiple"
                                 + " pkJoinColumns (composite keys are not supported)");
             }
+            ForeignKey tableForeignKey = declaration.foreignKey();
+            ForeignKey primaryKeyJoinForeignKey =
+                    pkJoinColumns.length == 0 ? null : pkJoinColumns[0].foreignKey();
+            boolean tableForeignKeyExplicit = isExplicitForeignKey(tableForeignKey);
+            boolean primaryKeyJoinForeignKeyExplicit = isExplicitForeignKey(primaryKeyJoinForeignKey);
+            if (tableForeignKeyExplicit && primaryKeyJoinForeignKeyExplicit) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @SecondaryTable(\"" + name + "\") declares foreignKey"
+                                + " both on @SecondaryTable and @PrimaryKeyJoinColumn");
+            }
+            ForeignKey foreignKey = primaryKeyJoinForeignKeyExplicit
+                    ? primaryKeyJoinForeignKey
+                    : tableForeignKeyExplicit ? tableForeignKey : null;
             String schema = declaration.schema() == null ? "" : declaration.schema();
-            ForeignKey foreignKey = pkJoinColumns.length == 0 ? null : pkJoinColumns[0].foreignKey();
             byName.put(name, new SecondaryTableInfo(
                     name,
                     schema,

@@ -179,6 +179,22 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void rendersSecondaryTableLevelForeignKeyModes() {
+        assertEquals(
+                "create table secondary_table_named_fk_details (id bigint not null primary key,"
+                        + " detail varchar(255), constraint fk_secondary_table_details foreign key (id)"
+                        + " references secondary_table_named_fk (id))",
+                dialect.schemaGenerator().createSecondaryTable(
+                        factory.getEntityMetadata(TableLevelNamedSecondaryForeignKey.class),
+                        factory.getEntityMetadata(TableLevelNamedSecondaryForeignKey.class).secondaryTables().get(0)));
+        assertEquals(
+                "create table secondary_table_no_fk_details (id bigint not null primary key, detail varchar(255))",
+                dialect.schemaGenerator().createSecondaryTable(
+                        factory.getEntityMetadata(TableLevelNoConstraintSecondaryForeignKey.class),
+                        factory.getEntityMetadata(TableLevelNoConstraintSecondaryForeignKey.class).secondaryTables().get(0)));
+    }
+
+    @Test
     void joinedSubtypeForeignKeyUsesSeparatelyQuotedRootSchema() {
         Dialect quotedDialect = new QuotedTestDialect();
         factory.getEntityMetadata(SchemaJoinedChild.class);
@@ -838,6 +854,24 @@ class AbstractSchemaGeneratorTest {
     static class NoConstraintSecondaryForeignKey {
         @Id Long id;
         @jakarta.persistence.Column(table = "secondary_no_fk_details") String detail;
+    }
+
+    @Entity
+    @Table(name = "secondary_table_named_fk")
+    @SecondaryTable(name = "secondary_table_named_fk_details",
+            foreignKey = @ForeignKey(name = "fk_secondary_table_details"))
+    static class TableLevelNamedSecondaryForeignKey {
+        @Id Long id;
+        @jakarta.persistence.Column(table = "secondary_table_named_fk_details") String detail;
+    }
+
+    @Entity
+    @Table(name = "secondary_table_no_fk")
+    @SecondaryTable(name = "secondary_table_no_fk_details",
+            foreignKey = @ForeignKey(value = ConstraintMode.NO_CONSTRAINT))
+    static class TableLevelNoConstraintSecondaryForeignKey {
+        @Id Long id;
+        @jakarta.persistence.Column(table = "secondary_table_no_fk_details") String detail;
     }
 
     private static final class QuotedTestDialect implements Dialect {

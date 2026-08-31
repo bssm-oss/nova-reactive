@@ -96,6 +96,32 @@ class EntityMetadataFactorySecondaryTableTest {
     }
 
     @Test
+    void extractsSecondaryTableForeignKeyWhenPrimaryKeyJoinUsesProviderDefault() {
+        SecondaryTableInfo info = factory.getEntityMetadata(TableLevelForeignKey.class)
+                .secondaryTables().get(0);
+
+        assertEquals(ConstraintMode.CONSTRAINT, info.foreignKeyMode());
+        assertEquals("fk_table_details", info.foreignKeyName());
+    }
+
+    @Test
+    void extractsSecondaryTableNoConstraintForeignKey() {
+        SecondaryTableInfo info = factory.getEntityMetadata(TableLevelNoConstraintForeignKey.class)
+                .secondaryTables().get(0);
+
+        assertEquals(ConstraintMode.NO_CONSTRAINT, info.foreignKeyMode());
+        assertEquals("", info.foreignKeyName());
+    }
+
+    @Test
+    void rejectsConflictingSecondaryTableAndPrimaryKeyJoinForeignKeys() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class, () -> factory.getEntityMetadata(ConflictingForeignKeys.class));
+
+        assertTrue(exception.getMessage().contains("both on @SecondaryTable and @PrimaryKeyJoinColumn"));
+    }
+
+    @Test
     void supportsMultipleSecondaryTables() {
         EntityMetadata<Product> metadata = factory.getEntityMetadata(Product.class);
         assertEquals(2, metadata.secondaryTables().size());
@@ -214,6 +240,44 @@ class EntityMetadataFactorySecondaryTableTest {
         private Long id;
 
         @Column(table = "no_constraint_fk_details")
+        private String detail;
+    }
+
+    @Entity
+    @Table(name = "table_level_fk")
+    @SecondaryTable(name = "table_level_fk_details",
+            foreignKey = @ForeignKey(name = "fk_table_details"),
+            pkJoinColumns = @PrimaryKeyJoinColumn)
+    static class TableLevelForeignKey {
+        @Id
+        private Long id;
+
+        @Column(table = "table_level_fk_details")
+        private String detail;
+    }
+
+    @Entity
+    @Table(name = "table_level_no_fk")
+    @SecondaryTable(name = "table_level_no_fk_details",
+            foreignKey = @ForeignKey(value = ConstraintMode.NO_CONSTRAINT))
+    static class TableLevelNoConstraintForeignKey {
+        @Id
+        private Long id;
+
+        @Column(table = "table_level_no_fk_details")
+        private String detail;
+    }
+
+    @Entity
+    @Table(name = "conflicting_fk")
+    @SecondaryTable(name = "conflicting_fk_details",
+            foreignKey = @ForeignKey(name = "fk_table"),
+            pkJoinColumns = @PrimaryKeyJoinColumn(foreignKey = @ForeignKey(name = "fk_join")))
+    static class ConflictingForeignKeys {
+        @Id
+        private Long id;
+
+        @Column(table = "conflicting_fk_details")
         private String detail;
     }
 
