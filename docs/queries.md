@@ -172,6 +172,10 @@ Mono<Long> total = operations.queryNativeOne(query,
         row -> row.get("count", Long.class));
 ```
 
+### Named native queries
+
+`@NamedNativeQuery` supports JPA-style named (`:name`) and positional (`?1`) parameters. Nova translates markers outside single-quoted SQL literals, `--` / `/* … */` comments, and ANSI double-quoted identifiers to the active dialect's bind markers, preserving their occurrence order for binding. Quoted identifiers are copied verbatim, including doubled double quotes, so identifier text such as `"metric:daily"`, `"slot?1"`, and `"quote""d:ignored"` never becomes a parameter marker.
+
 ### CompiledQuery — render SQL once, swap bindings
 
 ```java
@@ -182,3 +186,11 @@ CompiledQuery compiled = dialect.sqlRenderer().compileSelect(metadata,
 Flux<Account> a = operations.findAll(Account.class, compiled, "a@nova.io");
 Flux<Account> b = operations.findAll(Account.class, compiled, "b@nova.io");
 ```
+
+### JPQL identification aliases
+
+JPQL identification aliases are case-insensitive in every query scope. For example,
+`SELECT E.name FROM Employee e JOIN E.department D WHERE d.name = :name` is valid, as
+is a correlated subquery that refers to the outer alias with different casing. Aliases
+that differ only by case in the same scope, including `JOIN FETCH` aliases, are rejected
+as duplicates. Entity names and attribute-path segments remain case-sensitive.

@@ -281,10 +281,11 @@ public final class JpqlSqlBuilder {
             EntityMetadata<?> owner = ctx.scope.resolve(join.ownerAlias());
             PersistentProperty relation = owner.findProperty(join.relation()).orElseThrow();
             EntityMetadata<?> target = resolver.resolve(relation.manyToOneTargetType());
+            String ownerAlias = ctx.scope.canonical(join.ownerAlias());
             ctx.sql.append(join.inner() ? " join " : " left join ")
                     .append(tableRef(target)).append(' ').append(join.alias())
                     .append(" on ");
-            appendJoinOn(ctx, join.ownerAlias(), join.alias(), joinColumnPairs(relation, target));
+            appendJoinOn(ctx, ownerAlias, join.alias(), joinColumnPairs(relation, target));
         }
         for (ImplicitJoin ij : block.implicitByKey.values()) {
             ctx.sql.append(" join ")
@@ -973,7 +974,7 @@ public final class JpqlSqlBuilder {
                 .orElseThrow(() -> new JpqlException("Unknown field '" + field + "' on entity "
                         + ownerMeta.entityType().getSimpleName()));
         String ownerId = dialect.quote(ownerMeta.idProperty().columnName());
-        String ownerRef = path.alias() + "." + ownerId;
+        String ownerRef = ctx.scope.canonical(path.alias()) + "." + ownerId;
         String alias = ctx.nextImplicitAlias();
 
         String table;
@@ -1151,14 +1152,14 @@ public final class JpqlSqlBuilder {
         List<String> segments = path.segments();
         if (segments.isEmpty()) {
             // 순수 별칭 → 그 엔티티의 대표 id property(COUNT(e) 등).
-            return new ResolvedPath(path.alias(), ownerMeta, ownerMeta.idProperty());
+            return new ResolvedPath(ctx.scope.canonical(path.alias()), ownerMeta, ownerMeta.idProperty());
         }
         // 다세그먼트: 묵시 조인이 필요하므로 unqualified(벌크) 컨텍스트에서는 지원하지 않는다.
         if (segments.size() > 1 && !ctx.qualify) {
             throw new JpqlException("Multi-segment path '" + path.alias() + "."
                     + String.join(".", segments) + "' requires a join and is not supported in bulk UPDATE/DELETE");
         }
-        String currentAlias = path.alias();
+        String currentAlias = ctx.scope.canonical(path.alias());
         EntityMetadata<?> currentMeta = ownerMeta;
         for (int i = 0; i < segments.size() - 1; i++) {
             String segment = segments.get(i);
@@ -1278,7 +1279,7 @@ public final class JpqlSqlBuilder {
     /** {@code (ownerAlias, relation)}에 대한 묵시 INNER JOIN을 만들거나 재사용하고 대상 별칭을 돌려준다. */
     private String implicitJoin(Ctx ctx, String ownerAlias, String relation,
                                 PersistentProperty prop, EntityMetadata<?> targetMeta) {
-        String key = ownerAlias + ' ' + relation;
+        String key = Scope.normalize(ownerAlias) + "\0" + relation;
         ImplicitJoin existing = ctx.block.implicitByKey.get(key);
         if (existing != null) {
             return existing.alias;
@@ -1318,7 +1319,7 @@ public final class JpqlSqlBuilder {
         EntityMetadata<?> meta = ctx.scope.resolve(alias);
         requirePolymorphic(meta, "TYPE(" + alias + ")");
         String col = dialect.quote(meta.inheritance().discriminatorColumn());
-        return ctx.qualify ? alias + "." + col : col;
+        return ctx.qualify ? ctx.scope.canonical(alias) + "." + col : col;
     }
 
     /** {@code TREAT(alias AS Subtype).field} → 서브타입 속성 컬럼 참조(SINGLE_TABLE, 단일 세그먼트). */
@@ -1334,7 +1335,7 @@ public final class JpqlSqlBuilder {
             throw new JpqlException("Multi-segment TREAT path 'TREAT(" + treat.alias() + " AS " + treat.subtype()
                     + ")." + String.join(".", treat.segments()) + "' is not supported in v1");
         }
-        return resolveColumn(ctx, treat.alias(), subMeta, treat.segments().get(0));
+        return resolveColumn(ctx, ctx.scope.canonical(treat.alias()), subMeta, treat.segments().get(0));
     }
 
     /** downcast 대상 서브타입 메타데이터를 해석하고 같은 상속 계층인지 검증한다(3전략 모두 허용). */
@@ -1362,9 +1363,10 @@ public final class JpqlSqlBuilder {
     private List<DiscriminatorConstraint> collectDiscriminatorConstraints(Ctx ctx, JpqlStatement.Select select) {
         LinkedHashMap<String, DiscriminatorConstraint> byKey = new LinkedHashMap<>();
         EntityMetadata<?> rootMeta = ctx.scope.resolve(select.rootAlias());
+        String rootAlias = ctx.scope.canonical(select.rootAlias());
         if (rootMeta.hasInheritance() && !rootMeta.isInheritanceRoot()) {
             byKey.putIfAbsent(constraintKey(select.rootAlias(), rootMeta.inheritance().discriminatorBindValue()),
-                    new DiscriminatorConstraint(select.rootAlias(),
+                    new DiscriminatorConstraint(rootAlias,
                             rootMeta.inheritance().discriminatorColumn(),
                             rootMeta.inheritance().discriminatorBindValue()));
         }
@@ -1373,13 +1375,14 @@ public final class JpqlSqlBuilder {
             EntityMetadata<?> subMeta = resolveTreatSubtype(baseMeta, subtype);
             Object value = subMeta.inheritance().discriminatorBindValue();
             byKey.putIfAbsent(constraintKey(alias, value),
-                    new DiscriminatorConstraint(alias, baseMeta.inheritance().discriminatorColumn(), value));
+                    new DiscriminatorConstraint(
+                            ctx.scope.canonical(alias), baseMeta.inheritance().discriminatorColumn(), value));
         });
         return new ArrayList<>(byKey.values());
     }
 
     private static String constraintKey(String alias, Object value) {
-        return alias + ' ' + value;
+        return Scope.normalize(alias) + "\0" + value;
     }
 
     /** discriminator 제한(있으면)을 먼저 렌더하고 사용자 WHERE를 {@code and}로 이어 붙인다. */
@@ -1641,37 +1644,55 @@ public final class JpqlSqlBuilder {
     private record CompositeToOneRef(String alias, PersistentProperty property) {
     }
 
-    /** 별칭 → 메타데이터 스코프. 서브쿼리 상관 참조를 위해 부모 스코프로 위임한다. */
+    /** 대소문자를 구분하지 않는 별칭 → 메타데이터 스코프. 서브쿼리 상관 참조를 위해 부모 스코프로 위임한다. */
     private static final class Scope {
         private final Scope parent;
-        private final Map<String, EntityMetadata<?>> aliases = new HashMap<>();
+        private final Map<String, Binding> aliases = new HashMap<>();
 
         Scope(Scope parent) {
             this.parent = parent;
         }
 
         void bind(String alias, EntityMetadata<?> metadata) {
-            if (aliases.putIfAbsent(alias, metadata) != null) {
+            if (aliases.putIfAbsent(normalize(alias), new Binding(alias, metadata)) != null) {
                 throw new JpqlException("Duplicate alias '" + alias + "' in JPQL query");
             }
         }
 
         boolean contains(String alias) {
-            if (aliases.containsKey(alias)) {
+            if (aliases.containsKey(normalize(alias))) {
                 return true;
             }
             return parent != null && parent.contains(alias);
         }
 
         EntityMetadata<?> resolve(String alias) {
-            EntityMetadata<?> metadata = aliases.get(alias);
-            if (metadata != null) {
-                return metadata;
+            Binding binding = aliases.get(normalize(alias));
+            if (binding != null) {
+                return binding.metadata();
             }
             if (parent != null) {
                 return parent.resolve(alias);
             }
             throw new JpqlException("Unknown alias '" + alias + "' in JPQL query");
+        }
+
+        String canonical(String alias) {
+            Binding binding = aliases.get(normalize(alias));
+            if (binding != null) {
+                return binding.alias();
+            }
+            if (parent != null) {
+                return parent.canonical(alias);
+            }
+            throw new JpqlException("Unknown alias '" + alias + "' in JPQL query");
+        }
+
+        static String normalize(String alias) {
+            return alias.toLowerCase(Locale.ROOT);
+        }
+
+        private record Binding(String alias, EntityMetadata<?> metadata) {
         }
     }
 }

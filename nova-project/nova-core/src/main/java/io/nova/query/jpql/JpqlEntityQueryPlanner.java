@@ -13,7 +13,10 @@ import io.nova.query.jpql.ast.OrderItem;
 import io.nova.query.jpql.ast.SelectItem;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 엔티티 자체를 반환하는 단순 SELECT(단일 루트, 조인/집계/GROUP BY 없음)를 Nova의 {@link QuerySpec}으로
@@ -37,6 +40,7 @@ public final class JpqlEntityQueryPlanner {
      * 연관은 기존 배치 hydration으로 로드된다. 일반(non-fetch) 조인이 하나라도 있으면 엔티티 경로가 아니다.
      */
     public boolean isEntitySelect(JpqlStatement.Select select) {
+        validateAliasDeclarations(select);
         if (select.selectItems().size() != 1) {
             return false;
         }
@@ -47,7 +51,7 @@ public final class JpqlEntityQueryPlanner {
         return allFetchJoins(select.joins())
                 && select.groupBy().isEmpty()
                 && select.having() == null
-                && only.entityAlias().equals(select.rootAlias());
+                && sameAlias(only.entityAlias(), select.rootAlias());
     }
 
     private static boolean allFetchJoins(List<JoinClause> joins) {
@@ -65,11 +69,12 @@ public final class JpqlEntityQueryPlanner {
      * 먼저 뽑고 그 id 집합을 IN 조건으로 하이드레이션하는 2단계 경로로 처리한다. group/having/집계는 제외한다.
      */
     public boolean isJoinedEntitySelect(JpqlStatement.Select select) {
+        validateAliasDeclarations(select);
         if (select.selectItems().size() != 1) {
             return false;
         }
         SelectItem only = select.selectItems().get(0);
-        if (!only.isEntity() || !only.entityAlias().equals(select.rootAlias())) {
+        if (!only.isEntity() || !sameAlias(only.entityAlias(), select.rootAlias())) {
             return false;
         }
         return !select.joins().isEmpty()
@@ -99,11 +104,12 @@ public final class JpqlEntityQueryPlanner {
      * 동일하게 동작한다(cartesian 중복도 없음). EntityGraph와 동일한 always-eager 정합이다.
      */
     private void validateFetchJoins(JpqlStatement.Select select, EntityMetadata<?> rootMetadata) {
+        validateAliasDeclarations(select);
         for (JoinClause join : select.joins()) {
             if (!join.fetch()) {
                 throw unsupported("a non-fetch JOIN in an entity-returning query");
             }
-            if (!join.ownerAlias().equals(select.rootAlias())) {
+            if (!sameAlias(join.ownerAlias(), select.rootAlias())) {
                 throw new JpqlException("JOIN FETCH off a non-root alias ('" + join.ownerAlias()
                         + "') is not supported in v1; fetch joins must originate from the root alias '"
                         + select.rootAlias() + "'");
@@ -115,6 +121,17 @@ public final class JpqlEntityQueryPlanner {
             if (!property.isRelation()) {
                 throw new JpqlException("JOIN FETCH " + join.ownerAlias() + "." + join.relation()
                         + " is not an association on entity " + rootMetadata.entityType().getSimpleName());
+            }
+        }
+    }
+
+    /** Validates all local alias declarations before selecting an execution path. */
+    private static void validateAliasDeclarations(JpqlStatement.Select select) {
+        Set<String> aliases = new HashSet<>();
+        bindAlias(aliases, select.rootAlias());
+        for (JoinClause join : select.joins()) {
+            if (join.alias() != null) {
+                bindAlias(aliases, join.alias());
             }
         }
     }
@@ -183,7 +200,7 @@ public final class JpqlEntityQueryPlanner {
                 && c.op() == ComparisonOp.EQ
                 && c.left() instanceof Expression.Type type
                 && c.right() instanceof Expression.EntityTypeLiteral lit) {
-            if (!type.alias().equals(rootAlias)) {
+            if (!sameAlias(type.alias(), rootAlias)) {
                 throw unsupported("TYPE(...) over a non-root alias '" + type.alias() + "'");
             }
             if (narrowed[0]) {
@@ -379,7 +396,7 @@ public final class JpqlEntityQueryPlanner {
             throw unsupported("non-path operand (" + expression.getClass().getSimpleName()
                     + ") on the left side of a predicate");
         }
-        if (!path.alias().equals(rootAlias)) {
+        if (!sameAlias(path.alias(), rootAlias)) {
             throw unsupported("path over alias '" + path.alias()
                     + "' (only the root alias is available in an entity-returning query)");
         }
@@ -429,5 +446,19 @@ public final class JpqlEntityQueryPlanner {
     private static JpqlException unsupported(String what) {
         return new JpqlException("Entity-returning JPQL queries do not support " + what
                 + ". Rewrite it as a scalar/aggregate projection, or express the query with the Criteria API.");
+    }
+
+    private static boolean sameAlias(String first, String second) {
+        return first != null && second != null && normalizeAlias(first).equals(normalizeAlias(second));
+    }
+
+    private static void bindAlias(Set<String> aliases, String alias) {
+        if (alias != null && !aliases.add(normalizeAlias(alias))) {
+            throw new JpqlException("Duplicate alias '" + alias + "' in JPQL query");
+        }
+    }
+
+    private static String normalizeAlias(String alias) {
+        return alias.toLowerCase(Locale.ROOT);
     }
 }
