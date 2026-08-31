@@ -172,6 +172,10 @@ Mono<Long> total = operations.queryNativeOne(query,
         row -> row.get("count", Long.class));
 ```
 
+### Named native queries
+
+`@NamedNativeQuery` supports JPA-style named (`:name`) and positional (`?1`) parameters. Nova translates markers outside SQL literals, comments, and ANSI double-quoted identifiers to the active dialect's bind markers, preserving their occurrence order for binding. Quoted identifiers are copied verbatim, including doubled double quotes, so identifier text such as `"metric:daily"`, `"slot?1"`, and `"quote""d:ignored"` never becomes a parameter marker.
+
 ### CompiledQuery — render SQL once, swap bindings
 
 ```java

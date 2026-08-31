@@ -205,6 +205,22 @@ class NamedQueryRegistryTest {
     }
 
     @Test
+    void ignoresMarkersInsideQuotedNativeSqlIdentifiers() {
+        NamedQueryRegistry registry = registry(Person.class);
+        registry.createNativeQuery("Person.rawWithQuotedIdentifiers", row -> row)
+                .setParameter("owner", "Ada")
+                .setParameter(2, 7)
+                .setParameter("value", "daily")
+                .executeUpdate()
+                .block();
+
+        NativeQuery captured = operations.lastExecute.get();
+        assertEquals("UPDATE \"metric:daily\" SET \"slot?1\" = $1, \"quote\"\"d:ignored?9\" = \"slot?1\""
+                + " WHERE id = $2 AND owner = $3", captured.sql());
+        assertEquals(List.of("daily", 7, "Ada"), captured.bindings());
+    }
+
+    @Test
     void defaultRenderCallUsesOneBasedMarkers() {
         assertEquals("CALL procedure($1, $2)", dialect.renderCall("procedure", 2));
     }
@@ -244,6 +260,9 @@ class NamedQueryRegistryTest {
     @NamedNativeQuery(name = "Person.rawWithOpaqueSql",
             query = "UPDATE person SET note = ':ignored ''?1''' /* :block ?2 */ WHERE name = :name"
                     + " -- :line ?3\n AND age = ?2::integer")
+    @NamedNativeQuery(name = "Person.rawWithQuotedIdentifiers",
+            query = "UPDATE \"metric:daily\" SET \"slot?1\" = :value, \"quote\"\"d:ignored?9\" = \"slot?1\""
+                    + " WHERE id = ?2 AND owner = :owner")
     static class Person {
         @Id
         Long id;
