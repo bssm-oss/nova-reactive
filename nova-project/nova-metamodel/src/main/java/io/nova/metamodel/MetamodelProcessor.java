@@ -13,6 +13,7 @@ import javax.lang.model.element.PackageElement;
 import javax.lang.model.element.RecordComponentElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
@@ -20,12 +21,14 @@ import java.beans.Introspector;
 import java.io.IOException;
 import java.io.Writer;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /** Generates Criteria property-name constants using Nova's effective JPA access rules. */
 @SupportedAnnotationTypes("jakarta.persistence.Entity")
@@ -95,7 +98,7 @@ public final class MetamodelProcessor extends AbstractProcessor {
                     }
                 }
                 Map<String, ExecutableElement> getters = getters(declaration);
-                Map<String, ExecutableElement> setters = setters(declaration);
+                Map<String, List<ExecutableElement>> setters = setters(declaration);
                 Set<String> names = new LinkedHashSet<>(fields.keySet());
                 names.addAll(getters.keySet());
                 for (String name : names) {
@@ -123,7 +126,7 @@ public final class MetamodelProcessor extends AbstractProcessor {
                         }
                         if (hasAnnotation(getter, TRANSIENT)) continue;
                         if (!declaration.getKind().equals(ElementKind.RECORD)) {
-                            ExecutableElement setter = setters.get(name);
+                            ExecutableElement setter = setter(type, name, getter, setters.get(name));
                             if (setter == null) {
                                 throw new IllegalStateException(type.getQualifiedName() + "." + name
                                         + " has no JavaBean setter required by PROPERTY access");
@@ -218,13 +221,16 @@ public final class MetamodelProcessor extends AbstractProcessor {
     }
 
     private Map<String, ExecutableElement> getters(TypeElement type) {
-        Map<String, ExecutableElement> result = new LinkedHashMap<>();
+        Map<String, List<ExecutableElement>> candidates = new TreeMap<>();
         for (Element member : type.getEnclosedElements()) {
             if (member.getKind() != ElementKind.METHOD) continue;
             ExecutableElement method = (ExecutableElement) member;
             String name = getterName(method);
-            if (name == null) continue;
-            putGetter(result, name, method, type);
+            if (name != null) candidates.computeIfAbsent(name, ignored -> new ArrayList<>()).add(method);
+        }
+        Map<String, ExecutableElement> result = new LinkedHashMap<>();
+        for (Map.Entry<String, List<ExecutableElement>> entry : candidates.entrySet()) {
+            result.put(entry.getKey(), getter(type, entry.getKey(), entry.getValue()));
         }
         if (type.getKind() == ElementKind.RECORD) {
             for (RecordComponentElement component : type.getRecordComponents()) {
@@ -234,39 +240,71 @@ public final class MetamodelProcessor extends AbstractProcessor {
         return result;
     }
 
-    private Map<String, ExecutableElement> setters(TypeElement type) {
-        Map<String, ExecutableElement> result = new LinkedHashMap<>();
+    private Map<String, List<ExecutableElement>> setters(TypeElement type) {
+        Map<String, List<ExecutableElement>> result = new TreeMap<>();
         for (Element member : type.getEnclosedElements()) {
             if (member.getKind() != ElementKind.METHOD) continue;
             ExecutableElement method = (ExecutableElement) member;
             String methodName = method.getSimpleName().toString();
             if (method.getModifiers().contains(Modifier.STATIC) || method.getParameters().size() != 1
-                    || !method.getReturnType().getKind().name().equals("VOID")
+                    || method.getReturnType().getKind() != TypeKind.VOID
                     || !methodName.startsWith("set") || methodName.length() == 3) continue;
             String name = Introspector.decapitalize(methodName.substring(3));
-            if (result.put(name, method) != null) {
-                throw new IllegalStateException(type.getQualifiedName() + " has overloaded setter for " + name);
-            }
+            result.computeIfAbsent(name, ignored -> new ArrayList<>()).add(method);
         }
         return result;
     }
 
-    private static void putGetter(Map<String, ExecutableElement> getters, String name,
-            ExecutableElement getter, TypeElement type) {
-        ExecutableElement previous = getters.put(name, getter);
-        if (previous != null && !previous.equals(getter)) {
-            throw new IllegalStateException(type.getQualifiedName() + " has ambiguous getter for " + name);
+    private static ExecutableElement getter(TypeElement type, String property, List<ExecutableElement> candidates) {
+        List<ExecutableElement> booleanGetters = candidates.stream()
+                .filter(method -> method.getSimpleName().toString().startsWith("is"))
+                .sorted(Comparator.comparing(ExecutableElement::toString))
+                .toList();
+        List<ExecutableElement> regularGetters = candidates.stream()
+                .filter(method -> method.getSimpleName().toString().startsWith("get"))
+                .sorted(Comparator.comparing(ExecutableElement::toString))
+                .toList();
+        if (booleanGetters.size() > 1) {
+            throw new IllegalStateException(type.getQualifiedName() + " has ambiguous getter for " + property);
         }
+        if (!booleanGetters.isEmpty()) {
+            ExecutableElement booleanGetter = booleanGetters.get(0);
+            for (ExecutableElement regularGetter : regularGetters) {
+                if (!regularGetter.getReturnType().equals(booleanGetter.getReturnType())) {
+                    throw new IllegalStateException(type.getQualifiedName() + "." + property
+                            + " has incompatible JavaBean getters");
+                }
+            }
+            return booleanGetter;
+        }
+        if (regularGetters.size() != 1) {
+            throw new IllegalStateException(type.getQualifiedName() + " has ambiguous getter for " + property);
+        }
+        return regularGetters.get(0);
+    }
+
+    private static ExecutableElement setter(TypeElement type, String property, ExecutableElement getter,
+            List<ExecutableElement> candidates) {
+        if (candidates == null) return null;
+        List<ExecutableElement> exactMatches = candidates.stream()
+                .filter(method -> method.getParameters().get(0).asType().equals(getter.getReturnType()))
+                .sorted(Comparator.comparing(ExecutableElement::toString))
+                .toList();
+        if (exactMatches.size() == 1) return exactMatches.get(0);
+        if (exactMatches.size() > 1) {
+            throw new IllegalStateException(type.getQualifiedName() + " has ambiguous setter for " + property);
+        }
+        throw new IllegalStateException(type.getQualifiedName() + "." + property
+                + " getter/setter types are incompatible");
     }
 
     private static String getterName(ExecutableElement method) {
         Set<Modifier> modifiers = method.getModifiers();
         if (modifiers.contains(Modifier.STATIC) || method.getParameters().size() != 0
-                || method.getReturnType().getKind().name().equals("VOID")) return null;
+                || method.getReturnType().getKind() == TypeKind.VOID) return null;
         String name = method.getSimpleName().toString();
         if (name.startsWith("get") && name.length() > 3) return Introspector.decapitalize(name.substring(3));
-        if (name.startsWith("is") && name.length() > 2
-                && (method.getReturnType().toString().equals("boolean") || method.getReturnType().toString().equals("java.lang.Boolean"))) {
+        if (name.startsWith("is") && name.length() > 2 && method.getReturnType().getKind() == TypeKind.BOOLEAN) {
             return Introspector.decapitalize(name.substring(2));
         }
         return null;

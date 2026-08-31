@@ -322,6 +322,68 @@ class MetamodelProcessorTest {
     }
 
     @Test
+    @DisplayName("PROPERTY JavaBeans selection matches runtime boolean, setter-overload, and covariant rules")
+    void acceptsRuntimeValidJavaBeansPropertyModel() {
+        Source base = new Source(
+                "fixtures.BeanBase",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Id;
+                import jakarta.persistence.MappedSuperclass;
+
+                @MappedSuperclass
+                @Access(AccessType.PROPERTY)
+                public class BeanBase {
+                    private Long id;
+
+                    @Id public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+
+                    public CharSequence getLabel() { return ""; }
+                    public void setLabel(CharSequence label) { }
+                }
+                """);
+        Source entity = new Source(
+                "fixtures.BeanEntity",
+                """
+                package fixtures;
+
+                import jakarta.persistence.Entity;
+
+                @Entity
+                public class BeanEntity extends BeanBase {
+                    private boolean active;
+                    private String label;
+                    private String name;
+
+                    // Boxed Boolean isX is not a JavaBeans getter.
+                    public Boolean isActive() { return Boolean.TRUE; }
+                    public boolean getActive() { return active; }
+                    public void setActive(boolean active) { this.active = active; }
+
+                    @Override public String getLabel() { return label; }
+                    public void setLabel(String label) { this.label = label; }
+
+                    public String getName() { return name; }
+                    public void setName(CharSequence name) { this.name = name.toString(); }
+                    public void setName(String name) { this.name = name; }
+                }
+                """);
+
+        Compilation compilation = ProcessorRunner.compile(base, entity);
+
+        assertCompilationSucceeded(compilation);
+        String generated = compilation.generatedSources().get("fixtures.BeanEntity_");
+        assertNotNull(generated);
+        assertTrue(generated.contains("public static final String active = \"active\";"));
+        assertTrue(generated.contains("public static final String label = \"label\";"));
+        assertTrue(generated.contains("public static final String name = \"name\";"));
+    }
+
+    @Test
     @DisplayName("상속된 PROPERTY getter와 member-level PROPERTY override는 논리 이름으로 발행된다")
     void emitsInheritedAndMemberPropertyAccessNames() {
         Source base = new Source(
@@ -504,6 +566,40 @@ class MetamodelProcessorTest {
             assertNotNull(error);
             assertTrue(error.getMessage(null).contains("setter"),
                     () -> "expected missing-setter diagnostic, got: " + error.getMessage(null));
+        }
+
+        @Test
+        @DisplayName("동일 순위 JavaBeans getter가 겹치면 ERROR diagnostic이 보고된다")
+        void rejectsAmbiguousSameRankGetters() {
+            Source source = new Source(
+                    "fixtures.AmbiguousProperty",
+                    """
+                    package fixtures;
+
+                    import jakarta.persistence.Access;
+                    import jakarta.persistence.AccessType;
+                    import jakarta.persistence.Entity;
+                    import jakarta.persistence.Id;
+
+                    @Entity
+                    @Access(AccessType.PROPERTY)
+                    public class AmbiguousProperty {
+                        @Id public Long getId() { return 1L; }
+                        public void setId(Long id) { }
+
+                        public String getName() { return "one"; }
+                        public String getname() { return "two"; }
+                        public void setName(String name) { }
+                    }
+                    """);
+
+            Compilation compilation = ProcessorRunner.compile(source);
+
+            assertFalse(compilation.success(), "same-rank JavaBeans getters must be rejected");
+            Diagnostic<? extends JavaFileObject> error = compilation.firstError();
+            assertNotNull(error);
+            assertTrue(error.getMessage(null).contains("ambiguous getter"),
+                    () -> "expected ambiguous-getter diagnostic, got: " + error.getMessage(null));
         }
 
         @Test
