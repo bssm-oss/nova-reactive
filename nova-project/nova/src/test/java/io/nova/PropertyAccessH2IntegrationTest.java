@@ -35,6 +35,7 @@ import io.nova.schema.SchemaInitializer;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,6 +47,7 @@ import java.util.Map;
 import java.io.Serializable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -212,6 +214,58 @@ class PropertyAccessH2IntegrationTest {
                             loaded.getChildren().stream().map(PropertyChild::getName).toList());
                     assertTrue(loaded.childrenSetterInvoked,
                             "inverse collection hydration must use the PROPERTY setter");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void propertyOneToManyOrphanRemovalAndReparentFlushThroughAccessors() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+        PropertyParent first = new PropertyParent("first");
+        PropertyChild moved = new PropertyChild("moved");
+        PropertyChild orphan = new PropertyChild("orphan");
+        first.addChild(moved);
+        first.addChild(orphan);
+        PropertyParent second = new PropertyParent("second");
+
+        StepVerifier.create(schema.create(List.of(PropertyParent.class, PropertyChild.class))
+                .then(operations.save(first))
+                .then(operations.save(second))
+                .then(Mono.defer(() -> {
+                    Long movedId = moved.getId();
+                    Long orphanId = orphan.getId();
+                    return Nova.entityManager(cf).inTransaction(manager ->
+                            Mono.zip(manager.find(PropertyParent.class, first.getId()),
+                                            manager.find(PropertyParent.class, second.getId()))
+                                    .flatMap(parents -> {
+                                        PropertyParent managedFirst = parents.getT1();
+                                        PropertyParent managedSecond = parents.getT2();
+                                        PropertyChild managedMoved = managedFirst.getChildren().get(0);
+                                        PropertyChild managedOrphan = managedFirst.getChildren().get(1);
+                                        managedFirst.getChildren().remove(managedOrphan);
+                                        managedFirst.getChildren().remove(managedMoved);
+                                        managedSecond.addChild(managedMoved);
+                                        return manager.flush()
+                                                .thenReturn(new Long[]{movedId, orphanId});
+                                    }));
+                }))
+                .flatMap(ids -> operations.findById(PropertyChild.class, ids[0])
+                        .zipWith(operations.findById(PropertyParent.class, second.getId()))
+                        .flatMap(pair -> operations.findById(PropertyChild.class, ids[1]).hasElement()
+                                .map(orphanExists -> new Object[]{pair.getT1(), pair.getT2(), orphanExists})))
+                .assertNext(result -> {
+                    PropertyChild reloadedMoved = (PropertyChild) result[0];
+                    PropertyParent reloadedSecond = (PropertyParent) result[1];
+                    boolean orphanExists = (boolean) result[2];
+                    assertEquals(second.getId(), reloadedMoved.getParent().getId(),
+                            "flush must persist the reparented FK");
+                    assertEquals(List.of("moved"),
+                            reloadedSecond.getChildren().stream().map(PropertyChild::getName).toList());
+                    assertTrue(reloadedSecond.childrenSetterInvoked,
+                            "reparented collection hydration must still use its setter");
+                    assertFalse(orphanExists, "flush must delete the orphaned child row");
                 })
                 .verifyComplete();
     }
@@ -643,7 +697,7 @@ class PropertyAccessH2IntegrationTest {
     public static class PropertyParent {
         private Long id;
         private String name;
-        private List<PropertyChild> children = new ArrayList<>();
+        private List<PropertyChild> childrenStorage = new ArrayList<>();
         boolean childrenSetterInvoked;
 
         public PropertyParent() {
@@ -654,7 +708,7 @@ class PropertyAccessH2IntegrationTest {
         }
 
         void addChild(PropertyChild child) {
-            children.add(child);
+            childrenStorage.add(child);
             child.setParent(this);
         }
 
@@ -679,12 +733,12 @@ class PropertyAccessH2IntegrationTest {
         @OneToMany(mappedBy = "parent", cascade = CascadeType.ALL, orphanRemoval = true)
         @OrderColumn(name = "child_order")
         public List<PropertyChild> getChildren() {
-            return children;
+            return childrenStorage;
         }
 
         public void setChildren(List<PropertyChild> children) {
             childrenSetterInvoked = true;
-            this.children = children;
+            this.childrenStorage = children;
         }
     }
 
@@ -768,14 +822,14 @@ class PropertyAccessH2IntegrationTest {
     @Access(AccessType.PROPERTY)
     public static class PropertyEmbeddedOwner {
         private Long id;
-        private MutableAddress address;
+        private MutableAddress embeddedStorage;
         boolean addressSetterInvoked;
 
         public PropertyEmbeddedOwner() {
         }
 
         PropertyEmbeddedOwner(MutableAddress address) {
-            this.address = address;
+            this.embeddedStorage = address;
         }
 
         @Id
@@ -790,12 +844,12 @@ class PropertyAccessH2IntegrationTest {
 
         @Embedded
         public MutableAddress getAddress() {
-            return address;
+            return embeddedStorage;
         }
 
         public void setAddress(MutableAddress address) {
             addressSetterInvoked = true;
-            this.address = address;
+            this.embeddedStorage = address;
         }
     }
 
@@ -807,24 +861,24 @@ class PropertyAccessH2IntegrationTest {
     @Table(name = "property_record_keys")
     @Access(AccessType.PROPERTY)
     public static class PropertyRecordKeyEntity {
-        private PropertyRecordKey id;
+        private PropertyRecordKey embeddedIdStorage;
         boolean idSetterInvoked;
 
         public PropertyRecordKeyEntity() {
         }
 
         PropertyRecordKeyEntity(PropertyRecordKey id) {
-            this.id = id;
+            this.embeddedIdStorage = id;
         }
 
         @EmbeddedId
         public PropertyRecordKey getId() {
-            return id;
+            return embeddedIdStorage;
         }
 
         public void setId(PropertyRecordKey id) {
             idSetterInvoked = true;
-            this.id = id;
+            this.embeddedIdStorage = id;
         }
     }
 
@@ -944,9 +998,9 @@ class PropertyAccessH2IntegrationTest {
     @Access(AccessType.PROPERTY)
     public static class PropertyCollectionOwner {
         private Long id;
-        private List<PropertyCollectionTag> tags = new ArrayList<>();
-        private List<String> labels = new ArrayList<>();
-        private Map<String, Integer> weights = new LinkedHashMap<>();
+        private List<PropertyCollectionTag> tagsStorage = new ArrayList<>();
+        private List<String> labelsStorage = new ArrayList<>();
+        private Map<String, Integer> weightsStorage = new LinkedHashMap<>();
         boolean tagsSetterInvoked;
         boolean labelsSetterInvoked;
         boolean weightsSetterInvoked;
@@ -969,24 +1023,24 @@ class PropertyAccessH2IntegrationTest {
                 joinColumns = @JoinColumn(name = "owner_id"),
                 inverseJoinColumns = @JoinColumn(name = "tag_id"))
         public List<PropertyCollectionTag> getTags() {
-            return tags;
+            return tagsStorage;
         }
 
         public void setTags(List<PropertyCollectionTag> tags) {
             tagsSetterInvoked = true;
-            this.tags = tags;
+            this.tagsStorage = tags;
         }
 
         @ElementCollection
         @CollectionTable(name = "property_owner_labels", joinColumns = @JoinColumn(name = "owner_id"))
         @OrderColumn(name = "label_order")
         public List<String> getLabels() {
-            return labels;
+            return labelsStorage;
         }
 
         public void setLabels(List<String> labels) {
             labelsSetterInvoked = true;
-            this.labels = labels;
+            this.labelsStorage = labels;
         }
 
         @ElementCollection
@@ -994,12 +1048,12 @@ class PropertyAccessH2IntegrationTest {
         @MapKeyColumn(name = "weight_name")
         @Column(name = "weight_value")
         public Map<String, Integer> getWeights() {
-            return weights;
+            return weightsStorage;
         }
 
         public void setWeights(Map<String, Integer> weights) {
             weightsSetterInvoked = true;
-            this.weights = weights;
+            this.weightsStorage = weights;
         }
     }
 
