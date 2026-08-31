@@ -49,7 +49,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@Transient` | ✅ | Field annotations are excluded; under effective `@Access(PROPERTY)`, getter annotations are also excluded |
 | `@Access(FIELD)` | ✅ | Default |
 | `@Access(PROPERTY)` | ✅ | Basic **and** `@ManyToOne` / `@OneToOne` relations (JavaBean getter/setter) |
-| `@SecondaryTable` / `@PrimaryKeyJoinColumn` | ✅ | |
+| `@SecondaryTable` / `@PrimaryKeyJoinColumn` | ✅ | `foreignKey` mode/name supported: `PROVIDER_DEFAULT` keeps the existing unnamed FK, `NO_CONSTRAINT` suppresses it, and an explicit name is quoted. These options apply only when creating a new secondary table; migrate existing secondary-table constraints externally. |
 | Auditing (`@CreatedAt` / `@UpdatedAt`), lifecycle callbacks, `@EntityListeners` | ✅ | 7 lifecycle phases; listener + superclass inheritance |
 | `@ExcludeSuperclassListeners` | ✅ | Excludes external listener hosts above the annotated entity or mapped-superclass host; entity callbacks remain inherited |
 | `@ExcludeDefaultListeners` | ✅ | No-op without XML default listeners; explicit `@EntityListeners` and entity callbacks remain active |
