@@ -2245,7 +2245,7 @@ public final class EntityMetadataFactory {
             JoinColumn join = attribute.annotation(JoinColumn.class);
             Class<?> target = manyToOne.targetEntity() == void.class ? attribute.javaType() : manyToOne.targetEntity();
             ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
-            return new PersistentProperty(null, attribute.name(),
+            return new PersistentProperty(attribute.field(), attribute.name(),
                     join != null && !join.name().isBlank() ? join.name()
                             : namingStrategy.columnName(attribute.name() + "_id"),
                     storage == null ? Long.class : storage.javaType(), false, false,
@@ -2256,7 +2256,8 @@ public final class EntityMetadataFactory {
                     join == null || join.insertable(), join == null || join.updatable(), join != null && join.unique(),
                     join == null ? "" : join.columnDefinition(), false,
                     storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
-                    false, "", true, attribute.getter(), attribute.setter(),
+                    false, "", attribute.accessType() == AccessType.PROPERTY,
+                    attribute.getter(), attribute.setter(),
                     manyToOne.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(manyToOne.cascade())),
                     "", null);
         }
@@ -2299,7 +2300,9 @@ public final class EntityMetadataFactory {
                 throw new IllegalArgumentException(location
                         + " uses @GeneratedValue(SEQUENCE) but does not specify generator (sequence name)");
             }
-            generator = resolveSequenceName(attribute.declaringType(), attribute.getter(), generator);
+            generator = attribute.getter() != null
+                    ? resolveSequenceName(attribute.declaringType(), attribute.getter(), generator)
+                    : resolveSequenceName(attribute.declaringType(), attribute.field(), generator);
             if (!SEQUENCE_GENERATOR_NAME_PATTERN.matcher(generator).matches()) {
                 throw new IllegalArgumentException("Invalid sequence generator name: '" + generator + "' on " + location
                         + " — must match identifier pattern " + SEQUENCE_GENERATOR_NAME_PATTERN.pattern());
@@ -2314,25 +2317,33 @@ public final class EntityMetadataFactory {
                 throw new IllegalArgumentException("Unsupported @GeneratedValue(TABLE) id type " + javaType.getName()
                         + " on " + location + "; supported types are Long, Integer");
             }
-            tableGeneratorInfo = resolveTableGeneratorInfo(attribute.declaringType(), attribute.getter(), generator);
+            tableGeneratorInfo = attribute.getter() != null
+                    ? resolveTableGeneratorInfo(attribute.declaringType(), attribute.getter(), generator)
+                    : resolveTableGeneratorInfo(attribute.declaringType(), attribute.field(), generator);
         }
         Enumerated enumerated = attribute.annotation(Enumerated.class);
         boolean json = attribute.isAnnotationPresent(Json.class);
-        AttributeConverter<?, ?> converter = converters.get(javaType);
+        AttributeConverter<?, ?> userConverter = converters.get(javaType);
+        AttributeConverter<?, ?> converter = userConverter;
         Class<?> converterColumnType = null;
         boolean enumeratedMapping = false;
         EnumType enumType = null;
-        Convert convert = Arrays.stream(attribute.getter().getAnnotationsByType(Convert.class))
+        Convert convert = Arrays.stream(attribute.annotationsByType(Convert.class))
                 .filter(candidate -> candidate.attributeName().isBlank()).findFirst().orElse(null);
-        JpaConverterDescriptor explicitConverter = explicitJpaConverter(
-                attribute.getter(), javaType, null, location, null);
+        JpaConverterDescriptor explicitConverter = attribute.getter() != null
+                ? explicitJpaConverter(attribute.getter(), javaType, null, location, null)
+                : explicitJpaConverter(attribute.field(), javaType, null, location, null);
         if (enumerated != null) {
-            if (json || converter != null) {
-                throw new IllegalStateException(location + " cannot combine @Enumerated with @Json or a registered AttributeConverter");
+            if (json) {
+                throw new IllegalStateException(location + " cannot declare both @Json and @Enumerated");
             }
             if (!javaType.isEnum()) {
                 throw new IllegalArgumentException(location + " is annotated with @Enumerated but its type "
                         + javaType.getName() + " is not an enum");
+            }
+            if (userConverter != null) {
+                throw new IllegalArgumentException(location
+                        + " cannot use both @Enumerated and a registered AttributeConverter for " + javaType.getName());
             }
             enumeratedMapping = true;
             enumType = enumerated.value();
@@ -2341,15 +2352,19 @@ public final class EntityMetadataFactory {
             converterColumnType = mapping.customColumnType();
         }
         if (json) {
-            if (converter != null) {
+            if (userConverter != null) {
                 throw new IllegalStateException(location + " cannot use both @Json and a registered AttributeConverter for "
                         + javaType.getName());
             }
             converter = new JsonAttributeConverter(jsonCodec, javaType);
         }
         if (explicitConverter != null) {
-            if (enumeratedMapping || json || converter != null) {
-                throw new IllegalStateException(location + " cannot combine @Convert with another converter mapping");
+            if (enumeratedMapping || json) {
+                throw new IllegalStateException(location + " cannot combine @Convert with @Enumerated/@Json");
+            }
+            if (userConverter != null) {
+                throw new IllegalStateException(location + " cannot combine @Convert with a registered AttributeConverter for "
+                        + javaType.getName());
             }
             converter = explicitConverter.instantiate();
             converterColumnType = explicitConverter.columnType();
@@ -2358,12 +2373,24 @@ public final class EntityMetadataFactory {
         boolean utilDate = javaType == java.util.Date.class;
         boolean calendar = java.util.Calendar.class.isAssignableFrom(javaType);
         if (temporal != null) {
-            if (enumeratedMapping || json || (convert != null && !convert.disableConversion()) || converter != null) {
-                throw new IllegalStateException(location + " cannot combine @Temporal with another converter mapping");
+            if (enumeratedMapping || json) {
+                throw new IllegalStateException(location + " cannot combine @Temporal with @Enumerated/@Json");
+            }
+            if (convert != null && !convert.disableConversion()) {
+                throw new IllegalStateException(location + " cannot combine @Temporal with @Convert");
+            }
+            if (userConverter != null) {
+                throw new IllegalStateException(location + " cannot combine @Temporal with a registered AttributeConverter for "
+                        + javaType.getName());
             }
             if (!utilDate && !calendar) {
+                if (java.util.Date.class.isAssignableFrom(javaType)) {
+                    throw new IllegalArgumentException(location + " is annotated with @Temporal but its type "
+                            + javaType.getName() + " is a java.sql.* type whose temporal precision is already fixed by the type;"
+                            + " map java.sql.Date/Time/Timestamp without @Temporal");
+                }
                 throw new IllegalArgumentException(location + " is annotated with @Temporal but its type "
-                        + javaType.getName() + " is not java.util.Date or java.util.Calendar");
+                        + javaType.getName() + " is not java.util.Date or java.util.Calendar; java.time types must not use @Temporal");
             }
             converter = new TemporalAttributeConverter(javaType, temporal.value());
             converterColumnType = switch (temporal.value()) {
@@ -2375,8 +2402,11 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(location + " maps " + javaType.getName()
                     + " but is missing @Temporal(TemporalType.DATE|TIME|TIMESTAMP); java.util.Date/Calendar mapping is ambiguous without it");
         }
+        boolean conversionDisabled = attribute.getter() != null
+                ? conversionDisabled(attribute.getter(), null, null)
+                : conversionDisabled(attribute.field(), null, null);
         if (converter == null && !id && !version && enumerated == null && temporal == null && !json
-                && !conversionDisabled(attribute.getter(), null, null)) {
+                && !conversionDisabled) {
             JpaConverterDescriptor automatic = uniqueJpaConverter(javaType, true, location);
             if (automatic != null) {
                 converter = automatic.instantiate();
@@ -2392,10 +2422,12 @@ public final class EntityMetadataFactory {
         }
         if (converter == null) {
             ElementValueMapping storage = resolveBasicStorageMapping(wrapPrimitiveType(javaType));
-            converter = storage.converter();
-            converterColumnType = storage.columnType();
+            if (storage.converter() != null) {
+                converter = storage.converter();
+                converterColumnType = storage.columnType();
+            }
         }
-        return new PersistentProperty(null, attribute.name(), columnName, javaType, id,
+        return new PersistentProperty(attribute.field(), attribute.name(), columnName, javaType, id,
                 version, nullable,
                 column == null ? 255 : column.length(), column == null ? 0 : column.precision(),
                 column == null ? 0 : column.scale(), generationType,
@@ -2405,8 +2437,10 @@ public final class EntityMetadataFactory {
                 false, null, true, false, null, "", column == null || column.insertable(),
                 column == null || column.updatable(), column != null && column.unique(),
                 column == null ? "" : column.columnDefinition(), attribute.isAnnotationPresent(Lob.class), converterColumnType,
-                false, null, null, null, tableGeneratorInfo, false, "", true, attribute.getter(), attribute.setter(),
-                null, column == null ? "" : column.table(), null);
+                false, null, null, null, tableGeneratorInfo, false, "",
+                attribute.accessType() == AccessType.PROPERTY, attribute.getter(), attribute.setter(),
+                null, column == null ? "" : column.table(), null,
+                columnDdlDefinition(column, attribute));
     }
 
     private static Class<?> collectionElementType(
@@ -2426,15 +2460,17 @@ public final class EntityMetadataFactory {
         Class<?> target = annotation.targetEntity() == void.class ? attribute.javaType() : annotation.targetEntity();
         String mappedBy = annotation.mappedBy();
         if (!mappedBy.isBlank()) {
-            return new PersistentProperty(null, attribute.name(), "", attribute.javaType(), false, false, true,
+            return new PersistentProperty(attribute.field(), attribute.name(), "", attribute.javaType(),
+                    false, false, true,
                     255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
                     false, null, false, false, target, mappedBy, true, true, false, "", false, null, true,
-                    null, null, null, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                    null, null, null, null, false, "", attribute.accessType() == AccessType.PROPERTY,
+                    attribute.getter(), attribute.setter(), null, "", null,
                     ColumnDdlDefinition.EMPTY);
         }
         JoinColumn join = attribute.annotation(JoinColumn.class);
         ForeignKeyStorage storage = resolveToOneForeignKeyStorage(target);
-        return new PersistentProperty(null, attribute.name(),
+        return new PersistentProperty(attribute.field(), attribute.name(),
                 join != null && !join.name().isBlank() ? join.name()
                         : namingStrategy.columnName(attribute.name() + "_id"),
                 storage == null ? Long.class : storage.javaType(), false, false,
@@ -2445,16 +2481,19 @@ public final class EntityMetadataFactory {
                 join == null || join.insertable(), join == null || join.updatable(), oneToOne || (join != null && join.unique()),
                 join == null ? "" : join.columnDefinition(), false,
                 storage == null ? null : storage.converterColumnType(), false, null, null, null, null,
-                false, "", true, attribute.getter(), attribute.setter(),
+                false, "", attribute.accessType() == AccessType.PROPERTY,
+                attribute.getter(), attribute.setter(),
                 annotation.cascade().length == 0 ? null : new ToOneCascadeInfo(Set.of(annotation.cascade())),
                 "", null);
     }
 
     private PersistentProperty createDescriptorCollectionMarker(PersistentAttributeAccess attribute) {
-        return new PersistentProperty(null, attribute.name(), "", attribute.javaType(), false, false, true,
+        return new PersistentProperty(attribute.field(), attribute.name(), "", attribute.javaType(),
+                false, false, true,
                 255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
                 false, null, true, false, null, "", true, true, false, "", false, null, false,
-                null, null, null, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                null, null, null, null, false, "", attribute.accessType() == AccessType.PROPERTY,
+                attribute.getter(), attribute.setter(), null, "", null,
                 ColumnDdlDefinition.EMPTY);
     }
 
@@ -2479,9 +2518,10 @@ public final class EntityMetadataFactory {
             List<Field> hostPath,
             String columnPrefix
     ) {
-        // Fields are retained only for physical access compatibility.  The descriptor remains the
-        // sole selected access path for annotation/type decisions at the top-level dispatch.
-        if (attribute.field() == null) {
+        // Top-level metadata is always descriptor-driven, regardless of whether a conventional
+        // backing field happens to exist. Embedded legacy paths still carry their column prefix
+        // until composed host descriptors replace List<Field>.
+        if (hostPath.isEmpty()) {
             return createDescriptorProperty(attribute);
         }
         return createProperty(declaringType, attribute.field(), hostPath, columnPrefix);
@@ -2885,6 +2925,44 @@ public final class EntityMetadataFactory {
                     + field.getDeclaringClass().getName() + "." + field.getName());
         }
         validateNoNul(comment, "@Column.comment on " + field.getDeclaringClass().getName() + "." + field.getName());
+        return new ColumnDdlDefinition(checks, comment, options, secondPrecision);
+    }
+
+    private static ColumnDdlDefinition columnDdlDefinition(
+            Column column, PersistentAttributeAccess attribute) {
+        if (column == null) {
+            return ColumnDdlDefinition.EMPTY;
+        }
+        String location = attribute.declaringType().getName() + "." + attribute.name();
+        int secondPrecision = column.secondPrecision();
+        if (secondPrecision < -1) {
+            throw new IllegalArgumentException("@Column.secondPrecision on " + location
+                    + " must be -1 (unspecified) or non-negative");
+        }
+        Temporal temporal = attribute.annotation(Temporal.class);
+        boolean secondPrecisionCapable = attribute.javaType() == java.time.LocalTime.class
+                || attribute.javaType() == java.time.LocalDateTime.class
+                || (temporal != null
+                && (temporal.value() == TemporalType.TIME || temporal.value() == TemporalType.TIMESTAMP));
+        if (secondPrecision >= 0 && !secondPrecisionCapable) {
+            throw new IllegalArgumentException("@Column.secondPrecision on " + location
+                    + " requires a TIME or TIMESTAMP property");
+        }
+        List<CheckConstraintDefinition> checks = new ArrayList<>();
+        for (CheckConstraint check : column.check()) {
+            CheckConstraintDefinition definition = checkConstraint(
+                    check.name(), check.constraint(), check.options(), "@Column.check on " + location);
+            if (definition != null) {
+                checks.add(definition);
+            }
+        }
+        String comment = column.comment();
+        String options = fragment(column.options(), "@Column.options on " + location);
+        if (!column.columnDefinition().isBlank() && !options.isEmpty()) {
+            throw new IllegalArgumentException("@Column.columnDefinition and @Column.options"
+                    + " cannot both be non-blank on " + location);
+        }
+        validateNoNul(comment, "@Column.comment on " + location);
         return new ColumnDdlDefinition(checks, comment, options, secondPrecision);
     }
 
@@ -3658,10 +3736,12 @@ public final class EntityMetadataFactory {
         OneToManyInfo info = annotation.cascade().length > 0 || annotation.orphanRemoval() || orderColumn != null
                 ? new OneToManyInfo(Set.of(annotation.cascade()), annotation.orphanRemoval(), orderColumn)
                 : null;
-        return new PersistentProperty(null, attribute.name(), "", attribute.javaType(), false, false, true,
+        return new PersistentProperty(attribute.field(), attribute.name(), "", attribute.javaType(),
+                false, false, true,
                 255, 0, 0, null, "", null, false, false, false, false, List.of(), false, null, false,
                 false, null, true, true, target, mappedBy, true, true, false, "", false, null, false,
-                null, null, info, null, false, "", true, attribute.getter(), attribute.setter(), null, "", null,
+                null, null, info, null, false, "", attribute.accessType() == AccessType.PROPERTY,
+                attribute.getter(), attribute.setter(), null, "", null,
                 ColumnDdlDefinition.EMPTY);
     }
 
