@@ -102,6 +102,27 @@ class CriteriaJoinIntegrationTest {
     }
 
     @Test
+    void emptyJunctionsWorkThroughJoinedScalarRoute() {
+        CriteriaBuilder allBuilder = cb();
+        CriteriaQuery<String> all = allBuilder.createQuery(String.class);
+        Root<Employee> allEmployee = all.from(Employee.class);
+        allEmployee.join("department");
+        all.select(allEmployee.<String>get("name"))
+                .where(allBuilder.and())
+                .orderBy(allBuilder.asc(allEmployee.<String>get("name")));
+        StepVerifier.create(criteria.createQuery(all).getResultList())
+                .expectNext("Ada", "Bob", "Cara")
+                .verifyComplete();
+
+        CriteriaBuilder noneBuilder = cb();
+        CriteriaQuery<String> none = noneBuilder.createQuery(String.class);
+        Root<Employee> noneEmployee = none.from(Employee.class);
+        noneEmployee.join("department");
+        none.select(noneEmployee.<String>get("name")).where(noneBuilder.or());
+        StepVerifier.create(criteria.createQuery(none).getResultList()).verifyComplete();
+    }
+
+    @Test
     void leftJoinExposesUnmatchedRows() {
         CriteriaBuilder cb = cb();
         CriteriaQuery<String> cq = cb.createQuery(String.class);

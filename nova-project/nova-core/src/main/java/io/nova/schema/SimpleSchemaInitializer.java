@@ -636,11 +636,25 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                     return operations.executeNative(NativeQuery.of(ddl));
                 })
                 .then();
-        // generator 행은 (table, pkColumnValue)별로 한 번씩 seed 한다.
+        // Raw create/recreate는 새 테이블에 무조건 seed한다. ifNotExists 모드에서는 dialect SQL로
+        // 각 논리 generator 행을 먼저 확인해 없는 행만 seed하므로, 재기동이 기존 카운터를 되돌리지 않는다.
         Mono<Void> seedRows = Flux.fromIterable(definitions)
-                .concatMap(info -> operations.executeNative(NativeQuery.of(generator.seedTableGenerator(info))))
+                .concatMap(info -> options.ifNotExists()
+                        ? seedTableGeneratorIfMissing(info, generator)
+                        : operations.executeNative(NativeQuery.of(generator.seedTableGenerator(info))))
                 .then();
         return createTables.then(seedRows);
+    }
+
+    private Mono<Void> seedTableGeneratorIfMissing(TableGeneratorInfo info, SchemaGenerator generator) {
+        return operations.queryNative(
+                        NativeQuery.of(dialect.tableGeneratorSelectSql(
+                                info.table(), info.valueColumnName(), info.pkColumnName(), info.pkColumnValue())),
+                        row -> row.get(Dialect.TABLE_GENERATOR_VALUE_COLUMN, Long.class))
+                .hasElements()
+                .flatMap(exists -> exists
+                        ? Mono.empty()
+                        : operations.executeNative(NativeQuery.of(generator.seedTableGenerator(info))).then());
     }
 
     private Mono<Void> dropTableGenerators(List<Class<?>> types) {

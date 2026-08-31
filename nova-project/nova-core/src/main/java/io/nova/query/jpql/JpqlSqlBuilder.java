@@ -121,6 +121,7 @@ public final class JpqlSqlBuilder {
         ctx.block = new Block(select.rootEntity(), select.rootAlias(), select.joins());
         bindRoot(ctx.scope, select.rootEntity(), select.rootAlias());
         bindJoins(ctx.scope, select.joins());
+        validateResultVariables(ctx, select.selectItems());
 
         // 각 절을 개별 버퍼로 렌더한다(묵시 조인은 렌더 중 수집된다). 최종 SQL 순서대로 렌더하므로 bind
         // 순서가 marker 위치와 정확히 일치한다.
@@ -368,8 +369,38 @@ public final class JpqlSqlBuilder {
                     slots.add(new TranslatedSql.ResultSlot(start, 1, null, mappedProjectionProperty(ctx, arg)));
                 }
             } else {
+                int start = columns[0];
                 renderPlainSelectItem(ctx, item.expression(), columns, slots);
+                registerResultVariable(ctx, item.alias(), start, columns[0] - start);
             }
+        }
+    }
+
+    /**
+     * Result variables share the case-insensitive namespace used by identification variables, but only
+     * participate in ORDER BY. Entity and attribute names are deliberately not normalized here.
+     */
+    private void validateResultVariables(Ctx ctx, List<SelectItem> items) {
+        Map<String, String> variables = new HashMap<>();
+        for (SelectItem item : items) {
+            if (item.alias() == null) {
+                continue;
+            }
+            String key = Scope.normalize(item.alias());
+            if (ctx.scope.contains(item.alias())) {
+                throw new JpqlException("Result variable '" + item.alias()
+                        + "' collides with an identification variable in JPQL query");
+            }
+            if (variables.putIfAbsent(key, item.alias()) != null) {
+                throw new JpqlException("Duplicate result variable '" + item.alias() + "' in JPQL query");
+            }
+        }
+    }
+
+    private void registerResultVariable(Ctx ctx, String alias, int firstColumn, int width) {
+        if (alias != null) {
+            ctx.resultVariables.put(Scope.normalize(alias),
+                    new ResultVariable(JpqlQuery.columnLabel(firstColumn), width));
         }
     }
 
@@ -474,6 +505,18 @@ public final class JpqlSqlBuilder {
         boolean first = true;
         for (OrderItem item : orderBy) {
             String dir = item.ascending() ? " asc" : " desc";
+            ResultVariable resultVariable = resultVariable(ctx, item.expression());
+            if (resultVariable != null) {
+                if (!first) {
+                    ctx.sql.append(", ");
+                }
+                first = false;
+                if (resultVariable.width() != 1) {
+                    throw new JpqlException("Result variable in ORDER BY must select exactly one column");
+                }
+                ctx.sql.append(dialect.quote(resultVariable.label())).append(dir);
+                continue;
+            }
             CompositeToOneRef ref = compositeToOneRef(ctx, item.expression());
             if (ref != null) {
                 for (ToOneForeignKeyColumn column : ref.property().toOneForeignKey().columns()) {
@@ -493,6 +536,13 @@ public final class JpqlSqlBuilder {
                 ctx.sql.append(dir);
             }
         }
+    }
+
+    private static ResultVariable resultVariable(Ctx ctx, Expression expression) {
+        if (expression instanceof Expression.Path path && path.segments().isEmpty()) {
+            return ctx.resultVariables.get(Scope.normalize(path.alias()));
+        }
+        return null;
     }
 
     // ----------------------------------------------------------------------------------------
@@ -1579,6 +1629,7 @@ public final class JpqlSqlBuilder {
     private static final class Ctx {
         StringBuilder sql = new StringBuilder();
         final List<JpqlBinding> bindings = new ArrayList<>();
+        final Map<String, ResultVariable> resultVariables = new HashMap<>();
         Scope scope;
         Block block;
         /** true면 컬럼을 {@code alias."col"}로 qualify한다. 벌크 UPDATE/DELETE 최상위에서만 false. */
@@ -1642,6 +1693,9 @@ public final class JpqlSqlBuilder {
 
     /** 복합키 to-one terminal 비교/IS NULL 대상: FK가 걸린 별칭과 그 관계 프로퍼티. */
     private record CompositeToOneRef(String alias, PersistentProperty property) {
+    }
+
+    private record ResultVariable(String label, int width) {
     }
 
     /** 대소문자를 구분하지 않는 별칭 → 메타데이터 스코프. 서브쿼리 상관 참조를 위해 부모 스코프로 위임한다. */

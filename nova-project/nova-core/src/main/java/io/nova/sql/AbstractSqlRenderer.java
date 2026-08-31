@@ -15,6 +15,7 @@ import io.nova.query.Condition;
 import io.nova.query.Cursor;
 import io.nova.query.CursorField;
 import io.nova.query.LockMode;
+import io.nova.query.LogicalOperator;
 import io.nova.query.NegationPredicate;
 import io.nova.query.Predicate;
 import io.nova.query.QuerySpec;
@@ -1289,6 +1290,9 @@ public abstract class AbstractSqlRenderer implements SqlRenderer {
             return "not (" + renderPredicateWithLookup(context, metadata, negation.inner(), aliasLookup) + ")";
         }
         CompoundPredicate compound = (CompoundPredicate) predicate;
+        if (compound.predicates().isEmpty()) {
+            return compound.operator() == LogicalOperator.AND ? "1 = 1" : "1 = 0";
+        }
         return compound.predicates().stream()
                 .map(child -> "(" + renderPredicateWithLookup(context, metadata, child, aliasLookup) + ")")
                 .collect(Collectors.joining(" " + compound.operator().name().toLowerCase() + " "));

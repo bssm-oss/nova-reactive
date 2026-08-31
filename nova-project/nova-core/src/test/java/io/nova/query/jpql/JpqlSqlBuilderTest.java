@@ -63,6 +63,31 @@ class JpqlSqlBuilderTest {
     }
 
     @Test
+    void rendersCaseInsensitiveResultVariablesAsGeneratedColumnLabelsInOrderBy() {
+        TranslatedSql scalar = scalar("SELECT e.name AS DisplayName FROM Employee e ORDER BY displayname DESC");
+        assertEquals(
+                "select e.\"name\" as \"c0\" from \"employee\" e order by \"c0\" desc",
+                scalar.sql());
+
+        TranslatedSql aggregate = scalar("SELECT COUNT(e) AS Total FROM Employee e ORDER BY total");
+        assertEquals(
+                "select count(e.\"id\") as \"c0\" from \"employee\" e order by \"c0\" asc",
+                aggregate.sql());
+    }
+
+    @Test
+    void rejectsDuplicateAndIdentificationVariableCollidingResultVariables() {
+        JpqlException duplicate = assertThrows(JpqlException.class,
+                () -> scalar("SELECT e.name AS result, e.age AS RESULT FROM Employee e"));
+        assertEquals("Duplicate result variable 'RESULT' in JPQL query", duplicate.getMessage());
+
+        JpqlException collision = assertThrows(JpqlException.class,
+                () -> scalar("SELECT e.name AS E FROM Employee e"));
+        assertEquals("Result variable 'E' collides with an identification variable in JPQL query",
+                collision.getMessage());
+    }
+
+    @Test
     void rendersAndPredicateWithParens() {
         TranslatedSql t = scalar("SELECT e.name FROM Employee e WHERE e.age = 30 AND e.name = :n");
         assertEquals(
@@ -595,6 +620,13 @@ class JpqlSqlBuilderTest {
         assertEquals(2, slot.columnCount());
         assertEquals(List.of("p_k1", "p_k2"), slot.compositeFk().columns().stream()
                 .map(io.nova.metadata.ToOneForeignKeyColumn::columnName).toList());
+    }
+
+    @Test
+    void rejectsOrderingByResultVariableForMultiColumnProjection() {
+        JpqlException exception = assertThrows(JpqlException.class,
+                () -> compositeScalar("SELECT c.parent AS parentResult FROM CompositeJoinChild c ORDER BY PARENTRESULT"));
+        assertEquals("Result variable in ORDER BY must select exactly one column", exception.getMessage());
     }
 
     @Test

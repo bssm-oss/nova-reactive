@@ -95,6 +95,11 @@ import java.util.List;
 
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
+import jakarta.persistence.AttributeOverride;
+import jakarta.persistence.Basic;
+import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
+import jakarta.persistence.Embeddable;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
 import jakarta.persistence.ExcludeDefaultListeners;
@@ -104,9 +109,11 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
 import jakarta.persistence.EnumType;
+import io.nova.annotation.Json;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -545,17 +552,22 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
-    void preservesDeclarationOrderForMultipleCallbacksOfSamePhase() {
-        EntityMetadata<MultipleCallbacksEntity> metadata = factory.getEntityMetadata(MultipleCallbacksEntity.class);
+    void rejectsMultipleCallbacksOfSamePhaseOnOneEntityClass() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(MultipleCallbacksEntity.class));
 
-        assertEquals(2, metadata.prePersistCallbacks().size());
-        java.util.Set<String> names = new java.util.LinkedHashSet<>();
-        for (java.lang.reflect.Method m : metadata.prePersistCallbacks()) {
-            names.add(m.getName());
-        }
-        // declaration 순서를 강제하지는 않지만 두 메서드 모두 인식되어야 한다.
-        assertTrue(names.contains("first"));
-        assertTrue(names.contains("second"));
+        assertTrue(exception.getMessage().contains("@PrePersist"));
+        assertTrue(exception.getMessage().contains("multiple callback methods"));
+    }
+
+    @Test
+    void permitsOneCallbackMethodForMultiplePhases() {
+        EntityMetadata<MultiPhaseCallbackEntity> metadata = factory.getEntityMetadata(MultiPhaseCallbackEntity.class);
+
+        assertEquals(1, metadata.prePersistCallbacks().size());
+        assertEquals(1, metadata.preUpdateCallbacks().size());
+        assertEquals("audit", metadata.prePersistCallbacks().get(0).getName());
     }
 
     @Test
@@ -910,6 +922,100 @@ class EntityMetadataFactoryTest {
         assertEquals("geo", country.embeddedHostPath().get(1).getName());
         // 가장 안쪽 host는 path의 마지막 요소와 동일하다.
         assertEquals("geo", country.embeddedHostField().getName());
+    }
+
+    @Test
+    void implicitlyEmbedsEmbeddableFieldTypesIncludingNestedTypes() {
+        EntityMetadata<ImplicitEmbeddedFieldEntity> metadata = factory.getEntityMetadata(ImplicitEmbeddedFieldEntity.class);
+
+        assertEquals(List.of("id", "address_street", "address_geo_country"),
+                metadata.properties().stream().map(PersistentProperty::columnName).toList());
+        assertTrue(metadata.findProperty("address.geo.country").orElseThrow().embedded());
+    }
+
+    @Test
+    void implicitlyEmbedsEmbeddablePropertyTypesIncludingNestedTypes() {
+        EntityMetadata<ImplicitEmbeddedPropertyEntity> metadata =
+                factory.getEntityMetadata(ImplicitEmbeddedPropertyEntity.class);
+
+        assertEquals(List.of("id", "address_street", "address_geo_country"),
+                metadata.properties().stream().map(PersistentProperty::columnName).toList());
+        assertEquals(AccessType.PROPERTY, metadata.findProperty("address.geo.country").orElseThrow()
+                .embeddedHostAccessPath().get(0).accessType());
+    }
+
+    @Test
+    void doesNotImplicitlyEmbedExplicitBasicEmbeddableMappings() {
+        EntityMetadata<ExplicitBasicEmbeddableEntity> metadata =
+                factory.getEntityMetadata(ExplicitBasicEmbeddableEntity.class);
+
+        assertTrue(metadata.findProperty("converted").isPresent());
+        assertTrue(metadata.findProperty("json").isPresent());
+        assertTrue(metadata.findProperty("basic").isPresent());
+        assertTrue(metadata.findProperty("converted.street").isEmpty());
+        assertTrue(metadata.findProperty("json.street").isEmpty());
+        assertTrue(metadata.findProperty("basic.street").isEmpty());
+    }
+
+    @Test
+    void propagatesPathScopedConvertThroughImplicitFieldEmbeddables() {
+        PersistentProperty country = factory.getEntityMetadata(ImplicitConvertedFieldEntity.class)
+                .findProperty("address.geo.country").orElseThrow();
+
+        assertEquals(Integer.class, country.columnType());
+        assertEquals(2, country.toColumnValue("KR"));
+    }
+
+    @Test
+    void propagatesPathScopedConvertThroughImplicitPropertyEmbeddables() {
+        PersistentProperty country = factory.getEntityMetadata(ImplicitConvertedPropertyEntity.class)
+                .findProperty("address.geo.country").orElseThrow();
+
+        assertEquals(Integer.class, country.columnType());
+        assertEquals(2, country.toColumnValue("KR"));
+    }
+
+    @Test
+    void propagatesNestedAttributeOverridesThroughImplicitEmbeddables() {
+        EntityMetadata<ImplicitEmbeddedOverrideEntity> metadata =
+                factory.getEntityMetadata(ImplicitEmbeddedOverrideEntity.class);
+
+        assertEquals("nation", metadata.findProperty("address.geo.country").orElseThrow().columnName());
+    }
+
+    @Test
+    void outerFieldOverrideWinsOverNestedEmbeddableOverride() {
+        EntityMetadata<OuterFieldOverrideEntity> metadata =
+                factory.getEntityMetadata(OuterFieldOverrideEntity.class);
+
+        assertEquals("outer_country", metadata.findProperty("address.geo.country").orElseThrow().columnName());
+    }
+
+    @Test
+    void outerPropertyOverrideWinsOverNestedEmbeddableOverride() {
+        EntityMetadata<OuterPropertyOverrideEntity> metadata =
+                factory.getEntityMetadata(OuterPropertyOverrideEntity.class);
+
+        assertEquals("outer_country", metadata.findProperty("address.geo.country").orElseThrow().columnName());
+    }
+
+    @Test
+    void rejectsUnmatchedNestedAttributeOverridesOnImplicitEmbeddables() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(InvalidImplicitEmbeddedOverrideEntity.class));
+
+        assertTrue(exception.getMessage().contains("@AttributeOverride"), exception::getMessage);
+        assertTrue(exception.getMessage().contains(".geo"), exception::getMessage);
+        assertTrue(exception.getMessage().contains("'zip'"), exception::getMessage);
+    }
+
+    @Test
+    void rejectsDuplicateNestedAttributeOverridesOnImplicitEmbeddables() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(DuplicateImplicitEmbeddedOverrideEntity.class));
+
+        assertTrue(exception.getMessage().contains("duplicate @AttributeOverride"));
+        assertTrue(exception.getMessage().contains("geo.country"));
     }
 
     @Test
@@ -1550,6 +1656,231 @@ class EntityMetadataFactoryTest {
     static class ExcludeDefaultListenersEntity extends DefaultListenersExcludedBase {
         @PrePersist
         void entityCallback() {
+        }
+    }
+
+    @Entity
+    static class MultiPhaseCallbackEntity {
+        @Id
+        private Long id;
+
+        @PrePersist
+        @PreUpdate
+        void audit() {
+        }
+    }
+
+    @Embeddable
+    @Access(AccessType.FIELD)
+    static class ImplicitGeo {
+        private String country;
+    }
+
+    @Embeddable
+    @Access(AccessType.FIELD)
+    static class ImplicitAddress {
+        private String street;
+        private ImplicitGeo geo;
+    }
+
+    @Entity
+    static class ImplicitEmbeddedFieldEntity {
+        @Id
+        private Long id;
+        private ImplicitAddress address;
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class ImplicitEmbeddedPropertyEntity {
+        private Long id;
+        private ImplicitAddress address;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public ImplicitAddress getAddress() {
+            return address;
+        }
+
+        public void setAddress(ImplicitAddress address) {
+            this.address = address;
+        }
+    }
+
+    @Entity
+    static class ExplicitBasicEmbeddableEntity {
+        @Id
+        private Long id;
+        @Convert(converter = ImplicitAddressConverter.class)
+        private ImplicitAddress converted;
+        @Json
+        private ImplicitAddress json;
+        @Basic
+        private ImplicitAddress basic;
+    }
+
+    static class ImplicitAddressConverter
+            implements jakarta.persistence.AttributeConverter<ImplicitAddress, String> {
+        @Override
+        public String convertToDatabaseColumn(ImplicitAddress value) {
+            return value == null ? null : value.street;
+        }
+
+        @Override
+        public ImplicitAddress convertToEntityAttribute(String value) {
+            return value == null ? null : new ImplicitAddress();
+        }
+    }
+
+    static class CountryConverter implements jakarta.persistence.AttributeConverter<String, Integer> {
+        @Override
+        public Integer convertToDatabaseColumn(String value) {
+            return value == null ? null : value.length();
+        }
+
+        @Override
+        public String convertToEntityAttribute(Integer value) {
+            return value == null ? null : "X".repeat(value);
+        }
+    }
+
+    @Entity
+    static class ImplicitConvertedFieldEntity {
+        @Id
+        private Long id;
+        @Convert(attributeName = "geo.country", converter = CountryConverter.class)
+        private ImplicitAddress address;
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class ImplicitConvertedPropertyEntity {
+        private Long id;
+        private ImplicitAddress address;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @Convert(attributeName = "geo.country", converter = CountryConverter.class)
+        public ImplicitAddress getAddress() {
+            return address;
+        }
+
+        public void setAddress(ImplicitAddress address) {
+            this.address = address;
+        }
+    }
+
+    @Entity
+    static class ImplicitEmbeddedOverrideEntity {
+        @Id
+        private Long id;
+        @AttributeOverride(name = "geo.country", column = @Column(name = "nation"))
+        private ImplicitAddress address;
+    }
+
+    @Entity
+    static class InvalidImplicitEmbeddedOverrideEntity {
+        @Id
+        private Long id;
+        @AttributeOverride(name = "geo.zip", column = @Column(name = "postal_code"))
+        private ImplicitAddress address;
+    }
+
+    @Entity
+    static class DuplicateImplicitEmbeddedOverrideEntity {
+        @Id
+        private Long id;
+        @AttributeOverride(name = "geo.country", column = @Column(name = "nation"))
+        @AttributeOverride(name = "geo.country", column = @Column(name = "country_code"))
+        private ImplicitAddress address;
+    }
+
+    @Embeddable
+    @Access(AccessType.FIELD)
+    static class FieldOverrideGeo {
+        private String country;
+    }
+
+    @Embeddable
+    @Access(AccessType.FIELD)
+    static class FieldOverrideAddress {
+        @AttributeOverride(name = "country", column = @Column(name = "inner_country"))
+        private FieldOverrideGeo geo;
+    }
+
+    @Entity
+    static class OuterFieldOverrideEntity {
+        @Id
+        private Long id;
+        @AttributeOverride(name = "geo.country", column = @Column(name = "outer_country"))
+        private FieldOverrideAddress address;
+    }
+
+    @Embeddable
+    @Access(AccessType.PROPERTY)
+    static class PropertyOverrideGeo {
+        private String country;
+
+        public String getCountry() {
+            return country;
+        }
+
+        public void setCountry(String country) {
+            this.country = country;
+        }
+    }
+
+    @Embeddable
+    @Access(AccessType.PROPERTY)
+    static class PropertyOverrideAddress {
+        private PropertyOverrideGeo geo;
+
+        @AttributeOverride(name = "country", column = @Column(name = "inner_country"))
+        public PropertyOverrideGeo getGeo() {
+            return geo;
+        }
+
+        public void setGeo(PropertyOverrideGeo geo) {
+            this.geo = geo;
+        }
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class OuterPropertyOverrideEntity {
+        private Long id;
+        private PropertyOverrideAddress address;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @AttributeOverride(name = "geo.country", column = @Column(name = "outer_country"))
+        public PropertyOverrideAddress getAddress() {
+            return address;
+        }
+
+        public void setAddress(PropertyOverrideAddress address) {
+            this.address = address;
         }
     }
 
