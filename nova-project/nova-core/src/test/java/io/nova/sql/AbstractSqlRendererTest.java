@@ -24,6 +24,14 @@ import io.nova.support.fixtures.FixtureEntities.ShortVersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.SoftDeletableAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedAccount;
 import io.nova.support.fixtures.FixtureEntities.VersionedSoftDeletableAccount;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
+import jakarta.persistence.OneToOne;
+import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -1661,6 +1669,21 @@ class AbstractSqlRendererTest {
     }
 
     @Test
+    void compositeToOneEqualityRendersEveryForeignKeyColumnAndBinding() {
+        EntityMetadata<CompositeReferenceOwner> ownerMetadata =
+                metadataFactory.getEntityMetadata(CompositeReferenceOwner.class);
+
+        SqlStatement statement = dialect.sqlRenderer().exists(
+                ownerMetadata,
+                QuerySpec.empty().where(Criteria.eq("target", java.util.List.of("tenant-a", 42L))));
+
+        assertEquals(
+                "select 1 from composite_reference_owners where target_tenant = ? and target_sequence = ? limit 1",
+                statement.sql());
+        assertEquals(java.util.List.of("tenant-a", 42L), statement.bindings());
+    }
+
+    @Test
     void existsAppendsOverriddenHookClauseAfterWherePredicate() {
         // hook이 WHERE 절 뒤, SQL 맨 끝에 정확히 한 번 반영되는지까지 고정한다.
         SqlRenderer overriddenRenderer = new AbstractSqlRenderer(dialect) {
@@ -1752,5 +1775,32 @@ class AbstractSqlRendererTest {
         public SchemaGenerator schemaGenerator() {
             return schemaGenerator;
         }
+    }
+
+    @Embeddable
+    static class CompositeReferenceId {
+        String tenant;
+        Long sequence;
+    }
+
+    @Entity
+    @Table(name = "composite_reference_targets")
+    static class CompositeReferenceTarget {
+        @EmbeddedId
+        CompositeReferenceId id;
+    }
+
+    @Entity
+    @Table(name = "composite_reference_owners")
+    static class CompositeReferenceOwner {
+        @Id
+        Long id;
+
+        @OneToOne(orphanRemoval = true)
+        @JoinColumns({
+                @JoinColumn(name = "target_tenant", referencedColumnName = "tenant"),
+                @JoinColumn(name = "target_sequence", referencedColumnName = "sequence")
+        })
+        CompositeReferenceTarget target;
     }
 }

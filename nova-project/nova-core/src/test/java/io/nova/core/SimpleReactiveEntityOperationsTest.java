@@ -56,6 +56,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.OrderColumn;
 import jakarta.persistence.PostRemove;
 import jakarta.persistence.PreRemove;
@@ -87,6 +88,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SimpleReactiveEntityOperationsTest {
     private static final List<String> ORDERED_REMOVAL_TRACE = new ArrayList<>();
+    private static final List<String> ONE_TO_ONE_REMOVAL_TRACE = new ArrayList<>();
 
     @Test
     void saveUsesInsertWithGeneratedKeyForNewIdentityEntity() {
@@ -3129,6 +3131,26 @@ class SimpleReactiveEntityOperationsTest {
         assertEquals(1, executor.executedStatements.size());
     }
 
+    @Test
+    void statelessOwningOneToOneOrphanRemovalUpdatesOwnerBeforeDeletingOldTarget() {
+        ONE_TO_ONE_REMOVAL_TRACE.clear();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 1L, "target_id", 10L)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of()));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of("id", 10L)));
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        OneToOneOrphanOwner owner = new OneToOneOrphanOwner(1L, null);
+
+        StepVerifier.create(operations.save(owner)).expectNext(owner).verifyComplete();
+
+        assertEquals(
+                List.of(
+                        "update one_to_one_orphan_owners set target_id = ? where id = ?",
+                        "delete from one_to_one_orphan_targets where id = ?"),
+                executor.chronologicalSqlCalls);
+        assertEquals(List.of("pre-remove", "post-remove"), ONE_TO_ONE_REMOVAL_TRACE);
+    }
+
     private <P, C> PersistenceSession registerOneToManyBaseline(P parent, C child) {
         PersistenceSession session = new PersistenceSession();
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy());
@@ -3851,6 +3873,45 @@ class SimpleReactiveEntityOperationsTest {
         @PostRemove
         void postRemove() {
             RemovalCallbacks.events.add("child-post");
+        }
+    }
+
+    @Entity
+    @Table(name = "one_to_one_orphan_targets")
+    private static final class OneToOneOrphanTarget {
+        @Id
+        private Long id;
+
+        private OneToOneOrphanTarget() {
+        }
+
+        @PreRemove
+        void preRemove() {
+            ONE_TO_ONE_REMOVAL_TRACE.add("pre-remove");
+        }
+
+        @PostRemove
+        void postRemove() {
+            ONE_TO_ONE_REMOVAL_TRACE.add("post-remove");
+        }
+    }
+
+    @Entity
+    @Table(name = "one_to_one_orphan_owners")
+    private static final class OneToOneOrphanOwner {
+        @Id
+        private Long id;
+
+        @OneToOne(orphanRemoval = true)
+        @JoinColumn(name = "target_id")
+        private OneToOneOrphanTarget target;
+
+        private OneToOneOrphanOwner() {
+        }
+
+        private OneToOneOrphanOwner(Long id, OneToOneOrphanTarget target) {
+            this.id = id;
+            this.target = target;
         }
     }
 

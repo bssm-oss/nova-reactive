@@ -1,6 +1,8 @@
 package io.nova.metadata;
 
 import jakarta.persistence.CascadeType;
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
@@ -91,6 +93,38 @@ class EntityMetadataFactoryOneToOneTest {
     }
 
     @Test
+    void capturesOwningOrphanRemovalForFieldAndPropertyAccessAndKeepsItInCopies() {
+        PersistentProperty field = factory.getEntityMetadata(OrphanOwner.class)
+                .findProperty("passport").orElseThrow();
+        PersistentProperty property = factory.getEntityMetadata(PropertyOrphanOwner.class)
+                .findProperty("passport").orElseThrow();
+
+        assertTrue(field.owningOneToOne());
+        assertTrue(field.oneToOneOrphanRemoval());
+        assertTrue(property.owningOneToOne());
+        assertTrue(property.oneToOneOrphanRemoval());
+        assertTrue(field.withNullable(false).oneToOneOrphanRemoval());
+        assertTrue(field.withColumnName("replacement_id").oneToOneOrphanRemoval());
+        assertTrue(field.withPropertyName("replacement").oneToOneOrphanRemoval());
+        assertTrue(field.withId().oneToOneOrphanRemoval());
+    }
+
+    @Test
+    void rejectsUnsupportedInverseAndUnwritableOrphanRemovalDeclarations() {
+        IllegalArgumentException inverse = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(InverseOrphanOwner.class));
+        assertTrue(inverse.getMessage().contains("owning @OneToOne"));
+
+        IllegalArgumentException inverseCascade = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(InverseCascadeOwner.class));
+        assertTrue(inverseCascade.getMessage().contains("inverse @OneToOne"));
+
+        IllegalArgumentException readOnly = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(ReadOnlyOrphanOwner.class));
+        assertTrue(readOnly.getMessage().contains("updatable"));
+    }
+
+    @Test
     void rejectsCombiningOneToOneWithManyToOne() {
         assertThrows(IllegalStateException.class, () -> factory.getEntityMetadata(ConflictingRelations.class));
     }
@@ -135,6 +169,73 @@ class EntityMetadataFactoryOneToOneTest {
         Long id;
 
         @OneToOne(cascade = CascadeType.ALL)
+        Passport passport;
+    }
+
+    @Entity
+    @Table(name = "orphan_owner")
+    static class OrphanOwner {
+        @Id
+        Long id;
+
+        @OneToOne(orphanRemoval = true)
+        Passport passport;
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    @Table(name = "property_orphan_owner")
+    static class PropertyOrphanOwner {
+        private Long id;
+        private Passport passport;
+
+        @Id
+        Long getId() {
+            return id;
+        }
+
+        void setId(Long id) {
+            this.id = id;
+        }
+
+        @OneToOne(orphanRemoval = true)
+        Passport getPassport() {
+            return passport;
+        }
+
+        void setPassport(Passport passport) {
+            this.passport = passport;
+        }
+    }
+
+    @Entity
+    @Table(name = "inverse_orphan_owner")
+    static class InverseOrphanOwner {
+        @Id
+        Long id;
+
+        @OneToOne(mappedBy = "passport", orphanRemoval = true)
+        OrphanOwner owner;
+    }
+
+    @Entity
+    @Table(name = "inverse_cascade_owner")
+    static class InverseCascadeOwner {
+        @Id
+        Long id;
+
+        @OneToOne(mappedBy = "passport", cascade = CascadeType.REMOVE)
+        OrphanOwner owner;
+    }
+
+    @Entity
+    @Table(name = "read_only_orphan_owner")
+    static class ReadOnlyOrphanOwner {
+        @Id
+        Long id;
+
+        @OneToOne(orphanRemoval = true)
+        @JoinColumn(updatable = false)
         Passport passport;
     }
 
