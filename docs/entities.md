@@ -498,7 +498,7 @@ Nova honors the column attributes that have a clear non-blocking meaning:
 | `insertable = false` | Column is excluded from generated `INSERT` statements. |
 | `updatable = false` | Column is excluded from generated `UPDATE` statements. |
 | `unique = true` | Emits an inline `UNIQUE` constraint in the column DDL. |
-| `columnDefinition = "..."` | Used verbatim as the column's type in `CREATE TABLE`, replacing the dialect-derived type. It is raw DDL, not parsed metadata: it does not change the storage shape used for a referenced id, generated FK, join-table, or collection-table column. Keep those physical types compatible yourself, preferably in an external migration. |
+| `columnDefinition = "..."` | Used verbatim as the column's type in `CREATE TABLE`, replacing the dialect-derived type. It is raw DDL, not parsed metadata: it does not change the storage shape used for a referenced id, generated FK, join-table, or collection-table column. Nova rejects it on relationship storage and `BigDecimal` ids that require a reusable referenced shape. Keep ordinary raw-DDL changes compatible yourself, preferably in an external migration. |
 
 ### `BigDecimal` precision and scale
 
@@ -510,11 +510,11 @@ properties), ids and identity ids, to-one and `@MapsId` foreign-key columns, bot
 value, map-key, and map-value columns. `@AttributeOverride` supplies the shape for an
 overridden embedded component.
 
-`columnDefinition` deliberately remains an escape hatch rather than a type system. For
-example, putting `columnDefinition = "decimal(20, 6)"` on an id only changes that declared
-column; Nova cannot infer that token's precision or scale when it emits a FK to the id. Use
-`precision` and `scale` for generated related columns, or create/alter the column and its
-constraints together in your migration tool. See the dialect-specific matrix in
+`columnDefinition` deliberately remains an escape hatch rather than a type system. Nova
+rejects it on `@JoinColumn`, `@JoinColumns`, `@MapKeyJoinColumn`, secondary-table primary-key
+joins, and `BigDecimal` ids that would need to supply a reusable referenced shape. Use
+`precision` and `scale` for generated related columns, or create/alter every affected column
+and constraint together in your migration tool. See the dialect-specific matrix in
 [Dialects & Schema](dialects.md#bigdecimal-ddl).
 
 ## Compatibility limitations

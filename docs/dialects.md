@@ -56,18 +56,20 @@ The bundled dialect matrix is:
 
 | Dialect | `precision = 0, scale = 0` | `precision > 0` | Scale only (`precision = 0, scale > 0`) | Bounds / failures |
 |---|---|---|---|---|
-| PostgreSQL | `numeric` | `numeric(p, s)` | Fail-fast | `p` 1–1000; `s` 0–`p` |
-| MySQL | Fail-fast | `decimal(p, s)` | Fail-fast | `p` 1–65; `s` 0–30 and `s ≤ p` |
-| MariaDB | Fail-fast | `decimal(p, s)` | Fail-fast | `p` 1–65; `s` 0–38 and `s ≤ p` |
+| PostgreSQL | `numeric` | `numeric(p, s)` | `numeric(1000, s)` | `p` / `s` 0–1000; when `p > 0`, `s ≤ p` |
+| MySQL | Fail-fast | `decimal(p, s)` | `decimal(65, s)` | `p` 1–65; `s` 0–30 and `s ≤ p` when `p` is explicit |
+| MariaDB | Fail-fast | `decimal(p, s)` | `decimal(65, s)` | `p` 1–65; `s` 0–38 and `s ≤ p` when `p` is explicit |
 | H2 | `decfloat` | `numeric(p, s)` | `numeric(100000, s)` | `p` / `s` 0–100000; when `p > 0`, `s ≤ p` |
 | Oracle | `number` | `number(p, s)` (or `number(p, 0)`) | `number(*, s)` | `p` 0–38; `s` -84–127 |
 
-In particular, MySQL and MariaDB require an explicit positive `precision` for every
-`BigDecimal`; an unspecified shape and a scale-only declaration are rejected while DDL is
-generated. This avoids accepting a server-specific implicit `DECIMAL` shape that can round
-or truncate values. PostgreSQL likewise rejects scale without precision. H2 and Oracle have
-native unbounded/variable-scale forms, so their unspecified and scale-only forms are shown
-explicitly in the matrix.
+For MySQL and MariaDB, only a shape with both precision and scale unspecified is rejected.
+A scale-only declaration is normalized to the server maximum precision (`decimal(65, s)`),
+so its requested fractional scale is retained without accepting a server-specific implicit
+`DECIMAL` shape that can round or truncate values. PostgreSQL uses the corresponding
+`numeric(1000, s)` normalization. H2 and Oracle have native unbounded/variable-scale forms,
+so their unspecified and scale-only forms are shown explicitly in the matrix. H2's
+unannotated `decfloat` has variable scale; it preserves the numeric value, but neither it
+nor a driver round trip promises `BigDecimal.equals` scale identity.
 
 The same matrix applies wherever Nova emits a `BigDecimal` storage column: scalar and
 embedded properties (including secondary tables), primary and identity ids, to-one and
@@ -77,8 +79,11 @@ This is a no-loss propagation policy: generated related columns retain the refer
 storage type, precision, and scale rather than falling back to a generic decimal shape.
 
 `columnDefinition` is intentionally excluded from that propagation. It replaces only the
-DDL type token of the property where it is declared; raw SQL cannot be safely interpreted to
-derive a compatible referenced or link-table type. Use `precision`/`scale` for generated
+DDL type token of an ordinary property where it is declared; raw SQL cannot be safely
+interpreted to derive a compatible referenced or link-table type. Nova therefore rejects
+`columnDefinition` on relationship storage (`@JoinColumn`, `@JoinColumns`, and
+`@MapKeyJoinColumn`), secondary-table primary-key joins, and `BigDecimal` identifiers that
+would be referenced by generated relationships. Use `precision`/`scale` for generated
 relationships, or own every affected column and FK in an external migration.
 
 ---
