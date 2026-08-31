@@ -203,6 +203,7 @@ class PersistenceSessionIntegrationTest {
                             assertEquals("nested pending", restored.getName(),
                                     "savepoint rollback does not rewind managed Java state");
                         }))))
+                .expectNextCount(1)
                 .verifyComplete();
 
         StepVerifier.create(support.operations().findById(Person.class, id))

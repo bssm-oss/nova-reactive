@@ -130,19 +130,22 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
     private <T> Mono<T> runInNewTransaction(TransactionDefinition definition,
                                             Function<TransactionContext, Mono<T>> callback) {
         BoundaryOwner owner = new BoundaryOwner();
-        PhysicalTransactionScope scope = PhysicalTransactionScope.active();
+        PhysicalTransactionScope.Owner physicalOwner = PhysicalTransactionScope.newOwner();
+        PhysicalTransactionScope scope = physicalOwner.scope();
         return Mono.usingWhen(
                 begin(definition),
                 ctx -> Mono.defer(() -> callback.apply(ctx))
                         .doOnCancel(owner::cancelQueued)
-                        .flatMap(result -> scope.seal().then(scope.beforeCommit()).thenReturn(result))
-                        .switchIfEmpty(Mono.defer(() -> scope.seal().then(scope.beforeCommit()).then(Mono.empty())))
+                        .flatMap(result -> physicalOwner.seal()
+                                .then(physicalOwner.beforeCommit()).thenReturn(result))
+                        .switchIfEmpty(Mono.defer(() -> physicalOwner.seal()
+                                .then(physicalOwner.beforeCommit()).then(Mono.empty())))
                         .contextWrite(c -> c.put(CONNECTION_KEY, ((R2dbcTransactionContext) ctx).connection())
                                 .put(ACTIVE_TRANSACTION_KEY, owner)
                                 .put(PhysicalTransactionScope.CONTEXT_KEY, scope)),
                 ctx -> owner.seal().then(commitAfterSuccess(ctx)).onErrorMap(CleanupFailure::new),
-                (ctx, error) -> owner.seal().then(scope.seal()).then(rollbackAfterError(ctx, error)),
-                ctx -> owner.seal().then(scope.seal()).then(rollback(ctx)))
+                (ctx, error) -> owner.seal().then(physicalOwner.seal()).then(rollbackAfterError(ctx, error)),
+                ctx -> owner.seal().then(physicalOwner.seal()).then(rollback(ctx)))
                 .onErrorMap(R2dbcTransactionManager::unwrapCleanupFailure);
     }
 

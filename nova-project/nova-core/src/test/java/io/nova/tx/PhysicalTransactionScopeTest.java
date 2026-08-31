@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PhysicalTransactionScopeTest {
     @Test
     void resourcesUseIdentityKeys() {
-        PhysicalTransactionScope scope = PhysicalTransactionScope.active();
+        PhysicalTransactionScope scope = PhysicalTransactionScope.newOwner().scope();
         String firstKey = new String("key");
         String secondKey = new String("key");
         Object first = scope.getOrCreateResource(firstKey, Object::new);
@@ -28,21 +28,23 @@ class PhysicalTransactionScopeTest {
 
     @Test
     void beforeCommitRunsInOrderOnlyOnce() {
-        PhysicalTransactionScope scope = PhysicalTransactionScope.active();
+        PhysicalTransactionScope.Owner owner = PhysicalTransactionScope.newOwner();
+        PhysicalTransactionScope scope = owner.scope();
         ArrayList<Integer> order = new ArrayList<>();
         scope.beforeCommit(() -> Mono.fromRunnable(() -> order.add(1)));
         scope.beforeCommit(() -> Mono.fromRunnable(() -> order.add(2)));
 
-        scope.beforeCommit().block();
-        scope.beforeCommit().block();
+        owner.beforeCommit().block();
+        owner.beforeCommit().block();
 
         assertEquals(java.util.List.of(1, 2), order);
     }
 
     @Test
     void sealingRejectsNewResourcesAndCallbacks() {
-        PhysicalTransactionScope scope = PhysicalTransactionScope.active();
-        scope.seal().block();
+        PhysicalTransactionScope.Owner owner = PhysicalTransactionScope.newOwner();
+        PhysicalTransactionScope scope = owner.scope();
+        owner.seal().block();
 
         assertThrows(IllegalStateException.class, () -> scope.getOrCreateResource(new Object(), Object::new));
         assertThrows(IllegalStateException.class, () -> scope.beforeCommit(Mono::empty));
@@ -56,7 +58,6 @@ class PhysicalTransactionScopeTest {
         assertFalse(scope.isActive());
         assertEquals(null, scope.getOrCreateResource(new Object(), Object::new));
         scope.beforeCommit(() -> Mono.fromRunnable(invoked::incrementAndGet));
-        scope.beforeCommit().block();
 
         assertEquals(0, invoked.get());
     }

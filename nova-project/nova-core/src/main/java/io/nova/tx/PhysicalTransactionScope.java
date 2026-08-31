@@ -27,8 +27,8 @@ public final class PhysicalTransactionScope {
         this.active = active;
     }
 
-    public static PhysicalTransactionScope active() {
-        return new PhysicalTransactionScope(true);
+    public static Owner newOwner() {
+        return new Owner();
     }
 
     public static PhysicalTransactionScope inactive() {
@@ -68,7 +68,7 @@ public final class PhysicalTransactionScope {
         beforeCommitCallbacks.add(callback);
     }
 
-    public synchronized Mono<Void> seal() {
+    private synchronized Mono<Void> seal() {
         if (!active || sealed) {
             return Mono.empty();
         }
@@ -76,7 +76,7 @@ public final class PhysicalTransactionScope {
         return Mono.empty();
     }
 
-    public Mono<Void> beforeCommit() {
+    private Mono<Void> runBeforeCommit() {
         List<Supplier<Mono<Void>>> callbacks;
         synchronized (this) {
             if (!active || beforeCommitStarted) {
@@ -90,5 +90,28 @@ public final class PhysicalTransactionScope {
                 .concatMap(callback -> Mono.defer(() ->
                         Objects.requireNonNull(callback.get(), "before-commit callback must not return null")))
                 .then();
+    }
+
+    /**
+     * Manager-owned completion authority. Only the owner instance returned at physical transaction
+     * creation can seal and drain its scope; callback code receives {@link #scope()} only.
+     */
+    public static final class Owner {
+        private final PhysicalTransactionScope scope = new PhysicalTransactionScope(true);
+
+        private Owner() {
+        }
+
+        public PhysicalTransactionScope scope() {
+            return scope;
+        }
+
+        public Mono<Void> seal() {
+            return scope.seal();
+        }
+
+        public Mono<Void> beforeCommit() {
+            return scope.runBeforeCommit();
+        }
     }
 }

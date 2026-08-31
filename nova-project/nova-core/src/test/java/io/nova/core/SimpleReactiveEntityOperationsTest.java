@@ -723,12 +723,14 @@ class SimpleReactiveEntityOperationsTest {
 
         StepVerifier.create(operations.inTransaction(current ->
                         current.save(valued)
-                                .doOnNext(account -> account.setEmail("valued@nova.io"))))
+                                .doOnNext(account -> metadata(SampleAccount.class).findProperty("email")
+                                        .orElseThrow().write(account, "valued@nova.io"))))
                 .expectNext(valued)
                 .verifyComplete();
         StepVerifier.create(operations.inTransaction(current ->
                         current.save(empty)
-                                .doOnNext(account -> account.setEmail("empty@nova.io"))
+                                .doOnNext(account -> metadata(SampleAccount.class).findProperty("email")
+                                        .orElseThrow().write(account, "empty@nova.io"))
                                 .then()))
                 .verifyComplete();
 
@@ -748,13 +750,15 @@ class SimpleReactiveEntityOperationsTest {
 
         StepVerifier.create(operations.inTransaction(current ->
                         current.save(error)
-                                .doOnNext(account -> account.setEmail("error@nova.io"))
+                                .doOnNext(account -> metadata(SampleAccount.class).findProperty("email")
+                                        .orElseThrow().write(account, "error@nova.io"))
                                 .then(Mono.error(new IllegalStateException("fail")))))
                 .expectErrorMessage("fail")
                 .verify();
         StepVerifier.create(operations.inTransaction(current ->
                         current.save(cancelled)
-                                .doOnNext(account -> account.setEmail("cancel@nova.io"))
+                                .doOnNext(account -> metadata(SampleAccount.class).findProperty("email")
+                                        .orElseThrow().write(account, "cancel@nova.io"))
                                 .then(Mono.never())))
                 .thenCancel()
                 .verify();
@@ -768,6 +772,8 @@ class SimpleReactiveEntityOperationsTest {
         CapturingExecutor executor = new CapturingExecutor();
         executor.queryOneResults.addLast(new MapRowAccessor(Map.of(
                 "id", 5L, "email_address", "shared@nova.io", "active", true)));
+        executor.queryOneResults.addLast(new MapRowAccessor(Map.of(
+                "id", 5L, "email_address", "shared@nova.io", "active", true)));
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
 
         StepVerifier.create(operations.inTransaction(outer ->
@@ -775,6 +781,7 @@ class SimpleReactiveEntityOperationsTest {
                                 operations.inTransaction(inner ->
                                         inner.findById(SampleAccount.class, 5L)
                                                 .doOnNext(second -> assertSame(first, second))))))
+                .expectNextCount(1)
                 .verifyComplete();
     }
 
