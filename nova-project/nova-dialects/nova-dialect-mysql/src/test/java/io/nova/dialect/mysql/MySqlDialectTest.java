@@ -325,6 +325,9 @@ class MySqlDialectTest {
                 () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(UnspecifiedDecimal.class)));
         assertTrue(unspecified.getMessage().contains("@Column(precision = ..., scale = ...)"),
                 unspecified.getMessage());
+        IllegalArgumentException negativePrecision = assertThrows(IllegalArgumentException.class,
+                () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(NegativePrecisionDecimal.class)));
+        assertEquals("MySQL DECIMAL precision must be between 1 and 65: -1", negativePrecision.getMessage());
         assertThrows(IllegalArgumentException.class,
                 () -> dialect.schemaGenerator().createTable(factory.getEntityMetadata(TooPreciseDecimal.class)));
         assertThrows(IllegalArgumentException.class,
@@ -437,6 +440,13 @@ class MySqlDialectTest {
     @jakarta.persistence.Entity
     static class UnspecifiedDecimal {
         @jakarta.persistence.Id Long id;
+        java.math.BigDecimal amount;
+    }
+
+    @jakarta.persistence.Entity
+    static class NegativePrecisionDecimal {
+        @jakarta.persistence.Id Long id;
+        @jakarta.persistence.Column(precision = -1, scale = 2)
         java.math.BigDecimal amount;
     }
 
