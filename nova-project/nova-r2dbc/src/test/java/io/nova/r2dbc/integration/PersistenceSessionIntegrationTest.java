@@ -183,7 +183,8 @@ class PersistenceSessionIntegrationTest {
                                     assertSame(outer.get(), restored);
                                     assertNotSame(outer.get(), inner.get());
                                     assertEquals("outer pending", restored.getName());
-                                })))
+                                }))))
+                .expectNextCount(1)
                 .verifyComplete();
 
         StepVerifier.create(support.operations().findById(Person.class, id))
@@ -213,18 +214,20 @@ class PersistenceSessionIntegrationTest {
                                 .then(outerOps.findById(Person.class, rollbackId).doOnNext(restored -> {
                                     assertSame(rollbackOuter.get(), restored);
                                     assertEquals("outer rollback commit", restored.getName());
-                                })))
+                                }))))
+                .expectNextCount(1)
                 .verifyComplete();
         StepVerifier.create(support.operations().findById(Person.class, rollbackId))
                 .assertNext(person -> assertEquals("outer rollback commit", person.getName()))
                 .verifyComplete();
 
         Long emptyId = support.operations().save(new Person("empty original", 32)).map(Person::getId).block();
-        StepVerifier.create(support.transactionManager().inTransaction(
-                        TransactionDefinition.requiresNew(), ignored ->
-                                support.operations().findById(Person.class, emptyId)
-                                        .doOnNext(person -> person.setName("empty committed"))
-                                        .then()))
+        StepVerifier.create(support.operations().inTransaction(outerOps ->
+                        support.transactionManager().inTransaction(
+                                TransactionDefinition.requiresNew(), ignored ->
+                                        support.operations().findById(Person.class, emptyId)
+                                                .doOnNext(person -> person.setName("empty committed"))
+                                                .then())))
                 .verifyComplete();
         StepVerifier.create(support.operations().findById(Person.class, emptyId))
                 .assertNext(person -> assertEquals("empty committed", person.getName()))
@@ -250,7 +253,8 @@ class PersistenceSessionIntegrationTest {
                                 .then(outerOps.findById(Person.class, cancelId).doOnNext(restored -> {
                                     assertSame(cancelOuter.get(), restored);
                                     assertEquals("outer after cancel", restored.getName());
-                                })))
+                                }))))
+                .expectNextCount(1)
                 .verifyComplete();
         StepVerifier.create(support.operations().findById(Person.class, cancelId))
                 .assertNext(person -> assertEquals("outer after cancel", person.getName()))
@@ -283,7 +287,8 @@ class PersistenceSessionIntegrationTest {
                             assertSame(outer.get(), restored);
                             assertNotSame(outer.get(), firstRead.get());
                             assertEquals("outer pending", restored.getName());
-                        })))
+                        }))))
+                .expectNextCount(1)
                 .verifyComplete();
 
         StepVerifier.create(support.operations().findById(Person.class, id))

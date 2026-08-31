@@ -149,6 +149,7 @@ class R2dbcTransactionManagerTest {
                                         }).then()))
                                 .then(currentPhysicalScope()
                                         .doOnNext(scope -> assertSame(outerScope.get(), scope)))))
+                .expectNextCount(1)
                 .verifyComplete();
 
         StepVerifier.create(txManager.inTransaction(
