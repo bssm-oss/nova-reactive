@@ -1043,8 +1043,27 @@ public final class EntityMetadataFactory {
                         entityType.getName() + " @SecondaryTable(\"" + name + "\") declares multiple"
                                 + " pkJoinColumns (composite keys are not supported)");
             }
+            ForeignKey tableForeignKey = declaration.foreignKey();
+            ForeignKey primaryKeyJoinForeignKey =
+                    pkJoinColumns.length == 0 ? null : pkJoinColumns[0].foreignKey();
+            boolean tableForeignKeyExplicit = isExplicitForeignKey(tableForeignKey);
+            boolean primaryKeyJoinForeignKeyExplicit = isExplicitForeignKey(primaryKeyJoinForeignKey);
+            if (tableForeignKeyExplicit && primaryKeyJoinForeignKeyExplicit) {
+                throw new IllegalArgumentException(
+                        entityType.getName() + " @SecondaryTable(\"" + name + "\") declares foreignKey"
+                                + " both on @SecondaryTable and @PrimaryKeyJoinColumn");
+            }
+            ForeignKey foreignKey = primaryKeyJoinForeignKeyExplicit
+                    ? primaryKeyJoinForeignKey
+                    : tableForeignKeyExplicit ? tableForeignKey : null;
             String schema = declaration.schema() == null ? "" : declaration.schema();
-            byName.put(name, new SecondaryTableInfo(name, schema, pkJoinColumn, referencedColumn));
+            byName.put(name, new SecondaryTableInfo(
+                    name,
+                    schema,
+                    pkJoinColumn,
+                    referencedColumn,
+                    foreignKey == null ? ConstraintMode.PROVIDER_DEFAULT : foreignKey.value(),
+                    foreignKey == null ? "" : foreignKey.name()));
         }
         // 보조 테이블로 라우팅된 컬럼들을 검증: 선언된 테이블만 가리켜야 하고, id/생성키 컬럼은 보조 테이블에
         // 둘 수 없다(PK는 primary 테이블이 소유하고 보조 테이블은 그 PK를 FK로 공유한다).

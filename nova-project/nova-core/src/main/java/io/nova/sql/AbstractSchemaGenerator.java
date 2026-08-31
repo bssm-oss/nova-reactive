@@ -3,6 +3,7 @@ package io.nova.sql;
 import jakarta.persistence.DiscriminatorType;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.GenerationType;
+import jakarta.persistence.ConstraintMode;
 import io.nova.metadata.CollectionTableDefinition;
 import io.nova.metadata.CheckConstraintDefinition;
 import io.nova.metadata.EntityMetadata;
@@ -324,8 +325,14 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
         }
         // PK 조인 컬럼이 primary 테이블의 참조 컬럼을 가리키는 FK. primary 테이블이 먼저 존재해야 하므로
         // SchemaInitializer가 primary → secondary 순서로 생성한다(삭제는 역순).
-        columns.add("foreign key (" + dialect.quote(secondaryTable.pkJoinColumn()) + ") references "
-                + qualifiedTable(metadata) + " (" + dialect.quote(secondaryTable.primaryKeyColumn()) + ")");
+        if (secondaryTable.foreignKeyMode() != ConstraintMode.NO_CONSTRAINT) {
+            String constraint = secondaryTable.foreignKeyMode() == ConstraintMode.CONSTRAINT
+                    && !secondaryTable.foreignKeyName().isBlank()
+                    ? "constraint " + dialect.quote(secondaryTable.foreignKeyName()) + " "
+                    : "";
+            columns.add(constraint + "foreign key (" + dialect.quote(secondaryTable.pkJoinColumn()) + ") references "
+                    + qualifiedTable(metadata) + " (" + dialect.quote(secondaryTable.primaryKeyColumn()) + ")");
+        }
         appendTableChecks(List.of(), metadata.secondaryColumnMappedProperties(secondaryTable), columns);
         return "create table " + qualifiedSecondaryTable(secondaryTable)
                 + " (" + String.join(", ", columns) + ")";
