@@ -139,7 +139,7 @@ schema.create(Account.class)
       .block();
 ```
 
-By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
+By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. This also preserves existing `@TableGenerator` counters: only a missing generator row is seeded, so a restart never reuses identifiers. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
 
 Batch and lifecycle variants:
 
@@ -148,6 +148,8 @@ schema.create(Author.class, Book.class);        // emits parent then child
 schema.drop(Book.class, Author.class);          // drops child then parent
 schema.recreate(Author.class, Book.class);      // drop + recreate, FK-safe ordering
 ```
+
+`schema.validate(...)` checks every physical table and owned column in `JOINED` and `TABLE_PER_CLASS` inheritance hierarchies, including subtype tables.
 
 For lower-level control, the raw `dialect.schemaGenerator()` DDL strings stay available — see [Dialects & Schema](dialects.md).
 

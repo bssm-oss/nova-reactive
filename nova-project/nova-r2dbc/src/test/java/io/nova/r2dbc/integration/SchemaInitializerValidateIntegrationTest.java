@@ -55,4 +55,92 @@ class SchemaInitializerValidateIntegrationTest {
                         && error.getMessage().contains("missing columns")
                         && error.getMessage().contains("active"));
     }
+
+    @Test
+    void validateCompletesForJoinedHierarchyPhysicalTables() {
+        H2IntegrationTestSupport support = H2IntegrationTestSupport.create();
+        SchemaInitializer schema = schemaInitializer(support);
+
+        schema.create(InheritanceJoinedIntegrationTest.JVehicle.class,
+                InheritanceJoinedIntegrationTest.JCar.class,
+                InheritanceJoinedIntegrationTest.JTruck.class).block();
+
+        StepVerifier.create(schema.validate(List.of(InheritanceJoinedIntegrationTest.JVehicle.class,
+                        InheritanceJoinedIntegrationTest.JCar.class,
+                        InheritanceJoinedIntegrationTest.JTruck.class)))
+                .verifyComplete();
+    }
+
+    @Test
+    void validateReportsMissingJoinedSubtypeTableAndColumn() {
+        H2IntegrationTestSupport missingTableSupport = H2IntegrationTestSupport.create();
+        SchemaInitializer missingTableSchema = schemaInitializer(missingTableSupport);
+        missingTableSchema.create(InheritanceJoinedIntegrationTest.JVehicle.class,
+                InheritanceJoinedIntegrationTest.JCar.class,
+                InheritanceJoinedIntegrationTest.JTruck.class).block();
+        missingTableSupport.execute("drop table \"j_car\"");
+
+        StepVerifier.create(missingTableSchema.validate(List.of(InheritanceJoinedIntegrationTest.JVehicle.class,
+                        InheritanceJoinedIntegrationTest.JCar.class,
+                        InheritanceJoinedIntegrationTest.JTruck.class)))
+                .verifyErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("table 'j_car' is missing"));
+
+        H2IntegrationTestSupport missingColumnSupport = H2IntegrationTestSupport.create();
+        SchemaInitializer missingColumnSchema = schemaInitializer(missingColumnSupport);
+        missingColumnSchema.create(InheritanceJoinedIntegrationTest.JVehicle.class,
+                InheritanceJoinedIntegrationTest.JCar.class,
+                InheritanceJoinedIntegrationTest.JTruck.class).block();
+        missingColumnSupport.execute("alter table \"j_car\" drop column \"doors\"");
+
+        StepVerifier.create(missingColumnSchema.validate(List.of(InheritanceJoinedIntegrationTest.JVehicle.class,
+                        InheritanceJoinedIntegrationTest.JCar.class,
+                        InheritanceJoinedIntegrationTest.JTruck.class)))
+                .verifyErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("table 'j_car' is missing columns [doors]"));
+    }
+
+    @Test
+    void validateCompletesForTablePerClassHierarchyPhysicalTables() {
+        H2IntegrationTestSupport support = H2IntegrationTestSupport.create();
+        SchemaInitializer schema = schemaInitializer(support);
+
+        schema.create(InheritanceTablePerClassIntegrationTest.TVehicle.class,
+                InheritanceTablePerClassIntegrationTest.TCar.class,
+                InheritanceTablePerClassIntegrationTest.TTruck.class).block();
+
+        StepVerifier.create(schema.validate(List.of(InheritanceTablePerClassIntegrationTest.TVehicle.class,
+                        InheritanceTablePerClassIntegrationTest.TCar.class,
+                        InheritanceTablePerClassIntegrationTest.TTruck.class)))
+                .verifyComplete();
+    }
+
+    @Test
+    void validateReportsMissingTablePerClassSubtypeTableAndColumn() {
+        H2IntegrationTestSupport missingTableSupport = H2IntegrationTestSupport.create();
+        SchemaInitializer missingTableSchema = schemaInitializer(missingTableSupport);
+        missingTableSchema.create(InheritanceTablePerClassIntegrationTest.TVehicle.class,
+                InheritanceTablePerClassIntegrationTest.TCar.class,
+                InheritanceTablePerClassIntegrationTest.TTruck.class).block();
+        missingTableSupport.execute("drop table \"t_car\"");
+
+        StepVerifier.create(missingTableSchema.validate(List.of(InheritanceTablePerClassIntegrationTest.TVehicle.class,
+                        InheritanceTablePerClassIntegrationTest.TCar.class,
+                        InheritanceTablePerClassIntegrationTest.TTruck.class)))
+                .verifyErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("table 't_car' is missing"));
+
+        H2IntegrationTestSupport missingColumnSupport = H2IntegrationTestSupport.create();
+        SchemaInitializer missingColumnSchema = schemaInitializer(missingColumnSupport);
+        missingColumnSchema.create(InheritanceTablePerClassIntegrationTest.TVehicle.class,
+                InheritanceTablePerClassIntegrationTest.TCar.class,
+                InheritanceTablePerClassIntegrationTest.TTruck.class).block();
+        missingColumnSupport.execute("alter table \"t_car\" drop column \"doors\"");
+
+        StepVerifier.create(missingColumnSchema.validate(List.of(InheritanceTablePerClassIntegrationTest.TVehicle.class,
+                        InheritanceTablePerClassIntegrationTest.TCar.class,
+                        InheritanceTablePerClassIntegrationTest.TTruck.class)))
+                .verifyErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("table 't_car' is missing columns [doors]"));
+    }
 }
