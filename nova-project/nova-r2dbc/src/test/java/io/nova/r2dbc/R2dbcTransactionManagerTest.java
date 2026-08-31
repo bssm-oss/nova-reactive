@@ -255,7 +255,7 @@ class R2dbcTransactionManagerTest {
                 .expectNext("work")
                 .verifyComplete();
 
-        assertEquals(List.of("beginTransaction", "commit", "after-1", "after-2", "close"), calls);
+        assertEquals(List.of("beginTransaction", "setAutoCommit", "commit", "after-1", "after-2", "close"), calls);
     }
 
     @Test

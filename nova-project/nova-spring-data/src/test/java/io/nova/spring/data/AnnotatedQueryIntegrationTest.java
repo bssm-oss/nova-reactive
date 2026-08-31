@@ -416,6 +416,10 @@ class AnnotatedQueryIntegrationTest {
                 countQuery = "SELECT COUNT(a) FROM Account a")
         Mono<Page<Account>> pageWithCount(Pageable pageable);
 
+        @Query(value = "SELECT a FROM Account a WHERE a.score >= :min ORDER BY a.name",
+                countQuery = "SELECT COUNT(a) FROM Account a WHERE a.score >= :min")
+        Mono<Page<Account>> pageWithMinScore(@Param("min") int min, Pageable pageable);
+
         @Query("SELECT a FROM Account a ORDER BY a.name")
         Mono<Slice<Account>> slice(Pageable pageable);
 
