@@ -256,7 +256,7 @@ class R2dbcTransactionManagerTest {
                 .verify();
 
         assertFalse(beforeCommitRan.get());
-        assertEquals(List.of("setAutoCommit", "beginTransaction", "rollbackTransaction", "close"), calls);
+        assertEquals(List.of("beginTransaction", "setAutoCommit", "rollbackTransaction", "close"), calls);
     }
 
     @Test
