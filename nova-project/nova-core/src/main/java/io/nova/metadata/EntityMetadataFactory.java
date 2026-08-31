@@ -1940,7 +1940,8 @@ public final class EntityMetadataFactory {
     private static boolean hasExplicitBasicMapping(PersistentAttributeAccess attribute) {
         return attribute.isAnnotationPresent(Basic.class)
                 || attribute.isAnnotationPresent(Column.class)
-                || attribute.isAnnotationPresent(Convert.class)
+                || Arrays.stream(attribute.annotationsByType(Convert.class))
+                .anyMatch(convert -> convert.attributeName().isBlank())
                 || attribute.isAnnotationPresent(Json.class)
                 || attribute.isAnnotationPresent(Enumerated.class)
                 || attribute.isAnnotationPresent(Temporal.class)

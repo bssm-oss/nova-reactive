@@ -183,9 +183,14 @@ public final class MetamodelProcessor extends AbstractProcessor {
 
     private boolean hasExplicitBasicMapping(Element element) {
         return hasAnnotation(element, BASIC) || hasAnnotation(element, COLUMN)
-                || hasAnnotation(element, CONVERT) || hasAnnotation(element, JSON)
+                || hasWholeValueConvert(element) || hasAnnotation(element, JSON)
                 || hasAnnotation(element, ENUMERATED) || hasAnnotation(element, TEMPORAL)
                 || hasAnnotation(element, LOB);
+    }
+
+    private boolean hasWholeValueConvert(Element element) {
+        String attributeName = annotationValue(element, CONVERT, "attributeName");
+        return attributeName != null && attributeName.isBlank();
     }
 
     private boolean isInverseOneToOne(Element element) {

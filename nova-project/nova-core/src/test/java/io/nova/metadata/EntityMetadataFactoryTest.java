@@ -958,6 +958,24 @@ class EntityMetadataFactoryTest {
     }
 
     @Test
+    void propagatesPathScopedConvertThroughImplicitFieldEmbeddables() {
+        PersistentProperty country = factory.getEntityMetadata(ImplicitConvertedFieldEntity.class)
+                .findProperty("address.geo.country").orElseThrow();
+
+        assertEquals(Integer.class, country.columnType());
+        assertEquals(2, country.toColumnValue("KR"));
+    }
+
+    @Test
+    void propagatesPathScopedConvertThroughImplicitPropertyEmbeddables() {
+        PersistentProperty country = factory.getEntityMetadata(ImplicitConvertedPropertyEntity.class)
+                .findProperty("address.geo.country").orElseThrow();
+
+        assertEquals(Integer.class, country.columnType());
+        assertEquals(2, country.toColumnValue("KR"));
+    }
+
+    @Test
     void propagatesNestedAttributeOverridesThroughImplicitEmbeddables() {
         EntityMetadata<ImplicitEmbeddedOverrideEntity> metadata =
                 factory.getEntityMetadata(ImplicitEmbeddedOverrideEntity.class);
@@ -1718,6 +1736,51 @@ class EntityMetadataFactoryTest {
         @Override
         public ImplicitAddress convertToEntityAttribute(String value) {
             return value == null ? null : new ImplicitAddress();
+        }
+    }
+
+    static class CountryConverter implements jakarta.persistence.AttributeConverter<String, Integer> {
+        @Override
+        public Integer convertToDatabaseColumn(String value) {
+            return value == null ? null : value.length();
+        }
+
+        @Override
+        public String convertToEntityAttribute(Integer value) {
+            return value == null ? null : "X".repeat(value);
+        }
+    }
+
+    @Entity
+    static class ImplicitConvertedFieldEntity {
+        @Id
+        private Long id;
+        @Convert(attributeName = "geo.country", converter = CountryConverter.class)
+        private ImplicitAddress address;
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    static class ImplicitConvertedPropertyEntity {
+        private Long id;
+        private ImplicitAddress address;
+
+        @Id
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        @Convert(attributeName = "geo.country", converter = CountryConverter.class)
+        public ImplicitAddress getAddress() {
+            return address;
+        }
+
+        public void setAddress(ImplicitAddress address) {
+            this.address = address;
         }
     }
 

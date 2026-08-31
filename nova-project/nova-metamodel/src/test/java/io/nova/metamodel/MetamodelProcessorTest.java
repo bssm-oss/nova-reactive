@@ -284,6 +284,52 @@ class MetamodelProcessorTest {
     }
 
     @Test
+    @DisplayName("path-scoped Convert가 붙은 implicit @Embeddable member는 FIELD/PROPERTY 모두 평탄화된다")
+    void flattensImplicitEmbeddablesWithPathScopedConvert() {
+        Source fieldEntity = new Source("fixtures.ConvertedFieldCustomer", """
+                package fixtures;
+                import jakarta.persistence.Convert;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity public class ConvertedFieldCustomer {
+                    @Id private Long id;
+                    @Convert(attributeName = "geo.country", disableConversion = true)
+                    private Address address;
+                }""");
+        Source propertyEntity = new Source("fixtures.ConvertedPropertyCustomer", """
+                package fixtures;
+                import jakarta.persistence.Access;
+                import jakarta.persistence.AccessType;
+                import jakarta.persistence.Convert;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity @Access(AccessType.PROPERTY) public class ConvertedPropertyCustomer {
+                    private Long id; private Address address;
+                    @Id public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+                    @Convert(attributeName = "geo.country", disableConversion = true)
+                    public Address getAddress() { return address; }
+                    public void setAddress(Address address) { this.address = address; }
+                }""");
+        Source address = new Source("fixtures.Address", """
+                package fixtures;
+                import jakarta.persistence.Embeddable;
+                @Embeddable public class Address { private Geo geo; }""");
+        Source geo = new Source("fixtures.Geo", """
+                package fixtures;
+                import jakarta.persistence.Embeddable;
+                @Embeddable public class Geo { private String country; }""");
+
+        Compilation compilation = ProcessorRunner.compile(fieldEntity, propertyEntity, address, geo);
+
+        assertCompilationSucceeded(compilation);
+        assertTrue(compilation.generatedSources().get("fixtures.ConvertedFieldCustomer_")
+                .contains("address_geo_country = \"address.geo.country\";"));
+        assertTrue(compilation.generatedSources().get("fixtures.ConvertedPropertyCustomer_")
+                .contains("address_geo_country = \"address.geo.country\";"));
+    }
+
+    @Test
     @DisplayName("@OneToMany inverse property는 컬럼이 없으므로 상수 발행 대상에서 제외된다")
     void skipsOneToManyInverseFields() {
         Source author = new Source(
