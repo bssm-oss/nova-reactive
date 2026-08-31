@@ -341,6 +341,11 @@ public final class R2dbcTransactionManager implements ReactiveTransactionManager
             SavepointState selected;
             do {
                 selected = state.get();
+                if (selected == SavepointState.CREATE_FAILED) {
+                    return owner.seal()
+                            .then(create)
+                            .doFinally(ignored -> lease.complete());
+                }
                 if (selected != SavepointState.QUEUED && selected != SavepointState.CREATING
                         && selected != SavepointState.ACTIVE) {
                     return Mono.empty();
