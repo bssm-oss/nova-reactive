@@ -75,9 +75,9 @@ public final class PersistentAccessResolver {
                     if (field != null && hasMappingAnnotation(field)) {
                         throw new IllegalArgumentException(type.getName() + "." + name + " has mapping annotations on inactive FIELD member");
                     }
-                    if (field != null) {
+                    if (field != null && field.isAnnotationPresent(Access.class)) {
                         throw new IllegalArgumentException(type.getName() + "." + name
-                                + " has no JavaBean getter required by PROPERTY access");
+                                + " declares @Access(PROPERTY) on a field; @Access(PROPERTY) belongs on a getter");
                     }
                     continue;
                 }
