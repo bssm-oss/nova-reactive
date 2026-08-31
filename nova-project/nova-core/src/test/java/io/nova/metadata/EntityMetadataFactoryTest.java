@@ -936,7 +936,7 @@ class EntityMetadataFactoryTest {
         assertEquals(List.of("id", "address_street", "address_geo_country"),
                 metadata.properties().stream().map(PersistentProperty::columnName).toList());
         assertEquals(AccessType.PROPERTY, metadata.findProperty("address.geo.country").orElseThrow()
-                .embeddedHostPath().get(0).accessType());
+                .embeddedHostAccessPath().get(0).accessType());
     }
 
     @Test
