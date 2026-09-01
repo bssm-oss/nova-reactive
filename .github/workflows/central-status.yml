@@ -1,0 +1,50 @@
+name: Inspect Maven Central deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to verify
+        required: true
+        default: '2.28.0'
+      namespace:
+        description: Central namespace
+        required: true
+        default: 'io.github.bssm-oss'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect staging and portal deployments
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          NAMESPACE: ${{ inputs.namespace }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          AUTH="Bearer $(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)"
+          REPOSITORIES="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: $AUTH" \
+            "https://ossrh-staging-api.central.sonatype.com/manual/search/repositories?ip=any&profile_id=$NAMESPACE")"
+          echo "$REPOSITORIES" | jq '{repositories: [.repositories[] | {key, state, portal_deployment_id, warnings}]}'
+
+          mapfile -t DEPLOYMENTS < <(echo "$REPOSITORIES" | jq -r '.repositories[].portal_deployment_id // empty' | sort -u)
+          for deployment in "${DEPLOYMENTS[@]}"; do
+            curl --fail-with-body --silent --show-error --request POST \
+              -H "Authorization: $AUTH" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$deployment" \
+              | jq '{deploymentId, deploymentName, deploymentState, purls, errors}'
+          done
+
+          BASE="https://repo.maven.apache.org/maven2/${NAMESPACE//./\/}/nova/$VERSION"
+          for file in "nova-$VERSION.pom" "nova-$VERSION.jar" \
+              "nova-$VERSION-sources.jar" "nova-$VERSION-javadoc.jar"; do
+            code="$(curl --location --silent --output /dev/null --write-out '%{http_code}' "$BASE/$file")"
+            printf '%s=%s\n' "$file" "$code"
+          done
