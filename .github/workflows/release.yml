@@ -89,10 +89,56 @@ jobs:
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
+          AUTH="Bearer $(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)"
           curl --fail-with-body -X POST \
-            -H "Authorization: Bearer $(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)" \
+            -H "Authorization: $AUTH" \
             "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/io.github.bssm-oss?publishing_type=automatic"
+
+          repositories="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: $AUTH" \
+            "https://ossrh-staging-api.central.sonatype.com/manual/search/repositories?ip=client&profile_id=io.github.bssm-oss")"
+          deployment_id=""
+          mapfile -t deployment_ids < <(echo "$repositories" |
+            jq -r '.repositories[].portal_deployment_id // empty' | sort -u)
+          for candidate_id in "${deployment_ids[@]}"; do
+            candidate_status="$(curl --fail-with-body --silent --show-error --request POST \
+              -H "Authorization: $AUTH" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$candidate_id")"
+            if echo "$candidate_status" | jq -e --arg version "$VERSION" \
+                'any(.purls[]?; endswith("@" + $version))' >/dev/null; then
+              deployment_id="$candidate_id"
+              break
+            fi
+          done
+          if [ -z "$deployment_id" ]; then
+            echo "Central Portal deployment id was not returned for this runner." >&2
+            exit 1
+          fi
+
+          for attempt in $(seq 1 120); do
+            status="$(curl --fail-with-body --silent --show-error --request POST \
+              -H "Authorization: $AUTH" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$deployment_id")"
+            state="$(echo "$status" | jq -r '.deploymentState')"
+            echo "Central deployment $deployment_id state: $state (attempt $attempt/120)"
+            case "$state" in
+              PUBLISHED) exit 0 ;;
+              FAILED)
+                echo "$status" | jq '{deploymentId, deploymentState, errors}' >&2
+                exit 1
+                ;;
+              PENDING|VALIDATING|VALIDATED|PUBLISHING) sleep 10 ;;
+              *)
+                echo "Unexpected Central deployment state: $state" >&2
+                exit 1
+                ;;
+            esac
+          done
+          echo "Central deployment $deployment_id did not publish within 20 minutes." >&2
+          exit 1
 
   github-release:
     needs: publish
