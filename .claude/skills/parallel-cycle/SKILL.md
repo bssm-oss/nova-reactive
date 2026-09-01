@@ -37,6 +37,7 @@ Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
 2. main HEAD hash 기록(`git log --oneline -1 main`), 작업 트리 깨끗 확인(`git status --short` 빈 결과), 기존 worktree 잔재 정리(`git worktree list` → cleanup).
 3. scope를 사용자가 명시 안 했으면 후보 제시 후 `AskUserQuestion`으로 확정.
 4. **통합 브랜치 생성**: `git switch -c cycle/<topic> main`. 모든 worktree는 이 브랜치(또는 main, 동일 base)로 ff-merge되고 최종 PR의 head가 된다.
+5. **문서 영향표 작성(필수)**: 각 feature의 사용자-visible 동작, 호환성 표, 설정, 예제, 버전 표기가 영향을 받는 `README.md`/`docs/*.md`를 스코프에 명시한다. 영향이 없으면 근거를 적는다. "나중에 문서 정리"는 금지한다.
 
 ## Phase 2 — 설계-우선 병렬 개발 (worktree spawn)
 
@@ -59,6 +60,7 @@ Nova의 multi-feature batch 작업을 다음 순서로 진행한다:
   - 룰 #4: blocking call 금지 (`block`/`blockFirst`/`blockLast`/`toIterable`/`Future.get`)
   - 룰 #5: `ThreadLocal` 금지
 - 컨벤션: JUnit5 + StepVerifier, AssertJ/Mockito/Hamcrest 금지, constructor injection, `final` 필드, `Simple*`/`Abstract*` naming. 미지원 속성은 fail-fast 거부 + H2 통합 라운드트립 테스트 필수.
+- **문서 동시 완료(필수)**: 구현 agent는 코드·테스트와 함께 Phase 1 문서 영향표의 모든 파일을 최신화하고 같은 worktree 브랜치에 commit한다. 별도 docs 트랙을 써도 되지만 해당 feature 리뷰 전에 commit되어야 하며, 문서 없는 구현 commit을 "완료"로 보고할 수 없다. 새 API/동작/제약/호환성/설정/예제/버전 중 하나라도 바뀌면 README·가이드·compatibility matrix·예제 중 직접 영향받는 항목을 모두 갱신한다.
 - Commit: Conventional Commits, **Co-Authored-By Claude 절대 금지** (강조 1행 reserved). push 금지(오케스트레이터가 PR에서 처리).
 
 ### Marker namespace 분리 (hub 충돌 mitigation)
@@ -88,6 +90,7 @@ git -C <worktree path> diff main..HEAD
 - 보호 contract 시그니처 변경 여부 (룰 #6), blocking call (룰 #4), ThreadLocal (룰 #5), 룰 #1 dep 무변경
 - silent dedupe/corruption, 멱등성(ddl-auto=UPDATE 재시작 시 비멱등 DDL/ALTER → 크래시), 비트랜잭션 원자성(다중 statement)
 - Spring `@ConfigurationProperties`이면 dead config 위험 (실제 적용 효과까지 검증되는지)
+- **문서-구현 정합성**: Phase 1 영향표의 모든 문서가 branch commit range에 포함됐는지, 지원/제약/예제/compatibility matrix가 실제 코드·테스트와 일치하는지, 오래된 버전·좌표·명령이 남지 않았는지 검증한다. 누락은 major로 취급해 병합을 막는다.
 - agent별 sandbox 권한 불일치 가능 → 오케스트레이터가 build를 외부에서 직접 verify
 
 ## Phase 4 — 보완 ↔ 재리뷰 루프 (병합 전, 문제 0까지 반복)
@@ -132,6 +135,7 @@ review의 critical/major를 **머지 전에** 해당 worktree에서 해소한다
 1. `./gradlew build` (전 모듈 컴파일 + 단위/통합 테스트).
 2. **실제 앱 구동**: `nova-example`의 `NovaReactiveExample`(필요 시 `HibernateReactiveExample` 대조)을 실행해 ORM이 실 driver로 동작하는지 확인 — schema 생성, save/find, 관계/컬렉션, 트랜잭션·flush까지 한 흐름으로.
 3. 관련 dialect 통합(H2) + (해당 시) `nova-spring-boot-starter`/`nova-spring-data` 통합.
+4. **문서 검증**: README와 `docs/`의 버전·Maven 좌표·지원/제약 표기를 현재 release 후보와 대조하고, 내부 링크 및 명령/예제가 유효한지 확인한다. 구버전 표기나 구현과 다른 claim이 있으면 E2E 실패로 처리한다.
 
 ## Phase 7 — 보완 ↔ E2E 재실행 루프 (문제 0까지 반복)
 
@@ -140,7 +144,7 @@ E2E에서 드러난 결함을 통합 브랜치에서 직접 fix-commit + 회귀 
 ## Phase 8 — PR 생성 및 머지
 
 1. 통합 브랜치 push: `git push -u origin cycle/<topic>`.
-2. PR 생성: `gh pr create --base main --head cycle/<topic> --title "<conventional title>" --body "<요약 + feature별 커밋 + 리뷰/E2E 결과>"`. PR body 말미 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+2. PR 생성: `gh pr create --base main --head cycle/<topic> --title "<conventional title>" --body "<요약 + feature별 커밋 + 문서 변경 목록 + 리뷰/E2E 결과>"`. PR body에 Phase 1 문서 영향표 대비 실제 변경 파일과 "문서 영향 없음" 근거를 기록한다. 말미 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 3. CI 있으면 통과 확인. repo는 **squash-only** → `gh pr merge --squash --admin`(브랜치 보호 우회). merge commit/rebase 금지.
 4. 로컬 main 동기화: `git switch main && git pull --ff-only`.
 
@@ -149,10 +153,11 @@ E2E에서 드러난 결함을 통합 브랜치에서 직접 fix-commit + 회귀 
 PR이 main에 머지된 뒤에만 배포한다. 배포 버전은 임의로 추측하지 말고 사용자 또는 저장소 release 정책으로 확정한다.
 
 1. 현재 태그와 `build.gradle.kts`의 `nova.version`을 확인하고 다음 SemVer 태그(예: `v2.11.0`)를 확정한다.
-2. main에서 버전 태그를 생성·push한다: `git tag v<version> && git push origin v<version>`.
-3. `.github/workflows/release.yml`의 tag workflow가 Java 21 build, Maven Central publish, GitHub Release를 모두 완료하는지 `gh run watch`/`gh run view`로 확인한다.
-4. Central Portal deployment와 GitHub Release가 실제 공개 상태인지 확인한다. credentials/권한/CI 실패로 확인할 수 없으면 배포 완료로 표시하지 말고 blocker로 보고한다.
-5. 배포 확인 전에는 cycle을 완료로 선언하거나 worktree/브랜치를 삭제하지 않는다.
+2. 태그 전에 README, getting-started, docs index, compatibility matrix, dependency 예제의 버전/좌표가 확정 release와 일치하는지 재검색한다. 하나라도 stale이면 태그를 만들지 않는다.
+3. main에서 버전 태그를 생성·push한다: `git tag v<version> && git push origin v<version>`.
+4. `.github/workflows/release.yml`의 tag workflow가 Java 21 build, Maven Central publish, GitHub Release를 모두 완료하는지 `gh run watch`/`gh run view`로 확인한다.
+5. Central Portal deployment와 GitHub Release가 실제 공개 상태인지 확인한다. credentials/권한/CI 실패로 확인할 수 없으면 배포 완료로 표시하지 말고 blocker로 보고한다.
+6. 배포 확인 전에는 cycle을 완료로 선언하거나 worktree/브랜치를 삭제하지 않는다.
 
 ## Phase 9 — Cleanup & 다음 cycle confirm
 

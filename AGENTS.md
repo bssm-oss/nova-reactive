@@ -102,6 +102,10 @@ source-less grouping projects. Keep the root `build.gradle.kts` guard:
 
 - Use Conventional Commits prefixes such as `feat:`, `fix:`, `test:`,
   `refactor:`, `docs:`, and `chore:`.
+- Every user-visible behavior, compatibility claim, configuration change, and
+  release version change must update all directly affected README/docs pages in
+  the same PR. Documentation changes must be committed before review and merge;
+  deferring them to a later cleanup cycle is not allowed.
 - Keep each PR focused on one change.
 - Do not add an AI agent as `Co-Authored-By`.
 - Never write a bare `@Name` in a commit or PR title. JPA annotation names
