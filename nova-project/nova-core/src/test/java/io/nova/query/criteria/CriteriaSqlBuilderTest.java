@@ -963,6 +963,13 @@ class CriteriaSqlBuilderTest {
                 () -> bindings(cq, Collections.singletonMap(name, new String[]{"Ada"}), Map.of()));
         assertThrows(CriteriaException.class,
                 () -> bindings(cq, Collections.singletonMap(name, 1), Map.of()));
+        CriteriaQuery<Object> other = cb.createQuery(Object.class);
+        Root<Employee> otherEmployee = other.from(Employee.class);
+        ParameterExpression<String> foreign = cb.parameter(String.class);
+        other.multiselect(otherEmployee.<Long>get("id"))
+                .where(cb.equal(otherEmployee.<String>get("name"), foreign));
+        assertThrows(CriteriaException.class,
+                () -> bindings(cq, Collections.singletonMap(foreign, "Ada"), Map.of()));
     }
 
     @Test
@@ -995,6 +1002,38 @@ class CriteriaSqlBuilderTest {
         for (Object binding : translated.bindings()) {
             assertNull(binding);
         }
+    }
+
+    @Test
+    void retainsNullMarkersAndTraversalOrderForAliasedJoinAndCorrelatedSubqueryParameters() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<Integer> age = cb.parameter(Integer.class);
+        ParameterExpression<String> department = cb.parameter(String.class, "department");
+        jakarta.persistence.criteria.Subquery<Long> sub = cq.subquery(Long.class);
+        Root<Department> d = sub.from(Department.class);
+        Root<Employee> correlated = sub.correlate(e);
+        sub.select(d.<Long>get("id")).where(cb.and(
+                cb.equal(d.<Long>get("id"), correlated.get("department")),
+                cb.equal(d.<String>get("name"), department)));
+        cq.multiselect(e.<Long>get("id")).where(cb.and(
+                cb.gt(e.<Integer>get("age"), age),
+                cb.exists(sub),
+                cb.lt(e.<Integer>get("age"), age)));
+
+        CriteriaSql translated = aliased(cq, Collections.singletonMap(age, null),
+                Collections.singletonMap("department", null));
+
+        assertTrue(translated.sql().contains("inner join \"department\" \"t1\""), translated.sql());
+        assertTrue(translated.sql().contains("where (\"t0\".\"age\" > ? and exists"), translated.sql());
+        assertTrue(translated.sql().contains("exists (select 1 from \"department\" \"t2\" "
+                + "where (\"t2\".\"id\" = \"t0\".\"dept_id\" and \"t2\".\"name\" = ?))"), translated.sql());
+        assertTrue(translated.sql().endsWith("and \"t0\".\"age\" < ?)"), translated.sql());
+        assertEquals(3, translated.bindings().size());
+        assertNull(translated.bindings().get(0));
+        assertNull(translated.bindings().get(1));
+        assertNull(translated.bindings().get(2));
     }
 
     @Test
