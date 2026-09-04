@@ -73,7 +73,7 @@ nova:
 | `nova.pool.acquire-timeout`       | `Duration`      | `PoolConfig.defaults()` value | Acquire wait timeout                                  |
 | `nova.slow-query.threshold-ms`    | `Long`          | (unset)                       | When set, registers `SlowQueryLoggingListener`         |
 | `nova.ddl-auto`                   | `DdlAuto`       | `none`                        | `none` / `create` / `create-drop` schema bootstrap     |
-| `nova.entity-packages`            | `List<String>`  | (empty → AutoConfigurationPackages) | Packages to scan for `@Entity` when `ddl-auto` runs |
+| `nova.entity-packages`            | `List<String>`  | (empty → AutoConfigurationPackages) | Startup packages for managed `@Entity` and Jakarta `@Converter` discovery; schema creation still depends on `ddl-auto` |
 
 > The starter only exposes a `PoolConfig` bean; it does not bundle a pool implementation such as `r2dbc-pool`. If you need pooling, add the dependency yourself and feed this `PoolConfig` into your `ConnectionFactory` bean.
 
