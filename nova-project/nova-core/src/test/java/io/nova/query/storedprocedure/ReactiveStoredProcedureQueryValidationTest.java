@@ -8,6 +8,7 @@ import io.nova.sql.BindMarkerStrategy;
 import io.nova.sql.Dialect;
 import io.nova.sql.SchemaGenerator;
 import io.nova.sql.SqlRenderer;
+import io.r2dbc.spi.Parameter;
 import jakarta.persistence.ParameterMode;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -19,6 +20,8 @@ import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -57,7 +60,9 @@ class ReactiveStoredProcedureQueryValidationTest {
         assertEquals(1, operations.queryOperations.get());
         assertEquals(0, operations.executeOperations.get());
         assertEquals(7, operations.lastQuery.bindings().get(0));
-        assertEquals(null, operations.lastQuery.bindings().get(1));
+        Parameter typedNull = assertInstanceOf(Parameter.class, operations.lastQuery.bindings().get(1));
+        assertNull(typedNull.getValue());
+        assertEquals(String.class, typedNull.getType().getJavaType());
     }
 
     @Test
