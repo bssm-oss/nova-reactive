@@ -81,7 +81,7 @@ class PhysicalTransactionWriteTrackingSqlExecutorTest {
         setup.run();
         PhysicalTransactionScope scope = PhysicalTransactionScope.newOwner().scope();
 
-        StepVerifier.create(Flux.from(operation.apply(scope)).contextWrite(context(scope))).verifyComplete();
+        StepVerifier.create(Flux.from(operation.apply(scope)).contextWrite(context(scope)).then()).verifyComplete();
 
         assertTrue(scope.hasCompletedWrite());
     }

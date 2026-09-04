@@ -32,6 +32,8 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -55,6 +57,15 @@ class SecondLevelCacheH2IntegrationTest {
     private ConnectionFactory freshConnectionFactory() {
         int seq = DB_SEQ.incrementAndGet();
         return ConnectionFactories.get("r2dbc:h2:mem:///slcache" + seq + "?options=DB_CLOSE_DELAY=-1");
+    }
+
+    private static boolean await(CountDownLatch latch) {
+        try {
+            return latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Interrupted while awaiting transaction flush", error);
+        }
     }
 
     private record Wiring(ReactiveEntityOperations cached, SchemaInitializer schema, SelectCountingListener listener,
@@ -208,10 +219,12 @@ class SecondLevelCacheH2IntegrationTest {
                 "an errored physical transaction must not replay-clear the warm cache");
 
         long beforeCancellationFlush = w.listener().updates();
+        CountDownLatch flushed = new CountDownLatch(1);
         StepVerifier.create(w.cached().inTransaction(tx -> tx.findById(Widget.class, id)
                 .doOnNext(widget -> widget.name = "beta")
-                .then(tx.flush())
+                .then(tx.flush().doOnSuccess(ignored -> flushed.countDown()))
                 .then(Mono.never())))
+                .then(() -> assertTrue(await(flushed), "flush did not complete before cancellation"))
                 .thenCancel()
                 .verify();
         assertTrue(w.listener().updates() > beforeCancellationFlush,
