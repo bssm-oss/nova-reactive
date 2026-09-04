@@ -6,6 +6,7 @@ import io.nova.query.NativeQuery;
 import io.nova.schema.SchemaInitializer;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
@@ -19,8 +20,11 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToOne;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.io.Serializable;
@@ -284,6 +288,106 @@ class ManyToOneCompositeKeyH2IntegrationTest {
         ).expectNextCount(1).verifyComplete();
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // PERSIST-only composite cascade: complete ids still need existence probing before owner write.
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void persistCascadeInsertsCompleteEmbeddedIdTargetBeforeConstrainedOwner() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityManager em = Nova.entityManager(cf);
+
+        CascadeEmbeddedOrder order = new CascadeEmbeddedOrder(new OrderKey(810L, "CA"), "new");
+        CascadeEmbeddedLine line = new CascadeEmbeddedLine(order);
+
+        StepVerifier.create(
+                schema.create(List.of(CascadeEmbeddedOrder.class, CascadeEmbeddedLine.class))
+                        .then(em.persist(line))
+                        .flatMap(saved -> em.find(CascadeEmbeddedLine.class, saved.id))
+        ).assertNext(saved -> {
+            org.junit.jupiter.api.Assertions.assertEquals(810L, saved.order.id.orderNo);
+            org.junit.jupiter.api.Assertions.assertEquals("CA", saved.order.id.region);
+        }).verifyComplete();
+
+        StepVerifier.create(em.find(CascadeEmbeddedOrder.class, new OrderKey(810L, "CA")))
+                .assertNext(saved -> org.junit.jupiter.api.Assertions.assertEquals("new", saved.label))
+                .verifyComplete();
+    }
+
+    @Test
+    void persistCascadeInsertsCompleteIdClassTargetBeforeConstrainedOwner() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityManager em = Nova.entityManager(cf);
+
+        IdcOrder order = new IdcOrder(820L, "DE", "new");
+        CascadeIdcLine line = new CascadeIdcLine(order);
+
+        StepVerifier.create(
+                schema.create(List.of(IdcOrder.class, CascadeIdcLine.class))
+                        .then(em.persist(line))
+                        .flatMap(saved -> em.find(CascadeIdcLine.class, saved.id))
+        ).assertNext(saved -> {
+            org.junit.jupiter.api.Assertions.assertEquals(820L, saved.order.orderNo);
+            org.junit.jupiter.api.Assertions.assertEquals("DE", saved.order.region);
+        }).verifyComplete();
+    }
+
+    @Test
+    void persistCascadeDoesNotUpdateExistingConvertedCompositeTargetOrFirePostLoad() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityManager em = Nova.entityManager(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+        UUID token = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        CascadeAccount existing = new CascadeAccount(new AccountKey("EXISTING", token), "stored");
+
+        StepVerifier.create(
+                schema.create(List.of(CascadeAccount.class, CascadeLedger.class))
+                        .then(em.persist(existing))
+                        .then(Mono.fromRunnable(() -> {
+                            CascadeAccount.resetCallbacks();
+                            existing.tier = "mutated";
+                        }))
+                        .then(em.persist(new CascadeLedger(existing)))
+        ).verifyComplete();
+
+        StepVerifier.create(operations.queryNativeOne(
+                        NativeQuery.of("select \"tier\" as tier from \"mco_cascade_account\""
+                                + " where \"code\" = 'EXISTING' and \"token\" = '" + token + "'"),
+                        row -> row.get("tier", String.class)))
+                .expectNext("stored")
+                .verifyComplete();
+        org.junit.jupiter.api.Assertions.assertEquals(0, CascadeAccount.preUpdateCount,
+                "PERSIST-only cascade must not update an existing composite target");
+        org.junit.jupiter.api.Assertions.assertEquals(0, CascadeAccount.postLoadCount,
+                "composite existence probing must not hydrate the target or invoke @PostLoad");
+    }
+
+    @Test
+    void mergeCascadeUpdatesExistingCompositeTarget() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityManager em = Nova.entityManager(cf);
+        CascadeEmbeddedOrder existing = new CascadeEmbeddedOrder(new OrderKey(830L, "GB"), "stored");
+
+        StepVerifier.create(
+                schema.create(List.of(CascadeEmbeddedOrder.class, MergeCascadeEmbeddedLine.class))
+                        .then(em.persist(existing))
+                        .then(Mono.fromRunnable(() -> {
+                            CascadeEmbeddedOrder.resetCallbacks();
+                            existing.label = "merged";
+                        }))
+                        .then(em.merge(new MergeCascadeEmbeddedLine(existing)))
+        ).verifyComplete();
+
+        StepVerifier.create(em.find(CascadeEmbeddedOrder.class, new OrderKey(830L, "GB")))
+                .assertNext(saved -> org.junit.jupiter.api.Assertions.assertEquals("merged", saved.label))
+                .verifyComplete();
+        org.junit.jupiter.api.Assertions.assertEquals(1, CascadeEmbeddedOrder.preUpdateCount);
+    }
+
     // ============================== fixtures: @EmbeddedId target ==================================
 
     @Embeddable
@@ -374,6 +478,84 @@ class ManyToOneCompositeKeyH2IntegrationTest {
         }
     }
 
+    @Entity
+    @Table(name = "mco_cascade_embedded_order")
+    public static class CascadeEmbeddedOrder {
+        private static int preUpdateCount;
+
+        @EmbeddedId
+        private OrderKey id;
+        @Column(name = "label")
+        private String label;
+
+        public CascadeEmbeddedOrder() {
+        }
+
+        public CascadeEmbeddedOrder(OrderKey id, String label) {
+            this.id = id;
+            this.label = label;
+        }
+
+        static void resetCallbacks() {
+            preUpdateCount = 0;
+        }
+
+        @PreUpdate
+        void preUpdate() {
+            preUpdateCount++;
+        }
+    }
+
+    @Entity
+    @Table(name = "mco_cascade_embedded_line")
+    public static class CascadeEmbeddedLine {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.PERSIST, optional = false)
+        @JoinColumns(
+                value = {
+                        @JoinColumn(name = "order_no_fk", referencedColumnName = "order_no", nullable = false),
+                        @JoinColumn(name = "region_fk", referencedColumnName = "region", nullable = false)
+                },
+                foreignKey = @ForeignKey(name = "fk_cascade_embedded_line_order"))
+        private CascadeEmbeddedOrder order;
+
+        public CascadeEmbeddedLine() {
+        }
+
+        public CascadeEmbeddedLine(CascadeEmbeddedOrder order) {
+            this.order = order;
+        }
+    }
+
+    @Entity
+    @Table(name = "mco_merge_cascade_embedded_line")
+    public static class MergeCascadeEmbeddedLine {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @ManyToOne(cascade = {CascadeType.PERSIST, CascadeType.MERGE}, optional = false)
+        @JoinColumns(
+                value = {
+                        @JoinColumn(name = "order_no_fk", referencedColumnName = "order_no", nullable = false),
+                        @JoinColumn(name = "region_fk", referencedColumnName = "region", nullable = false)
+                },
+                foreignKey = @ForeignKey(name = "fk_merge_cascade_embedded_line_order"))
+        private CascadeEmbeddedOrder order;
+
+        public MergeCascadeEmbeddedLine() {
+        }
+
+        public MergeCascadeEmbeddedLine(CascadeEmbeddedOrder order) {
+            this.order = order;
+        }
+    }
+
     // ============================== fixtures: @IdClass target =====================================
 
     public static class OrderIdClass implements Serializable {
@@ -455,6 +637,31 @@ class ManyToOneCompositeKeyH2IntegrationTest {
         }
     }
 
+    @Entity
+    @Table(name = "mco_cascade_idc_line")
+    public static class CascadeIdcLine {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.PERSIST, optional = false)
+        @JoinColumns(
+                value = {
+                        @JoinColumn(name = "order_no_fk", referencedColumnName = "order_no", nullable = false),
+                        @JoinColumn(name = "region_fk", referencedColumnName = "region", nullable = false)
+                },
+                foreignKey = @ForeignKey(name = "fk_cascade_idc_line_order"))
+        private IdcOrder order;
+
+        public CascadeIdcLine() {
+        }
+
+        public CascadeIdcLine(IdcOrder order) {
+            this.order = order;
+        }
+    }
+
     // ============================== fixtures: non-Long components =================================
 
     @Embeddable
@@ -514,6 +721,66 @@ class ManyToOneCompositeKeyH2IntegrationTest {
 
         public Long getId() {
             return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "mco_cascade_account")
+    public static class CascadeAccount {
+        private static int preUpdateCount;
+        private static int postLoadCount;
+
+        @EmbeddedId
+        private AccountKey id;
+        @Column(name = "tier")
+        private String tier;
+
+        public CascadeAccount() {
+        }
+
+        public CascadeAccount(AccountKey id, String tier) {
+            this.id = id;
+            this.tier = tier;
+        }
+
+        static void resetCallbacks() {
+            preUpdateCount = 0;
+            postLoadCount = 0;
+        }
+
+        @PreUpdate
+        void preUpdate() {
+            preUpdateCount++;
+        }
+
+        @PostLoad
+        void postLoad() {
+            postLoadCount++;
+        }
+    }
+
+    @Entity
+    @Table(name = "mco_cascade_ledger")
+    public static class CascadeLedger {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        @Column(name = "id")
+        private Long id;
+
+        @ManyToOne(cascade = CascadeType.PERSIST, optional = false)
+        @JoinColumns(
+                value = {
+                        @JoinColumn(name = "code_fk", referencedColumnName = "code", nullable = false),
+                        @JoinColumn(name = "token_fk", referencedColumnName = "token", nullable = false)
+                },
+                foreignKey = @ForeignKey(name = "fk_cascade_ledger_account"))
+        private CascadeAccount account;
+
+        public CascadeLedger() {
+        }
+
+        public CascadeLedger(CascadeAccount account) {
+            this.account = account;
         }
     }
 

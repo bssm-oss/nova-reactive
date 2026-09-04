@@ -68,10 +68,10 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | `@ManyToOne` / owning `@OneToOne` | ✅ | FK column type aligned to the referenced `@Id` storage type; owning `@OneToOne(orphanRemoval = true)` supports replacement, nulling, and owner deletion |
-| `@ManyToOne` / `@OneToOne` → **composite-key** target | ✅ | Multi-column FK (one column per referenced `@Id` component) + composite FK constraint |
+| `@ManyToOne` / `@OneToOne` → **composite-key** target | ✅ | Multi-column FK (one column per referenced `@Id` component) + composite FK constraint; PERSIST-only cascade probes every converted key component, inserts an absent complete-key target before its constrained owner, and leaves an existing target unhydrated/unmodified; MERGE cascade updates it |
 | inverse `@OneToOne` (`mappedBy`) | ✅ | Hydration only; `orphanRemoval` and mutating `PERSIST`/`MERGE`/`REMOVE`/`ALL` cascades fail fast |
 | `@OneToMany` (`cascade`, `orphanRemoval`, `@OrderColumn`, `@OrderBy`) | ✅ | |
-| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration; single-column IDs (including `UUID`) are encoded to referenced-`@Id` physical storage and decoded before lookup |
+| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Cycle-guarded cascade; join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration; single-column IDs (including `UUID`) are encoded to referenced-`@Id` physical storage and decoded before lookup |
 | `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK) |
 | `@ElementCollection` | ✅ | Basic / enum / `UUID` elements, mutable and record `@Embeddable` values, `Map` keys/values (including records), `@OrderColumn`, `List` |
 | `@MapKeyColumn` / `@MapKeyEnumerated` / `@MapKeyTemporal` / `@MapKeyClass` | ✅ | `@MapKeyClass` supports basic / enum / `@Embeddable` / single-`@Id` **entity** key classes (entity key stored as its `@Id` FK column, batch-hydrated); composite-`@Id` entity key classes fail-fast |
@@ -79,7 +79,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@MapsId("component")` (one component of a composite `@Id`) | ✅ | Associated entity must have a single `@Id` |
 | `@JoinColumn` / `@JoinColumns` / `@ForeignKey` | ✅ | Composite FK, constraint-name length bounds, idempotent `ddl-auto=UPDATE` |
 | `@AssociationOverride` | ✅ | Remap the join column of an inherited to-one; overrides declared on an intermediate `@MappedSuperclass` are honored (most-derived declaration wins) |
-| `cascade` on to-one (`PERSIST` / `MERGE` / `REMOVE`) | ✅ | Cycle-guarded |
+| `cascade` on to-one (`PERSIST` / `MERGE` / `REMOVE`) | ✅ | Cycle-guarded; PERSIST-only does not update an existing complete composite-id target, while MERGE does |
 
 ## Fetching
 
