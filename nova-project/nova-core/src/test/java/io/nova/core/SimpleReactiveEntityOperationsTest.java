@@ -2341,6 +2341,33 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void delayedExecutionMutationRemainsDirtyAfterPartialUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "before@nova.io", true);
+        var metadata = metadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata, account);
+        metadata.findProperty("email").orElseThrow().write(account, "written@nova.io");
+        executor.executePublishers.addLast(Mono.defer(() -> {
+            metadata.findProperty("email").orElseThrow().write(account, "raced@nova.io");
+            return Mono.just(1L);
+        }));
+
+        StepVerifier.create(operations.update(account, List.of("email"))
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(account)
+                .verifyComplete();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size());
+        assertEquals(List.of("raced@nova.io", 7L), executor.executedStatements.get(1).bindings(),
+                "a mutation after statement rendering must remain dirty for flush");
+    }
+
+    @Test
     void cancelledPartialUpdateDoesNotRefreshManagedBaseline() {
         CapturingExecutor executor = new CapturingExecutor();
         executor.executePublishers.addLast(Mono.never());

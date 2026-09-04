@@ -1705,44 +1705,65 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         // skipPrimaryUpdate가 성립해, 보조 컬럼만 바뀐 변경이 primary 빈 SET 없이 보조 테이블만 갱신한다(이
         // 경우 검증할 version이 없으므로 lost-update 미탐지는 설계상 정상).
             boolean skipPrimaryUpdate = metadata.hasSecondaryTables() && !hasPrimaryField && hasSecondaryField;
+            SqlStatement primaryStatement = null;
+            Object currentVersion = null;
+            Object nextVersion = null;
+            if (!skipPrimaryUpdate) {
+                if (versionProperty == null) {
+                    primaryStatement = dialect.sqlRenderer().update(metadata, entity, requestedFields);
+            } else {
+                    currentVersion = versionProperty.read(entity);
+                // single-read: 다음 버전 값을 한 번만 계산해 SET 바인딩과 writeback에 동일 객체를 쓴다.
+                    nextVersion = nextVersionValue(versionProperty, currentVersion);
+                    primaryStatement = dialect.sqlRenderer().update(metadata, entity, requestedFields, nextVersion);
+                            }
+            }
+            List<SqlStatement> secondaryStatements = new ArrayList<>();
+            if (metadata.hasSecondaryTables()) {
+                SqlRenderer renderer = dialect.sqlRenderer();
+                for (SecondaryTableInfo secondary : metadata.secondaryTables()) {
+                    if (secondaryTableTouchedBy(metadata, secondary, requestedFields)) {
+                        SqlStatement statement = renderer.updateSecondary(metadata, secondary, entity);
+                        if (statement != null) {
+                            secondaryStatements.add(statement);
+            }
+                    }
+                }
+            }
+            LinkedHashSet<PersistentProperty> writtenProperties =
+                    partialUpdateWrittenProperties(metadata, requestedFields);
+            Map<String, Object> writtenStorageValues = capturePartialUpdateStorageValues(
+                    writtenProperties, entity, versionProperty, nextVersion);
             Mono<T> primaryUpdate;
             if (skipPrimaryUpdate) {
                 primaryUpdate = Mono.just(entity);
             } else if (versionProperty == null) {
-                SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, requestedFields);
-                primaryUpdate = sqlExecutor.execute(statement).thenReturn(entity);
+                primaryUpdate = sqlExecutor.execute(primaryStatement).thenReturn(entity);
             } else {
-                Object current = versionProperty.read(entity);
-                // single-read: 다음 버전 값을 한 번만 계산해 SET 바인딩과 writeback에 동일 객체를 쓴다.
-                Object next = nextVersionValue(versionProperty, current);
-                SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, requestedFields, next);
-                primaryUpdate = sqlExecutor.execute(statement)
+                Object expectedVersion = currentVersion;
+                Object writtenVersion = nextVersion;
+                primaryUpdate = sqlExecutor.execute(primaryStatement)
                         .flatMap(affected -> {
                             if (affected == 0L) {
                                 return Mono.error(new OptimisticLockingFailureException(
                                         "Optimistic locking failure: row not found or version mismatch for "
                                                 + metadata.entityType().getName()
                                                 + " id=" + id
-                                                + " version=" + current));
+                                                + " version=" + expectedVersion));
                             }
-                            versionProperty.write(entity, next);
+                            versionProperty.write(entity, writtenVersion);
                             return Mono.just(entity);
                         });
             }
         // 요청 필드(+augment) 중 보조 컬럼이 포함된 보조 테이블만 갱신한다 — primary 컬럼만 요청한 partial
         // update가 매번 전 보조 테이블을 덮어쓰던 불필요한 write를 제거한다(정확성 유지).
-            LinkedHashSet<PersistentProperty> writtenProperties =
-                    partialUpdateWrittenProperties(metadata, requestedFields);
             Mono<T> result = metadata.hasSecondaryTables()
                     ? primaryUpdate.flatMap(saved ->
-                            updateSecondaryRows(metadata, saved, requestedFields).thenReturn(saved))
+                            Flux.fromIterable(secondaryStatements)
+                                    .concatMap(sqlExecutor::execute)
+                                    .thenReturn(saved))
                     : primaryUpdate;
             return result.map(updated -> {
-                Map<String, Object> writtenStorageValues = new LinkedHashMap<>();
-                for (PersistentProperty property : writtenProperties) {
-                    writtenStorageValues.put(
-                            property.columnName(), PersistenceSession.snapshotValue(property, updated));
-                }
                 listenerInvoker.invokePostUpdate(updated, metadata);
                 currentSession(ctx).ifPresent(session ->
                         session.refreshManagedExactInstanceSnapshot(metadata, updated, writtenStorageValues));
@@ -1756,7 +1777,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         LinkedHashSet<PersistentProperty> written = new LinkedHashSet<>();
         for (String fieldName : requestedFields) {
             metadata.findProperty(fieldName)
-                    .filter(PersistentProperty::updatable)
+                    .filter(property -> !property.secondary())
                     .ifPresent(written::add);
         }
         for (SecondaryTableInfo secondary : metadata.secondaryTables()) {
@@ -1769,6 +1790,19 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             }
         }
         return written;
+    }
+
+    private static Map<String, Object> capturePartialUpdateStorageValues(
+            Iterable<PersistentProperty> properties, Object entity,
+            PersistentProperty versionProperty, Object nextVersion) {
+        Map<String, Object> captured = new LinkedHashMap<>();
+        for (PersistentProperty property : properties) {
+            Object value = property == versionProperty
+                    ? property.toColumnValue(nextVersion)
+                    : PersistenceSession.snapshotValue(property, entity);
+            captured.put(property.columnName(), value);
+        }
+        return captured;
     }
 
     private static LinkedHashSet<String> validatePartialUpdateFields(
