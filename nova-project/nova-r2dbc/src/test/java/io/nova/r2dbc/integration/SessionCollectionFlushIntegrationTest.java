@@ -365,7 +365,7 @@ class SessionCollectionFlushIntegrationTest {
                         .doOnNext(loaded -> loaded.getTags().add(new UuidTag("transient")))
                         .then()))
                 .expectErrorMatches(error -> error instanceof IllegalStateException
-                        && error.getMessage().contains("must be persisted before flush"))
+                        && error.getMessage().contains("every id component non-null"))
                 .verify();
 
         assertEquals(0, listener.count("uuid_post_tag", "insert"));

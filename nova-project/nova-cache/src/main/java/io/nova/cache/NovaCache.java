@@ -16,14 +16,21 @@ import java.util.Objects;
  * ReactiveEntityOperations cached = NovaCache.caching(base);
  * }</pre>
  *
- * <p>{@code @Cacheable}(또는 Nova {@link io.nova.cache.annotation.Cache})이 붙은 엔티티만 캐시되며, 그 외
- * 타입은 캐시 없이 그대로 통과한다.
+ * <p>{@code @Cacheable}(또는 Nova {@link io.nova.cache.annotation.Cache})이 붙은 엔티티만 read-through
+ * 캐시되며, 그 외 타입의 read는 그대로 통과한다. 모든 타입의 성공한 write는 eager graph 정합성을 위해
+ * 전역 캐시 무효화에 참여한다.
  *
  * <p><b>Mapping factory:</b> pass the exact {@link EntityMetadataFactory} used to construct the delegate to
  * {@link #caching(ReactiveEntityOperations, io.nova.cache.spi.ReactiveCacheProvider, EntityMetadataFactory)} or
  * {@link #cachingWithQueryCache(ReactiveEntityOperations, io.nova.cache.spi.ReactiveCacheProvider,
  * EntityMetadataFactory, ReactiveQueryCache)}. Cache snapshots reconstruct mapped converters and JSON values, so
  * an independently-created factory can disagree with the delegate mapping.
+ *
+ * <p><b>Custom transaction delegates:</b> delegates that execute SQL outside Nova's
+ * {@code SimpleReactiveEntityOperations} must mark successful internal/session-flush writes through
+ * {@link io.nova.tx.PhysicalTransactionScope#markWriteCompleted()} or the active
+ * {@link io.nova.tx.TransactionWriteObservation}. Explicit write methods invoked through the returned cache
+ * decorator are observed automatically. An unmarked internal write cannot trigger safe post-commit invalidation.
  */
 public final class NovaCache {
 
