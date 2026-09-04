@@ -63,6 +63,8 @@ public interface ReactiveEntityOperations {
 `save` lets `EntityStateDetector` choose **insert vs update** by inspecting the identifier state.
 For `@Version` entities, update/delete emits `OptimisticLockingFailureException` when affected rows are zero. For `@SoftDelete` entities, `delete` is rewritten as an UPDATE automatically. Lifecycle callbacks (`@PrePersist`/`@PreUpdate`/`@PostLoad`/`@PreRemove`) fire right after audit values are applied, so users may override audit defaults inside the callback.
 
+`update(entity, fields)` is subscription-cold: audit work, `@PreUpdate`, SQL rendering, and DML begin only when its `Mono` is subscribed. Each subscription is a distinct execution. `@PostUpdate` runs only after every update statement succeeds. Its actual write set includes automatic `@UpdatedAt` and `@Version` columns; requesting one property in a touched secondary table full-writes every updatable sibling column in that table.
+
 ---
 
 ## Query DSL
@@ -161,6 +163,15 @@ QuerySpec spec = QuerySpec.empty()
 ```
 
 When a cursor is set, OFFSET is ignored and a lexicographic keyset condition is appended to WHERE automatically.
+
+### Criteria API parameters and null
+
+Bind Criteria parameters by their expression identity or declared name. An explicit `null` is a bound value;
+an unset parameter remains an error when the reactive query is subscribed. Criteria renders an explicit null
+comparison with its normal bind marker, so `equal(path, parameter)` renders `path = ?` and
+`notEqual(path, parameter)` renders `path <> ?`. SQL evaluates both comparisons with a null binding as
+UNKNOWN, which filters rows in a `WHERE` clause. Use `isNull(path)` or `isNotNull(path)` when null matching
+is intended; Nova does not rewrite parameter comparisons to `IS NULL`.
 
 ### NativeQuery — raw SQL
 

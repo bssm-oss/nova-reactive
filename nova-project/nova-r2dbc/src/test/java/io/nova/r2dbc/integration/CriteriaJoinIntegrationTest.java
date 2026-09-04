@@ -11,6 +11,7 @@ import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Join;
 import jakarta.persistence.criteria.JoinType;
+import jakarta.persistence.criteria.ParameterExpression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Subquery;
@@ -133,6 +134,31 @@ class CriteriaJoinIntegrationTest {
 
         StepVerifier.create(criteria.createQuery(cq).getResultList())
                 .expectNext("Dan")
+                .verifyComplete();
+    }
+
+    @Test
+    void equalityBoundToNullMatchesNoneWhileExplicitIsNullMatchesNullRow() {
+        support.execute("insert into \"cj_employee\" (\"id\", \"name\", \"age\", \"dept_id\")"
+                + " values (5, null, 20, null)");
+        CriteriaBuilder equalityBuilder = cb();
+        CriteriaQuery<Long> equality = equalityBuilder.createQuery(Long.class);
+        Root<Employee> equalityEmployee = equality.from(Employee.class);
+        ParameterExpression<String> name = equalityBuilder.parameter(String.class, "name");
+        equality.select(equalityEmployee.<Long>get("id"))
+                .where(equalityBuilder.equal(equalityEmployee.<String>get("name"), name));
+
+        StepVerifier.create(criteria.createQuery(equality).setParameter("name", null).getResultList())
+                .verifyComplete();
+
+        CriteriaBuilder nullBuilder = cb();
+        CriteriaQuery<Long> nullCheck = nullBuilder.createQuery(Long.class);
+        Root<Employee> nullCheckEmployee = nullCheck.from(Employee.class);
+        nullCheck.select(nullCheckEmployee.<Long>get("id"))
+                .where(nullBuilder.isNull(nullCheckEmployee.<String>get("name")));
+
+        StepVerifier.create(criteria.createQuery(nullCheck).getResultList())
+                .expectNext(5L)
                 .verifyComplete();
     }
 

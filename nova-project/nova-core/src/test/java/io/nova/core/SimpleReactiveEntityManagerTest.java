@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -233,6 +234,58 @@ class SimpleReactiveEntityManagerTest {
         StepVerifier.create(withSession(manager.contains(managed), session))
                 .expectNext(Boolean.TRUE)
                 .verifyComplete();
+    }
+
+    @Test
+    void refreshReadIntentIsScopedToFreshReadsAndPreservesOuterContext() {
+        PersistenceSession session = new PersistenceSession();
+        Object outerKey = new Object();
+        Object outerValue = new Object();
+        Widget managed = new Widget(12L, "stale");
+        VersionedWidget versioned = new VersionedWidget(13L, 1L);
+        session.registerOnLoad(metadataFor(Widget.class), managed);
+        session.registerOnLoad(metadataFactory.getEntityMetadata(VersionedWidget.class), versioned);
+        operations.outerContextKey = outerKey;
+
+        operations.findByIdResult = new Widget(12L, "fresh");
+        StepVerifier.create(manager.refresh(managed)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)
+                                .put(outerKey, outerValue)))
+                .expectNext(managed)
+                .verifyComplete();
+
+        operations.findByIdResult = new Widget(12L, "fresh-none");
+        StepVerifier.create(manager.refresh(managed, LockModeType.NONE)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)
+                                .put(outerKey, outerValue)))
+                .expectNext(managed)
+                .verifyComplete();
+
+        operations.findByIdResult = new VersionedWidget(13L, 2L);
+        StepVerifier.create(manager.refresh(versioned, LockModeType.OPTIMISTIC)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)
+                                .put(outerKey, outerValue)))
+                .expectNext(versioned)
+                .verifyComplete();
+
+        operations.findByIdResult = new Widget(12L, "ordinary");
+        StepVerifier.create(manager.find(Widget.class, 12L)
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)
+                                .put(outerKey, outerValue)))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        assertEquals(4, operations.readContexts.size());
+        for (int index = 0; index < 3; index++) {
+            ReadContext context = operations.readContexts.get(index);
+            assertFalse(context.hasSession(), "refresh fresh read must not expose the session");
+            assertEquals(EntityReadIntent.REFRESH, context.intent());
+            assertSame(outerValue, context.outerValue(), "refresh must preserve unrelated outer context");
+        }
+        ReadContext ordinary = operations.readContexts.get(3);
+        assertTrue(ordinary.hasSession(), "the outer session must remain available after refresh");
+        assertEquals(null, ordinary.intent(), "refresh intent must not leak into ordinary reads");
+        assertSame(outerValue, ordinary.outerValue());
     }
 
     @Test
@@ -924,6 +977,9 @@ class SimpleReactiveEntityManagerTest {
         }
     }
 
+    private record ReadContext(boolean hasSession, EntityReadIntent intent, Object outerValue) {
+    }
+
     /**
      * 호출을 기록하고 구성 가능한 결과를 돌려주는 최소 {@link ReactiveEntityOperations} 테스트 더블.
      * default 메서드({@code flush} 포함)는 그대로 두되, {@code flush}는 카운트를 위해 override한다.
@@ -932,10 +988,12 @@ class SimpleReactiveEntityManagerTest {
         private final List<Object> saved = new ArrayList<>();
         private final List<Object> deleted = new ArrayList<>();
         private final List<Object> findByIdIds = new ArrayList<>();
+        private final List<ReadContext> readContexts = new ArrayList<>();
         private final List<QuerySpec> findAllSpecs = new ArrayList<>();
         private final List<Object> updated = new ArrayList<>();
         private final List<List<String>> updateFields = new ArrayList<>();
         private Object findByIdResult;
+        private Object outerContextKey;
         private List<Object> findAllResults = new ArrayList<>();
         private boolean findAllNever;
         private boolean existsResult;
@@ -952,8 +1010,14 @@ class SimpleReactiveEntityManagerTest {
         @Override
         @SuppressWarnings("unchecked")
         public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
-            findByIdIds.add(id);
-            return findByIdResult == null ? Mono.empty() : Mono.just((T) findByIdResult);
+            return Mono.deferContextual(context -> {
+                findByIdIds.add(id);
+                readContexts.add(new ReadContext(
+                        context.hasKey(SimpleReactiveEntityOperations.SESSION_KEY),
+                        context.getOrDefault(EntityReadIntent.class, null),
+                        context.getOrDefault(outerContextKey, null)));
+                return findByIdResult == null ? Mono.empty() : Mono.just((T) findByIdResult);
+            });
         }
 
         @Override

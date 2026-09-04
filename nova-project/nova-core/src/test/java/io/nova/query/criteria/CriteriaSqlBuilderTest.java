@@ -36,6 +36,8 @@ import reactor.test.StepVerifier;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -45,6 +47,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -916,6 +919,121 @@ class CriteriaSqlBuilderTest {
                 translated.sql());
         assertEquals(List.of("x' or 1 = 1 --", "x' or 1 = 1 --"), translated.bindings());
         assertTrue(!translated.sql().contains("x' or 1 = 1 --"));
+    }
+
+    @Test
+    void rendersExplicitNullIdentityAndNamedParametersInPlainTraversalOrder() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        ParameterExpression<Integer> age = cb.parameter(Integer.class);
+        ParameterExpression<String> name = cb.parameter(String.class, "name");
+        cq.multiselect(e.<Long>get("id")).where(cb.and(
+                cb.gt(e.<Integer>get("age"), age),
+                cb.equal(e.<String>get("name"), "Ada"),
+                cb.equal(e.<String>get("name"), name),
+                cb.notEqual(e.<String>get("name"), name),
+                cb.lt(e.<Integer>get("age"), age)));
+
+        CriteriaSql translated = builder.build((CriteriaQueryImpl<?>) cq,
+                bindings(cq, Collections.singletonMap(age, null), Collections.singletonMap("name", null)));
+
+        assertEquals(
+                "select \"id\" as \"c0\" from \"employee\" where (\"age\" > ? and \"name\" = ? "
+                        + "and \"name\" = ? and \"name\" <> ? and \"age\" < ?)",
+                translated.sql());
+        assertEquals(5, translated.bindings().size());
+        assertNull(translated.bindings().get(0));
+        assertEquals("Ada", translated.bindings().get(1));
+        assertNull(translated.bindings().get(2));
+        assertNull(translated.bindings().get(3));
+        assertNull(translated.bindings().get(4));
+    }
+
+    @Test
+    void rejectsUnboundAndInvalidNonNullParameterValues() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        ParameterExpression<String> name = cb.parameter(String.class, "name");
+        cq.multiselect(e.<Long>get("id")).where(cb.equal(e.<String>get("name"), name));
+
+        assertThrows(CriteriaException.class, () -> bindings(cq, Map.of(), Map.of()));
+        assertThrows(CriteriaException.class,
+                () -> bindings(cq, Collections.singletonMap(name, List.of("Ada")), Map.of()));
+        assertThrows(CriteriaException.class,
+                () -> bindings(cq, Collections.singletonMap(name, new String[]{"Ada"}), Map.of()));
+        assertThrows(CriteriaException.class,
+                () -> bindings(cq, Collections.singletonMap(name, 1), Map.of()));
+        CriteriaQuery<Object> other = cb.createQuery(Object.class);
+        Root<Employee> otherEmployee = other.from(Employee.class);
+        ParameterExpression<String> foreign = cb.parameter(String.class);
+        other.multiselect(otherEmployee.<Long>get("id"))
+                .where(cb.equal(otherEmployee.<String>get("name"), foreign));
+        assertThrows(CriteriaException.class,
+                () -> bindings(cq, Collections.singletonMap(foreign, "Ada"), Map.of()));
+    }
+
+    @Test
+    void rendersExplicitNullParametersThroughAliasedJoinAndSubquery() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<String> name = cb.parameter(String.class, "name");
+        ParameterExpression<String> department = cb.parameter(String.class, "department");
+        jakarta.persistence.criteria.Subquery<Long> sub = cq.subquery(Long.class);
+        Root<Department> d = sub.from(Department.class);
+        sub.select(d.<Long>get("id")).where(cb.equal(d.<String>get("name"), department));
+        cq.multiselect(e.<Long>get("id")).where(cb.and(
+                cb.equal(e.<String>get("name"), name),
+                cb.notEqual(e.<String>get("name"), name),
+                cb.exists(sub)));
+
+        Map<String, Object> namedValues = new LinkedHashMap<>();
+        namedValues.put("name", null);
+        namedValues.put("department", null);
+        CriteriaSql translated = aliased(cq, Map.of(), namedValues);
+
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"employee\" \"t0\" "
+                        + "inner join \"department\" \"t1\" on \"t0\".\"dept_id\" = \"t1\".\"id\" "
+                        + "where (\"t0\".\"name\" = ? and \"t0\".\"name\" <> ? and exists "
+                        + "(select 1 from \"department\" \"t2\" where \"t2\".\"name\" = ?))",
+                translated.sql());
+        assertEquals(3, translated.bindings().size());
+        for (Object binding : translated.bindings()) {
+            assertNull(binding);
+        }
+    }
+
+    @Test
+    void retainsNullMarkersAndTraversalOrderForAliasedJoinAndCorrelatedSubqueryParameters() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<Employee> e = cq.from(Employee.class);
+        e.join("department");
+        ParameterExpression<Integer> age = cb.parameter(Integer.class);
+        ParameterExpression<String> department = cb.parameter(String.class, "department");
+        jakarta.persistence.criteria.Subquery<Long> sub = cq.subquery(Long.class);
+        Root<Department> d = sub.from(Department.class);
+        Root<Employee> correlated = sub.correlate(e);
+        sub.select(d.<Long>get("id")).where(cb.and(
+                cb.equal(d.<Long>get("id"), correlated.get("department")),
+                cb.equal(d.<String>get("name"), department)));
+        cq.multiselect(e.<Long>get("id")).where(cb.and(
+                cb.gt(e.<Integer>get("age"), age),
+                cb.exists(sub),
+                cb.lt(e.<Integer>get("age"), age)));
+
+        CriteriaSql translated = aliased(cq, Collections.singletonMap(age, null),
+                Collections.singletonMap("department", null));
+
+        assertTrue(translated.sql().contains("inner join \"department\" \"t1\""), translated.sql());
+        assertTrue(translated.sql().contains("where (\"t0\".\"age\" > ? and exists"), translated.sql());
+        assertTrue(translated.sql().contains("exists (select 1 from \"department\" \"t2\" "
+                + "where (\"t2\".\"id\" = \"t0\".\"dept_id\" and \"t2\".\"name\" = ?))"), translated.sql());
+        assertTrue(translated.sql().endsWith("and \"t0\".\"age\" < ?)"), translated.sql());
+        assertEquals(3, translated.bindings().size());
+        assertNull(translated.bindings().get(0));
+        assertNull(translated.bindings().get(1));
+        assertNull(translated.bindings().get(2));
     }
 
     @Test

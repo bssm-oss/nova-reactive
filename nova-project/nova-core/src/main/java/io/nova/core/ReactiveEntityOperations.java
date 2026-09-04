@@ -41,13 +41,20 @@ public interface ReactiveEntityOperations {
     }
 
     /**
-     * 명시한 property 컬럼만 update한다. {@code save(T)}와 달리 SET 절에 빠진 컬럼은 건드리지 않으므로
-     * 다중 사용자가 같은 행의 서로 다른 컬럼을 수정하는 환경에서 lost update를 줄일 수 있다.
+     * 명시한 property를 대상으로 부분 update한다. 기본 테이블에서는 {@code fields}와 자동 관리되는
+     * {@code @UpdatedAt}/{@code @Version} 컬럼만 갱신하지만, 보조 테이블 property 하나를 지정하면 그
+     * 보조 테이블의 갱신 가능한 모든 컬럼을 한 문장으로 쓰므로 같은 테이블의 생략된 sibling도 갱신된다.
+     * 따라서 {@code fields}가 항상 물리적인 전체 SET 목록인 것은 아니다.
      * <p>
      * {@code fields}는 entity의 property name(Java 필드명)이며, 빈 컬렉션·미존재 field·id field는
-     * 모두 거부된다. entity의 id가 {@code null}이면 {@code Mono.error(IllegalArgumentException)}이
-     * 발행된다. 기본 구현은 외부 구현체가 미구현 시 호출자가 깨지지 않도록 명시적 예외를 던지며,
-     * {@link SimpleReactiveEntityOperations}는 {@code SqlRenderer.update(metadata, entity, fields)}로 위임한다.
+     * 모두 거부된다. entity의 id가 {@code null}이면 {@code Mono.error(IllegalArgumentException)}이 발행된다.
+     * 감사 적용, {@code @PreUpdate}, SQL 생성·실행은 구독 때마다 시작되고, 모든 문장이 성공한 뒤
+     * {@code @PostUpdate}가 호출된다. 활성 세션의 정확히 같은 managed instance라면 성공한 실제 write set만
+     * clean snapshot에 반영하고 다른 dirty property는 보존한다. 실행 오류·취소 또는
+     * {@code @PostUpdate} 실패 시 snapshot은 전진하지 않는다.
+     * <p>
+     * 기본 구현은 외부 구현체가 미구현 시 호출자가 깨지지 않도록 명시적 예외를 발행하며,
+     * {@link SimpleReactiveEntityOperations}가 구체 동작을 제공한다.
      */
     default <T> Mono<T> update(T entity, Iterable<String> fields) {
         return Mono.error(new UnsupportedOperationException(

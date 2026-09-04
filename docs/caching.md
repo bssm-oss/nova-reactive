@@ -14,6 +14,10 @@ Rollback, error, and cancellation never put uncommitted values into the shared c
 
 Outside a managed transaction, `findById` remains read-through and can serve a warm cache entry without SQL.
 
+The fresh read in `ReactiveEntityManager.refresh(...)`, including its lock-mode overload, bypasses the entity
+cache without a cache lookup or population. That read preserves existing warm entries and does not evict entity
+or query caches.
+
 ## Detached snapshots and write invalidation
 
 A cacheable `findById` result and every query-cache result are detached, mapping-aware snapshots. Every served hit receives a fresh object graph, so mutating a returned root, mapped PROPERTY association, or collection cannot alter a warm entry. Repeated references and cycles retain their identity within one returned graph only. Mapped accessors and record constructors are used when rebuilding values, including converted and record-backed collection values.

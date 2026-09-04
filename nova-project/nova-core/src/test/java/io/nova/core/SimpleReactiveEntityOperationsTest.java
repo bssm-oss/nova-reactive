@@ -359,12 +359,12 @@ class SimpleReactiveEntityOperationsTest {
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         SampleAccount account = new SampleAccount(7L, "x@nova.io", true);
 
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> operations.update(account, List.of())
-        );
-
-        assertEquals("update requires at least one field", exception.getMessage());
+        StepVerifier.create(operations.update(account, List.of()))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertEquals("update requires at least one field", error.getMessage());
+                })
+                .verify();
         assertTrue(executor.executedStatements.isEmpty());
     }
 
@@ -374,12 +374,12 @@ class SimpleReactiveEntityOperationsTest {
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         SampleAccount account = new SampleAccount(7L, "x@nova.io", true);
 
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> operations.update(account, List.of("id"))
-        );
-
-        assertEquals("Cannot update id property: id", exception.getMessage());
+        StepVerifier.create(operations.update(account, List.of("id")))
+                .expectErrorSatisfies(error -> {
+                    assertEquals(IllegalArgumentException.class, error.getClass());
+                    assertEquals("Cannot update id property: id", error.getMessage());
+                })
+                .verify();
         assertTrue(executor.executedStatements.isEmpty());
     }
 
@@ -2222,20 +2222,173 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
-    void deferredPartialUpdateDoesNotFireCallbacksBeforeItsPrecedingOperationCompletes() {
+    void partialUpdateIsColdUntilDirectSubscription() {
         EntityWithCallbacks.reset();
         CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
         SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
         EntityWithCallbacks entity = new EntityWithCallbacks(7L, "USER@NOVA.IO");
+        Mono<EntityWithCallbacks> update = operations.update(entity, List.of("email"));
 
-        StepVerifier.create(Mono.<Void>never()
-                        .then(Mono.defer(() -> operations.update(entity, List.of("email")))))
-                .thenCancel()
-                .verify();
-
+        assertEquals("USER@NOVA.IO", entity.getEmail());
         assertEquals(0, EntityWithCallbacks.preUpdateCount.get());
         assertEquals(0, EntityWithCallbacks.postUpdateCount.get());
         assertTrue(executor.executedStatements.isEmpty());
+
+        StepVerifier.create(update)
+                .expectNext(entity)
+                .verifyComplete();
+
+        assertEquals("user@nova.io", entity.getEmail());
+        assertEquals(1, EntityWithCallbacks.preUpdateCount.get());
+        assertEquals(1, EntityWithCallbacks.postUpdateCount.get());
+        assertEquals(1, executor.executedStatements.size());
+    }
+
+    @Test
+    void partialUpdateReexecutesForEachSubscription() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "USER@NOVA.IO");
+        Mono<EntityWithCallbacks> update = operations.update(entity, List.of("email"));
+
+        StepVerifier.create(update)
+                .expectNext(entity)
+                .verifyComplete();
+        StepVerifier.create(update)
+                .expectNext(entity)
+                .verifyComplete();
+
+        assertEquals(2, EntityWithCallbacks.preUpdateCount.get());
+        assertEquals(2, EntityWithCallbacks.postUpdateCount.get());
+        assertEquals(2, executor.executedStatements.size());
+    }
+
+    @Test
+    void managedPartialUpdateRefreshesOnlyWrittenBaseline() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "before@nova.io", true);
+        var metadata = metadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata, account);
+        metadata.findProperty("email").orElseThrow().write(account, "after@nova.io");
+
+        StepVerifier.create(operations.update(account, List.of("email"))
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(account)
+                .verifyComplete();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(1, executor.executedStatements.size(),
+                "a successful explicit update must not be repeated by session flush");
+    }
+
+    @Test
+    void detachedSameIdPartialUpdateDoesNotCleanManagedBaseline() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeResults.addLast(1L);
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount canonical = new SampleAccount(7L, "before@nova.io", true);
+        SampleAccount detached = new SampleAccount(7L, "detached@nova.io", true);
+        var metadata = metadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata, canonical);
+        metadata.findProperty("email").orElseThrow().write(canonical, "canonical@nova.io");
+
+        StepVerifier.create(operations.update(detached, List.of("email"))
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(detached)
+                .verifyComplete();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size(),
+                "a detached same-id update must leave canonical pending dirt intact");
+        assertEquals(List.of("canonical@nova.io", 7L), executor.executedStatements.get(1).bindings());
+    }
+
+    @Test
+    void failedPartialUpdateDoesNotRefreshManagedBaseline() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executeErrors.addLast(new IllegalStateException("write failed"));
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "before@nova.io", true);
+        var metadata = metadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata, account);
+        metadata.findProperty("email").orElseThrow().write(account, "after@nova.io");
+
+        StepVerifier.create(operations.update(account, List.of("email"))
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectErrorMessage("write failed")
+                .verify();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size(),
+                "a failed explicit update must leave its managed dirty field pending");
+    }
+
+    @Test
+    void delayedExecutionMutationRemainsDirtyAfterPartialUpdate() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "before@nova.io", true);
+        var metadata = metadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata, account);
+        metadata.findProperty("email").orElseThrow().write(account, "written@nova.io");
+        executor.executePublishers.addLast(Mono.defer(() -> {
+            metadata.findProperty("email").orElseThrow().write(account, "raced@nova.io");
+            return Mono.just(1L);
+        }));
+
+        StepVerifier.create(operations.update(account, List.of("email"))
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .expectNext(account)
+                .verifyComplete();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size());
+        assertEquals(List.of("raced@nova.io", 7L), executor.executedStatements.get(1).bindings(),
+                "a mutation after statement rendering must remain dirty for flush");
+    }
+
+    @Test
+    void cancelledPartialUpdateDoesNotRefreshManagedBaseline() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executePublishers.addLast(Mono.never());
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "before@nova.io", true);
+        var metadata = metadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata, account);
+        metadata.findProperty("email").orElseThrow().write(account, "after@nova.io");
+
+        StepVerifier.create(operations.update(account, List.of("email"))
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .thenCancel()
+                .verify();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size(),
+                "a cancelled explicit update must leave its managed dirty field pending");
     }
 
     @Test
@@ -3636,6 +3789,7 @@ class SimpleReactiveEntityOperationsTest {
         private final Deque<List<RowAccessor>> queryManyResults = new ArrayDeque<>();
         private final Deque<Long> executeResults = new ArrayDeque<>();
         private final Deque<Throwable> executeErrors = new ArrayDeque<>();
+        private final Deque<Mono<Long>> executePublishers = new ArrayDeque<>();
         private final List<BatchCall> batchCalls = new ArrayList<>();
         private final List<SqlStatement> executedStatements = new ArrayList<>();
         private final List<String> chronologicalSqlCalls = new ArrayList<>();
@@ -3664,6 +3818,9 @@ class SimpleReactiveEntityOperationsTest {
             }
             if (!executeErrors.isEmpty()) {
                 return Mono.error(executeErrors.removeFirst());
+            }
+            if (!executePublishers.isEmpty()) {
+                return executePublishers.removeFirst();
             }
             long result = executeResults.isEmpty() ? 1L : executeResults.removeFirst();
             return Mono.just(result);

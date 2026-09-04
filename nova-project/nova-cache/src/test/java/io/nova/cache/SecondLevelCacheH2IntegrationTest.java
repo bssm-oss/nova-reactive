@@ -5,6 +5,7 @@ import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.SimpleReactiveEntityManager;
 import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.core.SqlExecutionListener;
+import io.nova.query.QuerySpec;
 import io.nova.cache.spi.CacheKey;
 import io.nova.cache.spi.ReactiveCacheProvider;
 import io.nova.dialect.h2.H2Dialect;
@@ -45,6 +46,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -73,12 +75,17 @@ class SecondLevelCacheH2IntegrationTest {
         }
     }
 
-    private record Wiring(ReactiveEntityOperations cached, SchemaInitializer schema, SelectCountingListener listener,
-                          ReactiveCacheProvider cacheProvider, EntityMetadataFactory metadataFactory) {
+    private record Wiring(ReactiveEntityOperations base, ReactiveEntityOperations cached, SchemaInitializer schema,
+                          SelectCountingListener listener, ReactiveCacheProvider cacheProvider,
+                          EntityMetadataFactory metadataFactory) {
     }
 
     private Wiring wire(ConnectionFactory cf) {
-        return wire(cf, new R2dbcTransactionManager(cf));
+        return wire(cf, new R2dbcTransactionManager(cf), false);
+    }
+
+    private Wiring wireWithQueryCache(ConnectionFactory cf) {
+        return wire(cf, new R2dbcTransactionManager(cf), true);
     }
 
     private Wiring wireLegacy(ConnectionFactory cf) {
@@ -92,10 +99,10 @@ class SecondLevelCacheH2IntegrationTest {
                                 reactorContext -> reactorContext.delete(PhysicalTransactionScope.CONTEXT_KEY)));
             }
         };
-        return wire(cf, legacyManager);
+        return wire(cf, legacyManager, false);
     }
 
-    private Wiring wire(ConnectionFactory cf, ReactiveTransactionOperations txManager) {
+    private Wiring wire(ConnectionFactory cf, ReactiveTransactionOperations txManager, boolean queryCache) {
         H2Dialect dialect = new H2Dialect();
         SelectCountingListener listener = new SelectCountingListener();
         EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
@@ -103,9 +110,11 @@ class SecondLevelCacheH2IntegrationTest {
         SimpleReactiveEntityOperations base = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
         ReactiveCacheProvider cacheProvider = new SimpleReactiveCacheProvider();
-        ReactiveEntityOperations cached = NovaCache.caching(base, cacheProvider, metadataFactory);
+        ReactiveEntityOperations cached = queryCache
+                ? NovaCache.cachingWithQueryCache(base, cacheProvider, metadataFactory, new SimpleReactiveQueryCache())
+                : NovaCache.caching(base, cacheProvider, metadataFactory);
         SchemaInitializer schema = new SimpleSchemaInitializer(base, metadataFactory, dialect);
-        return new Wiring(cached, schema, listener, cacheProvider, metadataFactory);
+        return new Wiring(base, cached, schema, listener, cacheProvider, metadataFactory);
     }
 
     @Test
@@ -126,6 +135,50 @@ class SecondLevelCacheH2IntegrationTest {
         assertEquals("alpha", second.name());
         assertTrue(afterFirst > afterSave, "첫 findById는 DB SELECT를 발행해야 한다");
         assertEquals(afterFirst, afterSecond, "두 번째 findById는 캐시 히트로 SELECT를 발행하지 않아야 한다");
+    }
+
+    @Test
+    void refreshBypassesWarmEntityCacheWithoutChangingIt() {
+        assertRefreshBypassesWarmCache(wire(freshConnectionFactory()), false);
+    }
+
+    @Test
+    void refreshBypassesWarmEntityAndQueryCachesWithoutChangingThem() {
+        assertRefreshBypassesWarmCache(wireWithQueryCache(freshConnectionFactory()), true);
+    }
+
+    private static void assertRefreshBypassesWarmCache(Wiring wiring, boolean queryCache) {
+        wiring.schema().create(Widget.class).block();
+        Long id = wiring.cached().save(new Widget("alpha")).block().id();
+        Widget stale = wiring.cached().findById(Widget.class, id).block();
+        assertEquals("alpha", stale.name());
+        if (queryCache) {
+            assertEquals(List.of("alpha"), wiring.cached().findAll(Widget.class, QuerySpec.empty())
+                    .map(Widget::name).collectList().block());
+        }
+
+        wiring.base().save(new Widget(id, "beta")).block();
+        SimpleReactiveEntityManager entityManager = new SimpleReactiveEntityManager(
+                wiring.cached(), wiring.metadataFactory());
+        long beforeRefresh = wiring.listener().selects();
+        Widget refreshed = entityManager.refresh(stale).block();
+        long afterRefresh = wiring.listener().selects();
+
+        assertSame(stale, refreshed);
+        assertEquals("beta", refreshed.name(), "refresh must select the base-written database value");
+        assertTrue(afterRefresh > beforeRefresh, "refresh must not look up the warm entity cache");
+
+        Widget ordinaryRead = wiring.cached().findById(Widget.class, id).block();
+        assertEquals("alpha", ordinaryRead.name(), "refresh must not populate or evict the warm entity cache");
+        assertEquals(afterRefresh, wiring.listener().selects(),
+                "ordinary lookup must still hit the unchanged warm entity cache");
+        if (queryCache) {
+            assertEquals(List.of("alpha"), wiring.cached().findAll(Widget.class, QuerySpec.empty())
+                    .map(Widget::name).collectList().block(),
+                    "refresh must not evict the warm query cache");
+            assertEquals(afterRefresh, wiring.listener().selects(),
+                    "ordinary query must still hit the unchanged warm query cache");
+        }
     }
 
     @Test

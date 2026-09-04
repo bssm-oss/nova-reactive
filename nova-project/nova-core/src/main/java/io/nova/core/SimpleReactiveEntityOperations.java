@@ -1667,93 +1667,162 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     public <T> Mono<T> update(T entity, Iterable<String> fields) {
         Objects.requireNonNull(entity, "entity must not be null");
         Objects.requireNonNull(fields, "fields must not be null");
-        EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
-        Object id = metadata.readIdValue(entity);
-        if (id == null) {
-            return Mono.error(new IllegalArgumentException("Entity id must not be null for update"));
-        }
-        try {
+        return Mono.deferContextual(ctx -> {
+            EntityMetadata<T> metadata = metadataFactory.getEntityMetadata(entityType(entity));
+            Object id = metadata.readIdValue(entity);
+            if (id == null) {
+                return Mono.error(new IllegalArgumentException("Entity id must not be null for update"));
+            }
+            LinkedHashSet<String> requestedFields = validatePartialUpdateFields(metadata, fields);
             auditApplier.applyOnUpdate(entity, metadata);
             listenerInvoker.invokePreUpdate(entity, metadata);
-        } catch (RuntimeException exception) {
-            return Mono.error(exception);
-        }
-        Iterable<String> effectiveFields = fields;
-        Optional<String> updatedAtName = auditApplier.updatedAtPropertyName(metadata);
-        if (updatedAtName.isPresent()) {
-            effectiveFields = augmentWithExtraField(effectiveFields, updatedAtName.get());
-        }
-        PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
-        if (versionProperty != null) {
-            effectiveFields = augmentWithExtraField(effectiveFields, versionProperty.propertyName());
-        }
+            Optional<String> updatedAtName = auditApplier.updatedAtPropertyName(metadata);
+            updatedAtName.ifPresent(requestedFields::add);
+            PersistentProperty versionProperty = metadata.versionProperty().orElse(null);
+            if (versionProperty != null) {
+                requestedFields.add(versionProperty.propertyName());
+            }
         // @SecondaryTable: 요청 필드 중 보조 컬럼만 있고 primary 컬럼이 전혀 없으면(@Version/@UpdatedAt 미선언)
         // primary partial UPDATE를 건너뛴다(빈 SET SQL 방지). primary 컬럼이 하나라도 있으면 기존대로 primary
         // UPDATE를 발행한다. 빈 필드 목록은 renderer가 "update requires at least one field"로 거부하도록 그대로
         // 흘려보낸다(보조 컬럼이 실제로 요청됐을 때만 skip). 보조 테이블은 항상 full UPDATE로 동기화한다(idempotent).
-        boolean hasPrimaryField = false;
-        boolean hasSecondaryField = false;
-        for (String fieldName : effectiveFields) {
-            PersistentProperty property = metadata.findProperty(fieldName).orElse(null);
-            if (property == null) {
-                continue;
+            boolean hasPrimaryField = false;
+            boolean hasSecondaryField = false;
+            for (String fieldName : requestedFields) {
+                PersistentProperty property = metadata.findProperty(fieldName).orElse(null);
+                if (property == null) {
+                    continue;
+                }
+                if (property.secondary()) {
+                    hasSecondaryField = true;
+                } else {
+                    hasPrimaryField = true;
+                }
             }
-            if (property.secondary()) {
-                hasSecondaryField = true;
-            } else {
-                hasPrimaryField = true;
-            }
-        }
         // @Version 계약: versionProperty가 있으면 위 augment 단계가 version 컬럼(=primary)을 effectiveFields에
         // 항상 추가하므로 hasPrimaryField가 참이 되어 primary UPDATE가 반드시 발행된다 — 즉 보조 컬럼만 요청한
         // secondary-only update도 version을 bump+검증해 lost-update를 탐지한다(JPA 의미). @Version이 없을 때만
         // skipPrimaryUpdate가 성립해, 보조 컬럼만 바뀐 변경이 primary 빈 SET 없이 보조 테이블만 갱신한다(이
         // 경우 검증할 version이 없으므로 lost-update 미탐지는 설계상 정상).
-        boolean skipPrimaryUpdate = metadata.hasSecondaryTables() && !hasPrimaryField && hasSecondaryField;
-        Mono<T> primaryUpdate;
-        if (skipPrimaryUpdate) {
-            primaryUpdate = Mono.just(entity);
-        } else if (versionProperty == null) {
-            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields);
-            primaryUpdate = sqlExecutor.execute(statement).thenReturn(entity);
-        } else {
-            Object current = versionProperty.read(entity);
-            // single-read: 다음 버전 값을 한 번만 계산해 SET 바인딩과 writeback에 동일 객체를 쓴다.
-            Object next = nextVersionValue(versionProperty, current);
-            SqlStatement statement = dialect.sqlRenderer().update(metadata, entity, effectiveFields, next);
-            primaryUpdate = sqlExecutor.execute(statement)
-                    .flatMap(affected -> {
-                        if (affected == 0L) {
-                            return Mono.error(new OptimisticLockingFailureException(
-                                    "Optimistic locking failure: row not found or version mismatch for "
-                                            + metadata.entityType().getName()
-                                            + " id=" + id
-                                            + " version=" + current));
-                        }
-                        versionProperty.write(entity, next);
-                        return Mono.just(entity);
-                    });
-        }
+            boolean skipPrimaryUpdate = metadata.hasSecondaryTables() && !hasPrimaryField && hasSecondaryField;
+            SqlStatement primaryStatement = null;
+            Object currentVersion = null;
+            Object nextVersion = null;
+            if (!skipPrimaryUpdate) {
+                if (versionProperty == null) {
+                    primaryStatement = dialect.sqlRenderer().update(metadata, entity, requestedFields);
+            } else {
+                    currentVersion = versionProperty.read(entity);
+                // single-read: 다음 버전 값을 한 번만 계산해 SET 바인딩과 writeback에 동일 객체를 쓴다.
+                    nextVersion = nextVersionValue(versionProperty, currentVersion);
+                    primaryStatement = dialect.sqlRenderer().update(metadata, entity, requestedFields, nextVersion);
+                            }
+            }
+            List<SqlStatement> secondaryStatements = new ArrayList<>();
+            if (metadata.hasSecondaryTables()) {
+                SqlRenderer renderer = dialect.sqlRenderer();
+                for (SecondaryTableInfo secondary : metadata.secondaryTables()) {
+                    if (secondaryTableTouchedBy(metadata, secondary, requestedFields)) {
+                        SqlStatement statement = renderer.updateSecondary(metadata, secondary, entity);
+                        if (statement != null) {
+                            secondaryStatements.add(statement);
+            }
+                    }
+                }
+            }
+            LinkedHashSet<PersistentProperty> writtenProperties =
+                    partialUpdateWrittenProperties(metadata, requestedFields);
+            Map<String, Object> writtenStorageValues = capturePartialUpdateStorageValues(
+                    writtenProperties, entity, versionProperty, nextVersion);
+            Mono<T> primaryUpdate;
+            if (skipPrimaryUpdate) {
+                primaryUpdate = Mono.just(entity);
+            } else if (versionProperty == null) {
+                primaryUpdate = sqlExecutor.execute(primaryStatement).thenReturn(entity);
+            } else {
+                Object expectedVersion = currentVersion;
+                Object writtenVersion = nextVersion;
+                primaryUpdate = sqlExecutor.execute(primaryStatement)
+                        .flatMap(affected -> {
+                            if (affected == 0L) {
+                                return Mono.error(new OptimisticLockingFailureException(
+                                        "Optimistic locking failure: row not found or version mismatch for "
+                                                + metadata.entityType().getName()
+                                                + " id=" + id
+                                                + " version=" + expectedVersion));
+                            }
+                            versionProperty.write(entity, writtenVersion);
+                            return Mono.just(entity);
+                        });
+            }
         // 요청 필드(+augment) 중 보조 컬럼이 포함된 보조 테이블만 갱신한다 — primary 컬럼만 요청한 partial
         // update가 매번 전 보조 테이블을 덮어쓰던 불필요한 write를 제거한다(정확성 유지).
-        LinkedHashSet<String> requestedFields = new LinkedHashSet<>();
-        for (String field : effectiveFields) {
-            requestedFields.add(field);
-        }
-        Mono<T> result = metadata.hasSecondaryTables()
-                ? primaryUpdate.flatMap(saved ->
-                        updateSecondaryRows(metadata, saved, requestedFields).thenReturn(saved))
-                : primaryUpdate;
-        return result.doOnNext(updated -> listenerInvoker.invokePostUpdate(updated, metadata));
+            Mono<T> result = metadata.hasSecondaryTables()
+                    ? primaryUpdate.flatMap(saved ->
+                            Flux.fromIterable(secondaryStatements)
+                                    .concatMap(sqlExecutor::execute)
+                                    .then(Mono.just(saved)))
+                    : primaryUpdate;
+            return result.map(updated -> {
+                listenerInvoker.invokePostUpdate(updated, metadata);
+                currentSession(ctx).ifPresent(session ->
+                        session.refreshManagedExactInstanceSnapshot(metadata, updated, writtenStorageValues));
+                return updated;
+            });
+        });
     }
 
-    private static Iterable<String> augmentWithExtraField(Iterable<String> fields, String extraField) {
-        LinkedHashSet<String> merged = new LinkedHashSet<>();
-        for (String field : fields) {
-            merged.add(field);
+    private static LinkedHashSet<PersistentProperty> partialUpdateWrittenProperties(
+            EntityMetadata<?> metadata, java.util.Set<String> requestedFields) {
+        LinkedHashSet<PersistentProperty> written = new LinkedHashSet<>();
+        for (String fieldName : requestedFields) {
+            metadata.findProperty(fieldName)
+                    .filter(property -> !property.secondary())
+                    .ifPresent(written::add);
         }
-        merged.add(extraField);
-        return merged;
+        for (SecondaryTableInfo secondary : metadata.secondaryTables()) {
+            if (secondaryTableTouchedBy(metadata, secondary, requestedFields)) {
+                for (PersistentProperty property : metadata.secondaryColumnMappedProperties(secondary)) {
+                    if (property.updatable()) {
+                        written.add(property);
+                    }
+                }
+            }
+        }
+        return written;
+    }
+
+    private static Map<String, Object> capturePartialUpdateStorageValues(
+            Iterable<PersistentProperty> properties, Object entity,
+            PersistentProperty versionProperty, Object nextVersion) {
+        Map<String, Object> captured = new LinkedHashMap<>();
+        for (PersistentProperty property : properties) {
+            Object value = property == versionProperty
+                    ? property.toColumnValue(nextVersion)
+                    : PersistenceSession.snapshotValue(property, entity);
+            captured.put(property.columnName(), value);
+        }
+        return captured;
+    }
+
+    private static LinkedHashSet<String> validatePartialUpdateFields(
+            EntityMetadata<?> metadata, Iterable<String> fields) {
+        LinkedHashSet<String> validated = new LinkedHashSet<>();
+        for (String field : fields) {
+            Objects.requireNonNull(field, "field name must not be null");
+            if (metadata.idProperties().stream().anyMatch(id -> id.propertyName().equals(field))) {
+                throw new IllegalArgumentException("Cannot update id property: " + field);
+            }
+            if (metadata.findProperty(field).isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Unknown property " + field + " on " + metadata.entityType().getName());
+            }
+            validated.add(field);
+        }
+        if (validated.isEmpty()) {
+            throw new IllegalArgumentException("update requires at least one field");
+        }
+        return validated;
     }
 
     @Override

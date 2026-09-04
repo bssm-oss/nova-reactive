@@ -4,6 +4,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.PostUpdate;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import io.nova.core.SqlExecutionListener;
@@ -25,6 +27,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -151,6 +154,48 @@ class PersistenceSessionIntegrationTest {
                 .assertNext(person -> {
                     assertEquals("finnegan", person.getName());
                     assertEquals(1L, person.getVersion(), "@Version은 flush UPDATE에서 1 증가해야 한다");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void explicitPartialUpdateKeepsUnwrittenManagedFieldDirtyUntilSeparateFlush() {
+        Long id = support.operations().save(new VersionedPerson("finn", "original"))
+                .map(VersionedPerson::getId)
+                .block();
+        VersionedPerson.resetCallbacks();
+        listener.clear();
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(VersionedPerson.class, id).flatMap(person -> {
+                            person.setName("finnegan");
+                            person.setNote("flush separately");
+                            return ops.update(person, List.of("name")).doOnNext(updated -> {
+                                assertEquals(1, listener.updates().size(),
+                                        "the explicit partial update must execute exactly once before flush");
+                                assertEquals(1, VersionedPerson.preUpdateCount.get());
+                                assertEquals(1, VersionedPerson.postUpdateCount.get());
+                                assertEquals(1L, updated.getVersion());
+                            });
+                        })))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        List<String> updates = listener.updates();
+        assertEquals(2, updates.size(), "explicit and remaining-dirty writes must be separate");
+        assertTrue(updates.get(0).contains("name"), updates.get(0));
+        assertTrue(!updates.get(0).contains("note"), updates.get(0));
+        assertTrue(updates.get(1).contains("note"), updates.get(1));
+        assertTrue(!updates.get(1).contains("name"), updates.get(1));
+        assertEquals(2, VersionedPerson.preUpdateCount.get());
+        assertEquals(2, VersionedPerson.postUpdateCount.get());
+
+        StepVerifier.create(support.operations().findById(VersionedPerson.class, id))
+                .assertNext(person -> {
+                    assertEquals("finnegan", person.getName());
+                    assertEquals("flush separately", person.getNote());
+                    assertEquals(2L, person.getVersion(),
+                            "each completed physical update must increment @Version once");
                 })
                 .verifyComplete();
     }
@@ -416,10 +461,14 @@ class PersistenceSessionIntegrationTest {
     @Entity
     @Table(name = "versioned_person")
     public static class VersionedPerson {
+        private static final AtomicInteger preUpdateCount = new AtomicInteger();
+        private static final AtomicInteger postUpdateCount = new AtomicInteger();
+
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
         private Long id;
         private String name;
+        private String note;
         @Version
         private Long version;
 
@@ -428,6 +477,11 @@ class PersistenceSessionIntegrationTest {
 
         public VersionedPerson(String name) {
             this.name = name;
+        }
+
+        public VersionedPerson(String name, String note) {
+            this.name = name;
+            this.note = note;
         }
 
         public Long getId() {
@@ -442,8 +496,31 @@ class PersistenceSessionIntegrationTest {
             this.name = name;
         }
 
+        public String getNote() {
+            return note;
+        }
+
+        public void setNote(String note) {
+            this.note = note;
+        }
+
         public Long getVersion() {
             return version;
+        }
+
+        @PreUpdate
+        void onPreUpdate() {
+            preUpdateCount.incrementAndGet();
+        }
+
+        @PostUpdate
+        void onPostUpdate() {
+            postUpdateCount.incrementAndGet();
+        }
+
+        static void resetCallbacks() {
+            preUpdateCount.set(0);
+            postUpdateCount.set(0);
         }
     }
 }
