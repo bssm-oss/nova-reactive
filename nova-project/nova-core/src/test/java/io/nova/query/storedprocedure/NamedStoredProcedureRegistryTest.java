@@ -198,7 +198,13 @@ class NamedStoredProcedureRegistryTest {
         query.setParameter(1, Integer.valueOf(7)).getResultList().collectList().block();
         assertEquals(7, operations.lastQuery.get().bindings().get(0));
 
-        query.setParameter("number", null).getResultList().collectList().block();
+        ReactiveStoredProcedureQuery<Object> nullQuery = new ReactiveStoredProcedureQuery<>(
+                "primitive_input",
+                List.of(new StoredProcedureParameterDefinition("number", ParameterMode.IN, int.class)),
+                row -> row,
+                operations,
+                dialect);
+        nullQuery.setParameter("number", null).getResultList().collectList().block();
         assertNull(operations.lastQuery.get().bindings().get(0));
     }
 
