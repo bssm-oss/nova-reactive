@@ -51,7 +51,6 @@ class CriteriaJoinIntegrationTest {
         support.execute("insert into \"cj_employee\" (\"id\", \"name\", \"age\", \"dept_id\") values (2, 'Bob', 25, 2)");
         support.execute("insert into \"cj_employee\" (\"id\", \"name\", \"age\", \"dept_id\") values (3, 'Cara', 35, 1)");
         support.execute("insert into \"cj_employee\" (\"id\", \"name\", \"age\", \"dept_id\") values (4, 'Dan', 30, null)");
-        support.execute("insert into \"cj_employee\" (\"id\", \"name\", \"age\", \"dept_id\") values (5, null, 20, null)");
         criteria = new ReactiveCriteriaExecutor(support.operations(), support.dialect(), support.metadataFactory());
     }
 
@@ -140,6 +139,8 @@ class CriteriaJoinIntegrationTest {
 
     @Test
     void equalityBoundToNullMatchesNoneWhileExplicitIsNullMatchesNullRow() {
+        support.execute("insert into \"cj_employee\" (\"id\", \"name\", \"age\", \"dept_id\")"
+                + " values (5, null, 20, null)");
         CriteriaBuilder equalityBuilder = cb();
         CriteriaQuery<Long> equality = equalityBuilder.createQuery(Long.class);
         Root<Employee> equalityEmployee = equality.from(Employee.class);
