@@ -414,8 +414,9 @@ class SecondLevelCacheH2IntegrationTest {
         Widget alpha = w.cached().findById(Widget.class, id).block();
         CacheKey key = new CacheKey(Widget.class.getName(), Widget.class, id);
 
-        entityManager.inTransaction(em -> em.remove(alpha)
-                .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, alpha))).block();
+        entityManager.inTransaction(em -> em.find(Widget.class, id)
+                .flatMap(managed -> em.remove(managed)
+                        .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, alpha)))).block();
 
         long beforeReload = w.listener().selects();
         assertNull(w.cached().findById(Widget.class, id).block());
