@@ -24,10 +24,16 @@ import java.util.function.Function;
  * DB별 분기를 두지 않는다). IN 파라미터는 선언 순서대로 positional binding으로 채워
  * {@link ReactiveEntityOperations#queryNative}/{@link ReactiveEntityOperations#executeNative}에 위임한다.
  *
- * <p><b>파라미터 모드.</b> Nova의 리액티브 R2DBC 실행 경로와 대상 드라이버(r2dbc-h2)는 출력 파라미터를
- * 지원하지 않는다. 따라서 {@link ParameterMode#OUT}/{@link ParameterMode#INOUT}/
- * {@link ParameterMode#REF_CURSOR} 파라미터가 선언되면 실행 시 {@link StoredProcedureException}으로
- * fail-fast 한다(조용한 무시 금지). 결과가 필요하면 IN 파라미터 + result-set 을 반환하는 프로시저를 사용한다.
+ * <p><b>파라미터 모드.</b> JPA SPI는 출력 파라미터 선언을 모델링할 수 있지만 Nova의 리액티브 R2DBC 경로와
+ * r2dbc-h2 계약은 이를 이식성 있게 노출하지 않는다. 따라서 {@link ParameterMode#OUT}/
+ * {@link ParameterMode#INOUT}/{@link ParameterMode#REF_CURSOR} 파라미터가 하나라도 선언되면 native
+ * 작업 전에 {@link StoredProcedureException}으로 fail-fast 한다(조용한 무시 금지). 결과가 필요하면 IN
+ * 파라미터 + result-set 을 반환하는 프로시저를 사용한다.
+ *
+ * <p><b>IN 바인딩 검증.</b> {@link #setParameter(String, Object)}와
+ * {@link #setParameter(int, Object)}는 이름/1-based 위치가 선언된 파라미터를 가리키는지와 non-null 값이
+ * 선언 Java 타입(primitive 선언은 wrapper 타입)과 호환되는지를 즉시 검증한다. {@code null}은 허용하며,
+ * 값 coercion이나 선언되지 않은 기본 인자는 제공하지 않는다.
  *
  * <p><b>결과 매핑.</b> 생성 시 주입된 {@code mapper}(엔티티 {@code resultClass} 매핑, {@code @SqlResultSetMapping}
  * 재사용 매퍼, 또는 사용자 지정 row 매퍼)로 result-set 행을 변환한다. 매퍼가 없으면 {@link #executeUpdate()}로만
@@ -63,15 +69,31 @@ public final class ReactiveStoredProcedureQuery<T> {
         this.dialect = Objects.requireNonNull(dialect, "dialect must not be null");
     }
 
-    /** 이름으로 IN 파라미터 값을 바인딩한다. 선언되지 않은 이름이면 실행 시 fail-fast 한다. */
+    /**
+     * 이름으로 IN 파라미터 값을 바인딩한다.
+     *
+     * @throws StoredProcedureException 이름이 blank이거나 선언되지 않았거나, non-null 값이 선언 타입과
+     *         호환되지 않을 때
+     */
     public ReactiveStoredProcedureQuery<T> setParameter(String name, Object value) {
-        Objects.requireNonNull(name, "parameter name must not be null");
+        if (name == null || name.isBlank()) {
+            throw new StoredProcedureException("stored procedure parameter name must not be null or blank");
+        }
+        StoredProcedureParameterDefinition parameter = parameterByName(name);
+        validateValue(parameter, value, "'" + name + "'");
         namedValues.put(name, value);
         return this;
     }
 
-    /** 1-based 위치로 IN 파라미터 값을 바인딩한다(JPA 규약과 동일하게 위치는 1부터 센다). */
+    /**
+     * 1-based 위치로 IN 파라미터 값을 바인딩한다(JPA 규약과 동일하게 위치는 1부터 센다).
+     * Named 선언도 선언 순서의 위치로 바인딩할 수 있다.
+     *
+     * @throws StoredProcedureException 위치가 선언되지 않았거나, non-null 값이 선언 타입과 호환되지 않을 때
+     */
     public ReactiveStoredProcedureQuery<T> setParameter(int position, Object value) {
+        StoredProcedureParameterDefinition parameter = parameterByPosition(position);
+        validateValue(parameter, value, "at position " + position);
         positionalValues.put(position, value);
         return this;
     }
@@ -119,7 +141,6 @@ public final class ReactiveStoredProcedureQuery<T> {
     // --------------------------------------------------------------------------------------------
 
     private NativeQuery toNativeQuery() {
-        List<Object> bindings = new ArrayList<>(parameters.size());
         for (int i = 0; i < parameters.size(); i++) {
             StoredProcedureParameterDefinition parameter = parameters.get(i);
             if (parameter.mode() != ParameterMode.IN) {
@@ -129,7 +150,11 @@ public final class ReactiveStoredProcedureQuery<T> {
                         + "; the reactive R2DBC path (and the r2dbc-h2 driver) does not support output"
                         + " parameters. Use IN parameters with a result-set procedure instead.");
             }
-            bindings.add(resolveBinding(parameter, i + 1));
+        }
+
+        List<Object> bindings = new ArrayList<>(parameters.size());
+        for (int i = 0; i < parameters.size(); i++) {
+            bindings.add(resolveBinding(parameters.get(i), i + 1));
         }
         return new NativeQuery(dialect.renderCall(procedureName, parameters.size()), bindings);
     }
@@ -151,5 +176,48 @@ public final class ReactiveStoredProcedureQuery<T> {
         }
         throw new StoredProcedureException("Missing binding for stored procedure positional parameter "
                 + position + " of '" + procedureName + "'");
+    }
+
+    private StoredProcedureParameterDefinition parameterByName(String name) {
+        for (StoredProcedureParameterDefinition parameter : parameters) {
+            if (name.equals(parameter.name())) {
+                return parameter;
+            }
+        }
+        throw new StoredProcedureException("Unknown stored procedure parameter '" + name + "' of '"
+                + procedureName + "'");
+    }
+
+    private StoredProcedureParameterDefinition parameterByPosition(int position) {
+        if (position < 1 || position > parameters.size()) {
+            throw new StoredProcedureException("Unknown stored procedure parameter position " + position
+                    + " of '" + procedureName + "' (positions are 1-based)");
+        }
+        return parameters.get(position - 1);
+    }
+
+    private void validateValue(StoredProcedureParameterDefinition parameter, Object value, String reference) {
+        Class<?> declaredType = parameter.type();
+        if (value != null && declaredType != null && !boxedType(declaredType).isInstance(value)) {
+            throw new StoredProcedureException("Stored procedure parameter " + reference + " of '" + procedureName
+                    + "' declares Java type " + declaredType.getName() + " but received "
+                    + value.getClass().getName());
+        }
+    }
+
+    private static Class<?> boxedType(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == boolean.class) return Boolean.class;
+        if (type == byte.class) return Byte.class;
+        if (type == char.class) return Character.class;
+        if (type == short.class) return Short.class;
+        if (type == int.class) return Integer.class;
+        if (type == long.class) return Long.class;
+        if (type == float.class) return Float.class;
+        if (type == double.class) return Double.class;
+        if (type == void.class) return Void.class;
+        throw new IllegalArgumentException("Unknown primitive type: " + type);
     }
 }

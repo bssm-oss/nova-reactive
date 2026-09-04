@@ -105,7 +105,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Composite-key to-one in `WHERE` (`=` / `IS [NOT] NULL`, ordering `< <= > >=`, `IN`, `BETWEEN`), `GROUP BY` / `ORDER BY`, and scalar `SELECT` projection | ✅ | Scalar JPQL + Criteria; lexicographic multi-column expansion, single canonical component order. `IS NULL` requires every FK component null; `IS NOT NULL` accepts any non-null component, matching hydration. `SELECT c.parent` yields a target id-stub. `LIKE` / entity-returning-JPQL `WHERE` fail-fast |
 | `@NamedQuery` / `@NamedNativeQuery` | ✅ | Per-entity registry, duplicate-name fail-fast |
 | `@SqlResultSetMapping` (`@EntityResult` / `@FieldResult` / `@ConstructorResult` / `@ColumnResult`) | ✅ | Native-read-then-coerce (dialect-independent) |
-| `@StoredProcedureQuery` / `@NamedStoredProcedureQuery` | ⟳ | `IN` params + result sets. `OUT`/`INOUT`/`REF_CURSOR` fail-fast on r2dbc-h2 |
+| `@StoredProcedureQuery` / `@NamedStoredProcedureQuery` | ⟳ | Declared `IN` params + result sets; setters synchronously reject blank/unknown names, unknown 1-based positions, and incompatible non-null Java values (primitive declarations accept wrappers; `null` is valid). Named declarations also accept declared positions. No coercion/default args/output API. JPA SPI can model `OUT`/`INOUT`/`REF_CURSOR`, but Nova/R2DBC and r2dbc-h2 do not portably expose them, so any such declaration fails before native work. |
 
 ## EntityManager / session
 
@@ -136,7 +136,7 @@ These declare cleanly but are rejected with a message until implemented — Nova
   `GROUP BY` / `ORDER BY`, and multi-column **joins** are supported.
 - A deeper subgraph declared **under** a composite-key to-one leaf inside a nested `EntityGraph`
   (the composite leaf itself is now hydrated at any depth).
-- Stored-procedure `OUT` / `INOUT` / `REF_CURSOR` parameters (r2dbc-h2 driver limitation).
+- Stored-procedure `OUT` / `INOUT` / `REF_CURSOR` output retrieval. JPA SPI declarations are modeled, but Nova/R2DBC and r2dbc-h2 do not portably expose an output API; any such declaration fails before native work. Use `IN` parameters and a result set instead.
 - `@MapKeyClass` naming a **composite-`@Id`** entity key class (single-`@Id` entity and `@Embeddable` key classes are supported).
 - In-place mutation of a *loaded* referenced entity's `@Id` (JPA-forbidden) is not change-tracked.
 - Under a transaction-bound persistence session, moving an already-managed `@OneToMany` child between two
