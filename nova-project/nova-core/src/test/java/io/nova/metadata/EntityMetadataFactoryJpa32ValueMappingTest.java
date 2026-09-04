@@ -178,7 +178,7 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         PersistentProperty relation = metadata.findProperty("related").orElseThrow();
         assertTrue(relation.manyToOne());
         assertEquals(Long.class, relation.columnType());
-        assertEquals(Integer.class, metadata.findProperty("explicitEnum").orElseThrow().columnType());
+        assertEquals(String.class, metadata.findProperty("explicitEnum").orElseThrow().columnType());
         assertEquals(java.time.LocalDateTime.class, metadata.findProperty("timestamp").orElseThrow().columnType());
         PersistentProperty json = metadata.findProperty("json").orElseThrow();
         assertTrue(json.json());
@@ -435,7 +435,7 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         @Id Code id;
         @Version Long version;
         @ManyToOne Related related;
-        @Enumerated(EnumType.ORDINAL) TextStatus explicitEnum;
+        @Enumerated(EnumType.STRING) TextStatus explicitEnum;
         @Temporal(TemporalType.TIMESTAMP) Date timestamp;
         @Json Code json;
     }
