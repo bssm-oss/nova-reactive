@@ -16,9 +16,10 @@ import java.util.Set;
  *
  * <p>Physical transaction invalidation is recorded, never eagerly applied: after commit,
  * {@link #flush(ReactiveCacheProvider, ReactiveQueryCache)} applies the recorded entity/query invalidation once.
- * Core writes completed during session flushing are marked by {@code PhysicalTransactionScope} immediately before
- * this replay. Rollback, error, and cancellation do not change shared caches. Legacy and arbitrary delegate writes
- * may record an explicit clear after successful delegate completion and replay it when their legacy scope succeeds.
+ * Core write-shaped executor completion marks {@code PhysicalTransactionScope}; immediately before replay, the cache
+ * callback consumes that marker and records one global provider/query clear. Rollback, error, and cancellation do not
+ * change shared caches. Legacy and arbitrary delegate writes may record an explicit clear after successful delegate
+ * completion and replay it when their legacy scope succeeds.
  *
  * <p>엔티티 캐시(키/region)와 쿼리 캐시(타입/전역 clear)를 함께 기록해, 두 캐시 계층의 post-commit 재무효화를
  * 한 곳에서 순서대로 적용한다.
