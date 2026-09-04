@@ -190,6 +190,22 @@ class AnnotatedQueryIntegrationTest {
     }
 
     @Test
+    @DisplayName("JPQL @Query 생성자 projection Mono는 여러 행을 거부한다")
+    void jpqlConstructorProjectionMonoRejectsMultipleRows() {
+        StepVerifier.create(repository.accountNameDto())
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
+    }
+
+    @Test
+    @DisplayName("derived findFirstBy는 여러 행에서 명시적으로 첫 행만 반환한다")
+    void derivedFindFirstExplicitlyTruncatesMultipleRows() {
+        StepVerifier.create(repository.findFirstByScoreGreaterThanEqualOrderByNameAsc(20))
+                .assertNext(account -> assertEquals("Ada", account.getName()))
+                .verifyComplete();
+    }
+
+    @Test
     @DisplayName("native @Query 엔티티 Mono")
     void nativeEntityMono() {
         StepVerifier.create(repository.nativeByName("Cara"))
@@ -480,6 +496,11 @@ class AnnotatedQueryIntegrationTest {
 
         @Query("SELECT NEW " + AccountName.CLASS_NAME + "(a.name) FROM Account a ORDER BY a.name")
         Flux<Object> objectDtos();
+
+        @Query("SELECT NEW " + AccountName.CLASS_NAME + "(a.name) FROM Account a ORDER BY a.name")
+        Mono<AccountName> accountNameDto();
+
+        Mono<Account> findFirstByScoreGreaterThanEqualOrderByNameAsc(int score);
 
         @Query(value = "SELECT * FROM \"accounts_q\" WHERE \"name\" = :name", nativeQuery = true)
         Mono<Account> nativeByName(@Param("name") String name);

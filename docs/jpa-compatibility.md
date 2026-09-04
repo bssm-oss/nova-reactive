@@ -122,7 +122,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | Spring Data-style `ReactiveCrudRepository<T, ID>` + `Pageable` / `Sort` | ✅ | `nova-spring-data`, opt-in `SpringDataReactiveCrudRepository` |
-| `@Query` (JPQL) on repository methods | ✅ | `@EnableNovaRepositories`, `BeanFactoryAware` auto-wiring |
+| `@Query` (JPQL) on repository methods | ✅ | `@EnableNovaRepositories`, `BeanFactoryAware` auto-wiring. `Mono<T>` is zero-or-one; non-unique results fail rather than truncate. Use derived `findFirst...` / `findTop...` for explicit one-row truncation. |
 
 ---
 
