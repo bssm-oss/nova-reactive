@@ -57,6 +57,9 @@ import java.util.function.Function;
  *   <li>물리 트랜잭션 안의 모든 엔티티 read는 Reactor Context를 확인해 cache hit을 우회하지만 shared caches를
  *       변경하지 않는다. Successful writes record one global clear, which runs after physical commit and is
  *       shared by nested participants.</li>
+ *   <li>Legacy nested transaction wrappers reuse one {@link TransactionWriteObservation} and eviction buffer, so
+ *       only the outer successful boundary clears. Custom delegates must mark internal/session-flush DML through the
+ *       active observation or {@link PhysicalTransactionScope}; explicit decorator write methods mark automatically.</li>
  *   <li>알려진 한계: 단일 JVM in-process 캐시로, 동시 writer 간 완전한 트랜잭셔널 정합성(외부 post-commit
  *       broadcast)은 외부 캐시 프로바이더에서 다룬다. {@code findById(..., FetchGroup)}, projection/paged/slice
  *       조회, count/exists 스칼라, native/compiled 조회 결과는 캐시하지 않는다(자식 hydration 편차·범위 위험
@@ -401,13 +404,18 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
         return Mono.deferContextual(context -> {
             boolean participating = hasActivePhysicalScope(context);
-            TransactionEvictionBuffer localBuffer = new TransactionEvictionBuffer();
-            TransactionWriteObservation observation = new TransactionWriteObservation();
+            boolean hasExistingObservation = hasWriteObservation(context);
+            boolean participatingLegacy = !participating && hasExistingObservation && evictionBuffer != null;
+            TransactionEvictionBuffer localBuffer =
+                    evictionBuffer != null ? evictionBuffer : new TransactionEvictionBuffer();
+            TransactionWriteObservation observation = hasExistingObservation
+                    ? context.get(TransactionWriteObservation.CONTEXT_KEY)
+                    : new TransactionWriteObservation();
             Mono<R> body = delegate.inTransaction(inner -> Mono.deferContextual(transactionContext ->
                     callback.apply(withDelegate(inner, false, transactionBuffer(transactionContext, localBuffer)))))
                     .contextWrite(transactionContext ->
                             transactionContext.put(TransactionWriteObservation.CONTEXT_KEY, observation));
-            if (participating) {
+            if (participating || participatingLegacy) {
                 return body;
             }
             return body.flatMap(result -> flushLegacyBuffer(localBuffer, observation).thenReturn(result))
@@ -428,12 +436,16 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             return fallback;
         }
         PhysicalTransactionScope scope = context.get(PhysicalTransactionScope.CONTEXT_KEY);
+        TransactionWriteObservation observation = hasWriteObservation(context)
+                ? context.get(TransactionWriteObservation.CONTEXT_KEY)
+                : null;
         return scope.getOrCreateResource(transactionEvictionResourceKey, () -> {
             fallback.markPhysicalReplayRegistered();
             scope.afterCommit(() -> {
                 // Core-managed writes can complete during before-commit session flushing, after the decorator's
                 // explicit write method returned. Mark their global invalidation immediately before replay.
-                if (scope.hasCompletedWrite()) {
+                if (scope.hasCompletedWrite()
+                        || (observation != null && observation.hasCompletedWrite())) {
                     fallback.recordProviderClearAll();
                     fallback.recordQueryClearAll();
                 }

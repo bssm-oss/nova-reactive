@@ -8,7 +8,7 @@ A managed `inTransaction` scope always sends entity-loading operations to the de
 
 Managed reads never mutate shared caches. A successful write in a physical transaction records one global entity/query invalidation and runs it only after physical commit. Participating nested wrappers share that retained invalidation; rollback, error, and cancellation leave warm entries intact. Direct and legacy transaction writes clear after successful delegate completion, and legacy scopes replay the clear after successful completion. Native and compiled writes use the same global rule.
 
-Custom `ReactiveEntityOperations` implementations that execute internal or session-flush SQL must mark successful write completion through the active `PhysicalTransactionScope` or `TransactionWriteObservation`. Calls to explicit write methods through the cache decorator are observed automatically. This marker is required to defer invalidation until a successful commit without evicting on read-only, rollback, error, or cancellation paths.
+Custom `ReactiveEntityOperations` implementations that execute internal or session-flush SQL must mark successful write completion through the active `PhysicalTransactionScope` or `TransactionWriteObservation`. Calls to explicit write methods through the cache decorator are observed automatically. Joined legacy wrappers reuse the outer observation and eviction buffer, so an inner success never clears before the outer boundary succeeds. These markers defer invalidation until a successful commit without evicting on read-only, rollback, error, or cancellation paths.
 
 Rollback, error, and cancellation never put uncommitted values into the shared cache and do not evict warm entries solely because a physical transaction was opened.
 
