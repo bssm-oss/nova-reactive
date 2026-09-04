@@ -12,6 +12,7 @@ import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Slice;
 import io.nova.query.jpql.JpqlExecutor;
+import io.nova.query.jpql.JpqlException;
 import io.nova.spring.data.query.AnnotatedQueries;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
@@ -128,6 +129,14 @@ class AnnotatedQueryIntegrationTest {
         StepVerifier.create(repository.namesWithMinScore(40))
                 .expectNext("Dan", "Eve")
                 .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("JPQL @Query 스칼라 선언 타입 불일치는 JpqlException으로 fail-fast")
+    void jpqlScalarDeclaredTypeMismatchFailsFast() {
+        StepVerifier.create(repository.scoresDeclaredAsNames())
+                .expectError(JpqlException.class)
+                .verify();
     }
 
     @Test
@@ -397,6 +406,9 @@ class AnnotatedQueryIntegrationTest {
 
         @Query("SELECT a.name FROM Account a WHERE a.score >= :min ORDER BY a.name")
         Flux<String> namesWithMinScore(@Param("min") int min);
+
+        @Query("SELECT a.name FROM Account a")
+        Flux<Integer> scoresDeclaredAsNames();
 
         @Query(value = "SELECT * FROM \"accounts_q\" WHERE \"name\" = :name", nativeQuery = true)
         Mono<Account> nativeByName(@Param("name") String name);

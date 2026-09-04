@@ -141,7 +141,6 @@ public final class JpqlQuery<T> {
     // Internals
     // ----------------------------------------------------------------------------------------
 
-    @SuppressWarnings("unchecked")
     private Flux<T> execute(JpqlStatement.Select select) {
         if (maxResults != null && maxResults == 0) {
             return Flux.empty();
@@ -156,12 +155,16 @@ public final class JpqlQuery<T> {
         Function<RowAccessor, T> mapper;
         try {
             translated = sqlBuilder.buildScalarSelect(select);
-            int columns = translated.selectionCount();
             ConstructorCall ctor = constructorProjection(select);
             List<TranslatedSql.ResultSlot> slots = translated.slots();
+            if (ctor == null && slots.size() > 1 && resultType != Object.class && resultType != Object[].class) {
+                throw incompatibleResultType(new Object[0], "multi-select Object[]");
+            }
             mapper = ctor != null
                     ? constructorMapper(ctor, slots)
-                    : row -> (T) mapSlots(row, slots);
+                    : slots.size() == 1
+                            ? row -> scalarResult(mapSlots(row, slots))
+                            : row -> multiSelectResult(mapSlots(row, slots));
         } catch (RuntimeException e) {
             return Flux.error(e);
         }
@@ -324,6 +327,11 @@ public final class JpqlQuery<T> {
 
     private Function<RowAccessor, T> constructorMapper(ConstructorCall call, List<TranslatedSql.ResultSlot> slots) {
         Constructor<?> ctor = resolveConstructor(call, slots.size());
+        if (resultType != Object.class && !resultType.isAssignableFrom(ctor.getDeclaringClass())) {
+            throw new JpqlException("SELECT NEW " + call.className() + " returns "
+                    + ctor.getDeclaringClass().getName() + " which is not assignable to requested result type "
+                    + resultType.getName());
+        }
         Class<?>[] paramTypes = ctor.getParameterTypes();
         return row -> {
             Object[] args = new Object[slots.size()];
@@ -332,9 +340,7 @@ public final class JpqlQuery<T> {
                 args[i] = coerce(raw, paramTypes[i], "SELECT NEW " + call.className(), i);
             }
             try {
-                @SuppressWarnings("unchecked")
-                T instance = (T) ctor.newInstance(args);
-                return instance;
+                return resultType.cast(ctor.newInstance(args));
             } catch (ReflectiveOperationException e) {
                 throw new JpqlException("Failed to instantiate SELECT NEW target " + call.className()
                         + ": " + e.getMessage());
@@ -418,6 +424,28 @@ public final class JpqlQuery<T> {
         throw new JpqlException(context + ": cannot convert value of type "
                 + value.getClass().getName() + " at position " + index + " to type "
                 + target.getName());
+    }
+
+    /** 단일 스칼라 투영은 선언된 결과 타입과 호환되어야 한다. */
+    private T scalarResult(Object value) {
+        if (resultType.isInstance(value)) {
+            return resultType.cast(value);
+        }
+        throw incompatibleResultType(value, "single scalar");
+    }
+
+    /** 다중 SELECT는 {@code Object[]} 모양만 반환한다({@code Object}는 자동 감지 예외). */
+    private T multiSelectResult(Object value) {
+        if (resultType == Object.class || resultType == Object[].class) {
+            return resultType.cast(value);
+        }
+        throw incompatibleResultType(value, "multi-select Object[]");
+    }
+
+    private JpqlException incompatibleResultType(Object value, String shape) {
+        String actual = value == null ? "null" : value.getClass().getName();
+        return new JpqlException("JPQL " + shape + " result " + actual
+                + " is not assignable to requested result type " + resultType.getName());
     }
 
     /**

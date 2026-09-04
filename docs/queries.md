@@ -202,3 +202,12 @@ variables are case-insensitive and render as Nova's generated result-column labe
 `SELECT COUNT(e) AS Total FROM Employee e ORDER BY total DESC` is supported. A result
 variable must be unique without regard to case, cannot collide with an identification
 alias, and can order only a single-column projection.
+
+### Typed JPQL projections
+
+`JpqlExecutor.createQuery(jpql, resultType)` and JPQL-backed Spring `@Query` methods
+enforce the declared result type. A single scalar must be assignable to that type, a
+multi-select returns `Object[]` and must be declared as `Object[]`, and `SELECT NEW`
+must construct a type assignable to the declaration. `Object` retains automatic shape
+detection for scalar, multi-select, and constructor projections. A mismatch is emitted
+reactively as `JpqlException`; Nova never emits a value through an unchecked cast.

@@ -146,6 +146,61 @@ class JpqlQueryTest {
     }
 
     @Test
+    void declaredScalarResultTypeRejectsIncompatibleValue() {
+        RecordingOperations recorder = new RecordingOperations(List.of("Ada"));
+
+        StepVerifier.create(typedQuery("SELECT e.name FROM Employee e", Integer.class, recorder.operations())
+                        .getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
+    void declaredScalarResultTypeUsesExistingPropertyNumericCoercion() {
+        RecordingOperations recorder = new RecordingOperations(List.of(7));
+
+        StepVerifier.create(typedQuery("SELECT e.id FROM Employee e", Long.class, recorder.operations())
+                        .getResultList())
+                .expectNext(7L)
+                .verifyComplete();
+    }
+
+    @Test
+    void declaredMultiSelectResultTypeRequiresObjectArray() {
+        RecordingOperations recorder = new RecordingOperations(List.of("Ada"));
+
+        StepVerifier.create(typedQuery("SELECT e.name, e.id FROM Employee e", String.class, recorder.operations())
+                        .getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
+    void objectAndObjectArrayRetainProjectionShapeAutoDetection() {
+        RecordingOperations scalarRecorder = new RecordingOperations(List.of("Ada"));
+        RecordingOperations multiRecorder = new RecordingOperations(List.of("Ada"));
+
+        StepVerifier.create(typedQuery("SELECT e.name FROM Employee e", Object.class, scalarRecorder.operations())
+                        .getResultList())
+                .expectNext("Ada")
+                .verifyComplete();
+        StepVerifier.create(typedQuery("SELECT e.name, e.id FROM Employee e", Object[].class, multiRecorder.operations())
+                        .getResultList())
+                .assertNext(values -> assertEquals(2, values.length))
+                .verifyComplete();
+    }
+
+    @Test
+    void declaredSelectNewResultTypeMustMatchProjectionClass() {
+        RecordingOperations recorder = new RecordingOperations(List.of("Ada"));
+
+        StepVerifier.create(typedQuery("SELECT NEW " + EmployeeDto.class.getName() + "(e.name) FROM Employee e",
+                        String.class, recorder.operations()).getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
     void integerMaximumResultLimitDoesNotOverflowProjectionPaging() {
         RecordingOperations recorder = new RecordingOperations();
 
@@ -164,9 +219,13 @@ class JpqlQueryTest {
     }
 
     private JpqlQuery<Object> query(String jpql, ReactiveEntityOperations operations) {
+        return typedQuery(jpql, Object.class, operations);
+    }
+
+    private <T> JpqlQuery<T> typedQuery(String jpql, Class<T> resultType, ReactiveEntityOperations operations) {
         return new JpqlQuery<>(
                 (JpqlStatement.Select) new JpqlParser(jpql).parse(),
-                Object.class,
+                resultType,
                 operations,
                 builder,
                 new JpqlEntityQueryPlanner(resolver));
