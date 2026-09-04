@@ -576,19 +576,27 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             elements.add(element);
         }
         SqlRenderer renderer = dialect.sqlRenderer();
+        boolean composite = info.composite();
         List<Object> ownerColumnValues =
                 foreignKeyColumnValues(ownerMetadata, info.ownerForeignKeyColumns(), ownerId);
-        Mono<Void> delete =
-                sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then();
+        Mono<Void> delete = composite
+                ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then()
+                : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerColumnValues.get(0))).then();
         return resolveManyToManyTargetIds(ownerMetadata, property, targetMetadata, owner, elements)
                 .flatMap(targetIds -> {
                     if (targetIds.isEmpty()) {
                         return delete;
                     }
                     return delete.thenMany(Flux.fromIterable(targetIds)
-                                    .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRowByColumns(
-                                            definition, ownerColumnValues,
-                                            foreignKeyColumnValues(targetMetadata, info.targetForeignKeyColumns(), targetId))))
+                                    .concatMap(targetId -> {
+                                        List<Object> targetColumnValues = foreignKeyColumnValues(
+                                                targetMetadata, info.targetForeignKeyColumns(), targetId);
+                                        return sqlExecutor.execute(composite
+                                                ? renderer.insertJoinRowByColumns(
+                                                        definition, ownerColumnValues, targetColumnValues)
+                                                : renderer.insertJoinRow(
+                                                        definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
+                                    })
                             .then();
                 });
     }
@@ -2266,16 +2274,25 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             + property.propertyName() + "; add cascade=PERSIST to cascade transient targets"));
         }
         SqlRenderer renderer = dialect.sqlRenderer();
+        boolean composite = info.composite();
         List<Object> ownerColumnValues =
                 foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
         return Flux.fromIterable(removedTargetIds)
-                .concatMap(targetId -> sqlExecutor.execute(renderer.deleteJoinRowByColumns(
-                        definition, ownerColumnValues,
-                        columnValuesFromKey(targetMetadata, info.targetForeignKeyColumns(), asKey(targetId))))
+                .concatMap(targetId -> {
+                    List<Object> targetColumnValues = columnValuesFromKey(
+                            targetMetadata, info.targetForeignKeyColumns(), asKey(targetId));
+                    return sqlExecutor.execute(composite
+                            ? renderer.deleteJoinRowByColumns(definition, ownerColumnValues, targetColumnValues)
+                            : renderer.deleteJoinRow(definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
+                })
                 .thenMany(Flux.fromIterable(addedTargetIds)
-                        .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRowByColumns(
-                                definition, ownerColumnValues,
-                                columnValuesFromKey(targetMetadata, info.targetForeignKeyColumns(), asKey(targetId)))))
+                        .concatMap(targetId -> {
+                            List<Object> targetColumnValues = columnValuesFromKey(
+                                    targetMetadata, info.targetForeignKeyColumns(), asKey(targetId));
+                            return sqlExecutor.execute(composite
+                                    ? renderer.insertJoinRowByColumns(definition, ownerColumnValues, targetColumnValues)
+                                    : renderer.insertJoinRow(definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
+                        }))
                 .then();
     }
 
@@ -2628,17 +2645,23 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
         List<Object> targetIds = readManyToManyTargetIds(property, targetMetadata, owner);
         SqlRenderer renderer = dialect.sqlRenderer();
+        boolean composite = info.composite();
         List<Object> ownerColumnValues =
                 foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
-        Mono<Void> delete =
-                sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then();
+        Mono<Void> delete = composite
+                ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then()
+                : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerColumnValues.get(0))).then();
         if (targetIds.isEmpty()) {
             return delete;
         }
         return delete.thenMany(Flux.fromIterable(targetIds)
-                        .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRowByColumns(
-                                definition, ownerColumnValues,
-                                foreignKeyColumnValues(targetMetadata, info.targetForeignKeyColumns(), targetId))))
+                        .concatMap(targetId -> {
+                            List<Object> targetColumnValues = foreignKeyColumnValues(
+                                    targetMetadata, info.targetForeignKeyColumns(), targetId);
+                            return sqlExecutor.execute(composite
+                                    ? renderer.insertJoinRowByColumns(definition, ownerColumnValues, targetColumnValues)
+                                    : renderer.insertJoinRow(definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
+                        })
                 .then();
     }
 
@@ -3255,8 +3278,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             ManyToManyInfo info = property.manyToManyInfo();
             EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
             JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
-            Mono<Void> delete = sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition,
-                    foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId))).then();
+            List<Object> ownerColumnValues =
+                    foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
+            Mono<Void> delete = info.composite()
+                    ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then()
+                    : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerColumnValues.get(0))).then();
             deletes.add(delete);
         }
         if (deletes.isEmpty()) {
@@ -4244,7 +4270,78 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         ManyToManyInfo info = property.manyToManyInfo();
         EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
         JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
-        return hydrateOneManyToManyComposite(parents, metadata, targetMetadata, property, info, definition);
+        if (info.composite()) {
+            return hydrateOneManyToManyComposite(parents, metadata, targetMetadata, property, info, definition);
+        }
+        PersistentProperty parentIdProperty = metadata.idProperty();
+        PersistentProperty targetIdProperty = targetMetadata.idProperty();
+        LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
+        for (P parent : parents) {
+            Object id = parentIdProperty.read(parent);
+            if (id != null) {
+                parentsById.computeIfAbsent(id, key -> new ArrayList<>()).add(parent);
+            }
+        }
+        if (parentsById.isEmpty()) {
+            injectEmptyCollections(property, parents, info.usesSet());
+            return Mono.empty();
+        }
+        List<Object> ownerColumnValues = parentsById.keySet().stream()
+                .map(parentIdProperty::toColumnValue)
+                .toList();
+        SqlRenderer renderer = dialect.sqlRenderer();
+        return sqlExecutor.queryMany(renderer.selectJoinRows(definition, ownerColumnValues), row -> new Object[]{
+                        parentIdProperty.toPropertyValue(row.get(info.ownerForeignKeyColumn(),
+                                wrapPrimitive(parentIdProperty.columnType()))),
+                        targetIdProperty.toPropertyValue(row.get(info.targetForeignKeyColumn(),
+                                wrapPrimitive(targetIdProperty.columnType())))})
+                .collectList()
+                .flatMap(links -> {
+                    LinkedHashMap<Object, List<Object>> targetIdsByOwner = new LinkedHashMap<>();
+                    LinkedHashSet<Object> allTargetIds = new LinkedHashSet<>();
+                    for (Object[] link : links) {
+                        targetIdsByOwner.computeIfAbsent(link[0], key -> new ArrayList<>()).add(link[1]);
+                        allTargetIds.add(link[1]);
+                    }
+                    if (allTargetIds.isEmpty()) {
+                        injectEmptyCollections(property, parents, info.usesSet());
+                        return Mono.empty();
+                    }
+                    QuerySpec targetQuery = QuerySpec.empty().where(Criteria.in(
+                            targetIdProperty.propertyName(), new ArrayList<>(allTargetIds)));
+                    Sort orderBy = manyToManyOrderBy(property, targetMetadata, info.usesSet());
+                    if (orderBy != null) {
+                        targetQuery = targetQuery.orderBy(orderBy);
+                    }
+                    return findAllInternal(targetMetadata, targetQuery).collectList().doOnNext(targets -> {
+                        Map<Object, Object> targetById = new LinkedHashMap<>();
+                        for (Object target : targets) {
+                            targetById.put(targetMetadata.readIdValue(target), target);
+                        }
+                        for (Map.Entry<Object, List<P>> entry : parentsById.entrySet()) {
+                            List<Object> resolved = new ArrayList<>();
+                            if (orderBy == null) {
+                                for (Object targetId : targetIdsByOwner.getOrDefault(entry.getKey(), List.of())) {
+                                    Object target = targetById.get(targetId);
+                                    if (target != null) {
+                                        resolved.add(target);
+                                    }
+                                }
+                            } else {
+                                LinkedHashSet<Object> targetIds = new LinkedHashSet<>(
+                                        targetIdsByOwner.getOrDefault(entry.getKey(), List.of()));
+                                for (Object target : targets) {
+                                    if (targetIds.contains(targetMetadata.readIdValue(target))) {
+                                        resolved.add(target);
+                                    }
+                                }
+                            }
+                            for (P parent : entry.getValue()) {
+                                injectCollection(property, parent, resolved, info.usesSet());
+                            }
+                        }
+                    }).then();
+                });
     }
 
     /**

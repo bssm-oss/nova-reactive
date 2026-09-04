@@ -54,6 +54,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinColumns;
+import jakarta.persistence.JoinTable;
+import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OneToOne;
@@ -68,6 +70,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -78,6 +82,8 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -3302,6 +3308,23 @@ class SimpleReactiveEntityOperationsTest {
         return session;
     }
 
+    @Test
+    void scalarManyToManyUsesLegacyRendererMethodsWhenColumnAwareDefaultsAreUnsupported() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = new SimpleReactiveEntityOperations(
+                new EntityMetadataFactory(new DefaultNamingStrategy()), scalarOnlyDialect(), executor,
+                new EntityStateDetector(), new RecordingTransactions());
+        ScalarLinkTarget target = new ScalarLinkTarget(2L);
+        ScalarLinkOwner owner = new ScalarLinkOwner(1L);
+        owner.targets.add(target);
+
+        StepVerifier.create(operations.save(owner)).expectNext(owner).verifyComplete();
+        assertTrue(executor.executedStatements.stream().anyMatch(statement ->
+                statement.sql().startsWith("delete from scalar_link") && statement.bindings().equals(List.of(1L))));
+        assertTrue(executor.executedStatements.stream().anyMatch(statement ->
+                statement.sql().startsWith("insert into scalar_link") && statement.bindings().equals(List.of(1L, 2L))));
+    }
+
     private <T> io.nova.metadata.EntityMetadata<T> metadata(Class<T> type) {
         return new EntityMetadataFactory(new DefaultNamingStrategy()).getEntityMetadata(type);
     }
@@ -3341,6 +3364,30 @@ class SimpleReactiveEntityOperationsTest {
             child.parent = parent;
         }
         return parent;
+    }
+
+    private Dialect scalarOnlyDialect() {
+        RecordingDialect dialect = new RecordingDialect();
+        SqlRenderer delegate = dialect.sqlRenderer();
+        SqlRenderer scalarOnlyRenderer = (SqlRenderer) Proxy.newProxyInstance(
+                SqlRenderer.class.getClassLoader(), new Class<?>[]{SqlRenderer.class}, (proxy, method, args) -> {
+                    if (method.getName().endsWith("ByColumns")) {
+                        throw new UnsupportedOperationException("column-aware renderer methods are unsupported");
+                    }
+                    try {
+                        return method.invoke(delegate, args);
+                    } catch (InvocationTargetException exception) {
+                        throw exception.getCause();
+                    }
+                });
+        return new Dialect() {
+            @Override public String name() { return dialect.name(); }
+            @Override public String quote(String identifier) { return dialect.quote(identifier); }
+            @Override public BindMarkerStrategy bindMarkers() { return dialect.bindMarkers(); }
+            @Override public SqlRenderer sqlRenderer() { return scalarOnlyRenderer; }
+            @Override public SchemaGenerator schemaGenerator() { return dialect.schemaGenerator(); }
+            @Override public String sequenceNextValueSql(String sequenceName) { return dialect.sequenceNextValueSql(sequenceName); }
+        };
     }
 
     private SimpleReactiveEntityOperations newOperations(CapturingExecutor executor, RecordingTransactions transactions) {
@@ -3652,6 +3699,33 @@ class SimpleReactiveEntityOperationsTest {
         @SuppressWarnings("unchecked")
         public <T> T get(String columnName, Class<T> type) {
             return (T) values.get(columnName);
+        }
+    }
+
+    @Entity
+    @Table(name = "scalar_link_owners")
+    private static final class ScalarLinkOwner {
+        @Id
+        private Long id;
+
+        @ManyToMany
+        @JoinTable(name = "scalar_link", joinColumns = @JoinColumn(name = "owner_id"),
+                inverseJoinColumns = @JoinColumn(name = "target_id"))
+        private Set<ScalarLinkTarget> targets = new LinkedHashSet<>();
+
+        private ScalarLinkOwner(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    @Table(name = "scalar_link_targets")
+    private static final class ScalarLinkTarget {
+        @Id
+        private Long id;
+
+        private ScalarLinkTarget(Long id) {
+            this.id = id;
         }
     }
 
