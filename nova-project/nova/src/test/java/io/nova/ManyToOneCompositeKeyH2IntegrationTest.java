@@ -351,7 +351,7 @@ class ManyToOneCompositeKeyH2IntegrationTest {
                             existing.tier = "mutated";
                         }))
                         .then(em.persist(new CascadeLedger(existing)))
-        ).verifyComplete();
+        ).expectNextCount(1).verifyComplete();
 
         StepVerifier.create(operations.queryNativeOne(
                         NativeQuery.of("select \"tier\" as tier from \"mco_cascade_account\""
@@ -380,7 +380,7 @@ class ManyToOneCompositeKeyH2IntegrationTest {
                             existing.label = "merged";
                         }))
                         .then(em.merge(new MergeCascadeEmbeddedLine(existing)))
-        ).verifyComplete();
+        ).expectNextCount(1).verifyComplete();
 
         StepVerifier.create(em.find(CascadeEmbeddedOrder.class, new OrderKey(830L, "GB")))
                 .assertNext(saved -> org.junit.jupiter.api.Assertions.assertEquals("merged", saved.label))
