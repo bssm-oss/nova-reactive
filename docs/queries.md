@@ -240,3 +240,11 @@ arguments.
 JPQL-backed repository `Mono<T>` methods use zero-or-one cardinality: no matching row
 completes empty, exactly one row emits that value, and a second row emits `JpqlException`.
 Use `Flux<T>` when a query can return multiple rows.
+
+Native repository `@Query(nativeQuery = true)` supports entity `SELECT` statements that
+select all entity columns and `@Modifying` bulk `UPDATE`, `DELETE`, and `INSERT`
+statements. Its `Mono<T>` entity result has the same zero-or-one boundary: no matching
+row completes empty, exactly one row emits it, and a second row emits
+`AnnotatedQueryException`. Native scalar and constructor projections, and native queries
+with `Pageable`, are unsupported and fail fast. Use an explicit SQL `LIMIT`, or a derived
+`findFirst`/`findTop` method, when first-row truncation is intended.

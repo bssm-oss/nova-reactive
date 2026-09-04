@@ -189,9 +189,19 @@ public final class AnnotatedQueries {
      * while more than one row has the same non-unique-result failure as {@link JpqlQuery}.
      */
     private Mono<?> zeroOrOneJpqlResult(JpqlQuery<?> query) {
-        return query.getResultList().take(2).collectList().flatMap(rows -> {
+        return zeroOrOneResult(query.getResultList(),
+                () -> new JpqlException("getSingleResult() found more than one row"));
+    }
+
+    /**
+     * Binds a repository {@code Mono} to at most two source rows: zero stays empty, one is
+     * emitted, and a second is rejected. The bounded collection both establishes cardinality and
+     * cancels the source before a third row is requested.
+     */
+    private Mono<?> zeroOrOneResult(Flux<?> results, Supplier<? extends RuntimeException> nonUnique) {
+        return results.take(2).collectList().flatMap(rows -> {
             if (rows.size() > 1) {
-                return Mono.error(new JpqlException("getSingleResult() found more than one row"));
+                return Mono.error(nonUnique.get());
             }
             return rows.isEmpty() ? Mono.empty() : Mono.just(rows.get(0));
         });
@@ -236,7 +246,9 @@ public final class AnnotatedQueries {
         }
         // 엔티티 반환 native SELECT: CompiledQuery로 감싸 core 엔티티 하이드레이션 경로에 위임.
         return switch (meta.shape()) {
-            case MONO_SINGLE -> Mono.defer(() -> nativeEntityFlux(meta, args).next());
+            case MONO_SINGLE -> Mono.defer(() -> zeroOrOneResult(nativeEntityFlux(meta, args),
+                    () -> new AnnotatedQueryException(
+                            "native @Query Mono result found more than one row")));
             default -> Flux.defer(() -> nativeEntityFlux(meta, args));
         };
     }

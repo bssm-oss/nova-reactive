@@ -105,12 +105,18 @@ Mono<Long> delete(T entity);
 Mono<Long> deleteAll(Iterable<T> entities);
 ```
 
-### Annotated JPQL queries
+### Annotated queries
 
-JPQL-backed `@Query` methods returning `Mono<T>` are zero-or-one queries: zero rows
-complete empty, one row is emitted, and multiple rows fail with `JpqlException`. This
-does not truncate results. Derived `findFirst` and `findTop` methods are distinct
-explicit limiting operations and use `LIMIT 1`.
+JPQL-backed and native entity `@Query` methods returning `Mono<T>` are zero-or-one
+queries: zero rows complete empty, one row is emitted, and multiple rows fail with
+`JpqlException` for JPQL or `AnnotatedQueryException` for native SQL. This does not
+truncate results. Derived `findFirst` and `findTop` methods, and an explicit SQL
+`LIMIT`, are distinct opt-in limiting operations.
+
+Native `@Query(nativeQuery = true)` supports entity `SELECT` statements that select all
+entity columns and `@Modifying` bulk `UPDATE`, `DELETE`, and `INSERT` statements.
+Native scalar and constructor projections, and native queries with `Pageable`, fail fast;
+use JPQL for those query shapes.
 
 ### Derived query methods
 
