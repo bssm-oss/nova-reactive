@@ -305,7 +305,8 @@ class SessionCollectionFlushIntegrationTest {
 
         listener.clear();
         StepVerifier.create(support.operations().inTransaction(ops -> ops.findById(UuidPost.class, saved.getId())
-                .doOnNext(loaded -> loaded.getTags().remove(drop)).then())).verifyComplete();
+                .doOnNext(loaded -> loaded.getTags().removeIf(tag -> tag.getId().equals(drop.getId()))).then()))
+                .verifyComplete();
         assertEquals(1, listener.count("uuid_post_tag", "delete"));
         assertEquals(0, listener.count("uuid_post_tag", "insert"));
 

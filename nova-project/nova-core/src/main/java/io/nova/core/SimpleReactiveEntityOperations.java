@@ -596,7 +596,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                                         definition, ownerColumnValues, targetColumnValues)
                                                 : renderer.insertJoinRow(
                                                         definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
-                                    })
+                                    }))
                             .then();
                 });
     }
@@ -2661,7 +2661,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             return sqlExecutor.execute(composite
                                     ? renderer.insertJoinRowByColumns(definition, ownerColumnValues, targetColumnValues)
                                     : renderer.insertJoinRow(definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
-                        })
+                        }))
                 .then();
     }
 
