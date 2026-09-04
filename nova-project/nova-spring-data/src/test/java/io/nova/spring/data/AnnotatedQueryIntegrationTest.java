@@ -135,7 +135,7 @@ class AnnotatedQueryIntegrationTest {
     @DisplayName("JPQL @Query 스칼라 선언 타입 불일치는 JpqlException으로 fail-fast")
     void jpqlScalarDeclaredTypeMismatchFailsFast() {
         StepVerifier.create(repository.scoresDeclaredAsNames())
-                .expectError(JpqlException.class)
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
                 .verify();
     }
 

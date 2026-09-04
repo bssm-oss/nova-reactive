@@ -184,7 +184,7 @@ class JpqlQueryTest {
                         .getResultList())
                 .expectNext("Ada")
                 .verifyComplete();
-        StepVerifier.create(typedQuery("SELECT e.name, e.id FROM Employee e", Object[].class, multiRecorder.operations())
+        StepVerifier.create(typedQuery("SELECT e.name, e.name FROM Employee e", Object[].class, multiRecorder.operations())
                         .getResultList())
                 .assertNext(values -> assertEquals(2, values.length))
                 .verifyComplete();
@@ -198,6 +198,48 @@ class JpqlQueryTest {
                         String.class, recorder.operations()).getResultList())
                 .expectError(JpqlException.class)
                 .verify();
+    }
+
+    @Test
+    void incompatibleProjectionTypesSignalJpqlExceptionsFromTheirPublishers() {
+        JpqlQuery<Integer> scalar = typedQuery(
+                "SELECT e.name FROM Employee e", Integer.class, new RecordingOperations(List.of("Ada")).operations());
+        JpqlQuery<String> multiSelect = typedQuery(
+                "SELECT e.name, e.name FROM Employee e", String.class,
+                new RecordingOperations(List.of("Ada")).operations());
+        JpqlQuery<String> selectNew = typedQuery(
+                "SELECT NEW " + EmployeeDto.class.getName() + "(e.name) FROM Employee e", String.class,
+                new RecordingOperations(List.of("Ada")).operations());
+
+        StepVerifier.create(scalar.getResultList())
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
+        StepVerifier.create(multiSelect.getResultList())
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
+        StepVerifier.create(selectNew.getResultList())
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
+    }
+
+    @Test
+    void objectResultTypesAndPrimitivePropertyNumericConversionRemainValid() {
+        RecordingOperations scalarRecorder = new RecordingOperations(List.of(7));
+        RecordingOperations multiRecorder = new RecordingOperations(List.of("Ada"));
+        RecordingOperations boxedPrimitiveRecorder = new RecordingOperations(List.of(7L));
+
+        StepVerifier.create(typedQuery("SELECT e.id FROM Employee e", Object.class, scalarRecorder.operations())
+                        .getResultList())
+                .expectNext(7L)
+                .verifyComplete();
+        StepVerifier.create(typedQuery("SELECT e.name, e.name FROM Employee e", Object[].class,
+                        multiRecorder.operations()).getResultList())
+                .assertNext(values -> assertEquals(new Object[] {"Ada", "Ada"}, values))
+                .verifyComplete();
+        StepVerifier.create(typedQuery("SELECT e.score FROM Employee e", Integer.class,
+                        boxedPrimitiveRecorder.operations()).getResultList())
+                .expectNext(7)
+                .verifyComplete();
     }
 
     @Test
@@ -299,6 +341,9 @@ class JpqlQueryTest {
 
         @Column(name = "name")
         private String name;
+
+        @Column(name = "score")
+        private int score;
 
         @ManyToOne
         @JoinColumn(name = "department_id")
