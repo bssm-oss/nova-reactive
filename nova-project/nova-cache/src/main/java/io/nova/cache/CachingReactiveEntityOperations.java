@@ -474,6 +474,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             }
             TransactionEvictionBuffer buffer = activeTransactionBuffer(context);
             if (hasWriteObservation(context)) {
+                context.<TransactionWriteObservation>get(TransactionWriteObservation.CONTEXT_KEY)
+                        .markWriteCompleted();
                 if (buffer != null) {
                     buffer.recordProviderClearAll();
                     buffer.recordQueryClearAll();
