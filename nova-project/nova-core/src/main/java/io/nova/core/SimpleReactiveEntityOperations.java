@@ -630,24 +630,31 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Flux.fromIterable(elements)
                     .concatMap(element -> {
                         Object targetId = targetMetadata.readIdValue(element);
-                        // 사이클/공유 참조: 이미 cascade 경로에 있으면 재저장하지 않고 현재 id를 쓴다.
-                        if (!visited.add(element)) {
-                            Object idNow = targetMetadata.readIdValue(element);
-                            return !hasIncompleteId(targetMetadata, idNow)
-                                    ? Mono.just(idNow) : Mono.error(new IllegalStateException(
-                                    "@ManyToMany cascade encountered a transient target in a reference cycle on "
-                                            + ownerMetadata.entityType().getName() + "." + property.propertyName()));
-                        }
+                        // Probe before marking visited: a PERSIST-only edge to an existing composite-id target
+                        // must not suppress a later MERGE edge to the same instance.
                         return shouldCascadePersistTarget(targetMetadata, targetId, cascadeMerge)
-                                .flatMap(shouldSave -> shouldSave ? save(element).map(saved -> {
-                                    Object savedId = targetMetadata.readIdValue(saved);
-                                    if (hasIncompleteId(targetMetadata, savedId)) {
-                                        throw new IllegalStateException(
-                                                "@ManyToMany cascade-saved target has an incomplete id on "
-                                                        + ownerMetadata.entityType().getName() + "." + property.propertyName());
+                                .flatMap(shouldSave -> {
+                                    if (!shouldSave) {
+                                        return Mono.just(targetId);
                                     }
-                                    return savedId;
-                                }) : Mono.just(targetId));
+                                    // Only recursive saves participate in cycle detection.
+                                    if (!visited.add(element)) {
+                                        Object idNow = targetMetadata.readIdValue(element);
+                                        return !hasIncompleteId(targetMetadata, idNow)
+                                                ? Mono.just(idNow) : Mono.error(new IllegalStateException(
+                                                "@ManyToMany cascade encountered a transient target in a reference cycle on "
+                                                        + ownerMetadata.entityType().getName() + "." + property.propertyName()));
+                                    }
+                                    return save(element).map(saved -> {
+                                        Object savedId = targetMetadata.readIdValue(saved);
+                                        if (hasIncompleteId(targetMetadata, savedId)) {
+                                            throw new IllegalStateException(
+                                                    "@ManyToMany cascade-saved target has an incomplete id on "
+                                                            + ownerMetadata.entityType().getName() + "." + property.propertyName());
+                                        }
+                                        return savedId;
+                                    });
+                                });
                     })
                     .collectList()
                     .contextWrite(c -> c.put(CASCADE_VISITED_KEY, visited));

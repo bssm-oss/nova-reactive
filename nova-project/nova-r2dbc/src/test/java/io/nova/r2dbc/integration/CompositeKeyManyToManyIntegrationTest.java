@@ -1,5 +1,6 @@
 package io.nova.r2dbc.integration;
 
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
@@ -74,6 +75,35 @@ class CompositeKeyManyToManyIntegrationTest {
                     assertEquals(1, book.getAuthors().size());
                     assertEquals("Ada", book.getAuthors().iterator().next().getName());
                 })
+                .verifyComplete();
+    }
+
+    @Test
+    void persistOnlyExistingCompositeTargetDoesNotSuppressLaterMergeCascade() {
+        Book shared = support.operations().save(new Book(new BookId("978", 44L), "original")).block();
+        shared.title = "merged";
+        Author owner = new Author(new AuthorId("US", 44L), "owner");
+        owner.getPersistBooks().add(shared); // PERSIST: existence probe skips this existing target.
+        owner.getMergeBooks().add(shared);   // MERGE must still save the same instance.
+
+        support.operations().save(owner).block();
+
+        StepVerifier.create(support.operations().findById(Book.class, shared.id))
+                .assertNext(reloaded -> assertEquals("merged", reloaded.title))
+                .verifyComplete();
+    }
+
+    @Test
+    void sessionPersistOnlyCascadeInsertsAbsentCompleteCompositeTargetBeforeLink() {
+        Book target = new Book(new BookId("978", 45L), "session-new");
+        Author owner = new Author(new AuthorId("US", 45L), "session-owner");
+        owner.getPersistBooks().add(target);
+
+        StepVerifier.create(support.operations().inTransaction(ops -> ops.save(owner).then()))
+                .verifyComplete();
+
+        StepVerifier.create(support.operations().findById(Book.class, target.id))
+                .assertNext(saved -> assertEquals("session-new", saved.title))
                 .verifyComplete();
     }
 
@@ -383,6 +413,18 @@ class CompositeKeyManyToManyIntegrationTest {
         @OrderBy
         private List<Book> books = new ArrayList<>();
 
+        @ManyToMany(cascade = CascadeType.PERSIST)
+        @JoinTable(name = "author_persist_book",
+                joinColumns = {@JoinColumn(name = "ap_country"), @JoinColumn(name = "ap_num")},
+                inverseJoinColumns = {@JoinColumn(name = "pb_group"), @JoinColumn(name = "pb_num")})
+        private List<Book> persistBooks = new ArrayList<>();
+
+        @ManyToMany(cascade = CascadeType.MERGE)
+        @JoinTable(name = "author_merge_book",
+                joinColumns = {@JoinColumn(name = "am_country"), @JoinColumn(name = "am_num")},
+                inverseJoinColumns = {@JoinColumn(name = "mb_group"), @JoinColumn(name = "mb_num")})
+        private List<Book> mergeBooks = new ArrayList<>();
+
         // 복합 owner ↔ 단일 target.
         @ManyToMany
         @JoinTable(name = "author_genre",
@@ -412,6 +454,14 @@ class CompositeKeyManyToManyIntegrationTest {
 
         public Set<Genre> getGenres() {
             return genres;
+        }
+
+        public List<Book> getPersistBooks() {
+            return persistBooks;
+        }
+
+        public List<Book> getMergeBooks() {
+            return mergeBooks;
         }
     }
 
