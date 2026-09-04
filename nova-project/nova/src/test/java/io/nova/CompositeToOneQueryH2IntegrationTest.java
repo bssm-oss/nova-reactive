@@ -304,20 +304,15 @@ class CompositeToOneQueryH2IntegrationTest {
     }
 
     @Test
-    void jpqlBareScalarProjectionWithNullForeignKeyHitsPreExistingNullMapperLimitation() {
-        // 알려진 한계(이 F1 스코프 밖): 단독 SELECT c.warehouse(논리 슬롯 1개)에서 assembleStub이 null을 돌려주면
-        // 그 null이 top-level Flux 매핑값 자체가 된다. Nova의 queryNative는 R2dbcSqlExecutor.coreQuery에서
-        // R2DBC Result.map(mapper)로 직결되는데, reactor/R2DBC driver는 매핑 함수가 null을 반환하는 것을
-        // 금지한다("The mapper ... returned a null value."). 이 제약은 복합키 to-one 전용이 아니라 단일
-        // nullable scalar 컬럼(SELECT e.middleName 등)에도 이미 동일하게 적용되는 사전 존재 한계이며, nova-r2dbc
-        // (SqlExecutor/Result 매핑) 변경이 필요해 이 태스크(F1: nova-core 3파일)의 범위 밖이다.
+    void jpqlBareScalarProjectionRejectsNullForDeclaredReferenceType() {
         Wiring w = wire();
         StepVerifier.create(
                 seedWithNullWarehouseShipment(w).thenMany(w.jpql()
                         .createQuery("SELECT c.warehouse FROM Shipment c WHERE c.id = 4", Warehouse.class)
                         .getResultList()))
-                .verifyErrorMatches(error -> error instanceof NullPointerException
-                        && error.getMessage() != null && error.getMessage().contains("returned a null value"));
+                .verifyErrorMatches(error -> error instanceof io.nova.query.jpql.JpqlException
+                        && error.getMessage() != null
+                        && error.getMessage().contains("null is not assignable"));
     }
 
     private static void assertWarehouseId(Warehouse warehouse, long whNo, String region) {
