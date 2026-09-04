@@ -1,5 +1,6 @@
 package io.nova.r2dbc.integration;
 
+import io.nova.query.criteria.CriteriaException;
 import io.nova.query.criteria.ReactiveCriteriaExecutor;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
@@ -11,6 +12,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.ParameterExpression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import org.junit.jupiter.api.BeforeEach;
@@ -120,6 +122,61 @@ class CriteriaIntegrationTest {
                 .assertNext(x -> assertEquals("Bob", x.getName()))
                 .assertNext(x -> assertEquals("Cara", x.getName()))
                 .assertNext(x -> assertEquals("Dan", x.getName()))
+                .verifyComplete();
+    }
+
+    @Test
+    void explicitNullComparisonUsesSqlUnknownWhileIsNullMatchesForEntityAndScalarQueries() {
+        CriteriaBuilder entityUnknownBuilder = cb();
+        CriteriaQuery<Employee> entityUnknown = entityUnknownBuilder.createQuery(Employee.class);
+        Root<Employee> entityUnknownEmployee = entityUnknown.from(Employee.class);
+        ParameterExpression<String> entityNickname = entityUnknownBuilder.parameter(String.class, "nickname");
+        entityUnknown.select(entityUnknownEmployee)
+                .where(entityUnknownBuilder.equal(entityUnknownEmployee.<String>get("nickname"), entityNickname));
+
+        StepVerifier.create(criteria.createQuery(entityUnknown).getResultList())
+                .expectError(CriteriaException.class)
+                .verify();
+
+        StepVerifier.create(criteria.createQuery(entityUnknown)
+                        .setParameter(entityNickname, null)
+                        .getResultList())
+                .verifyComplete();
+
+        CriteriaBuilder entityIsNullBuilder = cb();
+        CriteriaQuery<Employee> entityIsNull = entityIsNullBuilder.createQuery(Employee.class);
+        Root<Employee> entityIsNullEmployee = entityIsNull.from(Employee.class);
+        entityIsNull.select(entityIsNullEmployee)
+                .where(entityIsNullBuilder.isNull(entityIsNullEmployee.<String>get("nickname")))
+                .orderBy(entityIsNullBuilder.asc(entityIsNullEmployee.<String>get("name")));
+
+        StepVerifier.create(criteria.createQuery(entityIsNull).getResultList())
+                .assertNext(employee -> assertEquals("Bob", employee.getName()))
+                .assertNext(employee -> assertEquals("Cara", employee.getName()))
+                .assertNext(employee -> assertEquals("Dan", employee.getName()))
+                .verifyComplete();
+
+        CriteriaBuilder scalarUnknownBuilder = cb();
+        CriteriaQuery<String> scalarUnknown = scalarUnknownBuilder.createQuery(String.class);
+        Root<Employee> scalarUnknownEmployee = scalarUnknown.from(Employee.class);
+        ParameterExpression<String> scalarNickname = scalarUnknownBuilder.parameter(String.class, "nickname");
+        scalarUnknown.select(scalarUnknownEmployee.<String>get("name"))
+                .where(scalarUnknownBuilder.notEqual(scalarUnknownEmployee.<String>get("nickname"), scalarNickname));
+
+        StepVerifier.create(criteria.createQuery(scalarUnknown)
+                        .setParameter("nickname", null)
+                        .getResultList())
+                .verifyComplete();
+
+        CriteriaBuilder scalarIsNullBuilder = cb();
+        CriteriaQuery<String> scalarIsNull = scalarIsNullBuilder.createQuery(String.class);
+        Root<Employee> scalarIsNullEmployee = scalarIsNull.from(Employee.class);
+        scalarIsNull.select(scalarIsNullEmployee.<String>get("name"))
+                .where(scalarIsNullBuilder.isNull(scalarIsNullEmployee.<String>get("nickname")))
+                .orderBy(scalarIsNullBuilder.asc(scalarIsNullEmployee.<String>get("name")));
+
+        StepVerifier.create(criteria.createQuery(scalarIsNull).getResultList())
+                .expectNext("Bob", "Cara", "Dan")
                 .verifyComplete();
     }
 

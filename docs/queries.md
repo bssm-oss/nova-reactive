@@ -164,6 +164,15 @@ QuerySpec spec = QuerySpec.empty()
 
 When a cursor is set, OFFSET is ignored and a lexicographic keyset condition is appended to WHERE automatically.
 
+### Criteria API parameters and null
+
+Bind Criteria parameters by their expression identity or declared name. An explicit `null` is a bound value;
+an unset parameter remains an error when the reactive query is subscribed. Criteria renders an explicit null
+comparison with its normal bind marker, so `equal(path, parameter)` renders `path = ?` and
+`notEqual(path, parameter)` renders `path <> ?`. SQL evaluates both comparisons with a null binding as
+UNKNOWN, which filters rows in a `WHERE` clause. Use `isNull(path)` or `isNotNull(path)` when null matching
+is intended; Nova does not rewrite parameter comparisons to `IS NULL`.
+
 ### NativeQuery — raw SQL
 
 ```java

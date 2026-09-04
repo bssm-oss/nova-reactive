@@ -76,11 +76,10 @@ final class CriteriaParameterBindings {
     }
 
     Object resolve(CriteriaParameter<?> parameter) {
-        Object value = values.get(parameter);
-        if (value == null) {
+        if (!values.containsKey(parameter)) {
             throw new CriteriaException("No value bound for Criteria parameter");
         }
-        return value;
+        return values.get(parameter);
     }
 
     Object resolve(Object value) {
@@ -92,7 +91,7 @@ final class CriteriaParameterBindings {
 
     private static Object validateValue(CriteriaParameter<?> parameter, Object value) {
         if (value == null) {
-            throw new CriteriaException("Criteria parameter values must not be null");
+            return null;
         }
         if (value instanceof Collection<?> || value.getClass().isArray()) {
             throw new CriteriaException("Criteria parameter values must be scalar");

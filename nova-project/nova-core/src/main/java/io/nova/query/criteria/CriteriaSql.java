@@ -1,5 +1,7 @@
 package io.nova.query.criteria;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -9,6 +11,6 @@ import java.util.List;
  */
 record CriteriaSql(String sql, List<Object> bindings, int selectionCount) {
     CriteriaSql {
-        bindings = List.copyOf(bindings);
+        bindings = Collections.unmodifiableList(new ArrayList<>(bindings));
     }
 }
