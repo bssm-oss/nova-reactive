@@ -8,7 +8,7 @@ A managed `inTransaction` scope always sends entity-loading operations to the de
 
 Managed reads never mutate shared caches. A successful write in a physical transaction records one global entity/query invalidation and runs it only after physical commit. Participating nested wrappers share that retained invalidation; rollback, error, and cancellation leave warm entries intact. Direct and legacy transaction writes clear after successful delegate completion, and legacy scopes replay the clear after successful completion. Native and compiled writes use the same global rule.
 
-A rollback never puts loaded or uncommitted values into the shared cache. It can leave an entry evicted, so the next non-transactional lookup reads the committed database value.
+Rollback, error, and cancellation never put uncommitted values into the shared cache and do not evict warm entries solely because a physical transaction was opened.
 
 Outside a managed transaction, `findById` remains read-through and can serve a warm cache entry without SQL.
 
@@ -16,4 +16,4 @@ Outside a managed transaction, `findById` remains read-through and can serve a w
 
 A cacheable `findById` result and every query-cache result are detached, mapping-aware snapshots. Every served hit receives a fresh object graph, so mutating a returned root, mapped PROPERTY association, or collection cannot alter a warm entry. Repeated references and cycles retain their identity within one returned graph only. Mapped accessors and record constructors are used when rebuilding values, including converted and record-backed collection values.
 
-Nova eagerly hydrates associations, so a cached root may contain state from several entity types. Consequently every successful wrapped ORM write (`save`, `update`, every delete variant, and bulk write) clears all entity regions and the query cache, including writes to non-cacheable types. In a physical transaction that global clear is applied immediately and replayed after commit; this conservative tradeoff prevents associated graph snapshots from becoming stale.
+Nova eagerly hydrates associations, so a cached root may contain state from several entity types. Consequently every successful wrapped ORM write (`save`, `update`, every delete variant, and bulk write) clears all entity regions and the query cache, including writes to non-cacheable types. In a physical transaction the global clear is recorded and applied only after commit; this conservative tradeoff prevents associated graph snapshots from becoming stale without evicting on rollback, error, cancellation, or read-only work.

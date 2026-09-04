@@ -44,9 +44,9 @@ import java.util.function.Function;
  *       품을 수 있으므로, cacheable 여부와 대상 행 특정 가능 여부에 관계없이 전역 무효화한다. Physical
  *       transaction writes record the clear for after-commit only.</li>
  *   <li><b>query cache read-through(opt-in)</b>: {@link ReactiveQueryCache}를 주입하면
- *       {@code findAll(Class, QuerySpec)} 결과를 정규화된 스펙 키로 캐시한다(히트 시 0 SQL). 어떤 write든 대상
- *       엔티티 타입의 쿼리 결과를 <b>통째로 무효화</b>한다(보수적 정합성). 쿼리 캐시가 없으면(기본) 이 경로는
- *       기존과 동일하게 delegate로 통과하고 조회 엔티티로 엔티티 캐시만 warming 한다 — 기본 동작 무변경.</li>
+ *       {@code findAll(Class, QuerySpec)} 결과를 정규화된 스펙 키로 캐시한다(히트 시 0 SQL). Every successful
+ *       write globally invalidates query results because eager graphs can include associated entity types. 쿼리
+ *       캐시가 없으면(기본) 이 경로는 기존과 동일하게 delegate로 통과하고 조회 엔티티로 엔티티 캐시만 warming 한다.</li>
  * </ul>
  *
  * <h2>정합성 계약 (v1)</h2>
@@ -220,7 +220,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
                         return queryCache.put(partition, key, snapshot)
                                 // 결과를 쿼리 캐시에 저장 + 엔티티 캐시도 warming(이후 findById 히트).
                                 .thenMany(Flux.fromIterable(graphCopier.copyAll(snapshot)))
-                                .concatMap(entity -> putEntity(entity).thenReturn(entity));
+                                .concatMap(entity -> putEntity(entity).thenReturn(entity))
+                                .map(CachingReactiveEntityOperations::<T>castEntity);
                     }));
             // 빈 리스트도 히트로 취급해야 하므로 Mono 존재 여부로 hit/miss를 판별한다(빈 Flux를
             // switchIfEmpty로 miss 처리하면 빈 결과가 매번 재실행됨).
@@ -426,7 +427,15 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         PhysicalTransactionScope scope = context.get(PhysicalTransactionScope.CONTEXT_KEY);
         return scope.getOrCreateResource(transactionEvictionResourceKey, () -> {
             fallback.markPhysicalReplayRegistered();
-            scope.afterCommit(() -> fallback.flush(provider, queryCache));
+            scope.afterCommit(() -> {
+                // Core-managed writes can complete during before-commit session flushing, after the decorator's
+                // explicit write method returned. Mark their global invalidation immediately before replay.
+                if (scope.hasCompletedWrite()) {
+                    fallback.recordProviderClearAll();
+                    fallback.recordQueryClearAll();
+                }
+                return fallback.flush(provider, queryCache);
+            });
             return fallback;
         });
     }
