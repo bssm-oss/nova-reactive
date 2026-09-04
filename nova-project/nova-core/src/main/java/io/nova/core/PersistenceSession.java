@@ -136,6 +136,10 @@ final class PersistenceSession {
             }
         }
 
+        void refreshSnapshotFields(Map<String, Object> storageValues) {
+            snapshot.putAll(storageValues);
+        }
+
         /**
          * 컬렉션 property의 영속 baseline 정규 표현을 반환한다. 아직 캡처된 적이 없으면 {@code null}이다
          * ({@link #hasCollectionSnapshot}로 구분). flush가 이 값과 현재 컬렉션 표현을 비교해 변경 여부/diff를 정한다.
@@ -265,6 +269,19 @@ final class PersistenceSession {
         }
     }
 
+    /**
+     * 직접 부분 UPDATE가 기록한 저장형 값을 정확히 같은 관리 인스턴스의 baseline에 반영한다. 호출자가
+     * post-callback 전에 캡처한 값을 받으므로 callback이 엔티티를 다시 바꿔도 기록되지 않은 값이 clean으로
+     * 바뀌지 않는다.
+     */
+    void refreshManagedExactInstanceSnapshot(
+            EntityMetadata<?> metadata, Object entity, Map<String, Object> storageValues) {
+        ManagedEntry entry = managedEntry(metadata, entity);
+        if (entry != null && !entry.isRemoved() && entry.entity() == entity) {
+            entry.refreshSnapshotFields(storageValues);
+        }
+    }
+
     void refreshManagedExactInstanceSnapshot(EntityMetadata<?> metadata, Object entity) {
         ManagedEntry entry = managedEntry(metadata, entity);
         if (entry != null && !entry.isRemoved() && entry.entity() == entity) {
@@ -387,7 +404,7 @@ final class PersistenceSession {
         return snapshot;
     }
 
-    private static Object snapshotValue(PersistentProperty property, Object entity) {
+    static Object snapshotValue(PersistentProperty property, Object entity) {
         if (!property.isCompositeToOne()) {
             return property.toColumnValue(property.read(entity));
         }

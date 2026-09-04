@@ -63,6 +63,8 @@ public interface ReactiveEntityOperations {
 `save` lets `EntityStateDetector` choose **insert vs update** by inspecting the identifier state.
 For `@Version` entities, update/delete emits `OptimisticLockingFailureException` when affected rows are zero. For `@SoftDelete` entities, `delete` is rewritten as an UPDATE automatically. Lifecycle callbacks (`@PrePersist`/`@PreUpdate`/`@PostLoad`/`@PreRemove`) fire right after audit values are applied, so users may override audit defaults inside the callback.
 
+`update(entity, fields)` is subscription-cold: audit work, `@PreUpdate`, SQL rendering, and DML begin only when its `Mono` is subscribed. Each subscription is a distinct execution. `@PostUpdate` runs only after every update statement succeeds.
+
 ---
 
 ## Query DSL
