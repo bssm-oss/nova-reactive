@@ -166,6 +166,26 @@ class JpqlQueryTest {
     }
 
     @Test
+    void primitiveDeclaredScalarResultEmitsBoxedValue() {
+        RecordingOperations recorder = new RecordingOperations(List.of(7));
+
+        StepVerifier.create(typedQuery("SELECT e.id FROM Employee e", primitiveType(long.class), recorder.operations())
+                        .getResultList())
+                .expectNext(7L)
+                .verifyComplete();
+    }
+
+    @Test
+    void primitiveDeclaredScalarResultRejectsNull() {
+        RecordingOperations recorder = new RecordingOperations(java.util.Arrays.asList((Object) null));
+
+        StepVerifier.create(typedQuery("SELECT e.name FROM Employee e", primitiveType(long.class), recorder.operations())
+                        .getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
     void declaredMultiSelectResultTypeRequiresObjectArray() {
         RecordingOperations recorder = new RecordingOperations(List.of("Ada"));
 
@@ -271,6 +291,11 @@ class JpqlQueryTest {
                 operations,
                 builder,
                 new JpqlEntityQueryPlanner(resolver));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> Class<T> primitiveType(Class<?> primitive) {
+        return (Class<T>) primitive;
     }
 
     private static final class RecordingOperations {

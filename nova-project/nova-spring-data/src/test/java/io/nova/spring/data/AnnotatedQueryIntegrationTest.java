@@ -140,6 +140,26 @@ class AnnotatedQueryIntegrationTest {
     }
 
     @Test
+    @DisplayName("JPQL @Query Object는 projection shape를 자동 감지한다")
+    void jpqlObjectProjectionAutoDetection() {
+        StepVerifier.create(repository.objectNames())
+                .expectNext("Ada", "Bob", "Cara", "Dan", "Eve")
+                .verifyComplete();
+        StepVerifier.create(repository.firstObjectName())
+                .expectNext("Ada")
+                .verifyComplete();
+        StepVerifier.create(repository.objectNameAndScores())
+                .assertNext(values -> {
+                    assertEquals("Ada", values[0]);
+                    assertEquals(30, values[1]);
+                })
+                .verifyComplete();
+        StepVerifier.create(repository.objectDtos())
+                .assertNext(value -> assertEquals("Ada", ((AccountName) value).name()))
+                .verifyComplete();
+    }
+
+    @Test
     @DisplayName("native @Query 엔티티 Mono")
     void nativeEntityMono() {
         StepVerifier.create(repository.nativeByName("Cara"))
@@ -410,6 +430,18 @@ class AnnotatedQueryIntegrationTest {
         @Query("SELECT a.name FROM Account a")
         Flux<Integer> scoresDeclaredAsNames();
 
+        @Query("SELECT a.name FROM Account a ORDER BY a.name")
+        Flux<Object> objectNames();
+
+        @Query("SELECT a.name FROM Account a ORDER BY a.name")
+        Mono<Object> firstObjectName();
+
+        @Query("SELECT a.name, a.score FROM Account a ORDER BY a.name")
+        Flux<Object[]> objectNameAndScores();
+
+        @Query("SELECT NEW " + AccountName.CLASS_NAME + "(a.name) FROM Account a ORDER BY a.name")
+        Flux<Object> objectDtos();
+
         @Query(value = "SELECT * FROM \"accounts_q\" WHERE \"name\" = :name", nativeQuery = true)
         Mono<Account> nativeByName(@Param("name") String name);
 
@@ -438,5 +470,9 @@ class AnnotatedQueryIntegrationTest {
         @Query("SELECT a FROM Account a ORDER BY a.name")
         Mono<org.springframework.data.domain.Page<Account>> springPage(
                 org.springframework.data.domain.Pageable pageable);
+    }
+
+    public record AccountName(String name) {
+        private static final String CLASS_NAME = "io.nova.spring.data.AnnotatedQueryIntegrationTest$AccountName";
     }
 }

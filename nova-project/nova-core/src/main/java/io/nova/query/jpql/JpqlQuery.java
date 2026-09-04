@@ -37,6 +37,7 @@ public final class JpqlQuery<T> {
 
     private final JpqlStatement statement;
     private final Class<T> resultType;
+    private final boolean primitiveResultType;
     private final ReactiveEntityOperations operations;
     private final JpqlSqlBuilder sqlBuilder;
     private final JpqlEntityQueryPlanner entityPlanner;
@@ -53,7 +54,8 @@ public final class JpqlQuery<T> {
             JpqlSqlBuilder sqlBuilder,
             JpqlEntityQueryPlanner entityPlanner) {
         this.statement = statement;
-        this.resultType = resultType;
+        this.primitiveResultType = resultType.isPrimitive();
+        this.resultType = boxedResultType(resultType);
         this.operations = operations;
         this.sqlBuilder = sqlBuilder;
         this.entityPlanner = entityPlanner;
@@ -428,6 +430,10 @@ public final class JpqlQuery<T> {
 
     /** 단일 스칼라 투영은 선언된 결과 타입과 호환되어야 한다. */
     private T scalarResult(Object value) {
+        if (value == null && primitiveResultType) {
+            throw new JpqlException("JPQL single scalar result null cannot be assigned to primitive requested result type "
+                    + resultType.getName());
+        }
         if (resultType.isInstance(value)) {
             return resultType.cast(value);
         }
@@ -532,6 +538,11 @@ public final class JpqlQuery<T> {
             case "char" -> Character.class;
             default -> throw new IllegalArgumentException("Unknown primitive type: " + type);
         };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> Class<T> boxedResultType(Class<T> type) {
+        return type.isPrimitive() ? (Class<T>) boxed(type) : type;
     }
 
     private record RawRow(Object[] values) implements RowAccessor {

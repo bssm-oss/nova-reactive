@@ -211,3 +211,5 @@ multi-select returns `Object[]` and must be declared as `Object[]`, and `SELECT 
 must construct a type assignable to the declaration. `Object` retains automatic shape
 detection for scalar, multi-select, and constructor projections. A mismatch is emitted
 reactively as `JpqlException`; Nova never emits a value through an unchecked cast.
+Primitive scalar declarations are checked against their boxed type and emit boxed
+publisher values; a null scalar for a primitive declaration fails with `JpqlException`.
