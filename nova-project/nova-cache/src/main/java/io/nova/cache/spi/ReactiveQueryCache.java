@@ -51,7 +51,8 @@ public interface ReactiveQueryCache {
     Mono<Void> invalidate(Class<?> entityType);
 
     /**
-     * 모든 쿼리 결과를 비운다. 대상 타입을 특정할 수 없는 native/compiled write 후 보수적 전역 무효화에 쓴다.
+     * 모든 쿼리 결과를 비운다. eager graph가 연관 타입 상태를 포함할 수 있으므로 모든 성공한 ORM write의
+     * 보수적 전역 무효화에 쓴다.
      */
     Mono<Void> clear();
 }
