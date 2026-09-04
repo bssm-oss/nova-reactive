@@ -47,7 +47,8 @@ class ToOneCascadeIntegrationTest {
                 Profile.class, Account.class,
                 MarkerAuthor.class, MarkerArticle.class,
                 Node.class,
-                PersistOnlyRef.class, PersistOnlyOwner.class, CompositePersistRef.class, CompositePersistOwner.class).block();
+                PersistOnlyRef.class, PersistOnlyOwner.class, CompositePersistRef.class, CompositePersistOwner.class,
+                CompositeCascadeBridge.class, CompositeCascadeRoot.class).block();
     }
 
     @Test
@@ -85,6 +86,22 @@ class ToOneCascadeIntegrationTest {
         support.operations().save(new CompositePersistOwner(ref)).block();
         StepVerifier.create(support.operations().findById(CompositePersistRef.class, ref.id))
                 .assertNext(saved -> assertEquals("original", saved.name))
+                .verifyComplete();
+    }
+
+    @Test
+    void recursiveSharedContextPersistOnlyThenMergeUpdatesExistingCompositeReference() {
+        CompositePersistRef shared = support.operations()
+                .save(new CompositePersistRef(new CompositeRefId("us", "shared"), "original")).block();
+        shared.name = "merged";
+        CompositeCascadeBridge bridge = new CompositeCascadeBridge(shared);
+
+        // Root -> bridge is recursive PERSIST, so bridge's sibling edges share CASCADE_VISITED_KEY.
+        support.operations().save(new CompositeCascadeRoot(bridge)).block();
+
+        StepVerifier.create(support.operations().findById(CompositePersistRef.class, shared.id))
+                .assertNext(reloaded -> assertEquals("merged", reloaded.name,
+                        "a skipped PERSIST edge must not suppress the later MERGE edge"))
                 .verifyComplete();
     }
 
@@ -464,5 +481,40 @@ class ToOneCascadeIntegrationTest {
         private CompositePersistRef ref;
         public CompositePersistOwner() { }
         CompositePersistOwner(CompositePersistRef ref) { this.ref = ref; }
+    }
+
+    @Entity
+    @Table(name = "composite_cascade_bridge")
+    public static class CompositeCascadeBridge {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+
+        @ManyToOne(cascade = CascadeType.PERSIST)
+        @JoinColumns({@JoinColumn(name = "persist_region", referencedColumnName = "region"),
+                @JoinColumn(name = "persist_code", referencedColumnName = "code")})
+        private CompositePersistRef persistReference;
+
+        @ManyToOne(cascade = CascadeType.MERGE)
+        @JoinColumns({@JoinColumn(name = "merge_region", referencedColumnName = "region"),
+                @JoinColumn(name = "merge_code", referencedColumnName = "code")})
+        private CompositePersistRef mergeReference;
+
+        public CompositeCascadeBridge() { }
+        CompositeCascadeBridge(CompositePersistRef shared) {
+            this.persistReference = shared;
+            this.mergeReference = shared;
+        }
+    }
+
+    @Entity
+    @Table(name = "composite_cascade_root")
+    public static class CompositeCascadeRoot {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+
+        @ManyToOne(cascade = CascadeType.PERSIST)
+        @JoinColumn(name = "bridge_id")
+        private CompositeCascadeBridge bridge;
+
+        public CompositeCascadeRoot() { }
+        CompositeCascadeRoot(CompositeCascadeBridge bridge) { this.bridge = bridge; }
     }
 }

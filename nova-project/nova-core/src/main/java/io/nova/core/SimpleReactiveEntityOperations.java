@@ -276,20 +276,25 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             // null 참조 = 이번 save에서 이 관계를 관리하지 않음 → cascade no-op.
                             return Mono.empty();
                         }
-                        if (!visited.add(reference)) {
-                            // 이미 cascade 경로에 있는 인스턴스(사이클/공유 참조) → 재저장하지 않는다(무한재귀 방지).
-                            return Mono.empty();
-                        }
-                        // PERSIST-only complete composite ids can still be transient, so probe every component.
+                        // Probe before marking visited: a PERSIST-only edge to an existing composite-id target
+                        // must not suppress a later MERGE edge to the same instance.
                         Class<?> referenceType = property.manyToOneTargetType() != null
                                 ? property.manyToOneTargetType() : reference.getClass();
                         EntityMetadata<?> referenceMetadata = metadataFactory.getEntityMetadata(referenceType);
                         Object referenceId = referenceMetadata.readIdValue(reference);
                         return shouldCascadePersistTarget(referenceMetadata, referenceId, property.cascadeMergeReference())
-                                .flatMap(shouldSave -> shouldSave
-                                        ? save(reference).doOnNext(savedReference -> property.writeReference(owner, savedReference))
-                                                .then()
-                                        : Mono.empty());
+                                .flatMap(shouldSave -> {
+                                    if (!shouldSave) {
+                                        return Mono.empty();
+                                    }
+                                    // Only recursive saves participate in cycle detection.
+                                    if (!visited.add(reference)) {
+                                        return Mono.empty();
+                                    }
+                                    return save(reference)
+                                            .doOnNext(savedReference -> property.writeReference(owner, savedReference))
+                                            .then();
+                                });
                     })
                     .then();
             // visited 집합을 nested save(reference)가 보도록 Context로 전파한다.
