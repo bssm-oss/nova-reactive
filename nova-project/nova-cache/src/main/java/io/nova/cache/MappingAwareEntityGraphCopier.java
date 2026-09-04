@@ -41,16 +41,19 @@ final class MappingAwareEntityGraphCopier {
         EntityMetadata<Object> metadata = metadataFactory.getEntityMetadata(entityType(source));
         Object target = instantiate(metadata.entityType());
         copies.put(source, target);
-        Map<PersistentAttributeAccess, List<PersistentProperty>> embedded = new LinkedHashMap<>();
+        Map<EmbeddedHostKey, List<PersistentProperty>> embedded = new LinkedHashMap<>();
         for (PersistentProperty property : metadata.properties()) {
             if (property.embedded()) {
-                embedded.computeIfAbsent(property.embeddedHostAccessPath().get(0), ignored -> new ArrayList<>()).add(property);
+                PersistentAttributeAccess root = property.embeddedHostAccessPath().get(0);
+                embedded.computeIfAbsent(EmbeddedHostKey.of(root), ignored -> new ArrayList<>()).add(property);
             } else {
                 copyProperty(source, target, property, copies);
             }
         }
-        for (Map.Entry<PersistentAttributeAccess, List<PersistentProperty>> entry : embedded.entrySet())
-            copyEmbedded(source, target, entry.getKey(), entry.getValue(), copies);
+        for (List<PersistentProperty> properties : embedded.values()) {
+            PersistentAttributeAccess root = properties.get(0).embeddedHostAccessPath().get(0);
+            copyEmbedded(source, target, root, properties, copies);
+        }
         return target;
     }
 
@@ -72,21 +75,46 @@ final class MappingAwareEntityGraphCopier {
 
     private void copyEmbedded(Object source, Object target, PersistentAttributeAccess root,
             List<PersistentProperty> properties, IdentityHashMap<Object, Object> copies) {
-        if (root.read(source) == null) return;
+        root.write(target, copyEmbeddedHost(source, source, root, 0, properties, copies));
+    }
+
+    private Object copyEmbeddedHost(Object source, Object sourceHolder, PersistentAttributeAccess host, int depth,
+            List<PersistentProperty> properties, IdentityHashMap<Object, Object> copies) {
+        Object sourceHost = host.read(sourceHolder);
+        if (sourceHost == null) return null;
+        Map<EmbeddedHostKey, List<PersistentProperty>> nested = new LinkedHashMap<>();
+        List<PersistentProperty> direct = new ArrayList<>();
         Map<String, Object> values = new LinkedHashMap<>();
         for (PersistentProperty property : properties) {
-            Object value = property.read(source);
-            values.put(property.leafName(), copyScalar(property.toPropertyValue(property.toColumnValue(value)), copies));
+            List<PersistentAttributeAccess> path = property.embeddedHostAccessPath();
+            if (path.size() == depth + 1) {
+                direct.add(property);
+                Object value = property.read(source);
+                values.put(property.leafName(),
+                        copyScalar(property.toPropertyValue(property.toColumnValue(value)), copies));
+            } else {
+                PersistentAttributeAccess child = path.get(depth + 1);
+                nested.computeIfAbsent(EmbeddedHostKey.of(child), ignored -> new ArrayList<>()).add(property);
+            }
+        }
+        for (List<PersistentProperty> childProperties : nested.values()) {
+            PersistentAttributeAccess child = childProperties.get(0).embeddedHostAccessPath().get(depth + 1);
+            values.put(child.name(), copyEmbeddedHost(source, sourceHost, child, depth + 1, childProperties, copies));
         }
         Object embedded;
-        if (root.javaType().isRecord()) {
-            embedded = constructRecord(root.javaType(), values, copies, root.read(source));
+        if (host.javaType().isRecord()) {
+            embedded = constructRecord(host.javaType(), values, copies, sourceHost);
         } else {
-            embedded = instantiate(root.javaType());
-            for (PersistentProperty property : properties)
+            embedded = instantiate(host.javaType());
+            copies.put(sourceHost, embedded);
+            for (PersistentProperty property : direct)
                 property.writeEmbeddedLeaf(embedded, values.get(property.leafName()));
+            for (List<PersistentProperty> childProperties : nested.values()) {
+                PersistentAttributeAccess child = childProperties.get(0).embeddedHostAccessPath().get(depth + 1);
+                childProperties.get(0).writeEmbeddedHost(embedded, depth + 1, values.get(child.name()));
+            }
         }
-        root.write(target, embedded);
+        return embedded;
     }
 
     private Object copyEntityCollection(Object source, IdentityHashMap<Object, Object> copies) {
@@ -220,6 +248,12 @@ final class MappingAwareEntityGraphCopier {
         return type.isPrimitive() || type.isEnum() || type == String.class || type == Boolean.class || type == Character.class
                 || Number.class.isAssignableFrom(type) || type == java.util.UUID.class || type == Class.class
                 || type.getPackageName().startsWith("java.time");
+    }
+
+    private record EmbeddedHostKey(Class<?> declaringType, String name) {
+        private static EmbeddedHostKey of(PersistentAttributeAccess access) {
+            return new EmbeddedHostKey(access.declaringType(), access.name());
+        }
     }
 
     @SuppressWarnings("unchecked") private static <T> Class<T> entityType(Object entity) { return (Class<T>) entity.getClass(); }

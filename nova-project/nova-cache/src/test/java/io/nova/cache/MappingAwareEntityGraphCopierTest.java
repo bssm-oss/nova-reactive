@@ -12,6 +12,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Converter;
 import jakarta.persistence.Converts;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -32,6 +34,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class MappingAwareEntityGraphCopierTest {
 
@@ -97,6 +100,42 @@ class MappingAwareEntityGraphCopierTest {
         assertEquals(1, copy.nameSetterCalls, "PROPERTY mapping must reconstruct through the JavaBean setter");
         assertEquals("new-instance", copy.unmanagedMarker,
                 "unmanaged final state must not be reflectively copied into cache snapshots");
+    }
+
+    @Test
+    void reconstructsNestedMutableEmbeddedHostsAtTheirOwnDepth() {
+        MutableEmbeddedOwner source = new MutableEmbeddedOwner(6L,
+                new MutableAddress("HQ", new Geo("KR", "Seoul")));
+
+        MutableEmbeddedOwner copy = copier.copy(source);
+
+        assertNotSame(source.address, copy.address);
+        assertEquals("HQ", copy.address.label);
+        assertNotSame(source.address.geo, copy.address.geo);
+        assertEquals(new Geo("KR", "Seoul"), copy.address.geo);
+    }
+
+    @Test
+    void reconstructsNestedRecordEmbeddedHostsAtTheirOwnDepth() {
+        RecordEmbeddedOwner source = new RecordEmbeddedOwner(7L,
+                new RecordAddress("Remote", new Geo("US", "Austin")));
+
+        RecordEmbeddedOwner copy = copier.copy(source);
+
+        assertNotSame(source.address, copy.address);
+        assertEquals("Remote", copy.address.label());
+        assertNotSame(source.address.geo(), copy.address.geo());
+        assertEquals(new Geo("US", "Austin"), copy.address.geo());
+    }
+
+    @Test
+    void overwritesConstructorDefaultWhenEmbeddedSourceIsNull() {
+        DefaultEmbeddedOwner source = new DefaultEmbeddedOwner(8L);
+        source.address = null;
+
+        DefaultEmbeddedOwner copy = copier.copy(source);
+
+        assertNull(copy.address);
     }
 
     @Test
@@ -298,6 +337,79 @@ class MappingAwareEntityGraphCopierTest {
         public <T> T decode(String json, Class<T> targetType) {
             String[] parts = json.split(":");
             return targetType.cast(new Preferences(parts[0], Integer.parseInt(parts[1])));
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_copy_mutable_embedded_owner")
+    static class MutableEmbeddedOwner {
+        @Id
+        private Long id;
+        @Embedded
+        private MutableAddress address;
+
+        MutableEmbeddedOwner() {
+        }
+
+        MutableEmbeddedOwner(Long id, MutableAddress address) {
+            this.id = id;
+            this.address = address;
+        }
+    }
+
+    @Embeddable
+    static class MutableAddress {
+        private String label;
+        @Embedded
+        private Geo geo;
+
+        MutableAddress() {
+        }
+
+        MutableAddress(String label, Geo geo) {
+            this.label = label;
+            this.geo = geo;
+        }
+    }
+
+    @Embeddable
+    record RecordAddress(String label, @Embedded Geo geo) {
+    }
+
+    @Embeddable
+    record Geo(String country, String city) {
+    }
+
+    @Entity
+    @Table(name = "cache_copy_record_embedded_owner")
+    static class RecordEmbeddedOwner {
+        @Id
+        private Long id;
+        @Embedded
+        private RecordAddress address;
+
+        RecordEmbeddedOwner() {
+        }
+
+        RecordEmbeddedOwner(Long id, RecordAddress address) {
+            this.id = id;
+            this.address = address;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_copy_default_embedded_owner")
+    static class DefaultEmbeddedOwner {
+        @Id
+        private Long id;
+        @Embedded
+        private MutableAddress address = new MutableAddress("constructor-default", new Geo("KR", "Seoul"));
+
+        DefaultEmbeddedOwner() {
+        }
+
+        DefaultEmbeddedOwner(Long id) {
+            this.id = id;
         }
     }
 }
