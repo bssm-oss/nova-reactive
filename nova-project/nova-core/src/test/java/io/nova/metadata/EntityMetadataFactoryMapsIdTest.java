@@ -1,6 +1,9 @@
 package io.nova.metadata;
 
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.Embeddable;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -91,6 +94,40 @@ class EntityMetadataFactoryMapsIdTest {
         assertTrue(error.getMessage().contains("@MapsId"), error.getMessage());
         assertTrue(error.getMessage().contains("composite-key associated")
                 || error.getMessage().contains("single @Id"), error.getMessage());
+    }
+
+    @Test
+    void acceptsNamedMapsIdComponentForFlatRecordEmbeddedIdWithFieldAccess() {
+        EntityMetadata<RecordFieldOwner> owner = factory.getEntityMetadata(RecordFieldOwner.class);
+
+        PersistentProperty parent = owner.findProperty("parent").orElseThrow();
+        assertTrue(parent.mapsId());
+        assertEquals("parentRef", parent.mapsIdValue());
+    }
+
+    @Test
+    void acceptsNamedMapsIdComponentForFlatRecordEmbeddedIdWithPropertyAccess() {
+        EntityMetadata<RecordPropertyOwner> owner = factory.getEntityMetadata(RecordPropertyOwner.class);
+
+        PersistentProperty parent = owner.findProperty("parent").orElseThrow();
+        assertTrue(parent.mapsId());
+        assertEquals("parentRef", parent.mapsIdValue());
+    }
+
+    @Test
+    void rejectsWholeKeyMapsIdForRecordEmbeddedId() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(RecordWholeKeyOwner.class));
+
+        assertTrue(error.getMessage().contains("record identifiers support only"), error.getMessage());
+    }
+
+    @Test
+    void rejectsNamedMapsIdComponentForNestedRecordEmbeddedId() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(NestedRecordOwner.class));
+
+        assertTrue(error.getMessage().contains("simple (non-embedded)"), error.getMessage());
     }
 
     @Test
@@ -267,5 +304,78 @@ class EntityMetadataFactoryMapsIdTest {
         @ManyToOne
         @MapsId("orderRef")
         CompositeKeyTarget target;
+    }
+
+    @Embeddable
+    record FlatRecordId(Long parentRef, Long localRef) {
+    }
+
+    @Entity
+    @Table(name = "maps_id_record_field_owner")
+    static class RecordFieldOwner {
+        @EmbeddedId
+        FlatRecordId id;
+
+        @ManyToOne
+        @MapsId("parentRef")
+        Master parent;
+    }
+
+    @Entity
+    @Table(name = "maps_id_record_property_owner")
+    @Access(AccessType.PROPERTY)
+    static class RecordPropertyOwner {
+        private FlatRecordId id;
+        private Master parent;
+
+        @EmbeddedId
+        FlatRecordId getId() {
+            return id;
+        }
+
+        void setId(FlatRecordId id) {
+            this.id = id;
+        }
+
+        @ManyToOne
+        @MapsId("parentRef")
+        Master getParent() {
+            return parent;
+        }
+
+        void setParent(Master parent) {
+            this.parent = parent;
+        }
+    }
+
+    @Entity
+    @Table(name = "maps_id_record_whole_key_owner")
+    static class RecordWholeKeyOwner {
+        @EmbeddedId
+        FlatRecordId id;
+
+        @ManyToOne
+        @MapsId
+        Master parent;
+    }
+
+    @Embeddable
+    static class NestedIdPart {
+        Long parentRef;
+    }
+
+    @Embeddable
+    record NestedRecordId(@Embedded NestedIdPart parent, Long localRef) {
+    }
+
+    @Entity
+    @Table(name = "maps_id_nested_record_owner")
+    static class NestedRecordOwner {
+        @EmbeddedId
+        NestedRecordId id;
+
+        @ManyToOne
+        @MapsId("parent")
+        Master parent;
     }
 }

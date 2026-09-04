@@ -27,8 +27,10 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -36,16 +38,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * in-memory R2DBC driver와 end-to-end로 동작하는지 검증한다.
  *
  * <p>H2 {@code CREATE ALIAS}로 Java 메서드를 result-set 프로시저로 등록한 뒤, IN 파라미터를 바인딩해 CALL 하고
- * 결과 행을 엔티티/커스텀 매퍼로 매핑한다. r2dbc-h2 driver는 출력 파라미터를 지원하지 않으므로
- * OUT/INOUT/REF_CURSOR는 실행 전에 {@link StoredProcedureException}으로 fail-fast 한다.
+ * 결과 행을 엔티티/커스텀 매퍼로 매핑한다. JPA SPI가 출력 파라미터 선언을 모델링하더라도 Nova/R2DBC와
+ * r2dbc-h2는 이를 이식성 있게 노출하지 않으므로 OUT/INOUT/REF_CURSOR는 native 작업 전에
+ * {@link StoredProcedureException}으로 fail-fast 한다.
  */
 class StoredProcedureIntegrationTest {
+
+    private static final AtomicInteger FIND_EXPENSIVE_CALLS = new AtomicInteger();
 
     private H2IntegrationTestSupport support;
     private NamedStoredProcedureRegistry registry;
 
     @BeforeEach
     void setUp() {
+        FIND_EXPENSIVE_CALLS.set(0);
         support = H2IntegrationTestSupport.create();
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
@@ -102,6 +108,29 @@ class StoredProcedureIntegrationTest {
     }
 
     @Test
+    void invalidBindingsNeverInvokeH2Alias() {
+        ReactiveStoredProcedureQuery<?> query = registry.createNamedStoredProcedureQuery("Widget.findExpensive");
+
+        assertThrows(StoredProcedureException.class, () -> query.setParameter(" ", new BigDecimal("1")));
+        assertThrows(StoredProcedureException.class, () -> query.setParameter("unknown", new BigDecimal("1")));
+        assertThrows(StoredProcedureException.class, () -> query.setParameter(0, new BigDecimal("1")));
+        assertThrows(StoredProcedureException.class, () -> query.setParameter(2, new BigDecimal("1")));
+        assertThrows(StoredProcedureException.class, () -> query.setParameter("minPrice", "1"));
+
+        assertEquals(0, FIND_EXPENSIVE_CALLS.get());
+    }
+
+    @Test
+    void declaredNullUsesTypedR2dbcBindingWithH2Alias() {
+        StepVerifier.create(
+                        registry.createNamedStoredProcedureQuery("Widget.findExpensive")
+                                .setParameter("minPrice", null)
+                                .getResultList())
+                .verifyComplete();
+        assertTrue(FIND_EXPENSIVE_CALLS.get() > 0);
+    }
+
+    @Test
     void outParameterFailsFastAtExecution() {
         // r2dbc-h2 는 출력 파라미터를 지원하지 않는다 — OUT 파라미터 선언은 CALL 발행 전에 fail-fast 한다.
         StepVerifier.create(
@@ -113,6 +142,7 @@ class StoredProcedureIntegrationTest {
                     assertTrue(error.getMessage().contains("does not support output parameters"),
                             "message was: " + error.getMessage());
                 });
+        assertEquals(0, FIND_EXPENSIVE_CALLS.get());
     }
 
     // ------------------------------------------------------------------------------------
@@ -128,6 +158,7 @@ class StoredProcedureIntegrationTest {
          * {@link Connection}이면 현재 커넥션을 자동 주입하므로 CALL 인자는 {@code minPrice} 하나다.
          */
         public static ResultSet findExpensive(Connection conn, BigDecimal minPrice) throws SQLException {
+            FIND_EXPENSIVE_CALLS.incrementAndGet();
             PreparedStatement statement = conn.prepareStatement(
                     "SELECT \"id\", \"name\", \"price\" FROM \"sp_widget\" WHERE \"price\" >= ? ORDER BY \"name\"");
             statement.setBigDecimal(1, minPrice);

@@ -68,18 +68,18 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | `@ManyToOne` / owning `@OneToOne` | ✅ | FK column type aligned to the referenced `@Id` storage type; owning `@OneToOne(orphanRemoval = true)` supports replacement, nulling, and owner deletion |
-| `@ManyToOne` / `@OneToOne` → **composite-key** target | ✅ | Multi-column FK (one column per referenced `@Id` component) + composite FK constraint |
+| `@ManyToOne` / `@OneToOne` → **composite-key** target | ✅ | Multi-column FK (one column per referenced `@Id` component) + composite FK constraint; PERSIST-only cascade probes every converted key component, inserts an absent complete-key target before its constrained owner, and leaves an existing target unhydrated/unmodified; MERGE cascade updates it |
 | inverse `@OneToOne` (`mappedBy`) | ✅ | Hydration only; `orphanRemoval` and mutating `PERSIST`/`MERGE`/`REMOVE`/`ALL` cascades fail fast |
 | `@OneToMany` (`cascade`, `orphanRemoval`, `@OrderColumn`, `@OrderBy`) | ✅ | |
-| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration; single-column IDs (including `UUID`) are encoded to referenced-`@Id` physical storage and decoded before lookup |
-| `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK) |
+| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Cycle-guarded cascade; join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration; single-column IDs (including `UUID`) are encoded to referenced-`@Id` physical storage and decoded before lookup |
+| `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK); PERSIST-only probes every id component, inserts an absent target before its link, and leaves an existing target unmodified; MERGE / ALL still save it. This is identical in stateless and persistence-session saves. |
 | `@ElementCollection` | ✅ | Basic / enum / `UUID` elements, mutable and record `@Embeddable` values, `Map` keys/values (including records), `@OrderColumn`, `List` |
 | `@MapKeyColumn` / `@MapKeyEnumerated` / `@MapKeyTemporal` / `@MapKeyClass` | ✅ | `@MapKeyClass` supports basic / enum / `@Embeddable` / single-`@Id` **entity** key classes (entity key stored as its `@Id` FK column, batch-hydrated); composite-`@Id` entity key classes fail-fast |
 | `@MapsId` (whole `@Id`) | ✅ | |
 | `@MapsId("component")` (one component of a composite `@Id`) | ✅ | Associated entity must have a single `@Id` |
 | `@JoinColumn` / `@JoinColumns` / `@ForeignKey` | ✅ | Composite FK, constraint-name length bounds, idempotent `ddl-auto=UPDATE` |
 | `@AssociationOverride` | ✅ | Remap the join column of an inherited to-one; overrides declared on an intermediate `@MappedSuperclass` are honored (most-derived declaration wins) |
-| `cascade` on to-one (`PERSIST` / `MERGE` / `REMOVE`) | ✅ | Cycle-guarded |
+| `cascade` on to-one (`PERSIST` / `MERGE` / `REMOVE`) | ✅ | Cycle-guarded; PERSIST-only does not update an existing complete composite-id target, while MERGE does |
 
 ## Fetching
 
@@ -105,7 +105,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Composite-key to-one in `WHERE` (`=` / `IS [NOT] NULL`, ordering `< <= > >=`, `IN`, `BETWEEN`), `GROUP BY` / `ORDER BY`, and scalar `SELECT` projection | ✅ | Scalar JPQL + Criteria; lexicographic multi-column expansion, single canonical component order. `IS NULL` requires every FK component null; `IS NOT NULL` accepts any non-null component, matching hydration. `SELECT c.parent` yields a target id-stub. `LIKE` / entity-returning-JPQL `WHERE` fail-fast |
 | `@NamedQuery` / `@NamedNativeQuery` | ✅ | Per-entity registry, duplicate-name fail-fast |
 | `@SqlResultSetMapping` (`@EntityResult` / `@FieldResult` / `@ConstructorResult` / `@ColumnResult`) | ✅ | Native-read-then-coerce (dialect-independent) |
-| `@StoredProcedureQuery` / `@NamedStoredProcedureQuery` | ⟳ | `IN` params + result sets. `OUT`/`INOUT`/`REF_CURSOR` fail-fast on r2dbc-h2 |
+| `@StoredProcedureQuery` / `@NamedStoredProcedureQuery` | ⟳ | Procedure names use conservative ASCII schema-qualified identifiers (`segment.segment`, each `[A-Za-z_][A-Za-z0-9_$]*`); invalid/blank/commented/quoted names fail at construction. Declared `IN` params + result sets; setters synchronously reject blank/unknown names, unknown 1-based positions, duplicate name/position addressing of one named slot, and incompatible non-null Java values (primitive declarations accept wrappers; `null` becomes a typed R2DBC binding when a type is declared). Duplicate declaration names fail at query construction. No coercion/default args/output API. R2DBC SPI 1.0 models `OUT`/`INOUT`, but not portable `REF_CURSOR`; Nova executor/result APIs plus the H2 baseline lack portable output support, so any output declaration fails before native work. |
 
 ## EntityManager / session
 
@@ -136,7 +136,7 @@ These declare cleanly but are rejected with a message until implemented — Nova
   `GROUP BY` / `ORDER BY`, and multi-column **joins** are supported.
 - A deeper subgraph declared **under** a composite-key to-one leaf inside a nested `EntityGraph`
   (the composite leaf itself is now hydrated at any depth).
-- Stored-procedure `OUT` / `INOUT` / `REF_CURSOR` parameters (r2dbc-h2 driver limitation).
+- Stored-procedure `OUT` / `INOUT` / `REF_CURSOR` output retrieval. R2DBC SPI 1.0 portably models `OUT`/`INOUT`, while `REF_CURSOR` is vendor-specific; Nova executor/result APIs plus the H2 baseline lack portable support for either form, so any such declaration fails before native work. Use `IN` parameters and a result set instead.
 - `@MapKeyClass` naming a **composite-`@Id`** entity key class (single-`@Id` entity and `@Embeddable` key classes are supported).
 - In-place mutation of a *loaded* referenced entity's `@Id` (JPA-forbidden) is not change-tracked.
 - Under a transaction-bound persistence session, moving an already-managed `@OneToMany` child between two
@@ -147,7 +147,10 @@ These declare cleanly but are rejected with a message until implemented — Nova
 - Under a session, removing a child from a non-`orphanRemoval` `@OneToMany` collection when the child's
   owning `@ManyToOne` foreign key is non-nullable (`optional = false` / `@JoinColumn(nullable = false)`) —
   nulling it would violate the column constraint. Use `orphanRemoval = true` or reparent explicitly instead.
-- Nested `@EmbeddedId` values and `@MapsId` targeting a record `@EmbeddedId` are rejected explicitly; flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported.
+- Nested `@EmbeddedId` values are rejected explicitly. A flat record `@EmbeddedId` supports
+  `@MapsId("component")` under FIELD or PROPERTY access only when the associated entity has one
+  `@Id`; whole-key `@MapsId`, nested record-id components, and composite-key association targets
+  remain rejected. Ordinary nested record `@Embedded` values are supported.
 - Owning `@OneToOne(orphanRemoval = true)` with `@MapsId` or a non-updatable join column is
   rejected. Support includes FIELD and PROPERTY access plus scalar/composite owner and target
   keys. The same-owner shared-reference guard is deliberately bounded; it does not discover
@@ -162,4 +165,4 @@ These declare cleanly but are rejected with a message until implemented — Nova
 > `BigDecimal` whose scale identity matters as an id, composite-id component, or relationship key;
 > use a round-trip-stable key and `compareTo` for numeric business equality.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.31.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.32.0`).

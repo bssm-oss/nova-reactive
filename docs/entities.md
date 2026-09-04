@@ -224,6 +224,11 @@ public static class Book {
 
 - For explicit fetch control, pass a `FetchGroup` to `findById(Class, ID, FetchGroup)` / `findAll(Class, FetchGroup)`. User-supplied and annotation-derived specs are deduped by `(childType, FK column)` with the user spec winning, so each child is fetched exactly once. Inside a transaction-bound persistence session, explicit `FetchGroup` and `EntityGraph` reads participate in the same identity map and dirty checking as ordinary reads, including runtime subtype state.
 - If the FK column seen by `@ManyToOne` clashes with another `@Column(name)` on the same entity, `EntityMetadataFactory` raises an explicit error rather than silently merging them.
+- On an owning to-one or `@ManyToMany` with `cascade = PERSIST`, a target with a complete
+  `@EmbeddedId` or `@IdClass` is checked by all id components before the owner/FK or link row is
+  written. An absent target is recursively persisted; an existing target is left untouched (no
+  target update or lifecycle callbacks). `MERGE` / `ALL`, generated ids, incomplete ids, and
+  single preassigned ids retain their normal cascade behavior.
 - Ordinary operations are stateless; an opt-in transaction-bound persistence session provides an identity map,
   dirty checking, and flush. There is no lazy proxy in either mode. For partial collections, drive `FetchGroup`
   explicitly. Collections omitted by a partial nested fetch remain unloaded and are never interpreted as
@@ -538,7 +543,7 @@ compatibility surface:
 | Composite-key to-one in `LIKE`, or an entity-returning JPQL `WHERE` predicate | Use a scalar projection or Criteria API; equality, null checks, ordering, `IN`, `BETWEEN`, grouping, and joins are supported. |
 | Nested `EntityGraph` below a composite-key to-one leaf | The composite leaf is hydrated, but a deeper subgraph below it is rejected. |
 | `@MapKeyClass` naming a composite-`@Id` entity key | Basic, enum, `@Embeddable`, and single-`@Id` entity key classes are supported. |
-| `@MapsId` targeting a record `@EmbeddedId`, or nested `@EmbeddedId` values | Flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported. |
+| `@MapsId` targeting a record `@EmbeddedId`, or nested `@EmbeddedId` values | A flat record `@EmbeddedId` supports `@MapsId("component")` only, when the associated entity has one scalar `@Id`. Nova rebuilds the complete record from its existing sibling values and the derived component; FIELD and PROPERTY roots are supported. Blank whole-key `@MapsId`, nested embedded id components, and composite-key association targets are rejected. Ordinary nested record `@Embedded` values are supported. |
 | Session-only collection reparenting without updating the owning `@ManyToOne` | Set the owning side explicitly; membership-only reparenting is rejected. A non-`orphanRemoval` removal with a non-nullable owning FK is likewise rejected. |
 
 `@OneToMany(orphanRemoval = true)` is supported. See the [JPA compatibility matrix](jpa-compatibility.md)

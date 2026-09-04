@@ -3867,10 +3867,11 @@ public final class EntityMetadataFactory {
      *       named 컴포넌트를 연관 엔티티 PK에서 파생한다. 마커는 컴포넌트 이름이다. 복합키 relation target
      *       (다중컬럼 FK)이 착지한 뒤이므로 이제 컴포넌트↔FK 매핑을 활용해 파생할 수 있다.</li>
      * </ul>
+     * Flat record {@code @EmbeddedId}는 named component 형태만 지원하며, 저장 시 전체 record를 재구성한다.
      * 다음은 fail-fast로 거부한다(조용한 무시 금지): {@code @MapsId("component")}인데 owner가 복합 {@code @Id}가
-     * 아니거나 named 컴포넌트가 존재하지 않는 경우, 단순 {@code @MapsId}인데 owner가 단일 {@code @Id}가 아닌 경우,
-     * 파생 대상 {@code @Id}(또는 named 컴포넌트)가 {@code @GeneratedValue}로 생성되는 경우(파생 식별자는
-     * application/연관-PK가 채우므로 양립 불가).
+     * 아니거나 named 컴포넌트가 존재하지 않는 경우, record id에 대한 단순 {@code @MapsId}, nested record id,
+     * 단순 {@code @MapsId}인데 owner가 단일 {@code @Id}가 아닌 경우, 파생 대상 {@code @Id}(또는 named
+     * 컴포넌트)가 {@code @GeneratedValue}로 생성되는 경우(파생 식별자는 application/연관-PK가 채우므로 양립 불가).
      */
     private static String resolveMapsIdMarker(Class<?> entityType, Field field) {
         return resolveMapsIdMarker(entityType, selectedAttribute(field));
@@ -3902,11 +3903,6 @@ public final class EntityMetadataFactory {
         boolean composite = embeddedId != null
                 || entityType.isAnnotationPresent(jakarta.persistence.IdClass.class)
                 || idFields.size() > 1;
-        if (embeddedId != null && embeddedId.javaType().isRecord()) {
-            throw new IllegalArgumentException(location
-                    + " uses @MapsId with record @EmbeddedId " + embeddedId.javaType().getName()
-                    + "; immutable record identifiers cannot be derived by mutation");
-        }
         if (value != null && !value.isBlank()) {
             // @MapsId("component"): owner는 복합 @Id여야 하고 named 컴포넌트가 존재해야 한다.
             if (!composite) {
@@ -3914,6 +3910,12 @@ public final class EntityMetadataFactory {
                         location
                                 + " @MapsId(\"" + value + "\") names an id component but the entity does not declare a"
                                 + " composite @Id (@EmbeddedId/@IdClass); use a simple @MapsId to derive the single @Id");
+            }
+            if (embeddedId != null && embeddedId.javaType().isRecord()
+                    && embeddedComponentAttributes(embeddedId.javaType(), embeddedId.accessType()).stream()
+                    .anyMatch(EntityMetadataFactory::isEmbeddedAttribute)) {
+                throw new IllegalArgumentException(location + " @MapsId(\"" + value + "\") requires a flat record"
+                        + " @EmbeddedId; nested embedded identifier components are not supported");
             }
             if (!compositeIdComponentExists(embeddedId, idFields, value)) {
                 throw new IllegalArgumentException(
@@ -3938,6 +3940,11 @@ public final class EntityMetadataFactory {
                                 + " entity is not supported; the associated entity must declare a single @Id");
             }
             return value;
+        }
+        if (embeddedId != null && embeddedId.javaType().isRecord()) {
+            throw new IllegalArgumentException(location + " uses @MapsId with record @EmbeddedId "
+                    + embeddedId.javaType().getName()
+                    + "; record identifiers support only @MapsId(\"component\")");
         }
         // 단순 @MapsId: 정확히 하나의 단일 @Id 필드여야 하고 @GeneratedValue가 없어야 한다.
         if (composite) {

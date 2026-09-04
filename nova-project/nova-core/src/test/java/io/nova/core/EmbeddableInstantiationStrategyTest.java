@@ -10,6 +10,7 @@ import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.Transient;
@@ -81,10 +82,30 @@ class EmbeddableInstantiationStrategyTest {
     }
 
     @Test
-    void rejectsMapsIdMutationOfRecordEmbeddedIdAtMetadataBuild() {
+    void acceptsNamedMapsIdComponentOfFlatRecordEmbeddedId() {
+        EntityMetadata<DerivedRecordIdEntity> metadata = factory.getEntityMetadata(DerivedRecordIdEntity.class);
+        assertEquals("parentId", metadata.mapsIdProperty().orElseThrow().mapsIdValue());
+    }
+
+    @Test
+    void rejectsWholeKeyMapsIdForRecordEmbeddedId() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> factory.getEntityMetadata(DerivedRecordIdEntity.class));
-        assertTrue(error.getMessage().contains("immutable record identifiers"));
+                () -> factory.getEntityMetadata(WholeKeyDerivedRecordIdEntity.class));
+        assertTrue(error.getMessage().contains("only @MapsId(\"component\")"));
+    }
+
+    @Test
+    void rejectsRecordMapsIdComponentFromCompositeTarget() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(CompositeTargetDerivedRecordIdEntity.class));
+        assertTrue(error.getMessage().contains("composite-key associated"));
+    }
+
+    @Test
+    void rejectsNestedRecordEmbeddedIdBeforeMapsIdCanDeriveIt() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> factory.getEntityMetadata(NestedDerivedRecordIdEntity.class));
+        assertTrue(error.getMessage().contains("@EmbeddedId component"));
     }
 
     @Test
@@ -171,7 +192,38 @@ class EmbeddableInstantiationStrategyTest {
     @Entity
     static class DerivedRecordIdEntity {
         @jakarta.persistence.EmbeddedId DerivedId id;
-        @ManyToOne @MapsId("parentId") DerivedParent parent;
+        @ManyToOne
+        @MapsId("parentId")
+        @JoinColumn(name = "parent_fk")
+        DerivedParent parent;
+    }
+
+    @Entity
+    static class WholeKeyDerivedRecordIdEntity {
+        @jakarta.persistence.EmbeddedId DerivedId id;
+        @ManyToOne @MapsId DerivedParent parent;
+    }
+
+    @Entity
+    static class CompositeDerivedParent {
+        @Id Long first;
+        @Id Long second;
+    }
+
+    @Entity
+    static class CompositeTargetDerivedRecordIdEntity {
+        @jakarta.persistence.EmbeddedId DerivedId id;
+        @ManyToOne @MapsId("parentId") CompositeDerivedParent parent;
+    }
+
+    @Embeddable
+    record NestedDerivedId(@Embedded DerivedId parent, String local) {
+    }
+
+    @Entity
+    static class NestedDerivedRecordIdEntity {
+        @jakarta.persistence.EmbeddedId NestedDerivedId id;
+        @ManyToOne @MapsId("local") DerivedParent parent;
     }
 
     @Embeddable

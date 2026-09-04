@@ -16,6 +16,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.NamedStoredProcedureQuery;
 import jakarta.persistence.ParameterMode;
+import io.r2dbc.spi.Parameter;
 import jakarta.persistence.StoredProcedureParameter;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -27,13 +28,15 @@ import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link NamedStoredProcedureRegistry}/{@link ReactiveStoredProcedureQuery} 단위 테스트 —
  * {@code @NamedStoredProcedureQuery} 스캔·등록, 이름 충돌 거부, CALL 렌더링과 IN 바인딩 순서(named/positional),
- * 미지원 OUT/INOUT/REF_CURSOR fail-fast, 바인딩 누락 fail-fast, {@code @SqlResultSetMapping} 참조 안내.
+ * setter의 이름·위치·Java 타입 검증, 미지원 OUT/INOUT/REF_CURSOR fail-fast, 바인딩 누락 fail-fast,
+ * {@code @SqlResultSetMapping} 참조 안내.
  */
 class NamedStoredProcedureRegistryTest {
 
@@ -111,16 +114,167 @@ class NamedStoredProcedureRegistryTest {
     }
 
     @Test
+    void constructionRejectsUnsafeProcedureNamesBeforeNativeOperation() {
+        assertThrows(StoredProcedureException.class,
+                () -> new ReactiveStoredProcedureQuery<>(null, List.of(), row -> row, operations, dialect));
+        for (String name : List.of(" ", "proc; drop", "proc--comment", "schema.\"proc\"", "schema..proc")) {
+            assertThrows(StoredProcedureException.class,
+                    () -> new ReactiveStoredProcedureQuery<>(
+                            name,
+                            List.of(new StoredProcedureParameterDefinition("value", ParameterMode.IN, Integer.class)),
+                            row -> row,
+                            operations,
+                            dialect));
+        }
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+
+        ReactiveStoredProcedureQuery<Object> query = new ReactiveStoredProcedureQuery<>(
+                "reporting.monthly_total",
+                List.of(new StoredProcedureParameterDefinition("value", ParameterMode.IN, Integer.class)),
+                row -> row,
+                operations,
+                dialect);
+        query.setParameter("value", 1).getResultList().collectList().block();
+        assertEquals("CALL reporting.monthly_total($1)", operations.lastQuery.get().sql());
+    }
+
+    @Test
+    void constructionRejectsDuplicateDeclaredNames() {
+        StoredProcedureException ex = assertThrows(StoredProcedureException.class,
+                () -> new ReactiveStoredProcedureQuery<>(
+                        "duplicate_names",
+                        List.of(
+                                new StoredProcedureParameterDefinition("value", ParameterMode.IN, Integer.class),
+                                new StoredProcedureParameterDefinition("value", ParameterMode.IN, Integer.class)),
+                        row -> row,
+                        operations,
+                        dialect));
+        assertTrue(ex.getMessage().contains("Duplicate stored procedure parameter name 'value'"));
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+    }
+
+    @Test
+    void setterRejectsBlankOrUnknownNamesBeforeNativeOperation() {
+        NamedStoredProcedureRegistry registry = registry(Person.class);
+        ReactiveStoredProcedureQuery<?> query = registry.createNamedStoredProcedureQuery("Person.compute");
+
+        assertThrows(StoredProcedureException.class, () -> query.setParameter(" ", 1));
+        assertThrows(StoredProcedureException.class, () -> query.setParameter("missing", 1));
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+
+        query.setParameter("a", 1).setParameter("b", 2).getResultList().collectList().block();
+        assertEquals(List.of(1, 2), operations.lastQuery.get().bindings());
+    }
+
+    @Test
+    void setterRejectsUnknownOneBasedPositionsBeforeNativeOperation() {
+        NamedStoredProcedureRegistry registry = registry(Person.class);
+        ReactiveStoredProcedureQuery<?> query = registry.createNamedStoredProcedureQuery("Person.compute");
+
+        assertThrows(StoredProcedureException.class, () -> query.setParameter(0, 1));
+        assertThrows(StoredProcedureException.class, () -> query.setParameter(3, 1));
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+
+        query.setParameter(1, 1).setParameter(2, 2).getResultList().collectList().block();
+        assertEquals(List.of(1, 2), operations.lastQuery.get().bindings());
+    }
+
+    @Test
+    void setterRejectsNamedThenPositionalRebindingBeforeNativeOperation() {
+        NamedStoredProcedureRegistry registry = registry(Person.class);
+        ReactiveStoredProcedureQuery<?> query = registry.createNamedStoredProcedureQuery("Person.compute");
+
+        query.setParameter("a", 1);
+        assertThrows(StoredProcedureException.class, () -> query.setParameter(1, 2));
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+
+        query.setParameter("b", 3).getResultList().collectList().block();
+        assertEquals(List.of(1, 3), operations.lastQuery.get().bindings());
+    }
+
+    @Test
+    void setterRejectsPositionalThenNamedRebindingBeforeNativeOperation() {
+        NamedStoredProcedureRegistry registry = registry(Person.class);
+        ReactiveStoredProcedureQuery<?> query = registry.createNamedStoredProcedureQuery("Person.compute");
+
+        query.setParameter(1, 1);
+        assertThrows(StoredProcedureException.class, () -> query.setParameter("a", 2));
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+
+        query.setParameter(2, 3).getResultList().collectList().block();
+        assertEquals(List.of(1, 3), operations.lastQuery.get().bindings());
+    }
+
+    @Test
+    void setterAcceptsNullAndBoxesPrimitiveDeclaredTypesWithoutCoercion() {
+        ReactiveStoredProcedureQuery<Object> query = new ReactiveStoredProcedureQuery<>(
+                "primitive_input",
+                List.of(new StoredProcedureParameterDefinition("number", ParameterMode.IN, int.class)),
+                row -> row,
+                operations,
+                dialect);
+
+        assertThrows(StoredProcedureException.class, () -> query.setParameter("number", "1"));
+        assertNull(operations.lastQuery.get());
+        query.setParameter(1, Integer.valueOf(7)).getResultList().collectList().block();
+        assertEquals(7, operations.lastQuery.get().bindings().get(0));
+
+        ReactiveStoredProcedureQuery<Object> nullQuery = new ReactiveStoredProcedureQuery<>(
+                "primitive_input",
+                List.of(new StoredProcedureParameterDefinition("number", ParameterMode.IN, int.class)),
+                row -> row,
+                operations,
+                dialect);
+        nullQuery.setParameter("number", null).getResultList().collectList().block();
+        assertTrue(operations.lastQuery.get().bindings().get(0) instanceof Parameter);
+
+        ReactiveStoredProcedureQuery<Object> untypedNullQuery = new ReactiveStoredProcedureQuery<>(
+                "untyped_input",
+                List.of(new StoredProcedureParameterDefinition("value", ParameterMode.IN, null)),
+                row -> row,
+                operations,
+                dialect);
+        untypedNullQuery.setParameter("value", null).getResultList().collectList().block();
+        assertNull(operations.lastQuery.get().bindings().get(0));
+    }
+
+    @Test
     void outParameterFailsFast() {
         NamedStoredProcedureRegistry registry = registry(ProcHolder.class);
         StoredProcedureException ex = assertThrows(StoredProcedureException.class,
                 () -> registry.createNamedStoredProcedureQuery("Proc.withOut", row -> row)
-                        .setParameter("in", 1)
                         .getResultList()
                         .collectList()
                         .block());
         assertTrue(ex.getMessage().contains("does not support output parameters"));
         assertTrue(ex.getMessage().contains("OUT"));
+        assertNull(operations.lastQuery.get());
+    }
+
+    @Test
+    void everyOutputModeFailsBeforeMissingBindingsOrNativeOperation() {
+        for (ParameterMode mode : List.of(ParameterMode.OUT, ParameterMode.INOUT, ParameterMode.REF_CURSOR)) {
+            ReactiveStoredProcedureQuery<Object> query = new ReactiveStoredProcedureQuery<>(
+                    "output_" + mode,
+                    List.of(
+                            new StoredProcedureParameterDefinition("input", ParameterMode.IN, Integer.class),
+                            new StoredProcedureParameterDefinition("output", mode, Integer.class)),
+                    row -> row,
+                    operations,
+                    dialect);
+
+            StoredProcedureException ex = assertThrows(StoredProcedureException.class,
+                    () -> query.getResultList().collectList().block());
+            assertTrue(ex.getMessage().contains(mode.name()));
+            assertNull(operations.lastQuery.get());
+            assertNull(operations.lastExecute.get());
+        }
     }
 
     @Test
