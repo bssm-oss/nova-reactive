@@ -115,7 +115,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `LockModeType` (`PESSIMISTIC_WRITE`/`READ`, `OPTIMISTIC`, `FORCE_INCREMENT`) | ✅ | `find` / `lock` / `getLockMode` overloads |
 | `FlushModeType` | ✅ | Propagated via Reactor `Context` |
 | Transaction-bound persistence session (identity map + dirty checking + flush) | ✅ | Opt-in; collection diff-at-flush. A successful `remove` retains an internal tombstone until `clear`: it is excluded from scalar/collection flush and `contains`/lock management, and re-persisting that identity in the same session fails explicitly. Lifecycle remove callbacks run on subscription, with `@PostRemove` after successful DML. |
-| 2nd-level cache (`nova-cache`, `@Cacheable` / `SharedCacheMode`) | ✅ | Managed transactions bypass shared values and replay conservative invalidation after physical commit; read-through + query cache remain enabled outside transactions |
+| 2nd-level cache (`nova-cache`, `@Cacheable` / `SharedCacheMode`) | ✅ | Each entity/query-cache hit is a fresh detached mapped graph (shared references and cycles are preserved only within that hit); every successful wrapped write globally invalidates graph-bearing entity and query caches, including non-cacheable associated writes. Managed transactions bypass shared values and replay that invalidation after physical commit. |
 
 ## Spring
 

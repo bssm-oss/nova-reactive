@@ -18,11 +18,14 @@ import io.nova.sql.SqlStatement;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
 import jakarta.persistence.Cacheable;
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -33,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -287,6 +291,53 @@ class SecondLevelCacheH2IntegrationTest {
                 "nested invalidation must still run after the outer physical commit");
     }
 
+    @Test
+    void nonCacheableAssociatedEntityWriteEvictsCacheablePropertyOwner() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(PropertyPart.class, PropertyOwner.class).block();
+        PropertyPart part = w.cached().save(new PropertyPart("alpha")).block();
+        Long ownerId = w.cached().save(new PropertyOwner("owner", part)).block().id();
+
+        PropertyOwner first = w.cached().findById(PropertyOwner.class, ownerId).block();
+        first.getPart().setName("mutated");
+        long beforeHit = w.listener().selects();
+        PropertyOwner hit = w.cached().findById(PropertyOwner.class, ownerId).block();
+        assertEquals(beforeHit, w.listener().selects(), "second owner lookup must be a cache hit");
+        assertNotSame(first, hit);
+        assertNotSame(first.getPart(), hit.getPart());
+        assertEquals("alpha", hit.getPart().getName(), "a hit must expose a fresh detached association graph");
+
+        w.cached().save(new PropertyPart(part.id(), "beta")).block();
+        long beforeReload = w.listener().selects();
+        PropertyOwner reloaded = w.cached().findById(PropertyOwner.class, ownerId).block();
+        assertTrue(w.listener().selects() > beforeReload,
+                "a non-cacheable associated write must clear cached owner graphs");
+        assertEquals("beta", reloaded.getPart().getName());
+    }
+
+    @Test
+    void associatedWriteReplaysGlobalEvictionAfterCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(PropertyPart.class, PropertyOwner.class).block();
+        PropertyPart part = w.cached().save(new PropertyPart("alpha")).block();
+        Long ownerId = w.cached().save(new PropertyOwner("owner", part)).block().id();
+        PropertyOwner stale = w.cached().findById(PropertyOwner.class, ownerId).block();
+        CacheKey ownerKey = new CacheKey(PropertyOwner.class.getName(), PropertyOwner.class, ownerId);
+
+        w.cached().inTransaction(ignored -> w.cached().save(new PropertyPart(part.id(), "beta"))
+                .then(w.cacheProvider().getCache(PropertyOwner.class.getName()).put(ownerKey, stale))).block();
+
+        long beforeReload = w.listener().selects();
+        PropertyOwner reloaded = w.cached().findById(PropertyOwner.class, ownerId).block();
+        assertTrue(w.listener().selects() > beforeReload,
+                "physical commit must replay a global clear after a stale owner is repopulated in the transaction");
+        assertEquals("beta", reloaded.getPart().getName());
+    }
+
     // --- SQL 실행 카운터 -----------------------------------------------------
 
     static final class SelectCountingListener implements SqlExecutionListener {
@@ -344,6 +395,84 @@ class SecondLevelCacheH2IntegrationTest {
 
         String name() {
             return name;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_property_part")
+    static class PropertyPart {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+
+        PropertyPart() {
+        }
+
+        PropertyPart(String name) {
+            this.name = name;
+        }
+
+        PropertyPart(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        Long id() {
+            return id;
+        }
+
+        String getName() {
+            return name;
+        }
+
+        void setName(String name) {
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_property_owner")
+    @Cacheable
+    @Access(AccessType.PROPERTY)
+    static class PropertyOwner {
+        private Long id;
+        private String name;
+        private PropertyPart part;
+
+        PropertyOwner() {
+        }
+
+        PropertyOwner(String name, PropertyPart part) {
+            this.name = name;
+            this.part = part;
+        }
+
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        Long id() {
+            return id;
+        }
+
+        void setId(Long id) {
+            this.id = id;
+        }
+
+        String getName() {
+            return name;
+        }
+
+        void setName(String name) {
+            this.name = name;
+        }
+
+        @ManyToOne
+        PropertyPart getPart() {
+            return part;
+        }
+
+        void setPart(PropertyPart part) {
+            this.part = part;
         }
     }
 }

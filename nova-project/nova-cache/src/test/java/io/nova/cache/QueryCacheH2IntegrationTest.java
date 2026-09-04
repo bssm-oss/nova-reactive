@@ -22,6 +22,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -155,6 +156,30 @@ class QueryCacheH2IntegrationTest {
         assertEquals("alpha", after.get(0).name());
     }
 
+    @Test
+    void associatedWriteInvalidatesCachedOwnerQuery() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(QueryPart.class, QueryOwner.class).block();
+        QueryPart part = w.cached().save(new QueryPart("alpha")).block();
+        w.cached().save(new QueryOwner("owner", part)).block();
+
+        QuerySpec all = QuerySpec.empty();
+        w.cached().findAll(QueryOwner.class, all).collectList().block();
+        long afterWarm = w.listener().selects();
+        w.cached().findAll(QueryOwner.class, all).collectList().block();
+        assertEquals(afterWarm, w.listener().selects(), "second owner query must use its warmed query cache entry");
+
+        w.cached().save(new QueryPart(part.id(), "beta")).block();
+        long beforeReload = w.listener().selects();
+        List<QueryOwner> reloaded = w.cached().findAll(QueryOwner.class, all).collectList().block();
+
+        assertTrue(w.listener().selects() > beforeReload,
+                "a non-cacheable associated write must globally invalidate cached owner queries");
+        assertEquals("beta", reloaded.get(0).part.name);
+    }
+
     // --- SQL 실행 카운터 -----------------------------------------------------
 
     static final class SelectCountingListener implements SqlExecutionListener {
@@ -199,6 +224,51 @@ class QueryCacheH2IntegrationTest {
 
         String name() {
             return name;
+        }
+    }
+
+    @Entity
+    @Table(name = "query_cache_part")
+    static class QueryPart {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+
+        QueryPart() {
+        }
+
+        QueryPart(String name) {
+            this.name = name;
+        }
+
+        QueryPart(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        Long id() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "query_cache_owner")
+    @Cacheable
+    static class QueryOwner {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+        @ManyToOne
+        private QueryPart part;
+
+        QueryOwner() {
+        }
+
+        QueryOwner(String name, QueryPart part) {
+            this.name = name;
+            this.part = part;
         }
     }
 }

@@ -11,6 +11,7 @@ import jakarta.persistence.Cacheable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -25,6 +26,7 @@ import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -103,7 +105,7 @@ class QueryCacheDecoratorTest {
     }
 
     @Test
-    void writeToOtherTypeDoesNotInvalidateUnrelatedQueryCache() {
+    void writeToOtherTypeConservativelyInvalidatesGraphQueryCache() {
         CountingQueryOps delegate = new CountingQueryOps();
         delegate.seed(new Product(1L, "keyboard"));
         delegate.seed(new Ledger(1L, "acme"));
@@ -112,9 +114,33 @@ class QueryCacheDecoratorTest {
 
         ops.findAll(Product.class, spec).collectList().block();  // delegate #1, Product 쿼리 캐시 채움
         ops.save(new Ledger(2L, "globex")).block();              // 다른(비캐시) 타입 write
-        ops.findAll(Product.class, spec).collectList().block();  // Product 쿼리 캐시 여전히 히트
+        ops.findAll(Product.class, spec).collectList().block();  // graph cache global clear → delegate #2
 
-        assertEquals(1, delegate.findAllCalls.get(), "무관한 타입 write는 Product 쿼리 캐시를 건드리지 않아야 한다");
+        assertEquals(2, delegate.findAllCalls.get(),
+                "어떤 wrapped write든 연관 graph가 포함될 수 있으므로 모든 쿼리 캐시를 비워야 한다");
+    }
+
+    @Test
+    void queryCacheHitDeepCopiesTheWholeResultGraph() {
+        CountingQueryOps delegate = new CountingQueryOps();
+        QueryGraphOwner source = new QueryGraphOwner(1L, "owner");
+        QueryGraphChild child = new QueryGraphChild(2L, "child");
+        source.child = child;
+        child.owner = source;
+        delegate.seed(source);
+        ReactiveEntityOperations ops = cachingWithQuery(delegate);
+
+        QueryGraphOwner first = ops.findAll(QueryGraphOwner.class, QuerySpec.empty()).blockFirst();
+        first.name = "mutated";
+        first.child.name = "mutated child";
+
+        QueryGraphOwner hit = ops.findAll(QueryGraphOwner.class, QuerySpec.empty()).blockFirst();
+        assertNotSame(first, hit);
+        assertNotSame(first.child, hit.child);
+        assertEquals("owner", hit.name);
+        assertEquals("child", hit.child.name);
+        assertTrue(hit.child.owner == hit, "a query-cache hit must retain cycles inside its fresh graph");
+        assertEquals(1, delegate.findAllCalls.get(), "second query must be served from the query cache");
     }
 
     @Test
@@ -353,6 +379,43 @@ class QueryCacheDecoratorTest {
         Ledger(Long id, String owner) {
             this.id = id;
             this.owner = owner;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_query_graph_owner")
+    @Cacheable
+    static class QueryGraphOwner {
+        @Id
+        private Long id;
+        private String name;
+        @ManyToOne
+        private QueryGraphChild child;
+
+        QueryGraphOwner() {
+        }
+
+        QueryGraphOwner(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_query_graph_child")
+    static class QueryGraphChild {
+        @Id
+        private Long id;
+        private String name;
+        @ManyToOne
+        private QueryGraphOwner owner;
+
+        QueryGraphChild() {
+        }
+
+        QueryGraphChild(Long id, String name) {
+            this.id = id;
+            this.name = name;
         }
     }
 
