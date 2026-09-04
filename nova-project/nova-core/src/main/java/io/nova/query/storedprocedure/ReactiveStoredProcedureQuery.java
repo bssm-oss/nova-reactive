@@ -57,7 +57,7 @@ public final class ReactiveStoredProcedureQuery<T> {
     /**
      * ad-hoc 저장 프로시저 핸들을 만든다. 명명 프로시저는 {@link NamedStoredProcedureRegistry}가, 결과 매핑은
      * {@code mapper}(null이면 {@code executeUpdate} 전용)가 담당한다. 선언된 이름은 이 생성 시점에 유일해야
-     * 하며 중복 이름은 거부된다. JPA SPI 1.0은 출력 파라미터 선언을 모델링할 수 있지만 Nova executor/result
+     * 하며 중복 이름은 거부된다. R2DBC SPI 1.0은 출력 파라미터 선언을 모델링할 수 있지만 Nova executor/result
      * API와 H2 baseline은 이식적인 출력 지원을 제공하지 않으므로 OUT/INOUT/REF_CURSOR 선언은 native 작업 전에
      * 거부된다.
      */
@@ -76,10 +76,11 @@ public final class ReactiveStoredProcedureQuery<T> {
     }
 
     /**
-     * 이름으로 IN 파라미터 값을 바인딩한다.
+     * 이름으로 IN 파라미터 값을 바인딩한다. 같은 이름으로 다시 바인딩하면 값을 덮어쓰지만, 이미 위치로
+     * 바인딩한 named 선언을 이름으로 다시 바인딩하는 것은 동기적으로 거부된다.
      *
      * @throws StoredProcedureException 이름이 blank이거나 선언되지 않았거나, non-null 값이 선언 타입과
-     *         호환되지 않을 때
+     *         호환되지 않거나 같은 선언이 이미 위치로 바인딩되었을 때
      */
     public ReactiveStoredProcedureQuery<T> setParameter(String name, Object value) {
         if (name == null || name.isBlank()) {
@@ -98,9 +99,11 @@ public final class ReactiveStoredProcedureQuery<T> {
 
     /**
      * 1-based 위치로 IN 파라미터 값을 바인딩한다(JPA 규약과 동일하게 위치는 1부터 센다).
-     * Named 선언도 선언 순서의 위치로 바인딩할 수 있다.
+     * Named 선언도 선언 순서의 위치로 바인딩할 수 있다. 같은 위치로 다시 바인딩하면 값을 덮어쓰지만,
+     * 이미 이름으로 바인딩한 선언을 위치로 다시 바인딩하는 것은 동기적으로 거부된다.
      *
-     * @throws StoredProcedureException 위치가 선언되지 않았거나, non-null 값이 선언 타입과 호환되지 않을 때
+     * @throws StoredProcedureException 위치가 선언되지 않았거나, non-null 값이 선언 타입과 호환되지
+     *         않거나 같은 선언이 이미 이름으로 바인딩되었을 때
      */
     public ReactiveStoredProcedureQuery<T> setParameter(int position, Object value) {
         StoredProcedureParameterDefinition parameter = parameterByPosition(position);

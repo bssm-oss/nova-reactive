@@ -220,7 +220,7 @@ public interface ReactiveEntityManager {
     // ---------------------------------------------------------------------------------------------
     // 저장 프로시저(@StoredProcedureQuery / @NamedStoredProcedureQuery) — W7, additive default 메서드.
     // 기본 구현은 UnsupportedOperationException을 발행하고 {@link SimpleReactiveEntityManager}가 override한다.
-    // 리액티브 경로는 IN 파라미터 + result-set 프로시저를 지원한다. JPA SPI 1.0은 출력 선언을 모델링할 수
+    // 리액티브 경로는 IN 파라미터 + result-set 프로시저를 지원한다. R2DBC SPI 1.0은 출력 선언을 모델링할 수
     // 있지만 Nova executor/result API와 H2 baseline은 이식적인 출력 지원을 제공하지 않으므로
     // OUT/INOUT/REF_CURSOR는 native 작업 전에 fail-fast 한다.
     // ---------------------------------------------------------------------------------------------

@@ -9,7 +9,7 @@ import java.util.Objects;
  * (또는 ad-hoc 등록)로 만들어지며, 선언 순서가 곧 프로시저 호출 시 marker 순서다.
  * <p>
  * {@link #name()}은 named 파라미터면 non-blank, positional 파라미터면 {@code null}이다.
- * {@link #mode()}는 {@link ParameterMode}다. JPA SPI 1.0은 출력 모드를 모델링할 수 있지만 Nova
+ * {@link #mode()}는 {@link ParameterMode}다. R2DBC SPI 1.0은 출력 모드를 모델링할 수 있지만 Nova
  * executor/result API와 H2 baseline은 이식적인 출력 지원을 제공하지 않는다. 따라서 Nova는 {@code IN}만
  * 실행하며 {@code OUT}/{@code INOUT}/{@code REF_CURSOR} 선언은 native 작업 전에 fail-fast 한다.
  *
