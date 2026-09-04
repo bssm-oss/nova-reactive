@@ -85,10 +85,11 @@ class InheritanceTablePerClassIntegrationTest {
 
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> schema.create(AutoTVehicle.class, AutoTCar.class, AutoTTruck.class));
-        assertTrue(error.getMessage().contains("TABLE_PER_CLASS"));
-        assertTrue(error.getMessage().contains("IDENTITY or AUTO"));
+        StepVerifier.create(schema.create(AutoTVehicle.class, AutoTCar.class, AutoTTruck.class))
+                .expectErrorMatches(error -> error instanceof IllegalArgumentException
+                        && error.getMessage().contains("TABLE_PER_CLASS")
+                        && error.getMessage().contains("IDENTITY or AUTO"))
+                .verify();
     }
 
     @Test
