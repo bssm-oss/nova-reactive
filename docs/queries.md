@@ -173,6 +173,14 @@ comparison with its normal bind marker, so `equal(path, parameter)` renders `pat
 UNKNOWN, which filters rows in a `WHERE` clause. Use `isNull(path)` or `isNotNull(path)` when null matching
 is intended; Nova does not rewrite parameter comparisons to `IS NULL`.
 
+## Stored procedures
+
+`ReactiveEntityManager.createStoredProcedureQuery(...)` and `NamedStoredProcedureRegistry` execute only declared `IN` parameters and result-set procedures. Procedure names are deliberately not raw SQL: they must be an ASCII identifier or schema-qualified identifier, with every segment matching `[A-Za-z_][A-Za-z0-9_$]*` (for example, `REPORTING.monthly_total`). Blank names, quotes, comments, semicolons, whitespace, and other SQL syntax are rejected when the query is constructed.
+
+Bind each declared slot exactly once by its declared name or its 1-based position. A named declaration may use either address, but not both; blank/unknown names, unknown positions, duplicate declared names, and cross-address rebinding fail before native work. Non-null values must be assignable to the declared Java type (primitive declarations accept their wrapper); Nova does not coerce values or supply default arguments. A null value is accepted and, when the declaration has a Java type, is passed as a typed R2DBC null binding; an undeclared type retains the normal executor fallback.
+
+R2DBC SPI 1.0 models `OUT` and `INOUT`, but has no portable `REF_CURSOR` type. Nova's executor/result APIs and H2 baseline do not expose portable output parameters, so Nova rejects all `OUT`/`INOUT`/`REF_CURSOR` declarations before binding or native execution. Use `IN` parameters and a result set instead.
+
 ### NativeQuery — raw SQL
 
 ```java

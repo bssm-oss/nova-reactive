@@ -16,6 +16,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.NamedStoredProcedureQuery;
 import jakarta.persistence.ParameterMode;
+import io.r2dbc.spi.Parameter;
 import jakarta.persistence.StoredProcedureParameter;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -113,6 +114,32 @@ class NamedStoredProcedureRegistryTest {
     }
 
     @Test
+    void constructionRejectsUnsafeProcedureNamesBeforeNativeOperation() {
+        assertThrows(StoredProcedureException.class,
+                () -> new ReactiveStoredProcedureQuery<>(null, List.of(), row -> row, operations, dialect));
+        for (String name : List.of(" ", "proc; drop", "proc--comment", "schema.\"proc\"", "schema..proc")) {
+            assertThrows(StoredProcedureException.class,
+                    () -> new ReactiveStoredProcedureQuery<>(
+                            name,
+                            List.of(new StoredProcedureParameterDefinition("value", ParameterMode.IN, Integer.class)),
+                            row -> row,
+                            operations,
+                            dialect));
+        }
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+
+        ReactiveStoredProcedureQuery<Object> query = new ReactiveStoredProcedureQuery<>(
+                "reporting.monthly_total",
+                List.of(new StoredProcedureParameterDefinition("value", ParameterMode.IN, Integer.class)),
+                row -> row,
+                operations,
+                dialect);
+        query.setParameter("value", 1).getResultList().collectList().block();
+        assertEquals("CALL reporting.monthly_total($1)", operations.lastQuery.get().sql());
+    }
+
+    @Test
     void constructionRejectsDuplicateDeclaredNames() {
         StoredProcedureException ex = assertThrows(StoredProcedureException.class,
                 () -> new ReactiveStoredProcedureQuery<>(
@@ -205,6 +232,15 @@ class NamedStoredProcedureRegistryTest {
                 operations,
                 dialect);
         nullQuery.setParameter("number", null).getResultList().collectList().block();
+        assertTrue(operations.lastQuery.get().bindings().get(0) instanceof Parameter);
+
+        ReactiveStoredProcedureQuery<Object> untypedNullQuery = new ReactiveStoredProcedureQuery<>(
+                "untyped_input",
+                List.of(new StoredProcedureParameterDefinition("value", ParameterMode.IN, null)),
+                row -> row,
+                operations,
+                dialect);
+        untypedNullQuery.setParameter("value", null).getResultList().collectList().block();
         assertNull(operations.lastQuery.get().bindings().get(0));
     }
 

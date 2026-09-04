@@ -121,6 +121,16 @@ class StoredProcedureIntegrationTest {
     }
 
     @Test
+    void declaredNullUsesTypedR2dbcBindingWithH2Alias() {
+        StepVerifier.create(
+                        registry.createNamedStoredProcedureQuery("Widget.findExpensive")
+                                .setParameter("minPrice", null)
+                                .getResultList())
+                .verifyComplete();
+        assertTrue(FIND_EXPENSIVE_CALLS.get() > 0);
+    }
+
+    @Test
     void outParameterFailsFastAtExecution() {
         // r2dbc-h2 는 출력 파라미터를 지원하지 않는다 — OUT 파라미터 선언은 CALL 발행 전에 fail-fast 한다.
         StepVerifier.create(
