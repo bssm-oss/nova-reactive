@@ -135,6 +135,7 @@ public interface ReactiveEntityManager {
      * <p><b>OPTIMISTIC 의미(설계상 의도):</b> {@code find}의 OPTIMISTIC은 별도 검증 쿼리를 발행하지 않는다 —
      * 방금 로드한 행의 버전이 곧 현재 값이므로, 검증은 이후 write(낙관락 UPDATE)나 명시적
      * {@link #lock(Object, LockModeType)}에서 이뤄진다. 이미 로드한 엔티티를 즉시 검증하려면 {@code lock}을 쓴다.
+     * 성공해 세션에 관리된 정확한 인스턴스에는 요청한 모드가 기록된다.
      */
     default <T> Mono<T> find(Class<T> entityType, Object id, LockModeType lockMode) {
         return Mono.error(new UnsupportedOperationException(
@@ -156,7 +157,8 @@ public interface ReactiveEntityManager {
      * 행을 {@code FOR UPDATE}/{@code FOR SHARE}로 재조회해 잠근다. 버전 모드를 {@code @Version} 없는 엔티티에
      * 요청하면 fail-fast한다. PESSIMISTIC_* 모드는 활성 물리 트랜잭션이 필요하며, 없으면 SQL을 발행하기 전에
      * {@link jakarta.persistence.TransactionRequiredException}으로 실패한다. OPTIMISTIC 계열은 세션 밖에서도
-     * SQL 기반 검증을 발행할 수 있지만 identity/dirty 의미는 없다.
+     * SQL 기반 검증을 발행할 수 있지만 identity/dirty 의미는 없다. 세션이 같은 id의 canonical 관리 인스턴스를
+     * 가지고 있으면 다른 detached 인스턴스는 SQL을 발행하기 전에 거부한다.
      */
     default Mono<Void> lock(Object entity, LockModeType lockMode) {
         return Mono.error(new UnsupportedOperationException(
@@ -164,9 +166,10 @@ public interface ReactiveEntityManager {
     }
 
     /**
-     * 엔티티의 현재 잠금 모드를 반환한다(JPA {@code getLockMode}). Nova는 per-entity 잠금 상태를 추적하지
-     * 않으므로, 세션에서 관리 중이고 {@code @Version}을 가진 엔티티는 {@link LockModeType#OPTIMISTIC},
-     * 그 외에는 {@link LockModeType#NONE}으로 보고한다.
+     * 엔티티의 현재 잠금 모드를 반환한다(JPA {@code getLockMode}). Nova는 정확히 같은 관리 인스턴스에
+     * 대해 마지막으로 성공한 {@link #find(Class, Object, LockModeType)} 또는
+     * {@link #lock(Object, LockModeType)}의 모드를 기록한다. 아직 잠금을 요청하지 않은 관리 엔티티,
+     * detached 엔티티, 세션 밖 엔티티는 {@link LockModeType#NONE}을 반환한다.
      * <p><b>계약 차이(기록):</b> JPA는 detached/비관리 엔티티에 대해 예외를 던지지만, Nova는 세션이 없거나
      * 관리 중이 아니면 예외 대신 {@link LockModeType#NONE}을 반환한다(리액티브 no-throw 등가).
      */

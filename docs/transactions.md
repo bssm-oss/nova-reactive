@@ -88,6 +88,7 @@ operations.inTransaction(tx ->
   work and rolls back both the owner update and target work; rollback does not rewind the Java
   object's already-mutated fields.
 - `find(..., OPTIMISTIC_FORCE_INCREMENT)` and `find`/`lock` with `PESSIMISTIC_FORCE_INCREMENT` issue one version-increment UPDATE. For an exact managed instance, its `@Version` and `@UpdatedAt` snapshot is reconciled after that successful SQL, so commit does not repeat the increment or update callbacks.
+- `getLockMode(entity)` reports the exact managed instance's last successfully applied `LockModeType`; an ordinary managed `find` reports `NONE`. Failed or cancelled lock work does not change the recorded mode, and `detach`/`clear` discard it. A same-id detached stand-in cannot be passed to `lock` in a session that manages the canonical instance.
 
 **Current scope limits:** `NESTED` is a database savepoint on the same physical connection and therefore shares the outer persistence session. A savepoint rollback does **not** rewind in-memory entity mutations, identity membership, or dirty snapshots; use `REQUIRES_NEW` when isolated persistence state is required. `merge` of detached entities and a persistence session that outlives a single transaction are not supported. `update(entity, fields)` / the `Updater` API deliberately bypass the session (direct SQL). Reads other than entity-loading `findById`/`findAll` variants (for example `count` and scalar projections) are not auto-flushed. Ordinary, `FetchGroup`, and `EntityGraph` entity reads are session-managed.
 

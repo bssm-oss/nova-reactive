@@ -2,6 +2,7 @@ package io.nova.core;
 
 import io.nova.metadata.EntityMetadata;
 import io.nova.metadata.PersistentProperty;
+import jakarta.persistence.LockModeType;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -51,6 +52,7 @@ final class PersistenceSession {
         private final boolean loaded;
         private Map<String, Object> snapshot;
         private State state = State.MANAGED;
+        private LockModeType lockMode = LockModeType.NONE;
         // propertyName -> 컬렉션의 영속 baseline 정규 표현(ops가 만들어 넣는다: multiset Map / ordered List /
         // Map / FORCE_FULL). 키가 없으면 "아직 baseline 미캡처"(로드 hydration 전 등)다.
         private final Map<String, Object> collectionSnapshots = new LinkedHashMap<>();
@@ -80,6 +82,15 @@ final class PersistenceSession {
 
         void markRemoved() {
             state = State.REMOVED;
+            lockMode = LockModeType.NONE;
+        }
+
+        LockModeType lockMode() {
+            return lockMode;
+        }
+
+        void setLockMode(LockModeType lockMode) {
+            this.lockMode = lockMode;
         }
 
         Object snapshotColumnValue(String columnName) {
@@ -194,6 +205,36 @@ final class PersistenceSession {
         EntityKey key = keyFor(metadata, entity);
         ManagedEntry entry = key == null ? null : identityMap.get(key);
         return entry != null && !entry.isRemoved();
+    }
+
+    /**
+     * 주어진 객체 자체가 현재 세션의 관리 인스턴스인지 판정한다. 같은 식별자를 가진 detached 객체는
+     * identity map의 엔트리와 다른 인스턴스이므로 관리 대상으로 보지 않는다.
+     */
+    boolean isManagedExactInstance(EntityMetadata<?> metadata, Object entity) {
+        ManagedEntry entry = managedEntry(metadata, entity);
+        return entry != null && !entry.isRemoved() && entry.entity() == entity;
+    }
+
+    /**
+     * 정확히 같은 관리 인스턴스에만 성공한 JPA 잠금 모드를 기록한다. identity key만 같은 detached
+     * 인스턴스에는 기록하지 않는다.
+     */
+    void recordLockModeExactInstance(EntityMetadata<?> metadata, Object entity, LockModeType lockMode) {
+        ManagedEntry entry = managedEntry(metadata, entity);
+        if (entry != null && !entry.isRemoved() && entry.entity() == entity) {
+            entry.setLockMode(lockMode);
+        }
+    }
+
+    /**
+     * 정확히 같은 관리 인스턴스의 마지막 성공 잠금 모드를 반환한다. 관리되지 않은 객체는 NONE이다.
+     */
+    LockModeType lockModeExactInstance(EntityMetadata<?> metadata, Object entity) {
+        ManagedEntry entry = managedEntry(metadata, entity);
+        return entry != null && !entry.isRemoved() && entry.entity() == entity
+                ? entry.lockMode()
+                : LockModeType.NONE;
     }
 
     /**

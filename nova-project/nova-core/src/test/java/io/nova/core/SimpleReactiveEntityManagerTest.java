@@ -492,19 +492,124 @@ class SimpleReactiveEntityManagerTest {
     }
 
     @Test
-    void getLockModeReturnsOptimisticForManagedVersionedEntity() {
+    void getLockModeReturnsNoneForOrdinaryManagedVersionedEntity() {
         PersistenceSession session = new PersistenceSession();
         VersionedWidget widget = new VersionedWidget(1L, 0L);
         session.registerOnLoad(metadataFactory.getEntityMetadata(VersionedWidget.class), widget);
 
         StepVerifier.create(withSession(manager.getLockMode(widget), session))
-                .expectNext(LockModeType.OPTIMISTIC)
+                .expectNext(LockModeType.NONE)
                 .verifyComplete();
     }
 
     @Test
     void getLockModeReturnsNoneWithoutSession() {
         StepVerifier.create(manager.getLockMode(new VersionedWidget(1L, 0L)))
+                .expectNext(LockModeType.NONE)
+                .verifyComplete();
+    }
+
+    @Test
+    void successfulFindsAndLocksRecordEveryLockModeForTheExactManagedInstance() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        session.registerOnLoad(metadataFactory.getEntityMetadata(VersionedWidget.class), widget);
+        operations.existsResult = true;
+        operations.findByIdResult = widget;
+        operations.findAllResults = List.of(widget);
+
+        for (LockModeType mode : LockModeType.values()) {
+            StepVerifier.create(withSessionAndActiveTransaction(
+                            manager.find(VersionedWidget.class, 1L, mode), session))
+                    .expectNext(widget)
+                    .verifyComplete();
+            StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                    .expectNext(mode)
+                    .verifyComplete();
+            StepVerifier.create(withSessionAndActiveTransaction(manager.lock(widget, mode), session))
+                    .verifyComplete();
+            StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                    .expectNext(mode)
+                    .verifyComplete();
+        }
+    }
+
+    @Test
+    void failedLockDoesNotReplaceThePreviouslyRecordedMode() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        session.registerOnLoad(metadataFactory.getEntityMetadata(VersionedWidget.class), widget);
+        operations.findAllResults = List.of(widget);
+
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.lock(widget, LockModeType.PESSIMISTIC_WRITE), session))
+                .verifyComplete();
+        operations.existsResult = false;
+
+        StepVerifier.create(withSession(manager.lock(widget, LockModeType.OPTIMISTIC), session))
+                .expectError(io.nova.exception.OptimisticLockingFailureException.class)
+                .verify();
+        StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                .expectNext(LockModeType.PESSIMISTIC_WRITE)
+                .verifyComplete();
+    }
+
+    @Test
+    void cancelledLockDoesNotReplaceThePreviouslyRecordedMode() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        session.registerOnLoad(metadataFactory.getEntityMetadata(VersionedWidget.class), widget);
+        operations.findAllResults = List.of(widget);
+
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.lock(widget, LockModeType.PESSIMISTIC_WRITE), session))
+                .verifyComplete();
+        operations.findAllNever = true;
+
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.lock(widget, LockModeType.PESSIMISTIC_READ), session))
+                .thenCancel()
+                .verify();
+        StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                .expectNext(LockModeType.PESSIMISTIC_WRITE)
+                .verifyComplete();
+    }
+
+    @Test
+    void lockRejectsDetachedSameIdInstanceBeforeIssuingSql() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget managed = new VersionedWidget(1L, 0L);
+        VersionedWidget detachedStandIn = new VersionedWidget(1L, 0L);
+        session.registerOnLoad(metadataFactory.getEntityMetadata(VersionedWidget.class), managed);
+
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.lock(detachedStandIn, LockModeType.PESSIMISTIC_WRITE), session))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+
+        assertTrue(operations.findAllSpecs.isEmpty(), "detached stand-in must be rejected before its lock SELECT");
+    }
+
+    @Test
+    void detachAndClearDiscardRecordedLockModes() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        EntityMetadata<VersionedWidget> metadata = metadataFactory.getEntityMetadata(VersionedWidget.class);
+        session.registerOnLoad(metadata, widget);
+        operations.existsResult = true;
+
+        StepVerifier.create(withSession(manager.lock(widget, LockModeType.OPTIMISTIC), session))
+                .verifyComplete();
+        session.detach(metadata, widget);
+        StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                .expectNext(LockModeType.NONE)
+                .verifyComplete();
+
+        session.registerOnLoad(metadata, widget);
+        StepVerifier.create(withSession(manager.lock(widget, LockModeType.OPTIMISTIC), session))
+                .verifyComplete();
+        session.clear();
+        StepVerifier.create(withSession(manager.getLockMode(widget), session))
                 .expectNext(LockModeType.NONE)
                 .verifyComplete();
     }
@@ -519,6 +624,12 @@ class SimpleReactiveEntityManagerTest {
 
     private <T> Mono<T> withActiveTransaction(Mono<T> mono) {
         return mono.contextWrite(Context.of(
+                PhysicalTransactionScope.CONTEXT_KEY, PhysicalTransactionScope.newOwner().scope()));
+    }
+
+    private <T> Mono<T> withSessionAndActiveTransaction(Mono<T> mono, PersistenceSession session) {
+        return mono.contextWrite(Context.of(
+                SimpleReactiveEntityOperations.SESSION_KEY, session,
                 PhysicalTransactionScope.CONTEXT_KEY, PhysicalTransactionScope.newOwner().scope()));
     }
 
@@ -693,6 +804,7 @@ class SimpleReactiveEntityManagerTest {
         private final List<List<String>> updateFields = new ArrayList<>();
         private Object findByIdResult;
         private List<Object> findAllResults = new ArrayList<>();
+        private boolean findAllNever;
         private boolean existsResult;
         private int flushCount;
 
@@ -714,7 +826,7 @@ class SimpleReactiveEntityManagerTest {
         @SuppressWarnings("unchecked")
         public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
             findAllSpecs.add(querySpec);
-            return (Flux<T>) Flux.fromIterable(findAllResults);
+            return findAllNever ? Flux.never() : (Flux<T>) Flux.fromIterable(findAllResults);
         }
 
         @Override

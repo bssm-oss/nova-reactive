@@ -294,9 +294,12 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
             if (resolved.forceIncrement()) {
                 PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
                 return found.flatMap(entity -> operations.update(entity, List.of(versionProperty.propertyName()))
-                        .doOnNext(updated -> reconcileForceIncrementSnapshot(session, updated)));
+                        .doOnNext(updated -> {
+                            reconcileForceIncrementSnapshot(session, updated);
+                            recordLockMode(session, metadata, updated, lockMode);
+                        }));
             }
-            return found;
+            return found.doOnNext(entity -> recordLockMode(session, metadata, entity, lockMode));
         });
     }
 
@@ -317,6 +320,10 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                         "Lock mode " + lockMode + " requires a @Version property on "
                                 + metadata.entityType().getName()));
             }
+            if (session.isPresent() && !session.get().isManagedExactInstance(metadata, entity)) {
+                return Mono.error(new IllegalArgumentException(
+                        "Cannot lock detached entity " + metadata.entityType().getName()));
+            }
             Mono<Void> chain = Mono.empty();
             if (resolved.lockMode() != LockMode.NONE) {
                 // PESSIMISTIC_*: 해당 행을 FOR UPDATE/SHARE로 재조회해 DB 잠금을 획득한다.
@@ -332,7 +339,7 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                 // OPTIMISTIC/READ: 현재 버전이 DB와 일치하는지 검증한다.
                 chain = chain.then(verifyVersion(metadata, entity));
             }
-            return chain;
+            return chain.then(Mono.fromRunnable(() -> recordLockMode(session, metadata, entity, lockMode)));
         });
     }
 
@@ -341,13 +348,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         Objects.requireNonNull(entity, "entity must not be null");
         return Mono.deferContextual(ctx -> {
             EntityMetadata<?> metadata = metadataFor(entity);
-            boolean managed = currentSession(ctx)
-                    .map(session -> session.isManaged(metadata, entity))
-                    .orElse(Boolean.FALSE);
-            // Nova는 per-entity 잠금 상태를 추적하지 않는다. 관리 중이고 @Version이 있으면 OPTIMISTIC, 그 외 NONE.
-            return Mono.just(managed && metadata.versionProperty().isPresent()
-                    ? LockModeType.OPTIMISTIC
-                    : LockModeType.NONE);
+            return Mono.just(currentSession(ctx)
+                    .map(session -> session.lockModeExactInstance(metadata, entity))
+                    .orElse(LockModeType.NONE));
         });
     }
 
@@ -439,6 +442,11 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         concreteMetadata.versionProperty().ifPresent(writtenProperties::add);
         concreteMetadata.updatedAtProperty().ifPresent(writtenProperties::add);
         session.get().refreshManagedExactInstanceSnapshot(concreteMetadata, entity, writtenProperties);
+    }
+
+    private static void recordLockMode(
+            Optional<PersistenceSession> session, EntityMetadata<?> metadata, Object entity, LockModeType lockMode) {
+        session.ifPresent(active -> active.recordLockModeExactInstance(metadata, entity, lockMode));
     }
 
     /**
