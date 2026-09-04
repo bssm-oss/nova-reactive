@@ -40,8 +40,8 @@ import java.util.function.Function;
  *   <li><b>read-through</b>: {@code findById(Class, id)}가 캐시 히트면 DB를 우회하고, 미스면 delegate로
  *       조회한 뒤 {@code @Cacheable} 엔티티를 캐시에 채운다.</li>
  *   <li><b>write invalidation</b>: {@code save}/{@code update}/{@code delete}(및 batch/변형)는 delegate 실행
- *       후 해당 엔티티 캐시 엔트리를 즉시 evict 한다. 대상 행을 특정할 수 없는 bulk update/delete와
- *       compiled/native write는 보수적으로 region(또는 전체)을 비운다.</li>
+ *       후 모든 엔티티 region과 쿼리 캐시를 즉시 clear 한다. eager hydration된 그래프가 다른 타입의 상태도
+ *       품을 수 있으므로, cacheable 여부와 대상 행 특정 가능 여부에 관계없이 전역 무효화한다.</li>
  *   <li><b>query cache read-through(opt-in)</b>: {@link ReactiveQueryCache}를 주입하면
  *       {@code findAll(Class, QuerySpec)} 결과를 정규화된 스펙 키로 캐시한다(히트 시 0 SQL). 어떤 write든 대상
  *       엔티티 타입의 쿼리 결과를 <b>통째로 무효화</b>한다(보수적 정합성). 쿼리 캐시가 없으면(기본) 이 경로는
@@ -60,6 +60,8 @@ import java.util.function.Function;
  *       조회, count/exists 스칼라, native/compiled 조회 결과는 캐시하지 않는다(자식 hydration 편차·범위 위험
  *       회피). 쿼리 캐시는 {@code findAll(Class, QuerySpec)} 엔티티 결과에만 적용되며, {@link ReactiveQueryCache}를
  *       주입한 경우에만(opt-in) 활성화된다.</li>
+ *   <li>캐시에서 발행되는 엔티티와 쿼리 결과는 매핑-aware detached graph 복사본이다. 한 hit 안에서는 공유
+ *       참조와 cycle을 보존하지만, 서로 다른 hit 사이에는 인스턴스를 공유하지 않는다.</li>
  *   <li><b>배선 경계(EntityManager 결합):</b> {@code ReactiveEntityManager}는 반드시 이 캐시 데코레이터
  *       <b>위에</b> 얹어라(예: {@code new SimpleReactiveEntityManager(NovaCache.caching(base, ...), mf)}).
  *       그래야 EM의 persist/merge/remove가 이 데코레이터의 write invalidation 경로를 거친다. EM을 캐시되지
@@ -76,6 +78,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
 
     private final ReactiveEntityOperations delegate;
     private final EntityMetadataFactory metadataFactory;
+    private final MappingAwareEntityGraphCopier graphCopier;
     private final CacheConfigurationResolver resolver;
     private final ReactiveCacheProvider provider;
     /** 쿼리 결과 캐시(opt-in). {@code null}이면 쿼리 캐싱 비활성 — {@code findAll(Class, QuerySpec)}은 기존 통과. */
@@ -118,6 +121,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             Object transactionEvictionResourceKey) {
         this.delegate = Objects.requireNonNull(delegate, "delegate must not be null");
         this.metadataFactory = Objects.requireNonNull(metadataFactory, "metadataFactory must not be null");
+        this.graphCopier = new MappingAwareEntityGraphCopier(this.metadataFactory);
         this.resolver = Objects.requireNonNull(resolver, "resolver must not be null");
         this.provider = Objects.requireNonNull(provider, "provider must not be null");
         this.queryCache = queryCache; // nullable — opt-in
@@ -148,8 +152,9 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             CacheKey key = new CacheKey(config.region(), config.keyType(), id);
             ReactiveCache cache = provider.getCache(config.region());
             Mono<T> load = delegate.findById(entityType, id)
-                    .flatMap(loaded -> cache.put(key, loaded).thenReturn(loaded));
-            return cache.get(key).map(value -> (T) value).switchIfEmpty(load);
+                    .flatMap(loaded -> cache.put(key, graphCopier.copy(loaded))
+                            .thenReturn(graphCopier.copy(loaded)));
+            return cache.get(key).map(value -> graphCopier.<T>copy(castEntity(value))).switchIfEmpty(load);
         });
     }
 
@@ -208,17 +213,20 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             String key = QuerySpecCacheKey.of(entityType, querySpec);
             Flux<T> onMiss = Flux.defer(() -> delegate.findAll(entityType, querySpec)
                     .collectList()
-                    .flatMapMany(list -> queryCache.put(partition, key, new ArrayList<Object>(list))
-                            // 결과를 쿼리 캐시에 저장 + 엔티티 캐시도 warming(이후 findById 히트).
-                            .thenMany(Flux.fromIterable(list))
-                            .concatMap(entity -> putEntity(entity).thenReturn(entity))));
+                    .flatMapMany(list -> {
+                        List<Object> snapshot = graphCopier.copyAll(list);
+                        return queryCache.put(partition, key, snapshot)
+                                // 결과를 쿼리 캐시에 저장 + 엔티티 캐시도 warming(이후 findById 히트).
+                                .thenMany(Flux.fromIterable(graphCopier.copyAll(snapshot)))
+                                .concatMap(entity -> putEntity(entity).thenReturn(entity));
+                    }));
             // 빈 리스트도 히트로 취급해야 하므로 Mono 존재 여부로 hit/miss를 판별한다(빈 Flux를
             // switchIfEmpty로 miss 처리하면 빈 결과가 매번 재실행됨).
             return queryCache.get(partition, key)
                     .map(Optional::of)
                     .defaultIfEmpty(Optional.empty())
                     .flatMapMany(hit -> hit.isPresent()
-                            ? Flux.fromIterable(hit.get()).map(CachingReactiveEntityOperations::castEntity)
+                            ? Flux.fromIterable(graphCopier.copyAll(hit.get())).map(CachingReactiveEntityOperations::castEntity)
                             : onMiss);
         }
         Flux<T> result = delegate.findAll(entityType, querySpec);
@@ -300,62 +308,56 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
 
     @Override
     public <T> Mono<T> save(T entity) {
-        return delegate.save(entity).flatMap(saved -> invalidateEntity(saved).thenReturn(saved));
+        return delegate.save(entity).flatMap(saved -> clearAllCaches().thenReturn(saved));
     }
 
     @Override
     public <T> Mono<T> update(T entity, Iterable<String> fields) {
-        return delegate.update(entity, fields).flatMap(updated -> invalidateEntity(updated).thenReturn(updated));
+        return delegate.update(entity, fields).flatMap(updated -> clearAllCaches().thenReturn(updated));
     }
 
     @Override
     public <T> Flux<T> saveAll(Iterable<T> entities) {
         List<T> list = toList(entities);
-        return delegate.saveAll(list).concatMap(saved -> invalidateEntity(saved).thenReturn(saved));
+        return delegate.saveAll(list).concatMap(saved -> clearAllCaches().thenReturn(saved));
     }
 
     @Override
     public <T> Mono<Long> delete(T entity) {
-        return delegate.delete(entity).flatMap(count -> invalidateEntity(entity).thenReturn(count));
+        return delegate.delete(entity).flatMap(count -> clearAllCaches().thenReturn(count));
     }
 
     @Override
     public <T, ID> Mono<Long> deleteById(Class<T> entityType, ID id) {
-        return delegate.deleteById(entityType, id).flatMap(count -> invalidateKey(entityType, id).thenReturn(count));
+        return delegate.deleteById(entityType, id).flatMap(count -> clearAllCaches().thenReturn(count));
     }
 
     @Override
     public <T> Mono<Long> deleteAll(Iterable<T> entities) {
         List<T> list = toList(entities);
         return delegate.deleteAll(list)
-                .flatMap(count -> Flux.fromIterable(list)
-                        .concatMap(this::invalidateEntity)
-                        .then()
-                        .thenReturn(count));
+                .flatMap(count -> clearAllCaches().thenReturn(count));
     }
 
     @Override
     public <T, ID> Mono<Long> deleteAllById(Class<T> entityType, Iterable<ID> ids) {
         List<ID> list = toList(ids);
         return delegate.deleteAllById(entityType, list)
-                .flatMap(count -> Flux.fromIterable(list)
-                        .concatMap(id -> invalidateKey(entityType, id))
-                        .then()
-                        .thenReturn(count));
+                .flatMap(count -> clearAllCaches().thenReturn(count));
     }
 
     @Override
     public <T> Mono<Long> deleteAll(Class<T> entityType, QuerySpec querySpec) {
         // predicate로 지운 행을 특정할 수 없어 해당 타입 region을 통째로 비운다(보수적).
         return delegate.deleteAll(entityType, querySpec)
-                .flatMap(count -> invalidateRegion(entityType).thenReturn(count));
+                .flatMap(count -> clearAllCaches().thenReturn(count));
     }
 
     @Override
     public <T> Mono<Long> update(Class<T> entityType, Updater<T> updater) {
         // bulk update도 대상 행을 특정할 수 없어 region을 통째로 비운다.
         return delegate.update(entityType, updater)
-                .flatMap(count -> invalidateRegion(entityType).thenReturn(count));
+                .flatMap(count -> clearAllCaches().thenReturn(count));
     }
 
     // --- native / compiled: 대상 불명 → 보수적 전역 무효화 ----------------------
@@ -429,22 +431,6 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
 
     // --- invalidation helpers ----------------------------------------------
 
-    private Mono<Void> invalidateEntity(Object entity) {
-        if (entity == null) {
-            return Mono.empty();
-        }
-        CacheConfiguration config = resolver.resolve(entity.getClass());
-        if (!config.cacheable()) {
-            return Mono.empty();
-        }
-        Object id = metadataFactory.getEntityMetadata(cast(entity.getClass())).readIdValue(entity);
-        if (id == null) {
-            return Mono.empty();
-        }
-        // canonical 키 타입으로 evict — findById(base)가 심은 키와 일치시켜 다형 stale read를 막는다.
-        return invalidate(new CacheKey(config.region(), config.keyType(), id));
-    }
-
     private TransactionEvictionBuffer transactionBuffer(ContextView context, TransactionEvictionBuffer fallback) {
         if (!hasActivePhysicalScope(context)) {
             return fallback;
@@ -493,59 +479,8 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         if (id == null) {
             return Mono.empty();
         }
-        return provider.getCache(config.region()).put(new CacheKey(config.region(), config.keyType(), id), entity);
-    }
-
-    private Mono<Void> invalidateKey(Class<?> entityType, Object id) {
-        CacheConfiguration config = resolver.resolve(entityType);
-        if (!config.cacheable() || id == null) {
-            return Mono.empty();
-        }
-        return invalidate(new CacheKey(config.region(), config.keyType(), id));
-    }
-
-    private Mono<Void> invalidate(CacheKey key) {
-        return Mono.deferContextual(context -> {
-            TransactionEvictionBuffer buffer = activeTransactionBuffer(context);
-            if (buffer != null) {
-                buffer.recordKey(key);
-            }
-            // 엔티티 캐시 키 evict에 더해, 이 타입의 쿼리 결과도 통째 무효화(어떤 write든 결과 집합을 바꿀 수 있음).
-            return provider.getCache(key.region()).evict(key).then(invalidateQueries(key.entityType(), buffer));
-        });
-    }
-
-    private Mono<Void> invalidateRegion(Class<?> entityType) {
-        CacheConfiguration config = resolver.resolve(entityType);
-        if (!config.cacheable()) {
-            return Mono.empty();
-        }
-        return Mono.deferContextual(context -> {
-            TransactionEvictionBuffer buffer = activeTransactionBuffer(context);
-            if (buffer != null) {
-                buffer.recordRegionClear(config.region());
-            }
-            return provider.getCache(config.region()).clear().then(invalidateQueries(config.keyType(), buffer));
-        });
-    }
-
-    /**
-     * 한 canonical 엔티티 타입의 쿼리 캐시 결과를 무효화한다. 쿼리 캐시 미배선이면 no-op. 트랜잭션 스코프에서는
-     * 즉시 무효화하고 버퍼에 기록해 commit 후 재적용한다(엔티티 캐시와 동일한 정합성 패턴).
-     */
-    private Mono<Void> invalidateQueries(Class<?> canonicalType) {
-        return Mono.deferContextual(context -> invalidateQueries(canonicalType, activeTransactionBuffer(context)));
-    }
-
-    private Mono<Void> invalidateQueries(Class<?> canonicalType, TransactionEvictionBuffer buffer) {
-        if (queryCache == null) {
-            return Mono.empty();
-        }
-        Mono<Void> evict = queryCache.invalidate(canonicalType);
-        if (buffer != null) {
-            buffer.recordQueryInvalidate(canonicalType);
-        }
-        return evict;
+        return provider.getCache(config.region()).put(
+                new CacheKey(config.region(), config.keyType(), id), graphCopier.copy(entity));
     }
 
     /**

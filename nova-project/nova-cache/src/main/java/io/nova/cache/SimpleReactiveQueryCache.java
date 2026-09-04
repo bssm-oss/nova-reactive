@@ -16,9 +16,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 맵 조작뿐이며 I/O가 없다. 선택적 TTL/타입당 최대 크기를 {@link CacheOptions}로 지원한다(만료는 get 시 지연
  * 제거, 초과 시 LRU 제거).
  *
- * <p>저장 값은 조회 결과 엔티티 리스트를 방어적 복사한 <b>불변 스냅샷</b>이다 — 발행 후 호출자가 리스트를
- * 변형해도 캐시가 오염되지 않는다. (엔티티 <i>인스턴스</i> 자체는 엔티티 캐시와 동일하게 공유되며, 이는 기존
- * 2차 캐시 설계와 일관된 aliasing 특성이다.)
+ * <p>저장 값은 조회 결과 리스트를 방어적으로 복사한 <b>불변 스냅샷</b>이다. 엔티티 그래프의 분리는
+ * {@link CachingReactiveEntityOperations}가 매핑-aware copier로 수행하므로, 이 저장소는 그 분리된 리스트를
+ * 보관하며, 결과 리스트 자체도 호출자가 변형할 수 없게 한다.
  *
  * <p>스레드 안전: 타입별 하위 맵은 자체 monitor로 감싸 접근한다.
  */
@@ -51,7 +51,7 @@ public final class SimpleReactiveQueryCache implements ReactiveQueryCache {
                 return Mono.empty();
             }
             List<Object> hit = region.get(queryKey);
-            return hit == null ? Mono.empty() : Mono.just(hit);
+            return hit == null ? Mono.empty() : Mono.just(List.copyOf(hit));
         });
     }
 

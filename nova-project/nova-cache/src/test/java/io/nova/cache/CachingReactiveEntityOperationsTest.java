@@ -6,22 +6,34 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.NativeQuery;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.Cacheable;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
+import jakarta.persistence.Converter;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -54,6 +66,54 @@ class CachingReactiveEntityOperationsTest {
         assertEquals("keyboard", ops.findById(Product.class, 1L).block().name);
 
         assertEquals(1, delegate.findByIdCalls.get(), "두 번째 findById는 캐시 히트로 delegate를 호출하지 않아야 한다");
+    }
+
+    @Test
+    void firstHitMutationDoesNotContaminateMappedPropertyAssociationCollectionOrCycle() {
+        CountingOps delegate = new CountingOps(metadataFactory);
+        CachedGraphRoot source = new CachedGraphRoot(1L, "root");
+        CachedGraphChild child = new CachedGraphChild(2L, "child");
+        source.children.add(child);
+        child.setOwner(source);
+        delegate.seed(source);
+        ReactiveEntityOperations ops = caching(delegate);
+        AtomicReference<CachedGraphRoot> first = new AtomicReference<>();
+
+        StepVerifier.create(ops.findById(CachedGraphRoot.class, 1L))
+                .assertNext(first::set)
+                .verifyComplete();
+        first.get().name = "mutated";
+        first.get().children.get(0).setName("mutated child");
+        first.get().children.clear();
+
+        StepVerifier.create(ops.findById(CachedGraphRoot.class, 1L))
+                .assertNext(hit -> {
+                    assertNotSame(first.get(), hit);
+                    assertEquals("root", hit.name);
+                    assertEquals(1, hit.children.size());
+                    assertEquals("child", hit.children.get(0).getName());
+                    assertSame(hit, hit.children.get(0).getOwner());
+                })
+                .verifyComplete();
+        assertEquals(1, delegate.findByIdCalls.get(), "second lookup must be served from the isolated cache snapshot");
+    }
+
+    @Test
+    void convertedRecordIsReconstructedForEachCacheHit() {
+        CountingOps delegate = new CountingOps(metadataFactory);
+        delegate.seed(new ConvertedRecordEntity(3L, new CacheCode("blue")));
+        ReactiveEntityOperations ops = caching(delegate);
+        AtomicReference<ConvertedRecordEntity> first = new AtomicReference<>();
+
+        StepVerifier.create(ops.findById(ConvertedRecordEntity.class, 3L))
+                .assertNext(first::set)
+                .verifyComplete();
+        StepVerifier.create(ops.findById(ConvertedRecordEntity.class, 3L))
+                .assertNext(hit -> {
+                    assertEquals(new CacheCode("blue"), hit.code);
+                    assertNotSame(first.get().code, hit.code);
+                })
+                .verifyComplete();
     }
 
     @Test
@@ -107,6 +167,22 @@ class CachingReactiveEntityOperationsTest {
         ops.findById(Ledger.class, 1L).block();
 
         assertEquals(2, delegate.findByIdCalls.get(), "@Cacheable이 아닌 타입은 항상 delegate로 조회되어야 한다");
+    }
+
+    @Test
+    void writeToNonCacheableTypeClearsEveryEntityRegion() {
+        CountingOps delegate = new CountingOps(metadataFactory);
+        delegate.seed(new Product(1L, "keyboard"));
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        ReactiveEntityOperations ops = caching(delegate, provider);
+        String productRegion = new CacheConfigurationResolver().resolve(Product.class).region();
+
+        StepVerifier.create(ops.findById(Product.class, 1L)).expectNextCount(1).verifyComplete();
+        assertEquals(1, provider.getCache(productRegion).size());
+        StepVerifier.create(ops.save(new Ledger(2L, "acme"))).expectNextCount(1).verifyComplete();
+
+        assertEquals(0, provider.getCache(productRegion).size(),
+                "a non-cacheable associated write must invalidate graph-bearing cache entries");
     }
 
     @Test
@@ -347,6 +423,104 @@ class CachingReactiveEntityOperationsTest {
         Product(Long id, String name) {
             this.id = id;
             this.name = name;
+        }
+    }
+
+
+
+    @Entity
+    @Table(name = "cache_converted_record")
+    @Cacheable
+    static class ConvertedRecordEntity {
+        @Id
+        private Long id;
+        @Convert(converter = CacheCodeConverter.class)
+        private CacheCode code;
+
+        ConvertedRecordEntity() {
+        }
+
+        ConvertedRecordEntity(Long id, CacheCode code) {
+            this.id = id;
+            this.code = code;
+        }
+    }
+
+    record CacheCode(String value) {
+    }
+
+    @Converter
+    public static class CacheCodeConverter implements jakarta.persistence.AttributeConverter<CacheCode, String> {
+        @Override
+        public String convertToDatabaseColumn(CacheCode attribute) {
+            return attribute == null ? null : attribute.value();
+        }
+
+        @Override
+        public CacheCode convertToEntityAttribute(String databaseValue) {
+            return databaseValue == null ? null : new CacheCode(databaseValue);
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_graph_root")
+    @Cacheable
+    static class CachedGraphRoot {
+        @Id
+        private Long id;
+        private String name;
+        @OneToMany(mappedBy = "owner")
+        private List<CachedGraphChild> children = new ArrayList<>();
+
+        CachedGraphRoot() {
+        }
+
+        CachedGraphRoot(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_graph_child")
+    @Access(AccessType.PROPERTY)
+    static class CachedGraphChild {
+        private Long id;
+        private String name;
+        private CachedGraphRoot owner;
+
+        CachedGraphChild() {
+        }
+
+        CachedGraphChild(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        @Id
+        Long getId() {
+            return id;
+        }
+
+        void setId(Long id) {
+            this.id = id;
+        }
+
+        String getName() {
+            return name;
+        }
+
+        void setName(String name) {
+            this.name = name;
+        }
+
+        @ManyToOne
+        CachedGraphRoot getOwner() {
+            return owner;
+        }
+
+        void setOwner(CachedGraphRoot owner) {
+            this.owner = owner;
         }
     }
 
