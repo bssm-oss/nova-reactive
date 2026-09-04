@@ -671,6 +671,21 @@ class CriteriaSqlBuilderTest {
     }
 
     @Test
+    void terminalIsNotNullOverCompositeKeyToOneExpandsToAnyForeignKeyColumn() {
+        CriteriaQuery<Object> cq = cb.createQuery(Object.class);
+        Root<io.nova.support.fixtures.FixtureEntities.CompositeJoinChild> c =
+                cq.from(io.nova.support.fixtures.FixtureEntities.CompositeJoinChild.class);
+        cq.multiselect(c.<Long>get("id")).where(cb.isNotNull(c.get("parent")));
+
+        CriteriaSql t = aliased(cq);
+        assertEquals(
+                "select \"t0\".\"id\" as \"c0\" from \"gc_composite_child\" \"t0\" "
+                        + "where (\"t0\".\"p_k1\" is not null or \"t0\".\"p_k2\" is not null)",
+                t.sql());
+        assertTrue(t.bindings().isEmpty());
+    }
+
+    @Test
     void failsFastOnSelectingCompositeKeyToOneAsSingleColumn() {
         // SELECT c.parent(복합 to-one을 단일 컬럼으로 투영)은 축약 불가 → 조용한 오답 대신 fail-fast.
         CriteriaException ex = assertThrows(CriteriaException.class, () -> {

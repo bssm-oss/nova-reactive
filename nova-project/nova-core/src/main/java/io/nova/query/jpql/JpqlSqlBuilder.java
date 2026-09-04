@@ -633,7 +633,10 @@ public final class JpqlSqlBuilder {
         };
     }
 
-    /** IS [NOT] NULL 술어. 복합키 to-one terminal이면 모든 FK 컬럼의 IS [NOT] NULL을 and로 전개한다. */
+    /**
+     * IS [NOT] NULL 술어. 복합키 to-one terminal에서 IS NULL은 모든 FK 컬럼 null의 and,
+     * IS NOT NULL은 어느 FK 컬럼이라도 non-null인 경우의 or로 전개한다.
+     */
     private void renderNull(Ctx ctx, Predicate.Null n) {
         CompositeToOneRef ref = compositeToOneRef(ctx, n.value());
         if (ref != null) {
@@ -641,7 +644,7 @@ public final class JpqlSqlBuilder {
             ctx.sql.append('(');
             for (int i = 0; i < columns.size(); i++) {
                 if (i > 0) {
-                    ctx.sql.append(" and ");
+                    ctx.sql.append(n.negated() ? " or " : " and ");
                 }
                 appendCompositeColumn(ctx, ref.alias(), columns.get(i));
                 ctx.sql.append(n.negated() ? " is not null" : " is null");

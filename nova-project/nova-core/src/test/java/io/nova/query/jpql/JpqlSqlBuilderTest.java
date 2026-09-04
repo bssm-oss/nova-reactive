@@ -599,6 +599,16 @@ class JpqlSqlBuilderTest {
         assertTrue(t.bindings().isEmpty());
     }
 
+    @Test
+    void terminalIsNotNullOverCompositeKeyToOneExpandsToAnyForeignKeyColumn() {
+        TranslatedSql t = compositeScalar("SELECT c.id FROM CompositeJoinChild c WHERE c.parent IS NOT NULL");
+        assertEquals(
+                "select c.\"id\" as \"c0\" from \"gc_composite_child\" c "
+                        + "where (c.\"p_k1\" is not null or c.\"p_k2\" is not null)",
+                t.sql());
+        assertTrue(t.bindings().isEmpty());
+    }
+
     private static JpqlBinding.Component assertComponent(JpqlBinding binding) {
         assertTrue(binding instanceof JpqlBinding.Component, "expected component binding, got " + binding);
         return (JpqlBinding.Component) binding;

@@ -483,14 +483,17 @@ final class AliasedCriteriaSqlBuilder {
         bindMarker(ctx, fk.toColumnValue(domain));
     }
 
-    /** {@code alias.parent IS [NOT] NULL}을 모든 FK 컬럼의 IS [NOT] NULL {@code and}로 전개한다. */
+    /**
+     * {@code alias.parent IS [NOT] NULL}에서 IS NULL은 모든 FK 컬럼 null의 {@code and},
+     * IS NOT NULL은 어느 FK 컬럼이라도 non-null인 경우의 {@code or}로 전개한다.
+     */
     private void renderCompositeToOneNull(Ctx ctx, CriteriaColumnPath path, boolean negated) {
         String alias = path.source() == null ? null : path.source().alias();
         List<io.nova.metadata.ToOneForeignKeyColumn> columns = path.property().toOneForeignKey().columns();
         ctx.sql.append('(');
         for (int i = 0; i < columns.size(); i++) {
             if (i > 0) {
-                ctx.sql.append(" and ");
+                ctx.sql.append(negated ? " or " : " and ");
             }
             io.nova.metadata.ToOneForeignKeyColumn fk = columns.get(i);
             ctx.sql.append(alias == null ? dialect.quote(fk.columnName()) : qualified(alias, fk.columnName()))
