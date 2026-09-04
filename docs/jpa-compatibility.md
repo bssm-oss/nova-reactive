@@ -162,4 +162,4 @@ These declare cleanly but are rejected with a message until implemented — Nova
 > `BigDecimal` whose scale identity matters as an id, composite-id component, or relationship key;
 > use a round-trip-stable key and `compareTo` for numeric business equality.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.28.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.29.0`).
