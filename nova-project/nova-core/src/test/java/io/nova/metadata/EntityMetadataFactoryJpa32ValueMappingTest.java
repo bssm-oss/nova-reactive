@@ -3,6 +3,7 @@ package io.nova.metadata;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Converter;
+import jakarta.persistence.Converts;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
@@ -12,8 +13,14 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.EnumeratedValue;
 import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.MapKeyTemporal;
+import jakarta.persistence.Temporal;
 import jakarta.persistence.TemporalType;
+import jakarta.persistence.Version;
+import io.nova.annotation.Json;
+import io.nova.json.JsonCodec;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -23,6 +30,26 @@ import java.util.Date;
 import static org.junit.jupiter.api.Assertions.*;
 
 class EntityMetadataFactoryJpa32ValueMappingTest {
+
+    @Test
+    void ignoresClasspathConvertersUntilTheyAreRegisteredBeforeMetadataBuild() {
+        EntityMetadataFactory bareFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        PersistentProperty bare = bareFactory.getEntityMetadata(BasicCodeEntity.class)
+                .findProperty("code").orElseThrow();
+        assertEquals(Code.class, bare.columnType());
+
+        EntityMetadataFactory directFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        directFactory.registerJpaConverter(CodeConverter.class);
+        PersistentProperty directlyRegistered = directFactory.getEntityMetadata(BasicCodeEntity.class)
+                .findProperty("code").orElseThrow();
+        assertEquals(String.class, directlyRegistered.columnType());
+
+        EntityMetadataFactory managedFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        managedFactory.registerManagedClasses(List.of(BasicCodeEntity.class, CodeConverter.class));
+        PersistentProperty managed = managedFactory.getEntityMetadata(BasicCodeEntity.class)
+                .findProperty("code").orElseThrow();
+        assertEquals(String.class, managed.columnType());
+    }
 
     @Test
     void appliesManagedAutoConverterToBasicEmbeddedAndBasicCollections() {
@@ -71,6 +98,16 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         PersistentProperty count = metadata.findProperty("count").orElseThrow();
         assertEquals(String.class, count.columnType());
         assertEquals("7", count.toColumnValue(7L));
+    }
+
+    @Test
+    void appliesAutoConverterToInheritedBasicAttributes() {
+        PersistentProperty inherited = factory(CodeConverter.class)
+                .getEntityMetadata(InheritedCodeEntity.class)
+                .findProperty("code").orElseThrow();
+
+        assertEquals(String.class, inherited.columnType());
+        assertEquals("inherited", inherited.toColumnValue(new Code("inherited")));
     }
 
     @Test
@@ -129,6 +166,26 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
     }
 
     @Test
+    void excludesIdsVersionsRelationshipsAndExplicitValueMappingsFromAutoApply() {
+        EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy(), new TestJsonCodec());
+        factory.registerManagedClasses(List.of(
+                CodeConverter.class, LongStringConverter.class, RelatedConverter.class));
+        EntityMetadata<ExcludedAutoApplyEntity> metadata =
+                factory.getEntityMetadata(ExcludedAutoApplyEntity.class);
+
+        assertEquals(Code.class, metadata.idProperty().columnType());
+        assertEquals(Long.class, metadata.findProperty("version").orElseThrow().columnType());
+        PersistentProperty relation = metadata.findProperty("related").orElseThrow();
+        assertTrue(relation.manyToOne());
+        assertEquals(Long.class, relation.columnType());
+        assertEquals(Integer.class, metadata.findProperty("explicitEnum").orElseThrow().columnType());
+        assertEquals(java.time.LocalDateTime.class, metadata.findProperty("timestamp").orElseThrow().columnType());
+        PersistentProperty json = metadata.findProperty("json").orElseThrow();
+        assertTrue(json.json());
+        assertEquals("\"json\"", json.toColumnValue(new Code("json")));
+    }
+
+    @Test
     void hostConvertOverridesFlatAndNestedEmbeddedLeavesAndCanDisableAutoApply() {
         EntityMetadataFactory factory = factory(CodeConverter.class, UpperCodeConverter.class);
         EntityMetadata<EmbeddedOverrideEntity> metadata = factory.getEntityMetadata(EmbeddedOverrideEntity.class);
@@ -139,6 +196,17 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
                 .toColumnValue(new Code("xyz")));
         PersistentProperty disabled = metadata.findProperty("disabled.code").orElseThrow();
         assertEquals(Code.class, disabled.columnType());
+    }
+
+    @Test
+    void mapKeyAndValueConvertSelectorsOverrideAutoApply() {
+        ElementCollectionInfo map = factory(CodeConverter.class, UpperCodeConverter.class)
+                .getEntityMetadata(ExplicitMapConvertEntity.class)
+                .findProperty("byCode").orElseThrow()
+                .elementCollectionInfo();
+
+        assertEquals("KEY", map.mapKey().encodeKey(new Code("key")));
+        assertEquals("VALUE", map.encodeElementValue(new Code("value")));
     }
 
     @Test
@@ -257,6 +325,12 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         public Date convertToEntityAttribute(String value) { return value == null ? null : new Date(Long.parseLong(value)); }
     }
 
+    @Converter(autoApply = true)
+    public static class RelatedConverter implements jakarta.persistence.AttributeConverter<Related, String> {
+        public String convertToDatabaseColumn(Related value) { return value == null ? null : value.id.toString(); }
+        public Related convertToEntityAttribute(String value) { return value == null ? null : new Related(Long.valueOf(value)); }
+    }
+
     @Embeddable
     static class Address {
         Code code;
@@ -280,6 +354,22 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         @Embedded Address address;
         @ElementCollection List<Code> codes;
         @ElementCollection Map<Code, Code> byCode;
+    }
+
+    @Entity
+    static class BasicCodeEntity {
+        @Id Long id;
+        Code code;
+    }
+
+    @MappedSuperclass
+    static class CodeBase {
+        Code code;
+    }
+
+    @Entity
+    static class InheritedCodeEntity extends CodeBase {
+        @Id Long id;
     }
 
     @Entity
@@ -330,6 +420,26 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
     @Entity static class EnumIdEntity { @Id TextStatus id; }
     @Entity static class CompositeIdEntity { @EmbeddedId CompositeId id; }
 
+    @Entity
+    static class Related {
+        @Id Long id;
+        Related() {
+        }
+        Related(Long id) {
+            this.id = id;
+        }
+    }
+
+    @Entity
+    static class ExcludedAutoApplyEntity {
+        @Id Code id;
+        @Version Long version;
+        @ManyToOne Related related;
+        @Enumerated(EnumType.ORDINAL) TextStatus explicitEnum;
+        @Temporal(TemporalType.TIMESTAMP) Date timestamp;
+        @Json Code json;
+    }
+
     @Entity static class EmbeddedOverrideEntity {
         @Id Long id;
         @Embedded @Convert(attributeName = "code", converter = UpperCodeConverter.class) Address flat;
@@ -348,6 +458,17 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         @Convert(attributeName = "code", converter = UpperCodeConverter.class)
         @Convert(attributeName = "code", disableConversion = true)
         Address address;
+    }
+
+    @Entity
+    static class ExplicitMapConvertEntity {
+        @Id Long id;
+        @ElementCollection
+        @Converts({
+                @Convert(attributeName = "key", converter = UpperCodeConverter.class),
+                @Convert(attributeName = "value", converter = UpperCodeConverter.class)
+        })
+        Map<Code, Code> byCode;
     }
 
     @Entity static class InvalidTemporalMapEntity {
@@ -392,5 +513,17 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
         @ElementCollection
         @MapKeyTemporal(TemporalType.DATE)
         Map<TemporalEntityKey, String> values;
+    }
+
+    static class TestJsonCodec implements JsonCodec {
+        @Override
+        public String encode(Object value) {
+            return "\"" + ((Code) value).value() + "\"";
+        }
+
+        @Override
+        public <T> T decode(String json, Class<T> type) {
+            return type.cast(new Code(json.substring(1, json.length() - 1)));
+        }
     }
 }

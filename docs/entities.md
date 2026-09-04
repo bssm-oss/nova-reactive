@@ -52,7 +52,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@JoinColumn`     | FK column name, nullability, and `insertable` / `updatable` / `unique` seen by `@ManyToOne`. Defaults to `{field}_id`. A clash with a plain `@Column` of the same name raises an explicit error in `EntityMetadataFactory`. |
 | `@Enumerated`     | Enum column mapping. `EnumType.ORDINAL` (default) or `EnumType.STRING`.                    |
 | `@EnumeratedValue` | JPA 3.2 enum mapping. Annotate one `String` or numeric enum field; that field's value is stored instead of the ordinal/name. |
-| `@Convert`        | Applies a `jakarta.persistence.AttributeConverter<X, Y>` to a field. The column is created with the **converter's storage type `Y`** (e.g. an `AttributeConverter<Rgb, Integer>` field gets an `integer` column). `disableConversion = true` turns it off. |
+| `@Convert`        | Applies a `jakarta.persistence.AttributeConverter<X, Y>` to a field or an embedded / element-collection path. The column is created with the **converter's storage type `Y`** (e.g. an `AttributeConverter<Rgb, Integer>` field gets an `integer` column). `disableConversion = true` turns JPA auto-apply off. |
 | `@Json`           | JSON column mapping. Requires a `JsonCodec` SPI. Maps to `jsonb` on PostgreSQL, `clob` on Oracle, and `text` elsewhere. |
 
 Entity metadata is parsed once and cached by `EntityMetadataFactory`. The factory enforces the following invariants:
@@ -182,14 +182,29 @@ public class Swatch {
 ```
 
 - The column DDL and row decoding use the **converter's storage type `Y`** (here `integer`),
-  not the domain type `X`. `@Convert(disableConversion = true)` turns the converter off.
+  not the domain type `X`.
 - The converter class needs an accessible no-arg constructor; its `AttributeConverter<X, Y>`
   type arguments must be concrete (resolved by reflection). Both are checked fail-fast.
-- `@Convert` cannot be combined with `@Enumerated` / `@Json` or a programmatically registered
-  converter for the same type.
-- **Not supported:** `@Converter(autoApply = true)` (auto-applying a converter to every field
-  of a type) and the `@Convert(attributeName = ...)` form. For "apply to all of type `X`",
-  register it programmatically via `EntityMetadataFactory#registerConverter`.
+- An explicit `@Convert(converter = ...)` overrides a managed `autoApply` converter for that
+  attribute. `@Convert(disableConversion = true)` suppresses managed auto-apply instead.
+- On an `@Embedded` attribute, `@Convert(attributeName = "path.to.leaf", ...)` selects a
+  flattened leaf; unknown or duplicate paths fail fast. On an `@ElementCollection Map<K, V>`,
+  use `attributeName = "key"` or `"value"` to select that side.
+- A managed `@Converter(autoApply = true)` applies to basic attributes, including inherited
+  mapped-superclass fields, embedded leaves, element-collection values, and map keys/values.
+  It never applies to an `@Id` or `@EmbeddedId` leaf, `@Version`, a relationship, or an
+  explicitly `@Enumerated`, `@Temporal`, or `@Json` attribute.
+- A Jakarta converter is **not** discovered merely because it is on the classpath. An
+  explicitly named `@Convert(converter = ...)` needs no registration; for `autoApply`, before
+  the first `getEntityMetadata` call `registerJpaConverter(ConverterClass.class)`, or pass an
+  already-discovered managed-class set to `registerManagedClasses(...)`. Later registration
+  fails fast. The Spring Boot starter scans its configured entity packages for both `@Entity`
+  and `@Converter`, registers that set first, then preloads entity metadata.
+- `EntityMetadataFactory#registerConverter` is Nova's separate
+  `io.nova.convert.AttributeConverter` SPI: it registers an instance for Nova's own
+  type-specific mapping, not a Jakarta converter class and not JPA `autoApply` discovery.
+  It remains incompatible with explicit JPA conversion, `@Enumerated`, and `@Json` on the
+  same attribute.
 
 ---
 
