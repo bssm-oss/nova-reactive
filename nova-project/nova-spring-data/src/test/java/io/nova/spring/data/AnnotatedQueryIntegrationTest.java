@@ -153,9 +153,11 @@ class AnnotatedQueryIntegrationTest {
                     assertEquals("Ada", values[0]);
                     assertEquals(30, values[1]);
                 })
+                .expectNextCount(4)
                 .verifyComplete();
         StepVerifier.create(repository.objectDtos())
                 .assertNext(value -> assertEquals("Ada", ((AccountName) value).name()))
+                .expectNextCount(4)
                 .verifyComplete();
     }
 

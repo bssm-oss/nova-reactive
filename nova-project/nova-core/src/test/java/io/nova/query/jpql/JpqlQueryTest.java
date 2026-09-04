@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -254,7 +255,7 @@ class JpqlQueryTest {
                 .verifyComplete();
         StepVerifier.create(typedQuery("SELECT e.name, e.name FROM Employee e", Object[].class,
                         multiRecorder.operations()).getResultList())
-                .assertNext(values -> assertEquals(new Object[] {"Ada", "Ada"}, values))
+                .assertNext(values -> assertArrayEquals(new Object[] {"Ada", "Ada"}, values))
                 .verifyComplete();
         StepVerifier.create(typedQuery("SELECT e.score FROM Employee e", Integer.class,
                         boxedPrimitiveRecorder.operations()).getResultList())
