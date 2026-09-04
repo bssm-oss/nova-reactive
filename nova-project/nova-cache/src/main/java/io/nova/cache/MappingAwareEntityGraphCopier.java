@@ -94,7 +94,8 @@ final class MappingAwareEntityGraphCopier {
         if (source instanceof Map<?, ?> map) {
             Map<Object, Object> target = new LinkedHashMap<>();
             copies.put(source, target);
-            for (Map.Entry<?, ?> entry : map.entrySet()) target.put(copyEntity(entry.getKey(), copies), copyEntity(entry.getValue(), copies));
+            for (Map.Entry<?, ?> entry : map.entrySet())
+                target.put(copyScalar(entry.getKey(), copies), entry.getValue() == null ? null : copyEntity(entry.getValue(), copies));
             return target;
         }
         java.util.Collection<?> values = (java.util.Collection<?>) source;

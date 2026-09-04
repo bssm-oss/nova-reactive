@@ -1,6 +1,7 @@
 package io.nova.cache;
 
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.cache.spi.CacheKey;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Criteria;
@@ -183,6 +184,50 @@ class QueryCacheDecoratorTest {
         ops.findAll(Product.class, spec).collectList().block();   // delegate #2
 
         assertEquals(2, delegate.findAllCalls.get());
+    }
+
+    @Test
+    void legacyTransactionBufferReplaysProviderAndQueryClearsOnlyAfterSuccessfulCommit() {
+        CountingQueryOps delegate = new CountingQueryOps();
+        delegate.seed(new Product(1L, "keyboard"));
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        SimpleReactiveQueryCache queries = new SimpleReactiveQueryCache();
+        ReactiveEntityOperations ops = new CachingReactiveEntityOperations(
+                delegate, metadataFactory, new CacheConfigurationResolver(), provider, queries);
+        CacheKey entityKey = new CacheKey(Product.class.getName(), Product.class, 1L);
+        String queryKey = QuerySpecCacheKey.of(Product.class, QuerySpec.empty());
+
+        ops.inTransaction(tx -> tx.save(new Product(2L, "mouse"))
+                .then(provider.getCache(Product.class.getName()).put(entityKey, new Product(1L, "stale")))
+                .then(queries.put(Product.class, queryKey, List.of(new Product(1L, "stale")))))
+                .block();
+
+        assertTrue(provider.getCache(Product.class.getName()).get(entityKey).blockOptional().isEmpty(),
+                "the legacy post-success replay must clear an entity cache repopulated during the transaction");
+        assertEquals(0, queries.size(Product.class),
+                "the legacy post-success replay must clear a query cache repopulated during the transaction");
+    }
+
+    @Test
+    void legacyTransactionBufferDoesNotReplayClearsAfterError() {
+        CountingQueryOps delegate = new CountingQueryOps();
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        SimpleReactiveQueryCache queries = new SimpleReactiveQueryCache();
+        ReactiveEntityOperations ops = new CachingReactiveEntityOperations(
+                delegate, metadataFactory, new CacheConfigurationResolver(), provider, queries);
+        CacheKey entityKey = new CacheKey(Product.class.getName(), Product.class, 1L);
+        String queryKey = QuerySpecCacheKey.of(Product.class, QuerySpec.empty());
+
+        reactor.test.StepVerifier.create(ops.inTransaction(tx -> tx.save(new Product(2L, "mouse"))
+                .then(provider.getCache(Product.class.getName()).put(entityKey, new Product(1L, "stale")))
+                .then(queries.put(Product.class, queryKey, List.of(new Product(1L, "stale"))))
+                .then(Mono.error(new IllegalStateException("rollback")))))
+                .verifyErrorMessage("rollback");
+
+        assertTrue(provider.getCache(Product.class.getName()).get(entityKey).blockOptional().isPresent(),
+                "an errored legacy transaction must not run its post-success provider replay");
+        assertEquals(1, queries.size(Product.class),
+                "an errored legacy transaction must not run its post-success query replay");
     }
 
     @Test

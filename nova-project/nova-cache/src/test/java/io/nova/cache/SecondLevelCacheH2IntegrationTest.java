@@ -170,6 +170,48 @@ class SecondLevelCacheH2IntegrationTest {
     }
 
     @Test
+    void physicalReadOnlyTransactionDoesNotClearWarmSharedCache() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        w.cached().inTransaction(tx -> tx.findById(Widget.class, id)).block();
+        long beforeHit = w.listener().selects();
+        assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
+        assertEquals(beforeHit, w.listener().selects(),
+                "a physical read-only transaction must neither clear nor replay-clear a warm shared cache");
+    }
+
+    @Test
+    void physicalErrorAndCancellationDoNotReplaySharedCacheClear() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.findById(Widget.class, id)
+                .then(Mono.error(new IllegalStateException("rollback")))))
+                .verifyErrorMessage("rollback");
+        long beforeErrorHit = w.listener().selects();
+        w.cached().findById(Widget.class, id).block();
+        assertEquals(beforeErrorHit, w.listener().selects(),
+                "an errored physical transaction must not replay-clear the warm cache");
+
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.findById(Widget.class, id).then(Mono.never())))
+                .thenCancel()
+                .verify();
+        long beforeCancelHit = w.listener().selects();
+        w.cached().findById(Widget.class, id).block();
+        assertEquals(beforeCancelHit, w.listener().selects(),
+                "a cancelled physical transaction must not replay-clear the warm cache");
+    }
+
+    @Test
     void managedTransactionBypassesWarmCacheAndEvictsAfterDirtyCommit() {
         ConnectionFactory cf = freshConnectionFactory();
         Wiring w = wire(cf);
@@ -298,7 +340,7 @@ class SecondLevelCacheH2IntegrationTest {
 
         w.schema().create(PropertyPart.class, PropertyOwner.class).block();
         PropertyPart part = w.cached().save(new PropertyPart("alpha")).block();
-        Long ownerId = w.cached().save(new PropertyOwner("owner", part)).block().id();
+        Long ownerId = w.cached().save(new PropertyOwner("owner", part)).block().getId();
 
         PropertyOwner first = w.cached().findById(PropertyOwner.class, ownerId).block();
         first.getPart().setName("mutated");
@@ -324,7 +366,7 @@ class SecondLevelCacheH2IntegrationTest {
 
         w.schema().create(PropertyPart.class, PropertyOwner.class).block();
         PropertyPart part = w.cached().save(new PropertyPart("alpha")).block();
-        Long ownerId = w.cached().save(new PropertyOwner("owner", part)).block().id();
+        Long ownerId = w.cached().save(new PropertyOwner("owner", part)).block().getId();
         PropertyOwner stale = w.cached().findById(PropertyOwner.class, ownerId).block();
         CacheKey ownerKey = new CacheKey(PropertyOwner.class.getName(), PropertyOwner.class, ownerId);
 
@@ -450,7 +492,7 @@ class SecondLevelCacheH2IntegrationTest {
 
         @Id
         @GeneratedValue(strategy = GenerationType.IDENTITY)
-        Long id() {
+        Long getId() {
             return id;
         }
 
