@@ -20,9 +20,9 @@ future module.
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova:1.0.x")
+    implementation("io.github.bssm-oss:nova:2.30.0")
 
-    annotationProcessor("io.github.bssm-oss:nova-metamodel:1.0.x")
+    annotationProcessor("io.github.bssm-oss:nova-metamodel:2.30.0")
 }
 ```
 
@@ -31,7 +31,7 @@ dependencies {
 <dependency>
     <groupId>io.github.bssm-oss</groupId>
     <artifactId>nova</artifactId>
-    <version>1.0.x</version>
+    <version>2.30.0</version>
 </dependency>
 
 <plugin>
@@ -41,7 +41,7 @@ dependencies {
             <path>
                 <groupId>io.github.bssm-oss</groupId>
                 <artifactId>nova-metamodel</artifactId>
-                <version>1.0.x</version>
+                <version>2.30.0</version>
             </path>
         </annotationProcessorPaths>
     </configuration>

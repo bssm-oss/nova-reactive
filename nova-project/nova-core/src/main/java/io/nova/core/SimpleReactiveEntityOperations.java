@@ -1278,14 +1278,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         idProperty.write(entity, idProperty.toPropertyValue(key));
                         return entity;
                     })
-                    .defaultIfEmpty(entity);
+                    .switchIfEmpty(Mono.error(new IllegalStateException(
+                            "Database generated id was not returned for " + metadata.entityType().getName())));
         }
         SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
         return sqlExecutor.execute(statement).thenReturn(entity);
     }
 
     /**
-     * JOINED 상속 INSERT — 루트 테이블 INSERT를 먼저 발행해 id를 확정한 뒤(IDENTITY는 생성 키 회수,
+     * JOINED 상속 INSERT — 루트 테이블 INSERT를 먼저 발행해 id를 확정한 뒤(IDENTITY/AUTO는 생성 키 회수,
      * SEQUENCE/TABLE/UUID는 사전 할당), 서브타입 테이블 INSERT를 같은 id를 FK로 발행한다. 두 INSERT는
      * {@link Mono#flatMap}으로 순차 보장되며, 동일 트랜잭션/세션 커넥션에서 실행된다(Reactor Context 전파).
      */
@@ -1299,7 +1300,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         String rootTable = metadata.inheritance().rootTableName();
 
         Mono<T> rootInserted;
-        if (strategy == GenerationType.IDENTITY) {
+        if (EntityMetadata.isDatabaseGeneratedId(idProperty)) {
             SqlStatement rootInsert = renderer.insertJoinedRoot(
                     metadata, rootTable, layout.rootTableColumns(), entity);
             rootInserted = sqlExecutor.executeAndReturnGeneratedKey(
@@ -1308,7 +1309,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         idProperty.write(entity, idProperty.toPropertyValue(key));
                         return entity;
                     })
-                    .defaultIfEmpty(entity);
+                    .switchIfEmpty(Mono.error(new IllegalStateException(
+                            "Database generated id was not returned for " + metadata.entityType().getName())));
         } else if (strategy == GenerationType.SEQUENCE) {
             Class<?> idColumnType = wrapPrimitive(idProperty.javaType());
             rootInserted = sqlExecutor.queryOne(

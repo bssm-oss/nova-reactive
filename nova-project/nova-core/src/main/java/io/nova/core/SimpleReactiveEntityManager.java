@@ -96,7 +96,15 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         Objects.requireNonNull(entity, "entity must not be null");
         // delete() turns a managed entry into a tombstone only after successful DML. Detaching first would
         // lose failed-delete recovery and would permit a same-session re-persist.
-        return operations.delete(entity).then();
+        return Mono.deferContextual(ctx -> {
+            EntityMetadata<?> metadata = metadataFor(entity);
+            Optional<PersistenceSession> session = currentSession(ctx);
+            if (session.isPresent() && !session.get().isManagedExactInstance(metadata, entity)) {
+                return Mono.error(new IllegalArgumentException(
+                        "Cannot remove detached entity " + metadata.entityType().getName()));
+            }
+            return operations.delete(entity).then();
+        });
     }
 
     @Override
@@ -141,7 +149,7 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
     public Mono<Boolean> contains(Object entity) {
         Objects.requireNonNull(entity, "entity must not be null");
         return Mono.deferContextual(ctx -> Mono.just(currentSession(ctx)
-                .map(session -> session.isManaged(metadataFor(entity), entity))
+                .map(session -> session.isManagedExactInstance(metadataFor(entity), entity))
                 .orElse(Boolean.FALSE)));
     }
 
@@ -162,8 +170,10 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                 return Mono.error(new IllegalStateException("Cannot refresh removed entity "
                         + entity.getClass().getName() + "; clear the persistence session first"));
             }
-            // 보류 변경 폐기: 재조회 전에 세션에서 분리해 auto-flush가 이 엔티티의 미저장 변경을 쓰지 않게 한다.
-            session.ifPresent(active -> active.detach(metadata, entity));
+            if (session.isPresent() && !session.get().isManagedExactInstance(metadata, entity)) {
+                return Mono.error(new IllegalArgumentException(
+                        "Cannot refresh detached entity " + entity.getClass().getName()));
+            }
             Class<T> entityType = metadata.entityType();
             // SESSION_KEY를 제거한 컨텍스트로 조회 = 세션-less raw read(auto-flush/identity 편입 없음). 커넥션 키는
             // 남으므로 동일 트랜잭션 커넥션에서 현재 DB 상태를 읽는다 — 방금 폐기한 미flush 변경은 반영되지 않는다.
@@ -174,8 +184,7 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                                     + "; the row no longer exists")))
                     .map(fresh -> {
                         copyColumnState(metadata, fresh, entity);
-                        // 재적재한 인스턴스를 clean snapshot으로 다시 관리 상태에 편입한다(분리 상태라 key가 비어 있음).
-                        session.ifPresent(active -> active.registerOnLoad(metadata, entity));
+                        session.ifPresent(active -> active.refreshManagedExactInstanceSnapshot(metadata, entity));
                         return entity;
                     });
         });
@@ -294,9 +303,12 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
             if (resolved.forceIncrement()) {
                 PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
                 return found.flatMap(entity -> operations.update(entity, List.of(versionProperty.propertyName()))
-                        .doOnNext(updated -> reconcileForceIncrementSnapshot(session, updated)));
+                        .doOnNext(updated -> {
+                            reconcileForceIncrementSnapshot(session, updated);
+                            recordLockMode(session, metadata, updated, lockMode);
+                        }));
             }
-            return found;
+            return found.doOnNext(entity -> recordLockMode(session, metadata, entity, lockMode));
         });
     }
 
@@ -317,6 +329,10 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                         "Lock mode " + lockMode + " requires a @Version property on "
                                 + metadata.entityType().getName()));
             }
+            if (session.isPresent() && !session.get().isManagedExactInstance(metadata, entity)) {
+                return Mono.error(new IllegalArgumentException(
+                        "Cannot lock detached entity " + metadata.entityType().getName()));
+            }
             Mono<Void> chain = Mono.empty();
             if (resolved.lockMode() != LockMode.NONE) {
                 // PESSIMISTIC_*: 해당 행을 FOR UPDATE/SHARE로 재조회해 DB 잠금을 획득한다.
@@ -325,14 +341,14 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
             if (resolved.forceIncrement()) {
                 // *_FORCE_INCREMENT: 버전을 강제 증분하는 UPDATE 발행(낙관락 검증 포함).
                 PersistentProperty versionProperty = metadata.versionProperty().orElseThrow();
-                chain = chain.then(operations.update(entity, List.of(versionProperty.propertyName()))
+                chain = chain.then(Mono.defer(() -> operations.update(entity, List.of(versionProperty.propertyName()))
                         .doOnNext(updated -> reconcileForceIncrementSnapshot(session, updated))
-                        .then());
+                        .then()));
             } else if (resolved.versionCheck()) {
                 // OPTIMISTIC/READ: 현재 버전이 DB와 일치하는지 검증한다.
                 chain = chain.then(verifyVersion(metadata, entity));
             }
-            return chain;
+            return chain.then(Mono.fromRunnable(() -> recordLockMode(session, metadata, entity, lockMode)));
         });
     }
 
@@ -341,13 +357,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         Objects.requireNonNull(entity, "entity must not be null");
         return Mono.deferContextual(ctx -> {
             EntityMetadata<?> metadata = metadataFor(entity);
-            boolean managed = currentSession(ctx)
-                    .map(session -> session.isManaged(metadata, entity))
-                    .orElse(Boolean.FALSE);
-            // Nova는 per-entity 잠금 상태를 추적하지 않는다. 관리 중이고 @Version이 있으면 OPTIMISTIC, 그 외 NONE.
-            return Mono.just(managed && metadata.versionProperty().isPresent()
-                    ? LockModeType.OPTIMISTIC
-                    : LockModeType.NONE);
+            return Mono.just(currentSession(ctx)
+                    .map(session -> session.lockModeExactInstance(metadata, entity))
+                    .orElse(LockModeType.NONE));
         });
     }
 
@@ -356,11 +368,46 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         Objects.requireNonNull(entity, "entity must not be null");
         Objects.requireNonNull(lockMode, "lockMode must not be null");
         return Mono.deferContextual(ctx -> {
-            if (LockModeTranslator.resolve(lockMode).lockMode() != LockMode.NONE && !hasActiveTransaction(ctx)) {
+            @SuppressWarnings("unchecked")
+            EntityMetadata<T> metadata = (EntityMetadata<T>) metadataFactory.getEntityMetadata(entity.getClass());
+            LockModeTranslator.ResolvedLock resolved = LockModeTranslator.resolve(lockMode);
+            if (resolved.lockMode() != LockMode.NONE && !hasActiveTransaction(ctx)) {
                 return Mono.error(new TransactionRequiredException(
                         "Pessimistic lock mode " + lockMode + " requires an active transaction"));
             }
-            return refresh(entity).flatMap(refreshed -> lock(refreshed, lockMode).thenReturn(refreshed));
+            if ((resolved.versionCheck() || resolved.forceIncrement()) && metadata.versionProperty().isEmpty()) {
+                return Mono.error(new IllegalArgumentException(
+                        "Lock mode " + lockMode + " requires a @Version property on "
+                                + metadata.entityType().getName()));
+            }
+            Object id = metadata.readIdValue(entity);
+            if (id == null) {
+                return Mono.error(new IllegalArgumentException(
+                        "Cannot refresh a transient " + entity.getClass().getName()
+                                + " with a null identifier; persist it first"));
+            }
+            Optional<PersistenceSession> session = currentSession(ctx);
+            if (session.isPresent() && session.get().isRemoved(metadata, entity)) {
+                return Mono.error(new IllegalStateException("Cannot refresh removed entity "
+                        + entity.getClass().getName() + "; clear the persistence session first"));
+            }
+            if (session.isPresent() && !session.get().isManagedExactInstance(metadata, entity)) {
+                return Mono.error(new IllegalArgumentException(
+                        "Cannot refresh detached entity " + entity.getClass().getName()));
+            }
+            return find(metadata.entityType(), id, lockMode)
+                    .contextWrite(context -> context.delete(SimpleReactiveEntityOperations.SESSION_KEY))
+                    .switchIfEmpty(Mono.error(() -> new EntityNotFoundException(
+                            "Unable to refresh " + metadata.entityType().getName() + " with id " + id
+                                    + "; the row no longer exists")))
+                    .map(fresh -> {
+                        copyColumnState(metadata, fresh, entity);
+                        session.ifPresent(active -> {
+                            active.refreshManagedExactInstanceSnapshot(metadata, entity);
+                            active.recordLockModeExactInstance(metadata, entity, lockMode);
+                        });
+                        return entity;
+                    });
         });
     }
 
@@ -439,6 +486,11 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         concreteMetadata.versionProperty().ifPresent(writtenProperties::add);
         concreteMetadata.updatedAtProperty().ifPresent(writtenProperties::add);
         session.get().refreshManagedExactInstanceSnapshot(concreteMetadata, entity, writtenProperties);
+    }
+
+    private static void recordLockMode(
+            Optional<PersistenceSession> session, EntityMetadata<?> metadata, Object entity, LockModeType lockMode) {
+        session.ifPresent(active -> active.recordLockModeExactInstance(metadata, entity, lockMode));
     }
 
     /**

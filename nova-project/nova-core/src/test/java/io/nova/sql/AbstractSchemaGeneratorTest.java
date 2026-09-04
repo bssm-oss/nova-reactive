@@ -129,6 +129,36 @@ class AbstractSchemaGeneratorTest {
     }
 
     @Test
+    void autoUsesTheIdentityHookWithoutReclassifyingOtherGenerationStrategies() {
+        Dialect identityHookDialect = new IdentityHookDialect();
+
+        EntityMetadata<AutoIdentityDispatchEntity> auto = factory.getEntityMetadata(AutoIdentityDispatchEntity.class);
+        EntityMetadata<ExplicitIdentityDispatchEntity> identity =
+                factory.getEntityMetadata(ExplicitIdentityDispatchEntity.class);
+        EntityMetadata<AssignedDispatchEntity> assigned = factory.getEntityMetadata(AssignedDispatchEntity.class);
+        EntityMetadata<SequenceDispatchEntity> sequence = factory.getEntityMetadata(SequenceDispatchEntity.class);
+        EntityMetadata<TableDispatchEntity> table = factory.getEntityMetadata(TableDispatchEntity.class);
+        EntityMetadata<UuidDispatchEntity> uuid = factory.getEntityMetadata(UuidDispatchEntity.class);
+
+        assertEquals(jakarta.persistence.GenerationType.AUTO, auto.idProperty().generationType());
+        assertEquals(jakarta.persistence.GenerationType.IDENTITY, identity.idProperty().generationType());
+        assertEquals(null, assigned.idProperty().generationType());
+        assertEquals(jakarta.persistence.GenerationType.SEQUENCE, sequence.idProperty().generationType());
+        assertEquals(jakarta.persistence.GenerationType.TABLE, table.idProperty().generationType());
+        assertEquals(jakarta.persistence.GenerationType.UUID, uuid.idProperty().generationType());
+
+        String autoDdl = identityHookDialect.schemaGenerator().createTable(auto);
+        String identityDdl = identityHookDialect.schemaGenerator().createTable(identity);
+        assertEquals(identityDdl, autoDdl);
+        assertTrue(autoDdl.contains("identity_hook"), autoDdl);
+
+        assertFalse(identityHookDialect.schemaGenerator().createTable(assigned).contains("identity_hook"));
+        assertFalse(identityHookDialect.schemaGenerator().createTable(sequence).contains("identity_hook"));
+        assertFalse(identityHookDialect.schemaGenerator().createTable(table).contains("identity_hook"));
+        assertFalse(identityHookDialect.schemaGenerator().createTable(uuid).contains("identity_hook"));
+    }
+
+    @Test
     void rejectsInvalidJpa32CheckAndColumnDefinitionOptionsCombinations() {
         assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(BlankCheckEntity.class));
@@ -812,6 +842,43 @@ class AbstractSchemaGeneratorTest {
         }
     }
 
+    private static final class IdentityHookDialect implements Dialect {
+        private final BindMarkerStrategy bindMarkers = index -> "?";
+        private final SqlRenderer renderer = new AbstractSqlRenderer(this) {
+        };
+        private final SchemaGenerator schemaGenerator = new AbstractSchemaGenerator(this) {
+            @Override
+            protected String identityColumn(PersistentProperty property) {
+                return super.identityColumn(property) + " identity_hook";
+            }
+        };
+
+        @Override
+        public String name() {
+            return "identity-hook";
+        }
+
+        @Override
+        public String quote(String identifier) {
+            return identifier;
+        }
+
+        @Override
+        public BindMarkerStrategy bindMarkers() {
+            return bindMarkers;
+        }
+
+        @Override
+        public SqlRenderer sqlRenderer() {
+            return renderer;
+        }
+
+        @Override
+        public SchemaGenerator schemaGenerator() {
+            return schemaGenerator;
+        }
+    }
+
     @jakarta.persistence.Entity
     @jakarta.persistence.Table(
             name = "ddl32",
@@ -853,6 +920,51 @@ class AbstractSchemaGeneratorTest {
         @jakarta.persistence.Column(check = @jakarta.persistence.CheckConstraint(
                 name = "chk_identity", constraint = "id > 0"), options = "identity_option")
         Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "identity_dispatch")
+    static class AutoIdentityDispatchEntity {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    @jakarta.persistence.Table(name = "identity_dispatch")
+    static class ExplicitIdentityDispatchEntity {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.IDENTITY)
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class AssignedDispatchEntity {
+        @jakarta.persistence.Id
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class SequenceDispatchEntity {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.SEQUENCE, generator = "dispatch_seq")
+        @jakarta.persistence.SequenceGenerator(name = "dispatch_seq")
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class TableDispatchEntity {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.TABLE, generator = "dispatch_table")
+        @jakarta.persistence.TableGenerator(name = "dispatch_table")
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class UuidDispatchEntity {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.UUID)
+        java.util.UUID id;
     }
 
     @jakarta.persistence.Entity

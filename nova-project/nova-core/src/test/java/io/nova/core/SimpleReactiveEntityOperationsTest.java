@@ -52,6 +52,8 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
+import jakarta.persistence.Inheritance;
+import jakarta.persistence.InheritanceType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinColumns;
 import jakarta.persistence.JoinTable;
@@ -115,6 +117,40 @@ class SimpleReactiveEntityOperationsTest {
         assertEquals(List.of("new@nova.io", true), executor.lastStatement.bindings());
         assertEquals("id", executor.lastGeneratedIdColumn);
         assertEquals(Long.class, executor.lastGeneratedIdType);
+    }
+
+    @Test
+    void saveFailsWithoutGeneratedKeyAndDoesNotAssignId() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(null, "missing-key@nova.io", true);
+
+        StepVerifier.create(operations.save(account))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("Database generated id was not returned"))
+                .verify();
+
+        assertEquals(1, executor.generatedKeyCalls, "only the generated-key insert may be attempted");
+        assertTrue(executor.executedStatements.isEmpty(), "no dependent DML may execute after a missing key");
+        assertEquals(null, account.getId(), "an empty generated-key result must not be treated as a successful save");
+    }
+
+    @Test
+    void joinedSaveFailsWithoutGeneratedKeyBeforeSubtypeInsert() {
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        MissingKeyJoinedChild child = new MissingKeyJoinedChild("missing-key");
+
+        StepVerifier.create(operations.save(child))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("Database generated id was not returned"))
+                .verify();
+
+        assertEquals(1, executor.generatedKeyCalls, "only the root insert may request a generated key");
+        assertEquals(1, executor.chronologicalSqlCalls.size(), "subtype DML must not run without the root key");
+        assertTrue(executor.chronologicalSqlCalls.get(0).startsWith("insert into missing_key_joined_root"),
+                "only the root insert may be attempted");
+        assertEquals(null, child.getId(), "a missing root key must not produce a successful child save");
     }
 
     @Test
@@ -2186,6 +2222,23 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void deferredPartialUpdateDoesNotFireCallbacksBeforeItsPrecedingOperationCompletes() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "USER@NOVA.IO");
+
+        StepVerifier.create(Mono.<Void>never()
+                        .then(Mono.defer(() -> operations.update(entity, List.of("email")))))
+                .thenCancel()
+                .verify();
+
+        assertEquals(0, EntityWithCallbacks.preUpdateCount.get());
+        assertEquals(0, EntityWithCallbacks.postUpdateCount.get());
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
     void deleteFiresPreRemoveCallback() {
         EntityWithCallbacks.reset();
         CapturingExecutor executor = new CapturingExecutor();
@@ -3421,6 +3474,39 @@ class SimpleReactiveEntityOperationsTest {
                 transactions,
                 clock
         );
+    }
+
+    @Entity
+    @Table(name = "missing_key_joined_root")
+    @Inheritance(strategy = InheritanceType.JOINED)
+    abstract static class MissingKeyJoinedRoot {
+        @Id
+        @GeneratedValue
+        private Long id;
+
+        private String name;
+
+        MissingKeyJoinedRoot() {
+        }
+
+        MissingKeyJoinedRoot(String name) {
+            this.name = name;
+        }
+
+        Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "missing_key_joined_child")
+    static class MissingKeyJoinedChild extends MissingKeyJoinedRoot {
+        MissingKeyJoinedChild() {
+        }
+
+        MissingKeyJoinedChild(String name) {
+            super(name);
+        }
     }
 
     private static final class RecordingDialect implements Dialect {

@@ -60,7 +60,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 |---|---|---|
 | `@Inheritance(SINGLE_TABLE)` + `@DiscriminatorColumn` / `@DiscriminatorValue` | ✅ | |
 | `@Inheritance(JOINED)` | ✅ | Polymorphic SELECT with derived-table wrapping |
-| `@Inheritance(TABLE_PER_CLASS)` | ✅ | |
+| `@Inheritance(TABLE_PER_CLASS)` | ✅ | `IDENTITY` / `AUTO` ids are rejected because independent subtype identities can collide; use `TABLE` or `SEQUENCE`. |
 | `@MappedSuperclass` | ✅ | Fields, ids, listeners inherited via ancestor walk |
 
 ## Relationships
@@ -112,7 +112,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | `ReactiveEntityManager` (`persist` / `merge` / `remove` / `find` / `getReference` / `flush` / `clear` / `detach` / `refresh` / `contains`) | ⟳ | `Nova.entityManager(...)` |
-| `LockModeType` (`PESSIMISTIC_WRITE`/`READ`, `OPTIMISTIC`, `FORCE_INCREMENT`) | ✅ | `find` / `lock` / `getLockMode` overloads |
+| `LockModeType` (`PESSIMISTIC_WRITE`/`READ`, `OPTIMISTIC`, `FORCE_INCREMENT`) | ✅ | `find` / `lock` / `getLockMode` overloads. `getLockMode` is `NONE` for an ordinary managed find and reports the requested alias only after that exact managed instance successfully completes the lock. Detached stand-ins cannot observe or alter the canonical instance; failed/cancelled lock or lock-refresh attempts preserve its prior mode and state; successful lock-refresh records its requested mode. `remove`, `detach`, `clear`, and transaction completion reset/discard the state. |
 | `FlushModeType` | ✅ | Propagated via Reactor `Context` |
 | Transaction-bound persistence session (identity map + dirty checking + flush) | ✅ | Opt-in; collection diff-at-flush. A successful `remove` retains an internal tombstone until `clear`: it is excluded from scalar/collection flush and `contains`/lock management, and re-persisting that identity in the same session fails explicitly. Lifecycle remove callbacks run on subscription, with `@PostRemove` after successful DML. |
 | 2nd-level cache (`nova-cache`, `@Cacheable` / `SharedCacheMode`) | ✅ | Each entity/query-cache hit is a fresh detached mapped graph: PROPERTY accessors, mapped converter/`@Temporal` values, and element collections are reconstructed while shared references and cycles are preserved only within that hit; unmapped state is not copied. Every successful wrapped write globally invalidates graph-bearing entity and query caches, including non-cacheable associated writes. Managed transactions bypass shared values and replay that invalidation only after a successful physical commit. |
@@ -122,7 +122,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | Spring Data-style `ReactiveCrudRepository<T, ID>` + `Pageable` / `Sort` | ✅ | `nova-spring-data`, opt-in `SpringDataReactiveCrudRepository` |
-| `@Query` (JPQL) on repository methods | ✅ | `@EnableNovaRepositories`, `BeanFactoryAware` auto-wiring |
+| `@Query` (JPQL) on repository methods | ✅ | `@EnableNovaRepositories`, `BeanFactoryAware` auto-wiring. `Mono<T>` is zero-or-one; non-unique results fail rather than truncate. Use derived `findFirst...` / `findTop...` for explicit one-row truncation. |
 
 ---
 
@@ -162,4 +162,4 @@ These declare cleanly but are rejected with a message until implemented — Nova
 > `BigDecimal` whose scale identity matters as an id, composite-id component, or relationship key;
 > use a round-trip-stable key and `compareTo` for numeric business equality.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.29.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.30.0`).

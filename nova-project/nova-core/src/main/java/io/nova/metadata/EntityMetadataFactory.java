@@ -845,6 +845,12 @@ public final class EntityMetadataFactory {
             throw new IllegalArgumentException(entityType.getName()
                     + " must declare an access member annotated with @Id or @EmbeddedId");
         }
+        if (inheritance.tablePerClass() && EntityMetadata.isDatabaseGeneratedId(idProperty)) {
+            throw new IllegalArgumentException(
+                    entityType.getName() + " @Inheritance(TABLE_PER_CLASS) does not support"
+                            + " @GeneratedValue(strategy = IDENTITY or AUTO); use TABLE or SEQUENCE"
+                            + " for globally unique identifiers");
+        }
         if (hasIdClass) {
             validateIdClass(entityType, properties);
         }

@@ -9,8 +9,8 @@ Adding `nova-spring-boot-starter` registers every core bean via `NovaAutoConfigu
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.29.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.29.0")
+    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.30.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.30.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -74,7 +74,7 @@ nova:
 
 ## Spring Data-style repositories (`nova-spring-data`)
 
-The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.29.0`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
+The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.30.0`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
 
 ```java
 import io.nova.spring.data.ReactiveCrudRepository;
@@ -104,6 +104,13 @@ Mono<Long> deleteById(ID id);
 Mono<Long> delete(T entity);
 Mono<Long> deleteAll(Iterable<T> entities);
 ```
+
+### Annotated JPQL queries
+
+JPQL-backed `@Query` methods returning `Mono<T>` are zero-or-one queries: zero rows
+complete empty, one row is emitted, and multiple rows fail with `JpqlException`. This
+does not truncate results. Derived `findFirst` and `findTop` methods are distinct
+explicit limiting operations and use `LIMIT 1`.
 
 ### Derived query methods
 

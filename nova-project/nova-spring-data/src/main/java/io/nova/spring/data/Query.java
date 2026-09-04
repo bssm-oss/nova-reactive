@@ -27,9 +27,11 @@ import java.lang.annotation.Target;
  *       {@code @Modifying} 없이 UPDATE/DELETE JPQL을 지정하면 fail-fast 거부한다.</li>
  * </ul>
  *
- * <p><b>단건 반환 시맨틱:</b> {@code Mono<T>}(비-Page/Slice) 반환은 결과 스트림의 <em>첫 행</em>을
- * 발행한다(first-wins). 여러 행이 나와도 오류가 아니라 첫 행만 발행하며(파생 쿼리 {@code findFirst*}와
- * 동일), 행이 없으면 빈 {@code Mono}로 완료한다. 정확히 한 건을 강제하려면 쿼리로 유일성을 보장하라.
+ * <p><b>단건 반환 시맨틱:</b> JPQL {@code @Query}의 {@code Mono<T>}(비-Page/Slice) 반환은
+ * zero-or-one이다. 행이 없으면 빈 {@code Mono}로 완료하고, 정확히 한 행을 발행하며, 여러 행이면
+ * {@code JpqlException}으로 실패한다. native {@code @Query}의 {@code Mono<T>}는 기존처럼 결과
+ * 스트림의 첫 행만 발행한다. 파생 쿼리 {@code findFirst*}/{@code findTop*}는 {@code LIMIT 1}을
+ * 적용하는 명시적 제한 연산이다.
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)

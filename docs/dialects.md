@@ -16,7 +16,7 @@ public interface Dialect {
 
 ## Supported dialects
 
-| Dialect              | Bind marker | Identity column                                                 | Quote      | Generated keys           | SEQUENCE                |
+| Dialect              | Bind marker | IDENTITY / AUTO column                                          | Quote      | Generated keys           | SEQUENCE                |
 |----------------------|-------------|-----------------------------------------------------------------|------------|--------------------------|--------------------------|
 | `PostgresqlDialect`  | `$1`, `$2`  | `bigserial` / `serial` primary key                              | `" "`      | `RETURNING` clause        | `nextval('seq')`         |
 | `MySqlDialect`       | `?`         | `bigint primary key auto_increment`                             | `` ` ` ``  | `Statement.returnGeneratedValues` | not supported (UOE) |
@@ -26,7 +26,7 @@ public interface Dialect {
 
 > **Oracle specifics**: there is no `LIMIT/OFFSET`, so pagination renders as `OFFSET ? ROWS FETCH NEXT ? ROWS ONLY` and `exists()` renders as `FETCH FIRST 1 ROWS ONLY`. `FOR SHARE` row locking is unsupported and throws `UnsupportedOperationException`. `@Json` columns map to `clob` (override per-dialect for native `JSON` on 21c+).
 
-For `@GeneratedValue(strategy = SEQUENCE, generator = "account_seq")`, Nova issues a SELECT aliased as `Dialect.SEQUENCE_VALUE_COLUMN` using the dialect's `sequenceNextValueSql(generator)` to fetch the id beforehand. For `UUID`, ops stamp `UUID.randomUUID()` just before INSERT for `java.util.UUID` or `String` fields.
+`@GeneratedValue(strategy = AUTO)` and bare `@GeneratedValue` use the `IDENTITY / AUTO column` and generated-key path shown above for the active dialect. For `@GeneratedValue(strategy = SEQUENCE, generator = "account_seq")`, Nova issues a SELECT aliased as `Dialect.SEQUENCE_VALUE_COLUMN` using the dialect's `sequenceNextValueSql(generator)` to fetch the id beforehand. For `UUID`, ops stamp `UUID.randomUUID()` just before INSERT for `java.util.UUID` or `String` fields.
 
 A new dialect extends `AbstractSqlRenderer` and `AbstractSchemaGenerator` and overrides only the differences.
 

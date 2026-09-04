@@ -17,7 +17,7 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 | `@Id`             | Single identifier field. Exactly one `@Id` **or** one `@EmbeddedId` is required per entity. |
 | `@EmbeddedId`     | Composite primary key. The field's type is an `@Embeddable` whose fields become the key columns (no host-field prefix; `@AttributeOverride` renames them). The key is application-assigned — `save()` resolves insert vs. update with an existence check. `@GeneratedValue` on a component is rejected. |
 | `@IdClass`        | Composite primary key declared as several top-level `@Id` fields plus a mirror id class. The id class must declare a matching field (name + type) for each `@Id` and a no-arg constructor. Same application-assigned semantics as `@EmbeddedId`; cannot be combined with it. |
-| `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. |
+| `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `UUID`). `AUTO` (including bare `@GeneratedValue`) is an alias for the active dialect's `IDENTITY` DDL and generated-key path. Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. |
 | `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). |
 | `@Column`         | Column name, `nullable`, `length` / `precision` / `scale` / JPA 3.2 `secondPrecision`, `insertable` / `updatable` / `unique` / `columnDefinition`, plus JPA 3.2 `check`, `comment`, and `options`. |
 | `@Lob`            | Maps the column to the dialect LOB type — character LOB (`clob` / `text` / `longtext`) for `String`, binary LOB (`blob` / `bytea` / `longblob`) for `byte[]`. |
@@ -383,7 +383,9 @@ root polymorphically.
 `JOINED` stores root fields in the root table and subtype fields in subtype tables linked by
 the inherited primary key; root and subtype schemas are honored independently.
 `TABLE_PER_CLASS` stores each concrete type in its own table and uses polymorphic unions for
-root reads.
+root reads. Because independent identity columns can collide across subtype tables,
+`@GeneratedValue(strategy = IDENTITY)` and `AUTO` (including bare `@GeneratedValue`) are rejected;
+use a shared `TABLE` or `SEQUENCE` generator for globally unique identifiers.
 
 > Only single-level `JOINED` and `TABLE_PER_CLASS` hierarchies are supported. Querying a
 > non-leaf mid-hierarchy type is not supported, and `@DiscriminatorFormula` remains unsupported.
