@@ -24,6 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * 세션(트랜잭션 바인딩) 안에서 owning {@code @ManyToMany} link 동기화가 save 즉시가 아니라 flush로 지연되고,
@@ -283,6 +284,99 @@ class SessionCollectionFlushIntegrationTest {
     }
 
     @Test
+    void uuidManyToManySessionDiffEncodesIdsAndReloads() {
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(UuidPost.class, UuidTag.class).block();
+
+        UuidTag keep = support.operations().save(new UuidTag("keep")).block();
+        UuidTag drop = support.operations().save(new UuidTag("drop")).block();
+        UuidTag add = support.operations().save(new UuidTag("add")).block();
+        UuidPost post = new UuidPost("p");
+        post.getTags().add(keep);
+        post.getTags().add(drop);
+        UuidPost saved = support.operations().save(post).block();
+
+        listener.clear();
+        StepVerifier.create(support.operations().inTransaction(ops -> ops.findById(UuidPost.class, saved.getId())
+                .doOnNext(loaded -> loaded.getTags().add(add)).then())).verifyComplete();
+        assertEquals(1, listener.count("uuid_post_tag", "insert"));
+        assertEquals(0, listener.count("uuid_post_tag", "delete"));
+
+        listener.clear();
+        StepVerifier.create(support.operations().inTransaction(ops -> ops.findById(UuidPost.class, saved.getId())
+                .doOnNext(loaded -> loaded.getTags().removeIf(tag -> tag.getId().equals(drop.getId()))).then()))
+                .verifyComplete();
+        assertEquals(1, listener.count("uuid_post_tag", "delete"));
+        assertEquals(0, listener.count("uuid_post_tag", "insert"));
+
+        StepVerifier.create(support.operations().findById(UuidPost.class, saved.getId()))
+                .assertNext(loaded -> assertEquals(Set.of("keep", "add"), loaded.getTags().stream()
+                        .map(UuidTag::getName).collect(Collectors.toSet())))
+                .verifyComplete();
+    }
+
+    @Test
+    void uuidManyToManyManagedFlushBindsVarcharIdsAndWritesOneDistinctLink() {
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(UuidPost.class, UuidTag.class).block();
+
+        UuidTag initial = support.operations().save(new UuidTag("initial")).block();
+        UuidTag added = support.operations().save(new UuidTag("added")).block();
+        UuidPost post = new UuidPost("p");
+        post.getTags().add(initial);
+        UuidPost saved = support.operations().save(post).block();
+
+        listener.clear();
+        StepVerifier.create(support.operations().inTransaction(ops -> ops.findById(UuidPost.class, saved.getId())
+                .doOnNext(loaded -> loaded.getTags().add(added))
+                .then())).verifyComplete();
+
+        SqlStatement joinInsert = listener.lastWrite("uuid_post_tag", "insert");
+        assertNotNull(joinInsert, "managed flush must insert the newly added UUID join link");
+        assertEquals(java.util.List.of(saved.getId().toString(), added.getId().toString()), joinInsert.bindings(),
+                "managed join insert must bind UUID ids using their varchar storage values");
+        assertEquals(1, listener.count("uuid_post_tag", "insert"),
+                "managed diff must write exactly one new link");
+        assertEquals(2L, support.operations().queryNativeOne(
+                        io.nova.query.NativeQuery.of("select count(*) as c from "
+                                + support.dialect().quote("uuid_post_tag")),
+                        row -> row.get("c", Long.class))
+                .block(), "managed flush must leave one row per distinct UUID link");
+
+        StepVerifier.create(support.operations().findById(UuidPost.class, saved.getId()))
+                .assertNext(loaded -> assertEquals(Set.of(initial.getId(), added.getId()), loaded.getTags().stream()
+                        .map(UuidTag::getId).collect(Collectors.toSet()),
+                        "fresh hydration must decode varchar join ids back to UUID"))
+                .verifyComplete();
+    }
+
+    @Test
+    void uuidManyToManyManagedFlushRejectsTransientTargetBeforeWritingNullLink() {
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(UuidPost.class, UuidTag.class).block();
+
+        UuidPost saved = support.operations().save(new UuidPost("p")).block();
+        listener.clear();
+
+        StepVerifier.create(support.operations().inTransaction(ops -> ops.findById(UuidPost.class, saved.getId())
+                        .doOnNext(loaded -> loaded.getTags().add(new UuidTag("transient")))
+                        .then()))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("every id component non-null"))
+                .verify();
+
+        assertEquals(0, listener.count("uuid_post_tag", "insert"));
+        assertEquals(0L, support.operations().queryNativeOne(
+                        io.nova.query.NativeQuery.of("select count(*) as c from "
+                                + support.dialect().quote("uuid_post_tag")),
+                        row -> row.get("c", Long.class))
+                .block());
+    }
+
+    @Test
     void collectionMutationIsFlushedAtCommit() {
         Post seeded = seedPostWithTwoTags();
         Tag c = support.operations().save(new Tag("c")).block();
@@ -304,11 +398,11 @@ class SessionCollectionFlushIntegrationTest {
     }
 
     private static final class CapturingListener implements SqlExecutionListener {
-        private final java.util.List<String> statements = new CopyOnWriteArrayList<>();
+        private final java.util.List<SqlStatement> statements = new CopyOnWriteArrayList<>();
 
         @Override
         public void onBeforeExecution(SqlStatement statement) {
-            statements.add(statement.sql());
+            statements.add(statement);
         }
 
         void clear() {
@@ -316,12 +410,12 @@ class SessionCollectionFlushIntegrationTest {
         }
 
         java.util.List<String> statements() {
-            return statements;
+            return statements.stream().map(SqlStatement::sql).toList();
         }
 
         long linkTableWriteCount() {
             return statements.stream()
-                    .map(sql -> sql.toLowerCase(Locale.ROOT))
+                    .map(statement -> statement.sql().toLowerCase(Locale.ROOT))
                     .filter(sql -> sql.contains("post_tag")
                             && (sql.startsWith("insert") || sql.startsWith("delete")))
                     .count();
@@ -330,9 +424,20 @@ class SessionCollectionFlushIntegrationTest {
         /** 주어진 테이블 이름을 언급하며 {@code op}(insert/delete)로 시작하는 SQL 문 개수. */
         long count(String table, String op) {
             return statements.stream()
-                    .map(sql -> sql.toLowerCase(Locale.ROOT))
+                    .map(statement -> statement.sql().toLowerCase(Locale.ROOT))
                     .filter(sql -> sql.contains(table) && sql.startsWith(op))
                     .count();
+        }
+
+        SqlStatement lastWrite(String table, String operation) {
+            SqlStatement found = null;
+            for (SqlStatement statement : statements) {
+                String sql = statement.sql().toLowerCase(Locale.ROOT);
+                if (sql.startsWith(operation) && sql.contains(table)) {
+                    found = statement;
+                }
+            }
+            return found;
         }
     }
 
@@ -494,6 +599,60 @@ class SessionCollectionFlushIntegrationTest {
 
         public Set<java.util.UUID> getRefs() {
             return refs;
+        }
+    }
+
+    @Entity
+    @Table(name = "uuid_post")
+    public static class UuidPost {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private java.util.UUID id;
+        private String title;
+
+        @ManyToMany
+        @JoinTable(name = "uuid_post_tag",
+                joinColumns = @JoinColumn(name = "post_id"),
+                inverseJoinColumns = @JoinColumn(name = "tag_id"))
+        private Set<UuidTag> tags = new LinkedHashSet<>();
+
+        public UuidPost() {
+        }
+
+        public UuidPost(String title) {
+            this.title = title;
+        }
+
+        public java.util.UUID getId() {
+            return id;
+        }
+
+        public Set<UuidTag> getTags() {
+            return tags;
+        }
+    }
+
+    @Entity
+    @Table(name = "uuid_tag")
+    public static class UuidTag {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private java.util.UUID id;
+        private String name;
+
+        public UuidTag() {
+        }
+
+        public UuidTag(String name) {
+            this.name = name;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public java.util.UUID getId() {
+            return id;
         }
     }
 }

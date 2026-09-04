@@ -71,7 +71,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@ManyToOne` / `@OneToOne` → **composite-key** target | ✅ | Multi-column FK (one column per referenced `@Id` component) + composite FK constraint |
 | inverse `@OneToOne` (`mappedBy`) | ✅ | Hydration only; `orphanRemoval` and mutating `PERSIST`/`MERGE`/`REMOVE`/`ALL` cascades fail fast |
 | `@OneToMany` (`cascade`, `orphanRemoval`, `@OrderColumn`, `@OrderBy`) | ✅ | |
-| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration |
+| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration; single-column IDs (including `UUID`) are encoded to referenced-`@Id` physical storage and decoded before lookup |
 | `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK) |
 | `@ElementCollection` | ✅ | Basic / enum / `UUID` elements, mutable and record `@Embeddable` values, `Map` keys/values (including records), `@OrderColumn`, `List` |
 | `@MapKeyColumn` / `@MapKeyEnumerated` / `@MapKeyTemporal` / `@MapKeyClass` | ✅ | `@MapKeyClass` supports basic / enum / `@Embeddable` / single-`@Id` **entity** key classes (entity key stored as its `@Id` FK column, batch-hydrated); composite-`@Id` entity key classes fail-fast |
@@ -102,7 +102,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Criteria API (`jakarta.persistence.criteria`) | ⟳ | Joins (M2O/O2O/O2M/inverse), subqueries (`EXISTS`/`IN`/correlate) |
 | Criteria `ParameterExpression` | ✅ | Named and identity-bound scalar parameters execute across entity, scalar, join, and subquery routes. Values are validated and converted for the target column per subscription, then supplied as bind markers in SQL traversal order; positional, null, collection, missing, foreign, and type-conflicting bindings fail fast. |
 | Joins over a **composite-key** to-one target | ✅ | Multi-column `ON` (`a.c1=b.c1 AND a.c2=b.c2`) |
-| Composite-key to-one in `WHERE` (`=` / `IS NULL`, ordering `< <= > >=`, `IN`, `BETWEEN`), `GROUP BY` / `ORDER BY`, and scalar `SELECT` projection | ✅ | Scalar JPQL + Criteria; lexicographic multi-column expansion, single canonical component order. `SELECT c.parent` yields a target id-stub. `LIKE` / entity-returning-JPQL `WHERE` fail-fast |
+| Composite-key to-one in `WHERE` (`=` / `IS [NOT] NULL`, ordering `< <= > >=`, `IN`, `BETWEEN`), `GROUP BY` / `ORDER BY`, and scalar `SELECT` projection | ✅ | Scalar JPQL + Criteria; lexicographic multi-column expansion, single canonical component order. `IS NULL` requires every FK component null; `IS NOT NULL` accepts any non-null component, matching hydration. `SELECT c.parent` yields a target id-stub. `LIKE` / entity-returning-JPQL `WHERE` fail-fast |
 | `@NamedQuery` / `@NamedNativeQuery` | ✅ | Per-entity registry, duplicate-name fail-fast |
 | `@SqlResultSetMapping` (`@EntityResult` / `@FieldResult` / `@ConstructorResult` / `@ColumnResult`) | ✅ | Native-read-then-coerce (dialect-independent) |
 | `@StoredProcedureQuery` / `@NamedStoredProcedureQuery` | ⟳ | `IN` params + result sets. `OUT`/`INOUT`/`REF_CURSOR` fail-fast on r2dbc-h2 |
@@ -115,7 +115,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `LockModeType` (`PESSIMISTIC_WRITE`/`READ`, `OPTIMISTIC`, `FORCE_INCREMENT`) | ✅ | `find` / `lock` / `getLockMode` overloads |
 | `FlushModeType` | ✅ | Propagated via Reactor `Context` |
 | Transaction-bound persistence session (identity map + dirty checking + flush) | ✅ | Opt-in; collection diff-at-flush. A successful `remove` retains an internal tombstone until `clear`: it is excluded from scalar/collection flush and `contains`/lock management, and re-persisting that identity in the same session fails explicitly. Lifecycle remove callbacks run on subscription, with `@PostRemove` after successful DML. |
-| 2nd-level cache (`nova-cache`, `@Cacheable` / `SharedCacheMode`) | ✅ | Managed transactions bypass shared values and replay conservative invalidation after physical commit; read-through + query cache remain enabled outside transactions |
+| 2nd-level cache (`nova-cache`, `@Cacheable` / `SharedCacheMode`) | ✅ | Each entity/query-cache hit is a fresh detached mapped graph: PROPERTY accessors, mapped converter/`@Temporal` values, and element collections are reconstructed while shared references and cycles are preserved only within that hit; unmapped state is not copied. Every successful wrapped write globally invalidates graph-bearing entity and query caches, including non-cacheable associated writes. Managed transactions bypass shared values and replay that invalidation only after a successful physical commit. |
 
 ## Spring
 
@@ -162,4 +162,4 @@ These declare cleanly but are rejected with a message until implemented — Nova
 > `BigDecimal` whose scale identity matters as an id, composite-id component, or relationship key;
 > use a round-trip-stable key and `compareTo` for numeric business equality.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.28.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.29.0`).

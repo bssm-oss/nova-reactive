@@ -1,20 +1,25 @@
 package io.nova.cache;
 
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.cache.spi.CacheKey;
 import io.nova.metadata.DefaultNamingStrategy;
 import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.Criteria;
 import io.nova.query.NativeQuery;
 import io.nova.query.QuerySpec;
 import io.nova.query.Updater;
+import io.nova.tx.PhysicalTransactionScope;
+import io.nova.tx.TransactionWriteObservation;
 import jakarta.persistence.Cacheable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +30,7 @@ import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -103,7 +109,7 @@ class QueryCacheDecoratorTest {
     }
 
     @Test
-    void writeToOtherTypeDoesNotInvalidateUnrelatedQueryCache() {
+    void writeToOtherTypeConservativelyInvalidatesGraphQueryCache() {
         CountingQueryOps delegate = new CountingQueryOps();
         delegate.seed(new Product(1L, "keyboard"));
         delegate.seed(new Ledger(1L, "acme"));
@@ -112,9 +118,33 @@ class QueryCacheDecoratorTest {
 
         ops.findAll(Product.class, spec).collectList().block();  // delegate #1, Product 쿼리 캐시 채움
         ops.save(new Ledger(2L, "globex")).block();              // 다른(비캐시) 타입 write
-        ops.findAll(Product.class, spec).collectList().block();  // Product 쿼리 캐시 여전히 히트
+        ops.findAll(Product.class, spec).collectList().block();  // graph cache global clear → delegate #2
 
-        assertEquals(1, delegate.findAllCalls.get(), "무관한 타입 write는 Product 쿼리 캐시를 건드리지 않아야 한다");
+        assertEquals(2, delegate.findAllCalls.get(),
+                "어떤 wrapped write든 연관 graph가 포함될 수 있으므로 모든 쿼리 캐시를 비워야 한다");
+    }
+
+    @Test
+    void queryCacheHitDeepCopiesTheWholeResultGraph() {
+        CountingQueryOps delegate = new CountingQueryOps();
+        QueryGraphOwner source = new QueryGraphOwner(1L, "owner");
+        QueryGraphChild child = new QueryGraphChild(2L, "child");
+        source.child = child;
+        child.owner = source;
+        delegate.seed(source);
+        ReactiveEntityOperations ops = cachingWithQuery(delegate);
+
+        QueryGraphOwner first = ops.findAll(QueryGraphOwner.class, QuerySpec.empty()).blockFirst();
+        first.name = "mutated";
+        first.child.name = "mutated child";
+
+        QueryGraphOwner hit = ops.findAll(QueryGraphOwner.class, QuerySpec.empty()).blockFirst();
+        assertNotSame(first, hit);
+        assertNotSame(first.child, hit.child);
+        assertEquals("owner", hit.name);
+        assertEquals("child", hit.child.name);
+        assertTrue(hit.child.owner == hit, "a query-cache hit must retain cycles inside its fresh graph");
+        assertEquals(1, delegate.findAllCalls.get(), "second query must be served from the query cache");
     }
 
     @Test
@@ -157,6 +187,98 @@ class QueryCacheDecoratorTest {
         ops.findAll(Product.class, spec).collectList().block();   // delegate #2
 
         assertEquals(2, delegate.findAllCalls.get());
+    }
+
+    @Test
+    void legacyTransactionBufferReplaysProviderAndQueryClearsOnlyAfterSuccessfulCommit() {
+        CountingQueryOps delegate = new CountingQueryOps();
+        delegate.seed(new Product(1L, "keyboard"));
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        SimpleReactiveQueryCache queries = new SimpleReactiveQueryCache();
+        ReactiveEntityOperations ops = new CachingReactiveEntityOperations(
+                delegate, metadataFactory, new CacheConfigurationResolver(), provider, queries);
+        CacheKey entityKey = new CacheKey(Product.class.getName(), Product.class, 1L);
+        String queryKey = QuerySpecCacheKey.of(Product.class, QuerySpec.empty());
+
+        ops.inTransaction(tx -> tx.save(new Product(2L, "mouse"))
+                .then(provider.getCache(Product.class.getName()).put(entityKey, new Product(1L, "stale")))
+                .then(queries.put(Product.class, queryKey, List.of(new Product(1L, "stale")))))
+                .block();
+
+        assertTrue(provider.getCache(Product.class.getName()).get(entityKey).blockOptional().isEmpty(),
+                "the legacy post-success replay must clear an entity cache repopulated during the transaction");
+        assertEquals(0, queries.size(Product.class),
+                "the legacy post-success replay must clear a query cache repopulated during the transaction");
+    }
+
+    @Test
+    void legacyTransactionBufferDoesNotReplayClearsAfterError() {
+        CountingQueryOps delegate = new CountingQueryOps();
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        SimpleReactiveQueryCache queries = new SimpleReactiveQueryCache();
+        ReactiveEntityOperations ops = new CachingReactiveEntityOperations(
+                delegate, metadataFactory, new CacheConfigurationResolver(), provider, queries);
+        CacheKey entityKey = new CacheKey(Product.class.getName(), Product.class, 1L);
+        String queryKey = QuerySpecCacheKey.of(Product.class, QuerySpec.empty());
+
+        reactor.test.StepVerifier.create(ops.inTransaction(tx -> tx.save(new Product(2L, "mouse"))
+                .then(provider.getCache(Product.class.getName()).put(entityKey, new Product(1L, "stale")))
+                .then(queries.put(Product.class, queryKey, List.of(new Product(1L, "stale"))))
+                .then(Mono.error(new IllegalStateException("rollback")))))
+                .verifyErrorMessage("rollback");
+
+        assertTrue(provider.getCache(Product.class.getName()).get(entityKey).blockOptional().isPresent(),
+                "an errored legacy transaction must not run its post-success provider replay");
+        assertEquals(1, queries.size(Product.class),
+                "an errored legacy transaction must not run its post-success provider replay");
+    }
+
+    @Test
+    void nestedLegacyTransactionDefersClearUntilOuterSuccess() {
+        CountingQueryOps delegate = new CountingQueryOps();
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        SimpleReactiveQueryCache queries = new SimpleReactiveQueryCache();
+        ReactiveEntityOperations ops = new CachingReactiveEntityOperations(
+                delegate, metadataFactory, new CacheConfigurationResolver(), provider, queries);
+        CacheKey entityKey = new CacheKey(Product.class.getName(), Product.class, 1L);
+        String queryKey = QuerySpecCacheKey.of(Product.class, QuerySpec.empty());
+
+        StepVerifier.create(ops.inTransaction(outer -> outer.inTransaction(inner ->
+                                inner.save(new Product(2L, "mouse"))
+                                        .then(provider.getCache(Product.class.getName())
+                                                .put(entityKey, new Product(1L, "stale")))
+                                        .then(queries.put(Product.class, queryKey,
+                                                List.of(new Product(1L, "stale")))))
+                        .then(Mono.error(new IllegalStateException("outer rollback")))))
+                .verifyErrorMessage("outer rollback");
+
+        assertTrue(provider.getCache(Product.class.getName()).get(entityKey).blockOptional().isPresent(),
+                "joined inner completion must not clear before the outer legacy transaction succeeds");
+        assertEquals(1, queries.size(Product.class),
+                "joined inner completion must retain query entries when the outer transaction rolls back");
+    }
+
+    @Test
+    void customPhysicalDelegateObservationClearsOnlyWhenInternalWriteCompletes() {
+        CountingQueryOps delegate = new CountingQueryOps();
+        delegate.physicalTransactions = true;
+        SimpleReactiveCacheProvider provider = new SimpleReactiveCacheProvider();
+        SimpleReactiveQueryCache queries = new SimpleReactiveQueryCache();
+        ReactiveEntityOperations ops = new CachingReactiveEntityOperations(
+                delegate, metadataFactory, new CacheConfigurationResolver(), provider, queries);
+        CacheKey entityKey = new CacheKey(Product.class.getName(), Product.class, 1L);
+        String queryKey = QuerySpecCacheKey.of(Product.class, QuerySpec.empty());
+
+        provider.getCache(Product.class.getName()).put(entityKey, new Product(1L, "warm")).block();
+        queries.put(Product.class, queryKey, List.of(new Product(1L, "warm"))).block();
+        ops.inTransaction(tx -> Mono.just("read-only")).block();
+        assertTrue(provider.getCache(Product.class.getName()).get(entityKey).blockOptional().isPresent());
+        assertEquals(1, queries.size(Product.class));
+
+        delegate.internalTransactionWrite = true;
+        ops.inTransaction(tx -> Mono.just("write")).block();
+        assertTrue(provider.getCache(Product.class.getName()).get(entityKey).blockOptional().isEmpty());
+        assertEquals(0, queries.size(Product.class));
     }
 
     @Test
@@ -237,6 +359,8 @@ class QueryCacheDecoratorTest {
     final class CountingQueryOps implements ReactiveEntityOperations {
         private final Map<Object, Object> store = new ConcurrentHashMap<>();
         final AtomicInteger findAllCalls = new AtomicInteger();
+        boolean physicalTransactions;
+        boolean internalTransactionWrite;
 
         void seed(Object entity) {
             store.put(idOf(entity), entity);
@@ -315,6 +439,19 @@ class QueryCacheDecoratorTest {
 
         @Override
         public <R> Mono<R> inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback) {
+            if (physicalTransactions) {
+                PhysicalTransactionScope.Owner owner = PhysicalTransactionScope.newOwner();
+                return callback.apply(this)
+                        .flatMap(result -> Mono.deferContextual(context -> {
+                            if (internalTransactionWrite) {
+                                context.<TransactionWriteObservation>get(TransactionWriteObservation.CONTEXT_KEY)
+                                        .markWriteCompleted();
+                            }
+                            return owner.seal().then(owner.afterCommit()).thenReturn(result);
+                        }))
+                        .contextWrite(context ->
+                                context.put(PhysicalTransactionScope.CONTEXT_KEY, owner.scope()));
+            }
             return callback.apply(this);
         }
     }
@@ -353,6 +490,43 @@ class QueryCacheDecoratorTest {
         Ledger(Long id, String owner) {
             this.id = id;
             this.owner = owner;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_query_graph_owner")
+    @Cacheable
+    static class QueryGraphOwner {
+        @Id
+        private Long id;
+        private String name;
+        @ManyToOne
+        private QueryGraphChild child;
+
+        QueryGraphOwner() {
+        }
+
+        QueryGraphOwner(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_query_graph_child")
+    static class QueryGraphChild {
+        @Id
+        private Long id;
+        private String name;
+        @ManyToOne
+        private QueryGraphOwner owner;
+
+        QueryGraphChild() {
+        }
+
+        QueryGraphChild(Long id, String name) {
+            this.id = id;
+            this.name = name;
         }
     }
 

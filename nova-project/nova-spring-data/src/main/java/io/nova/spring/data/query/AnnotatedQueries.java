@@ -196,9 +196,9 @@ public final class AnnotatedQueries {
         return query;
     }
 
-    /** 엔티티 결과면 entityType, 스칼라면 elementType(Object이면 auto-detect)로 result type을 정한다. */
+    /** 일반 Flux/Mono는 선언된 원소 타입을 그대로 사용한다(Object면 projection shape를 자동 감지한다). */
     private Class<?> resultTypeFor(AnnotatedQueryMethod meta) {
-        return meta.isEntityElement(entityType) ? entityType : meta.elementType();
+        return meta.elementType();
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -14,10 +14,12 @@ import java.util.Set;
 /**
  * 트랜잭션 스코프 동안 발생한 캐시 무효화를 기록해 두었다가 <b>commit 이후</b> 다시 한번 적용하기 위한 버퍼.
  *
- * <p>트랜잭션 안의 write는 즉시(eager) evict 되지만, commit 전 다른 트랜잭션이 옛 값을 DB에서 읽어 캐시를
- * 재-populate 할 수 있다. 이 버퍼는 그 창을 닫기 위해 commit 성공 후
- * {@link #flush(ReactiveCacheProvider, ReactiveQueryCache)}로 기록된 키/region(엔티티 캐시)과 쿼리 캐시 무효화를
- * 재적용한다. rollback 시에는 eager evict만 남으므로(엔트리 제거는 안전) flush를 생략해도 정합성이 유지된다.
+ * <p>Physical transaction invalidation is recorded, never eagerly applied: after commit,
+ * {@link #flush(ReactiveCacheProvider, ReactiveQueryCache)} applies the recorded entity/query invalidation once.
+ * Core write-shaped executor completion marks {@code PhysicalTransactionScope}; immediately before replay, the cache
+ * callback consumes that marker and records one global provider/query clear. Rollback, error, and cancellation do not
+ * change shared caches. Legacy and arbitrary delegate writes may record an explicit clear after successful delegate
+ * completion and replay it when their legacy scope succeeds.
  *
  * <p>엔티티 캐시(키/region)와 쿼리 캐시(타입/전역 clear)를 함께 기록해, 두 캐시 계층의 post-commit 재무효화를
  * 한 곳에서 순서대로 적용한다.

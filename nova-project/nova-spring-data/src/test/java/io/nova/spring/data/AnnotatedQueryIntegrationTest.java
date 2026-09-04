@@ -12,6 +12,7 @@ import io.nova.query.Pageable;
 import io.nova.query.QuerySpec;
 import io.nova.query.Slice;
 import io.nova.query.jpql.JpqlExecutor;
+import io.nova.query.jpql.JpqlException;
 import io.nova.spring.data.query.AnnotatedQueries;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
@@ -127,6 +128,36 @@ class AnnotatedQueryIntegrationTest {
     void jpqlScalarFlux() {
         StepVerifier.create(repository.namesWithMinScore(40))
                 .expectNext("Dan", "Eve")
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("JPQL @Query 스칼라 선언 타입 불일치는 JpqlException으로 fail-fast")
+    void jpqlScalarDeclaredTypeMismatchFailsFast() {
+        StepVerifier.create(repository.scoresDeclaredAsNames())
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
+    }
+
+    @Test
+    @DisplayName("JPQL @Query Object는 projection shape를 자동 감지한다")
+    void jpqlObjectProjectionAutoDetection() {
+        StepVerifier.create(repository.objectNames())
+                .expectNext("Ada", "Bob", "Cara", "Dan", "Eve")
+                .verifyComplete();
+        StepVerifier.create(repository.firstObjectName())
+                .expectNext("Ada")
+                .verifyComplete();
+        StepVerifier.create(repository.objectNameAndScores())
+                .assertNext(values -> {
+                    assertEquals("Ada", values[0]);
+                    assertEquals(30, values[1]);
+                })
+                .expectNextCount(4)
+                .verifyComplete();
+        StepVerifier.create(repository.objectDtos())
+                .assertNext(value -> assertEquals("Ada", ((AccountName) value).name()))
+                .expectNextCount(4)
                 .verifyComplete();
     }
 
@@ -398,6 +429,21 @@ class AnnotatedQueryIntegrationTest {
         @Query("SELECT a.name FROM Account a WHERE a.score >= :min ORDER BY a.name")
         Flux<String> namesWithMinScore(@Param("min") int min);
 
+        @Query("SELECT a.name FROM Account a")
+        Flux<Integer> scoresDeclaredAsNames();
+
+        @Query("SELECT a.name FROM Account a ORDER BY a.name")
+        Flux<Object> objectNames();
+
+        @Query("SELECT a.name FROM Account a ORDER BY a.name")
+        Mono<Object> firstObjectName();
+
+        @Query("SELECT a.name, a.score FROM Account a ORDER BY a.name")
+        Flux<Object[]> objectNameAndScores();
+
+        @Query("SELECT NEW " + AccountName.CLASS_NAME + "(a.name) FROM Account a ORDER BY a.name")
+        Flux<Object> objectDtos();
+
         @Query(value = "SELECT * FROM \"accounts_q\" WHERE \"name\" = :name", nativeQuery = true)
         Mono<Account> nativeByName(@Param("name") String name);
 
@@ -426,5 +472,9 @@ class AnnotatedQueryIntegrationTest {
         @Query("SELECT a FROM Account a ORDER BY a.name")
         Mono<org.springframework.data.domain.Page<Account>> springPage(
                 org.springframework.data.domain.Pageable pageable);
+    }
+
+    public record AccountName(String name) {
+        private static final String CLASS_NAME = "io.nova.spring.data.AnnotatedQueryIntegrationTest$AccountName";
     }
 }

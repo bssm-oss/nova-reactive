@@ -24,6 +24,7 @@ public final class PhysicalTransactionScope {
     private boolean sealed;
     private boolean beforeCommitStarted;
     private boolean afterCommitStarted;
+    private boolean completedWrite;
 
     private PhysicalTransactionScope(boolean active) {
         this.active = active;
@@ -39,6 +40,20 @@ public final class PhysicalTransactionScope {
 
     public boolean isActive() {
         return active;
+    }
+
+    /**
+     * Records that SQL DML completed successfully in this physical transaction.
+     * This remains legal while sealed because before-commit session flushes execute after sealing.
+     */
+    public synchronized void markWriteCompleted() {
+        if (active) {
+            completedWrite = true;
+        }
+    }
+
+    public synchronized boolean hasCompletedWrite() {
+        return completedWrite;
     }
 
     @SuppressWarnings("unchecked")

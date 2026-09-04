@@ -6,7 +6,8 @@ package io.nova.cache.annotation;
  *
  * <ul>
  *   <li>{@link #READ_ONLY} — 삽입 후 변경되지 않는 엔티티 전용. 캐시된 값은 evict 되기 전까지 그대로 재사용된다.</li>
- *   <li>{@link #READ_WRITE} — read-through 후 write 시 즉시 evict(보수적 무효화)로 stale을 회피한다. 기본값.</li>
+ *   <li>{@link #READ_WRITE} — read-through 후 성공한 direct write 또는 physical commit 뒤 전역 evict로
+ *       stale graph를 회피한다. 기본값.</li>
  * </ul>
  *
  * <p>{@link #NONSTRICT_READ_WRITE}와 {@link #TRANSACTIONAL}은 열거값으로만 존재하며 v1에서는 미지원이다 —
@@ -23,8 +24,8 @@ public enum CacheConcurrencyStrategy {
     READ_ONLY,
 
     /**
-     * read-through + write 시 즉시 evict. Nova v1의 기본 전략이며, in-process 캐시에서 stale 회피를 위해
-     * 값을 캐시에 다시 채우지 않고 무효화만 한다(commit 후 재-evict로 창을 최소화).
+     * read-through + successful-write invalidation. Direct write는 성공 직후, physical transaction write는
+     * outer commit 성공 뒤 값을 다시 채우지 않고 전역 무효화한다.
      */
     READ_WRITE,
 

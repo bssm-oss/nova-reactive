@@ -15,24 +15,35 @@ import io.nova.r2dbc.R2dbcTransactionManager;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
 import io.nova.sql.SqlStatement;
+import io.nova.tx.PhysicalTransactionScope;
+import io.nova.tx.ReactiveTransactionOperations;
+import io.nova.tx.TransactionContext;
+import io.nova.tx.TransactionDefinition;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
 import jakarta.persistence.Cacheable;
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.util.List;
+import java.util.function.Function;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -53,16 +64,42 @@ class SecondLevelCacheH2IntegrationTest {
         return ConnectionFactories.get("r2dbc:h2:mem:///slcache" + seq + "?options=DB_CLOSE_DELAY=-1");
     }
 
+    private static boolean await(CountDownLatch latch) {
+        try {
+            return latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Interrupted while awaiting transaction flush", error);
+        }
+    }
+
     private record Wiring(ReactiveEntityOperations cached, SchemaInitializer schema, SelectCountingListener listener,
                           ReactiveCacheProvider cacheProvider, EntityMetadataFactory metadataFactory) {
     }
 
     private Wiring wire(ConnectionFactory cf) {
+        return wire(cf, new R2dbcTransactionManager(cf));
+    }
+
+    private Wiring wireLegacy(ConnectionFactory cf) {
+        R2dbcTransactionManager physicalManager = new R2dbcTransactionManager(cf);
+        ReactiveTransactionOperations legacyManager = new ReactiveTransactionOperations() {
+            @Override
+            public <T> Mono<T> inTransaction(
+                    TransactionDefinition definition, Function<TransactionContext, Mono<T>> callback) {
+                return physicalManager.inTransaction(definition, context ->
+                        callback.apply(context).contextWrite(
+                                reactorContext -> reactorContext.delete(PhysicalTransactionScope.CONTEXT_KEY)));
+            }
+        };
+        return wire(cf, legacyManager);
+    }
+
+    private Wiring wire(ConnectionFactory cf, ReactiveTransactionOperations txManager) {
         H2Dialect dialect = new H2Dialect();
         SelectCountingListener listener = new SelectCountingListener();
         EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
         R2dbcSqlExecutor executor = new R2dbcSqlExecutor(cf, dialect, listener);
-        R2dbcTransactionManager txManager = new R2dbcTransactionManager(cf);
         SimpleReactiveEntityOperations base = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
         ReactiveCacheProvider cacheProvider = new SimpleReactiveCacheProvider();
@@ -163,6 +200,134 @@ class SecondLevelCacheH2IntegrationTest {
         assertTrue(w.listener().selects() > before,
                 "in-tx 읽기가 캐시를 채웠다면 이 findById가 히트해 SELECT가 없었을 것");
         assertEquals("alpha", reloaded.name());
+    }
+
+    @Test
+    void physicalReadOnlyTransactionDoesNotClearWarmSharedCache() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        w.cached().inTransaction(tx -> tx.findById(Widget.class, id)).block();
+        long beforeHit = w.listener().selects();
+        assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
+        assertEquals(beforeHit, w.listener().selects(),
+                "a physical read-only transaction must neither clear nor replay-clear a warm shared cache");
+    }
+
+    @Test
+    void legacySuccessfulWriteClearsWarmSharedCacheAfterCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wireLegacy(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        w.cached().inTransaction(tx -> tx.update(new Widget(id, "beta"), List.of("name"))).block();
+
+        assertForcedReload(w, id, "beta");
+    }
+
+    @Test
+    void legacyErroredWriteDoesNotClearWarmSharedCache() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wireLegacy(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.update(new Widget(id, "beta"), List.of("name"))
+                .then(Mono.error(new IllegalStateException("rollback")))))
+                .verifyErrorMessage("rollback");
+
+        long beforeHit = w.listener().selects();
+        assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
+        assertEquals(beforeHit, w.listener().selects(),
+                "an errored legacy transaction must not clear the warm shared cache");
+    }
+
+    @Test
+    void legacyCancelledWriteDoesNotClearWarmSharedCache() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wireLegacy(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        CountDownLatch completedWrite = new CountDownLatch(1);
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.update(new Widget(id, "beta"), List.of("name"))
+                .doOnSuccess(ignored -> completedWrite.countDown())
+                .then(Mono.never())))
+                .then(() -> assertTrue(await(completedWrite), "legacy write did not complete before cancellation"))
+                .thenCancel()
+                .verify();
+
+        long beforeHit = w.listener().selects();
+        assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
+        assertEquals(beforeHit, w.listener().selects(),
+                "a cancelled legacy transaction must not clear the warm shared cache");
+    }
+
+    @Test
+    void legacyReadOnlyTransactionDoesNotClearWarmSharedCache() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wireLegacy(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        w.cached().inTransaction(tx -> tx.findById(Widget.class, id)).block();
+
+        long beforeHit = w.listener().selects();
+        assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
+        assertEquals(beforeHit, w.listener().selects(),
+                "a read-only legacy transaction must not clear the warm shared cache");
+    }
+
+    @Test
+    void physicalErrorAndCancellationDoNotReplaySharedCacheClear() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        long beforeRollbackFlush = w.listener().updates();
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.findById(Widget.class, id)
+                .doOnNext(widget -> widget.name = "beta")
+                .then(tx.flush())
+                .then(Mono.error(new IllegalStateException("rollback")))))
+                .verifyErrorMessage("rollback");
+        assertTrue(w.listener().updates() > beforeRollbackFlush,
+                "the rollback case must issue actual DML before testing its missing commit replay");
+        long beforeErrorHit = w.listener().selects();
+        w.cached().findById(Widget.class, id).block();
+        assertEquals(beforeErrorHit, w.listener().selects(),
+                "an errored physical transaction must not replay-clear the warm cache");
+
+        long beforeCancellationFlush = w.listener().updates();
+        CountDownLatch flushed = new CountDownLatch(1);
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.findById(Widget.class, id)
+                .doOnNext(widget -> widget.name = "beta")
+                .then(tx.flush().doOnSuccess(ignored -> flushed.countDown()))
+                .then(Mono.never())))
+                .then(() -> assertTrue(await(flushed), "flush did not complete before cancellation"))
+                .thenCancel()
+                .verify();
+        assertTrue(w.listener().updates() > beforeCancellationFlush,
+                "the cancellation case must issue actual DML before testing its missing commit replay");
+        long beforeCancelHit = w.listener().selects();
+        w.cached().findById(Widget.class, id).block();
+        assertEquals(beforeCancelHit, w.listener().selects(),
+                "a cancelled physical transaction must not replay-clear the warm cache");
     }
 
     @Test
@@ -277,14 +442,66 @@ class SecondLevelCacheH2IntegrationTest {
 
         w.cached().inTransaction(outer -> outer.inTransaction(inner ->
                         inner.findById(Widget.class, id)
+                                .doOnNext(widget -> widget.name = "beta")
+                                .then(inner.flush())
                                 .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, stale)))
                 .then())
                 .block();
 
         long beforeReload = w.listener().selects();
-        w.cached().findById(Widget.class, id).block();
+        Widget reloaded = w.cached().findById(Widget.class, id).block();
         assertTrue(w.listener().selects() > beforeReload,
                 "nested invalidation must still run after the outer physical commit");
+        assertEquals("beta", reloaded.name());
+    }
+
+    @Test
+    void nonCacheableAssociatedEntityWriteEvictsCacheablePropertyOwner() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(PropertyPart.class, PropertyOwner.class).block();
+        PropertyPart part = w.cached().save(new PropertyPart("alpha")).block();
+        Long ownerId = w.cached().save(new PropertyOwner("owner", part)).block().getId();
+
+        PropertyOwner first = w.cached().findById(PropertyOwner.class, ownerId).block();
+        first.getPart().setName("mutated");
+        long beforeHit = w.listener().selects();
+        PropertyOwner hit = w.cached().findById(PropertyOwner.class, ownerId).block();
+        assertEquals(beforeHit, w.listener().selects(), "second owner lookup must be a cache hit");
+        assertNotSame(first, hit);
+        assertNotSame(first.getPart(), hit.getPart());
+        assertEquals("alpha", hit.getPart().getName(), "a hit must expose a fresh detached association graph");
+
+        w.cached().inTransaction(tx -> tx.findById(PropertyPart.class, part.id())
+                .doOnNext(managed -> managed.setName("beta"))).block();
+        long beforeReload = w.listener().selects();
+        PropertyOwner reloaded = w.cached().findById(PropertyOwner.class, ownerId).block();
+        assertTrue(w.listener().selects() > beforeReload,
+                "a non-cacheable associated write must clear cached owner graphs");
+        assertEquals("beta", reloaded.getPart().getName());
+    }
+
+    @Test
+    void associatedWriteReplaysGlobalEvictionAfterCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wire(cf);
+
+        w.schema().create(PropertyPart.class, PropertyOwner.class).block();
+        PropertyPart part = w.cached().save(new PropertyPart("alpha")).block();
+        Long ownerId = w.cached().save(new PropertyOwner("owner", part)).block().getId();
+        PropertyOwner stale = w.cached().findById(PropertyOwner.class, ownerId).block();
+        CacheKey ownerKey = new CacheKey(PropertyOwner.class.getName(), PropertyOwner.class, ownerId);
+
+        w.cached().inTransaction(tx -> tx.findById(PropertyPart.class, part.id())
+                .doOnNext(managed -> managed.setName("beta"))
+                .then(w.cacheProvider().getCache(PropertyOwner.class.getName()).put(ownerKey, stale))).block();
+
+        long beforeReload = w.listener().selects();
+        PropertyOwner reloaded = w.cached().findById(PropertyOwner.class, ownerId).block();
+        assertTrue(w.listener().selects() > beforeReload,
+                "physical commit must replay a global clear after a stale owner is repopulated in the transaction");
+        assertEquals("beta", reloaded.getPart().getName());
     }
 
     // --- SQL 실행 카운터 -----------------------------------------------------
@@ -344,6 +561,84 @@ class SecondLevelCacheH2IntegrationTest {
 
         String name() {
             return name;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_property_part")
+    static class PropertyPart {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String name;
+
+        PropertyPart() {
+        }
+
+        PropertyPart(String name) {
+            this.name = name;
+        }
+
+        PropertyPart(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        Long id() {
+            return id;
+        }
+
+        String getName() {
+            return name;
+        }
+
+        void setName(String name) {
+            this.name = name;
+        }
+    }
+
+    @Entity
+    @Table(name = "cache_property_owner")
+    @Cacheable
+    @Access(AccessType.PROPERTY)
+    static class PropertyOwner {
+        private Long id;
+        private String name;
+        private PropertyPart part;
+
+        PropertyOwner() {
+        }
+
+        PropertyOwner(String name, PropertyPart part) {
+            this.name = name;
+            this.part = part;
+        }
+
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        Long getId() {
+            return id;
+        }
+
+        void setId(Long id) {
+            this.id = id;
+        }
+
+        String getName() {
+            return name;
+        }
+
+        void setName(String name) {
+            this.name = name;
+        }
+
+        @ManyToOne
+        PropertyPart getPart() {
+            return part;
+        }
+
+        void setPart(PropertyPart part) {
+            this.part = part;
         }
     }
 }

@@ -19,7 +19,9 @@ public interface ReactiveCacheProvider {
     ReactiveCache getCache(String region);
 
     /**
-     * 모든 region의 엔트리를 비운다. 통합 테스트 초기화, native/bulk write 후 보수적 전역 무효화에 사용된다.
+     * 모든 region의 엔트리를 비운다. Eager graph가 여러 엔티티 타입의 상태를 포함할 수 있으므로 캐시
+     * 데코레이터는 모든 성공한 ORM write에서 이를 사용한다. Direct write는 성공 직후, physical transaction
+     * write는 outer commit 성공 뒤 호출한다.
      */
     Mono<Void> clearAll();
 }

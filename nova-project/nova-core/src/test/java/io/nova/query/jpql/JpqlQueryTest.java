@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -146,6 +147,123 @@ class JpqlQueryTest {
     }
 
     @Test
+    void declaredScalarResultTypeRejectsIncompatibleValue() {
+        RecordingOperations recorder = new RecordingOperations(List.of("Ada"));
+
+        StepVerifier.create(typedQuery("SELECT e.name FROM Employee e", Integer.class, recorder.operations())
+                        .getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
+    void declaredScalarResultTypeUsesExistingPropertyNumericCoercion() {
+        RecordingOperations recorder = new RecordingOperations(List.of(7));
+
+        StepVerifier.create(typedQuery("SELECT e.id FROM Employee e", Long.class, recorder.operations())
+                        .getResultList())
+                .expectNext(7L)
+                .verifyComplete();
+    }
+
+    @Test
+    void primitiveDeclaredScalarResultEmitsBoxedValue() {
+        RecordingOperations recorder = new RecordingOperations(List.of(7));
+
+        StepVerifier.create(typedQuery("SELECT e.id FROM Employee e", primitiveType(long.class), recorder.operations())
+                        .getResultList())
+                .expectNext(7L)
+                .verifyComplete();
+    }
+
+    @Test
+    void primitiveDeclaredScalarResultRejectsNull() {
+        RecordingOperations recorder = new RecordingOperations(java.util.Arrays.asList((Object) null));
+
+        StepVerifier.create(typedQuery("SELECT e.name FROM Employee e", primitiveType(long.class), recorder.operations())
+                        .getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
+    void declaredMultiSelectResultTypeRequiresObjectArray() {
+        RecordingOperations recorder = new RecordingOperations(List.of("Ada"));
+
+        StepVerifier.create(typedQuery("SELECT e.name, e.id FROM Employee e", String.class, recorder.operations())
+                        .getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
+    void objectAndObjectArrayRetainProjectionShapeAutoDetection() {
+        RecordingOperations scalarRecorder = new RecordingOperations(List.of("Ada"));
+        RecordingOperations multiRecorder = new RecordingOperations(List.of("Ada"));
+
+        StepVerifier.create(typedQuery("SELECT e.name FROM Employee e", Object.class, scalarRecorder.operations())
+                        .getResultList())
+                .expectNext("Ada")
+                .verifyComplete();
+        StepVerifier.create(typedQuery("SELECT e.name, e.name FROM Employee e", Object[].class, multiRecorder.operations())
+                        .getResultList())
+                .assertNext(values -> assertEquals(2, values.length))
+                .verifyComplete();
+    }
+
+    @Test
+    void declaredSelectNewResultTypeMustMatchProjectionClass() {
+        RecordingOperations recorder = new RecordingOperations(List.of("Ada"));
+
+        StepVerifier.create(typedQuery("SELECT NEW " + EmployeeDto.class.getName() + "(e.name) FROM Employee e",
+                        String.class, recorder.operations()).getResultList())
+                .expectError(JpqlException.class)
+                .verify();
+    }
+
+    @Test
+    void incompatibleProjectionTypesSignalJpqlExceptionsFromTheirPublishers() {
+        JpqlQuery<Integer> scalar = typedQuery(
+                "SELECT e.name FROM Employee e", Integer.class, new RecordingOperations(List.of("Ada")).operations());
+        JpqlQuery<String> multiSelect = typedQuery(
+                "SELECT e.name, e.name FROM Employee e", String.class,
+                new RecordingOperations(List.of("Ada")).operations());
+        JpqlQuery<String> selectNew = typedQuery(
+                "SELECT NEW " + EmployeeDto.class.getName() + "(e.name) FROM Employee e", String.class,
+                new RecordingOperations(List.of("Ada")).operations());
+
+        StepVerifier.create(scalar.getResultList())
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
+        StepVerifier.create(multiSelect.getResultList())
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
+        StepVerifier.create(selectNew.getResultList())
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
+    }
+
+    @Test
+    void objectResultTypesAndPrimitivePropertyNumericConversionRemainValid() {
+        RecordingOperations scalarRecorder = new RecordingOperations(List.of(7));
+        RecordingOperations multiRecorder = new RecordingOperations(List.of("Ada"));
+        RecordingOperations boxedPrimitiveRecorder = new RecordingOperations(List.of(7L));
+
+        StepVerifier.create(typedQuery("SELECT e.id FROM Employee e", Object.class, scalarRecorder.operations())
+                        .getResultList())
+                .expectNext(7L)
+                .verifyComplete();
+        StepVerifier.create(typedQuery("SELECT e.name, e.name FROM Employee e", Object[].class,
+                        multiRecorder.operations()).getResultList())
+                .assertNext(values -> assertArrayEquals(new Object[] {"Ada", "Ada"}, values))
+                .verifyComplete();
+        StepVerifier.create(typedQuery("SELECT e.score FROM Employee e", Integer.class,
+                        boxedPrimitiveRecorder.operations()).getResultList())
+                .expectNext(7)
+                .verifyComplete();
+    }
+
+    @Test
     void integerMaximumResultLimitDoesNotOverflowProjectionPaging() {
         RecordingOperations recorder = new RecordingOperations();
 
@@ -164,12 +282,21 @@ class JpqlQueryTest {
     }
 
     private JpqlQuery<Object> query(String jpql, ReactiveEntityOperations operations) {
+        return typedQuery(jpql, Object.class, operations);
+    }
+
+    private <T> JpqlQuery<T> typedQuery(String jpql, Class<T> resultType, ReactiveEntityOperations operations) {
         return new JpqlQuery<>(
                 (JpqlStatement.Select) new JpqlParser(jpql).parse(),
-                Object.class,
+                resultType,
                 operations,
                 builder,
                 new JpqlEntityQueryPlanner(resolver));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> Class<T> primitiveType(Class<?> primitive) {
+        return (Class<T>) primitive;
     }
 
     private static final class RecordingOperations {
@@ -240,6 +367,9 @@ class JpqlQueryTest {
 
         @Column(name = "name")
         private String name;
+
+        @Column(name = "score")
+        private int score;
 
         @ManyToOne
         @JoinColumn(name = "department_id")

@@ -183,7 +183,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     ) {
         this.metadataFactory = metadataFactory;
         this.dialect = dialect;
-        this.sqlExecutor = sqlExecutor;
+        this.sqlExecutor = new PhysicalTransactionWriteTrackingSqlExecutor(sqlExecutor);
         this.entityStateDetector = entityStateDetector;
         this.transactionOperations = transactionOperations;
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
@@ -576,24 +576,27 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             elements.add(element);
         }
         SqlRenderer renderer = dialect.sqlRenderer();
-        // 단일 소스: 링크가 복합인지 여부는 항상 ManyToManyInfo.composite()(=FK 컬럼 수)로만 판정한다.
-        // key shape(collectionRepresentation)와 SQL 브랜치가 서로 다른 파생을 쓰면 desync해 asKey CCE/wrong SQL이 난다.
         boolean composite = info.composite();
-        List<Object> ownerColumnValues = composite
-                ? foreignKeyColumnValues(ownerMetadata, info.ownerForeignKeyColumns(), ownerId) : null;
+        List<Object> ownerColumnValues =
+                foreignKeyColumnValues(ownerMetadata, info.ownerForeignKeyColumns(), ownerId);
         Mono<Void> delete = composite
                 ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then()
-                : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
+                : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerColumnValues.get(0))).then();
         return resolveManyToManyTargetIds(ownerMetadata, property, targetMetadata, owner, elements)
                 .flatMap(targetIds -> {
                     if (targetIds.isEmpty()) {
                         return delete;
                     }
                     return delete.thenMany(Flux.fromIterable(targetIds)
-                                    .concatMap(targetId -> sqlExecutor.execute(composite
-                                            ? renderer.insertJoinRowByColumns(definition, ownerColumnValues,
-                                                    foreignKeyColumnValues(targetMetadata, info.targetForeignKeyColumns(), targetId))
-                                            : renderer.insertJoinRow(definition, ownerId, targetId))))
+                                    .concatMap(targetId -> {
+                                        List<Object> targetColumnValues = foreignKeyColumnValues(
+                                                targetMetadata, info.targetForeignKeyColumns(), targetId);
+                                        return sqlExecutor.execute(composite
+                                                ? renderer.insertJoinRowByColumns(
+                                                        definition, ownerColumnValues, targetColumnValues)
+                                                : renderer.insertJoinRow(
+                                                        definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
+                                    }))
                             .then();
                 });
     }
@@ -613,9 +616,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             List<Object> ids = new ArrayList<>();
             for (Object element : elements) {
                 Object targetId = targetMetadata.readIdValue(element);
-                if (targetId == null) {
+                if (hasIncompleteId(targetMetadata, targetId)) {
                     return Mono.error(new IllegalStateException(
-                            "@ManyToMany targets must be persisted (non-null id) before saving the owner on "
+                            "@ManyToMany targets must be persisted (every id component non-null)"
+                                    + " before saving the owner on "
                                     + ownerMetadata.entityType().getName() + "." + property.propertyName()
                                     + "; add cascade=PERSIST to cascade transient targets"));
                 }
@@ -631,21 +635,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     .concatMap(element -> {
                         Object targetId = targetMetadata.readIdValue(element);
                         // 영속 대상 + MERGE 아님 → 재저장 없이 현재 id를 그대로 link한다(PERSIST는 transient에만 전파).
-                        if (targetId != null && !cascadeMerge) {
+                        if (!hasIncompleteId(targetMetadata, targetId) && !cascadeMerge) {
                             return Mono.just(targetId);
                         }
                         // 사이클/공유 참조: 이미 cascade 경로에 있으면 재저장하지 않고 현재 id를 쓴다.
                         if (!visited.add(element)) {
                             Object idNow = targetMetadata.readIdValue(element);
-                            return idNow != null ? Mono.just(idNow) : Mono.error(new IllegalStateException(
+                            return !hasIncompleteId(targetMetadata, idNow)
+                                    ? Mono.just(idNow) : Mono.error(new IllegalStateException(
                                     "@ManyToMany cascade encountered a transient target in a reference cycle on "
                                             + ownerMetadata.entityType().getName() + "." + property.propertyName()));
                         }
                         return save(element).map(saved -> {
                             Object savedId = targetMetadata.readIdValue(saved);
-                            if (savedId == null) {
+                            if (hasIncompleteId(targetMetadata, savedId)) {
                                 throw new IllegalStateException(
-                                        "@ManyToMany cascade-saved target has a null id on "
+                                        "@ManyToMany cascade-saved target has an incomplete id on "
                                                 + ownerMetadata.entityType().getName() + "." + property.propertyName());
                             }
                             return savedId;
@@ -658,8 +663,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private JoinTableDefinition joinDefinition(
             EntityMetadata<?> ownerMetadata, ManyToManyInfo info, EntityMetadata<?> targetMetadata) {
-        // 단일키·복합키를 한 자리에서 조립한다 — 단일키는 기존 도메인 타입 + varchar 255, 복합키는 참조 @Id
-        // 컴포넌트 저장타입/길이. DDL(schema init)과 runtime SQL이 동일한 정의를 공유한다.
+        // 단일키·복합키를 한 자리에서 조립하고 양쪽 참조 @Id의 실제 저장 타입/shape를 그대로 재사용한다.
+        // DDL(schema init)과 runtime SQL이 동일한 정의를 공유한다.
         return JoinTableDefinition.of(ownerMetadata, info, targetMetadata);
     }
 
@@ -720,6 +725,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             key.add(metadata.idColumnValue(idProperty, idObject));
         }
         return key;
+    }
+
+    private static boolean hasIncompleteId(EntityMetadata<?> metadata, Object idObject) {
+        return idObject == null || idComponentKey(metadata, idObject).stream().anyMatch(Objects::isNull);
     }
 
     private static Map<String, PersistentProperty> idPropertiesByColumn(EntityMetadata<?> metadata) {
@@ -2265,28 +2274,33 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
         // 추가된 대상이 미영속(null id)이면 link 행에 null FK를 쓸 수 없다 — full-replace 경로와 동일한 명확한
         // fail-fast를 유지한다(save 시점 cascade가 이미 영속화했어야 한다).
-        if (addedTargetIds.contains(null)) {
+        if (addedTargetIds.stream()
+                .map(SimpleReactiveEntityOperations::asKey)
+                .anyMatch(key -> key.isEmpty() || key.stream().anyMatch(Objects::isNull))) {
             return Mono.error(new IllegalStateException(
-                    "@ManyToMany targets must be persisted before flush on "
+                    "@ManyToMany targets must be persisted with every id component non-null before flush on "
                             + property.propertyName() + "; add cascade=PERSIST to cascade transient targets"));
         }
         SqlRenderer renderer = dialect.sqlRenderer();
-        if (info.composite()) {
-            // 복합키: diff 키는 idComponentKey(List). owner 컬럼 값은 owner id 객체에서, target 컬럼 값은 키에서 유도.
-            List<Object> ownerColumnValues =
-                    foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
-            return Flux.fromIterable(removedTargetIds)
-                    .concatMap(key -> sqlExecutor.execute(renderer.deleteJoinRowByColumns(definition, ownerColumnValues,
-                            columnValuesFromKey(targetMetadata, info.targetForeignKeyColumns(), asKey(key)))))
-                    .thenMany(Flux.fromIterable(addedTargetIds)
-                            .concatMap(key -> sqlExecutor.execute(renderer.insertJoinRowByColumns(definition, ownerColumnValues,
-                                    columnValuesFromKey(targetMetadata, info.targetForeignKeyColumns(), asKey(key))))))
-                    .then();
-        }
+        boolean composite = info.composite();
+        List<Object> ownerColumnValues =
+                foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
         return Flux.fromIterable(removedTargetIds)
-                .concatMap(targetId -> sqlExecutor.execute(renderer.deleteJoinRow(definition, ownerId, targetId)))
+                .concatMap(targetId -> {
+                    List<Object> targetColumnValues = columnValuesFromKey(
+                            targetMetadata, info.targetForeignKeyColumns(), asKey(targetId));
+                    return sqlExecutor.execute(composite
+                            ? renderer.deleteJoinRowByColumns(definition, ownerColumnValues, targetColumnValues)
+                            : renderer.deleteJoinRow(definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
+                })
                 .thenMany(Flux.fromIterable(addedTargetIds)
-                        .concatMap(targetId -> sqlExecutor.execute(renderer.insertJoinRow(definition, ownerId, targetId))))
+                        .concatMap(targetId -> {
+                            List<Object> targetColumnValues = columnValuesFromKey(
+                                    targetMetadata, info.targetForeignKeyColumns(), asKey(targetId));
+                            return sqlExecutor.execute(composite
+                                    ? renderer.insertJoinRowByColumns(definition, ownerColumnValues, targetColumnValues)
+                                    : renderer.insertJoinRow(definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
+                        }))
                 .then();
     }
 
@@ -2640,25 +2654,28 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         List<Object> targetIds = readManyToManyTargetIds(property, targetMetadata, owner);
         SqlRenderer renderer = dialect.sqlRenderer();
         boolean composite = info.composite();
-        List<Object> ownerColumnValues = composite
-                ? foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId) : null;
+        List<Object> ownerColumnValues =
+                foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
         Mono<Void> delete = composite
                 ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then()
-                : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
+                : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerColumnValues.get(0))).then();
         if (targetIds.isEmpty()) {
             return delete;
         }
         return delete.thenMany(Flux.fromIterable(targetIds)
-                        .concatMap(targetId -> sqlExecutor.execute(composite
-                                ? renderer.insertJoinRowByColumns(definition, ownerColumnValues,
-                                        foreignKeyColumnValues(targetMetadata, info.targetForeignKeyColumns(), targetId))
-                                : renderer.insertJoinRow(definition, ownerId, targetId))))
+                        .concatMap(targetId -> {
+                            List<Object> targetColumnValues = foreignKeyColumnValues(
+                                    targetMetadata, info.targetForeignKeyColumns(), targetId);
+                            return sqlExecutor.execute(composite
+                                    ? renderer.insertJoinRowByColumns(definition, ownerColumnValues, targetColumnValues)
+                                    : renderer.insertJoinRow(definition, ownerColumnValues.get(0), targetColumnValues.get(0)));
+                        }))
                 .then();
     }
 
     /**
-     * owning {@code @ManyToMany}의 현재 대상 id들을 동기로 읽는다(flush 전용, cascade 없음). 대상이 미영속이면
-     * (cascade 미설정 + 직접 저장 안 함) fail-fast — save 시점 cascade가 이미 영속화했어야 한다.
+     * owning {@code @ManyToMany}의 현재 대상 id들을 동기로 읽는다(flush 전용, cascade 없음). 대상 id가 없거나
+     * 복합 id 컴포넌트가 하나라도 null이면 fail-fast — save 시점 cascade가 이미 완전한 id를 채웠어야 한다.
      */
     private List<Object> readManyToManyTargetIds(
             PersistentProperty property, EntityMetadata<?> targetMetadata, Object owner) {
@@ -2669,9 +2686,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         for (Object element : (Iterable<?>) collection) {
             Object targetId = targetMetadata.readIdValue(element);
-            if (targetId == null) {
+            if (hasIncompleteId(targetMetadata, targetId)) {
                 throw new IllegalStateException(
-                        "@ManyToMany targets must be persisted before flush on "
+                        "@ManyToMany targets must be persisted with every id component non-null before flush on "
                                 + property.propertyName() + "; add cascade=PERSIST to cascade transient targets");
             }
             ids.add(targetId);
@@ -2740,16 +2757,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (property.manyToMany()) {
             EntityMetadata<?> targetMetadata =
                     metadataFactory.getEntityMetadata(property.manyToManyInfo().targetType());
-            // 단일키는 대상 id 값, 복합키(owner 또는 target)는 값-비교 가능한 도메인 컴포넌트 키(List)를 diff 키로
-            // 쓴다(첫 컴포넌트만 보면 silent 손상 — trap #2 회피). owner가 복합키면 link 행도 복합 컬럼이므로
-            // diffManyToMany가 List 키를 그대로 target 컬럼 값으로 되돌린다(단일키 target도 size-1 List로 통일).
-            // 단일 소스: key shape 판정은 SQL 브랜치(diffManyToMany 등)와 반드시 같은 ManyToManyInfo.composite()를 쓴다
-            // — hasCompositeId 같은 독립 파생을 쓰면 미래 edge에서 desync해 asKey CCE/wrong SQL을 낸다.
-            boolean composite = property.manyToManyInfo().composite();
+            // 저장/복원 경로와 동일하게 단일키도 singleton component key로 통일한다. 이는 join column의
+            // converter/UUID 저장 표현과 세션 최소 diff의 도메인 id를 분리한다.
             for (Object element : (Iterable<?>) collection) {
-                keys.add(composite
-                        ? idComponentKey(targetMetadata, targetMetadata.readIdValue(element))
-                        : targetMetadata.idProperty().read(element));
+                keys.add(idComponentKey(targetMetadata, targetMetadata.readIdValue(element)));
             }
             return keys;
         }
@@ -3254,10 +3265,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * ({@code delete(entity)}/{@code deleteById}/{@code deleteAll(Iterable)}/{@code deleteAllById}와 그들을
      * 경유하는 cascade-remove)가 공유한다. 임의 조건 bulk {@code deleteAll(Class, QuerySpec)}은 매칭 owner id를
      * 알 수 없어 정리하지 않는다(JPA bulk delete가 cascade를 우회하는 것과 동일).
-     * <p>v1 한계: owning 측만 정리한다 — inverse {@code @ManyToMany} 엔티티를 삭제할 때 그 엔티티를 target으로 가리키는
-     * 다른 owner의 link 행은 정리되지 않는다. enforced {@code @ForeignKey}가 있으면 그 link 행의 고아화가 아니라
-     * target hard delete가 FK 위반으로 실패할 수 있다. soft delete는 owner 행을 논리 보존하므로 호출자가 hard
-     * delete에서만 부른다.
+     * <p>Owning과 inverse 양쪽 metadata가 모두 같은 join table을 현재 엔티티 기준으로 정규화하므로 어느 쪽을
+     * hard delete해도 그 엔티티를 참조하는 link 행을 먼저 정리한다. Soft delete는 owner/target 행을 논리
+     * 보존하므로 이 정리는 hard delete에서만 수행한다.
      */
     private Mono<Void> removeOwnedCollectionRows(EntityMetadata<?> metadata, Object ownerId) {
         SqlRenderer renderer = dialect.sqlRenderer();
@@ -3275,11 +3285,11 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             ManyToManyInfo info = property.manyToManyInfo();
             EntityMetadata<?> targetMetadata = metadataFactory.getEntityMetadata(info.targetType());
             JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
-            // 복합키(owner 또는 target): 이 엔티티 기준으로 정규화된 owner FK 컬럼들을 id 객체에서 분해해 지운다.
+            List<Object> ownerColumnValues =
+                    foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId);
             Mono<Void> delete = info.composite()
-                    ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition,
-                            foreignKeyColumnValues(metadata, info.ownerForeignKeyColumns(), ownerId))).then()
-                    : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerId)).then();
+                    ? sqlExecutor.execute(renderer.deleteJoinRowsByColumns(definition, ownerColumnValues)).then()
+                    : sqlExecutor.execute(renderer.deleteJoinRows(definition, ownerColumnValues.get(0))).then();
             deletes.add(delete);
         }
         if (deletes.isEmpty()) {
@@ -4271,9 +4281,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return hydrateOneManyToManyComposite(parents, metadata, targetMetadata, property, info, definition);
         }
         PersistentProperty parentIdProperty = metadata.idProperty();
-        Class<?> ownerIdType = wrapPrimitive(parentIdProperty.javaType());
-        Class<?> targetIdType = wrapPrimitive(targetMetadata.idProperty().javaType());
-
+        PersistentProperty targetIdProperty = targetMetadata.idProperty();
         LinkedHashMap<Object, List<P>> parentsById = new LinkedHashMap<>();
         for (P parent : parents) {
             Object id = parentIdProperty.read(parent);
@@ -4285,13 +4293,15 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             injectEmptyCollections(property, parents, info.usesSet());
             return Mono.empty();
         }
+        List<Object> ownerColumnValues = parentsById.keySet().stream()
+                .map(parentIdProperty::toColumnValue)
+                .toList();
         SqlRenderer renderer = dialect.sqlRenderer();
-        List<Object> ownerIds = new ArrayList<>(parentsById.keySet());
-        return sqlExecutor.queryMany(
-                        renderer.selectJoinRows(definition, ownerIds),
-                        row -> new Object[]{
-                                row.get(info.ownerForeignKeyColumn(), ownerIdType),
-                                row.get(info.targetForeignKeyColumn(), targetIdType)})
+        return sqlExecutor.queryMany(renderer.selectJoinRows(definition, ownerColumnValues), row -> new Object[]{
+                        parentIdProperty.toPropertyValue(row.get(info.ownerForeignKeyColumn(),
+                                wrapPrimitive(parentIdProperty.columnType()))),
+                        targetIdProperty.toPropertyValue(row.get(info.targetForeignKeyColumn(),
+                                wrapPrimitive(targetIdProperty.columnType())))})
                 .collectList()
                 .flatMap(links -> {
                     LinkedHashMap<Object, List<Object>> targetIdsByOwner = new LinkedHashMap<>();
@@ -4304,44 +4314,40 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         injectEmptyCollections(property, parents, info.usesSet());
                         return Mono.empty();
                     }
-                    String targetIdName = targetMetadata.idProperty().propertyName();
+                    QuerySpec targetQuery = QuerySpec.empty().where(Criteria.in(
+                            targetIdProperty.propertyName(), new ArrayList<>(allTargetIds)));
                     Sort orderBy = manyToManyOrderBy(property, targetMetadata, info.usesSet());
-                    QuerySpec targetQuery = QuerySpec.empty()
-                            .where(Criteria.in(targetIdName, new ArrayList<>(allTargetIds)));
                     if (orderBy != null) {
                         targetQuery = targetQuery.orderBy(orderBy);
                     }
-                    return findAllInternal(targetMetadata, targetQuery)
-                            .collectList()
-                            .doOnNext(targets -> {
-                                Map<Object, Object> targetById = new LinkedHashMap<>();
+                    return findAllInternal(targetMetadata, targetQuery).collectList().doOnNext(targets -> {
+                        Map<Object, Object> targetById = new LinkedHashMap<>();
+                        for (Object target : targets) {
+                            targetById.put(targetMetadata.readIdValue(target), target);
+                        }
+                        for (Map.Entry<Object, List<P>> entry : parentsById.entrySet()) {
+                            List<Object> resolved = new ArrayList<>();
+                            if (orderBy == null) {
+                                for (Object targetId : targetIdsByOwner.getOrDefault(entry.getKey(), List.of())) {
+                                    Object target = targetById.get(targetId);
+                                    if (target != null) {
+                                        resolved.add(target);
+                                    }
+                                }
+                            } else {
+                                LinkedHashSet<Object> targetIds = new LinkedHashSet<>(
+                                        targetIdsByOwner.getOrDefault(entry.getKey(), List.of()));
                                 for (Object target : targets) {
-                                    targetById.put(targetMetadata.idProperty().read(target), target);
-                                }
-                                for (Map.Entry<Object, List<P>> entry : parentsById.entrySet()) {
-                                    List<Object> resolved = new ArrayList<>();
-                                    if (orderBy == null) {
-                                        for (Object targetId : targetIdsByOwner.getOrDefault(entry.getKey(), List.of())) {
-                                            Object target = targetById.get(targetId);
-                                            if (target != null) {
-                                                resolved.add(target);
-                                            }
-                                        }
-                                    } else {
-                                        LinkedHashSet<Object> targetIds =
-                                                new LinkedHashSet<>(targetIdsByOwner.getOrDefault(entry.getKey(), List.of()));
-                                        for (Object target : targets) {
-                                            if (targetIds.contains(targetMetadata.idProperty().read(target))) {
-                                                resolved.add(target);
-                                            }
-                                        }
-                                    }
-                                    for (P parent : entry.getValue()) {
-                                        injectCollection(property, parent, resolved, info.usesSet());
+                                    if (targetIds.contains(targetMetadata.readIdValue(target))) {
+                                        resolved.add(target);
                                     }
                                 }
-                            })
-                            .then();
+                            }
+                            for (P parent : entry.getValue()) {
+                                injectCollection(property, parent, resolved, info.usesSet());
+                            }
+                        }
+                    }).then();
                 });
     }
 
