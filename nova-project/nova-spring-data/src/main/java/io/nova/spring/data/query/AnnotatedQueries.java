@@ -188,8 +188,7 @@ public final class AnnotatedQueries {
      * Repository {@code Mono} queries are optional single-result queries: no row remains empty,
      * while more than one row has the same non-unique-result failure as {@link JpqlQuery}.
      */
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private Mono zeroOrOneJpqlResult(JpqlQuery query) {
+    private Mono<?> zeroOrOneJpqlResult(JpqlQuery<?> query) {
         return query.getResultList().take(2).collectList().flatMap(rows -> {
             if (rows.size() > 1) {
                 return Mono.error(new JpqlException("getSingleResult() found more than one row"));
