@@ -7,20 +7,19 @@ import java.util.List;
 /**
  * 쿼리 결과 캐시 SPI. {@code findAll(Class, QuerySpec)} 류 조회의 <b>정규화된 스펙 + 바인딩 파라미터</b>를
  * 캐시 키로 삼아, 조회 결과를 통째로(materialized) 저장한다. 히트 시 DB SELECT를 발행하지 않고 캐시된 결과를
- * 그대로 발행한다(read-through).
+ * as a detached snapshot through the caching decorator (read-through).
  *
  * <h2>정합성 계약 (핵심 리스크)</h2>
  * <ul>
  *   <li>쿼리 캐시는 엔티티 캐시보다 무효화 범위가 넓다 — predicate로 특정된 결과 집합은 대상 테이블의
- *       <b>어떤</b> write에도 영향받을 수 있으므로, 해당 엔티티 타입에 write가 발생하면 그 타입의 쿼리 결과를
- *       <b>모두</b> 무효화해야 한다({@link #invalidate(Class)}). 이 SPI를 구현할 때 부분 무효화(어떤 행이 어떤
- *       쿼리 결과에 속하는지 추적)를 시도하지 말고 타입 단위 통째 무효화를 유지하라 — 잘못된 부분 무효화는
- *       stale 결과를 서빙한다.</li>
+ *       <b>어떤</b> write에도 영향받을 수 있다. eager-hydrated entity graphs may include associated types,
+ *       so the decorator clears every query partition after each successful wrapped ORM write. Implementations
+ *       must preserve {@link #clear()} as an atomic global invalidation operation.</li>
  *   <li>키는 엔티티 타입별로 분리 저장돼 {@link #invalidate(Class)}가 한 타입의 모든 결과를 비운다.
  *       그래서 get/put에 엔티티 타입을 함께 넘긴다.</li>
  *   <li>트랜잭션 정합성은 데코레이터가 책임진다 — 미커밋 트랜잭션 안에서는 쿼리 캐시를 채우지 않고,
- *       write는 즉시 무효화한 뒤 commit 성공 후 재무효화(post-commit re-evict)해 rollback stale과 동시
- *       reader의 재-populate 창을 막는다.</li>
+ *       physical transaction write invalidation is recorded and runs only after commit. Direct and legacy
+ *       transaction writes clear after successful delegate completion; legacy scopes replay the clear after success.</li>
  * </ul>
  *
  * <p>기본 in-process 구현은 {@link io.nova.cache.SimpleReactiveQueryCache}이며, 외부 캐시(Redis 등)는 이 SPI를

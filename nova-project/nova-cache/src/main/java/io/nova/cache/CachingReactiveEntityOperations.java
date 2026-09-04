@@ -40,8 +40,9 @@ import java.util.function.Function;
  *   <li><b>read-through</b>: {@code findById(Class, id)}가 캐시 히트면 DB를 우회하고, 미스면 delegate로
  *       조회한 뒤 {@code @Cacheable} 엔티티를 캐시에 채운다.</li>
  *   <li><b>write invalidation</b>: {@code save}/{@code update}/{@code delete}(및 batch/변형)는 delegate 실행
- *       후 모든 엔티티 region과 쿼리 캐시를 즉시 clear 한다. eager hydration된 그래프가 다른 타입의 상태도
- *       품을 수 있으므로, cacheable 여부와 대상 행 특정 가능 여부에 관계없이 전역 무효화한다.</li>
+ *       후 모든 엔티티 region과 쿼리 캐시를 clear 한다. eager hydration된 그래프가 다른 타입의 상태도
+ *       품을 수 있으므로, cacheable 여부와 대상 행 특정 가능 여부에 관계없이 전역 무효화한다. Physical
+ *       transaction writes record the clear for after-commit only.</li>
  *   <li><b>query cache read-through(opt-in)</b>: {@link ReactiveQueryCache}를 주입하면
  *       {@code findAll(Class, QuerySpec)} 결과를 정규화된 스펙 키로 캐시한다(히트 시 0 SQL). 어떤 write든 대상
  *       엔티티 타입의 쿼리 결과를 <b>통째로 무효화</b>한다(보수적 정합성). 쿼리 캐시가 없으면(기본) 이 경로는
@@ -53,8 +54,9 @@ import java.util.function.Function;
  *   <li>캐시는 <b>읽기에서만 채워지고 쓰기에서는 무효화만</b> 된다 — 미커밋 write 값을 캐시에 넣지 않는다.
  *       따라서 rollback 되는 트랜잭션은 캐시 <i>제거</i>만 유발하며(최악의 경우 다음 조회가 캐시 미스),
  *       stale 값을 <i>주입</i>하지 않는다.</li>
- *   <li>물리 트랜잭션 안의 모든 엔티티 read는 Reactor Context를 확인해 cache hit을 우회하고, provider 전체를
- *       즉시 clear 한다. clear는 물리 commit 뒤 재적용되며 nested 참여 wrapper와 공유된다.</li>
+ *   <li>물리 트랜잭션 안의 모든 엔티티 read는 Reactor Context를 확인해 cache hit을 우회하지만 shared caches를
+ *       변경하지 않는다. Successful writes record one global clear, which runs after physical commit and is
+ *       shared by nested participants.</li>
  *   <li>알려진 한계: 단일 JVM in-process 캐시로, 동시 writer 간 완전한 트랜잭셔널 정합성(외부 post-commit
  *       broadcast)은 외부 캐시 프로바이더에서 다룬다. {@code findById(..., FetchGroup)}, projection/paged/slice
  *       조회, count/exists 스칼라, native/compiled 조회 결과는 캐시하지 않는다(자식 hydration 편차·범위 위험
@@ -143,7 +145,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
         return Mono.deferContextual(context -> {
             if (hasActivePhysicalScope(context)) {
-                return clearTransactionalCaches(context).then(delegate.findById(entityType, id));
+                return delegate.findById(entityType, id);
             }
             CacheConfiguration config = resolver.resolve(entityType);
             if (!config.cacheable() || id == null || !populateOnRead) {
@@ -178,7 +180,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @Override
     public <T, ID> Flux<T> findAllById(Class<T> entityType, Iterable<ID> ids) {
         return Flux.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).thenMany(delegate.findAllById(entityType, ids))
+                ? delegate.findAllById(entityType, ids)
                 : findAllByIdOutsideTransaction(entityType, ids));
     }
 
@@ -194,7 +196,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @Override
     public <T> Flux<T> findAll(Class<T> entityType, QuerySpec querySpec) {
         return Flux.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).thenMany(delegate.findAll(entityType, querySpec))
+                ? delegate.findAll(entityType, querySpec)
                 : findAllOutsideTransaction(entityType, querySpec));
     }
 
@@ -244,16 +246,12 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
 
     @Override
     public <T> Mono<Page<T>> findAll(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
-        return Mono.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).then(delegate.findAll(entityType, querySpec, pageable))
-                : delegate.findAll(entityType, querySpec, pageable));
+        return delegate.findAll(entityType, querySpec, pageable);
     }
 
     @Override
     public <T> Mono<Slice<T>> findSlice(Class<T> entityType, QuerySpec querySpec, Pageable pageable) {
-        return Mono.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).then(delegate.findSlice(entityType, querySpec, pageable))
-                : delegate.findSlice(entityType, querySpec, pageable));
+        return delegate.findSlice(entityType, querySpec, pageable);
     }
 
     @Override
@@ -269,39 +267,29 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @Override
     public <P> Mono<P> findById(Class<P> entityType, Object id, FetchGroup<P> fetchGroup) {
         // FetchGroup 경로는 자식 hydration이 달라질 수 있어 v1에서는 캐시를 우회한다(read/put 모두 없음).
-        return Mono.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).then(delegate.findById(entityType, id, fetchGroup))
-                : delegate.findById(entityType, id, fetchGroup));
+        return delegate.findById(entityType, id, fetchGroup);
     }
 
     @Override
     public <P> Flux<P> findAll(Class<P> entityType, FetchGroup<P> fetchGroup) {
-        return Flux.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).thenMany(delegate.findAll(entityType, fetchGroup))
-                : delegate.findAll(entityType, fetchGroup));
+        return delegate.findAll(entityType, fetchGroup);
     }
 
     @Override
     public <T, ID> Mono<T> findById(Class<T> entityType, ID id, io.nova.graph.EntityGraph<T> entityGraph) {
         // EntityGraph(중첩 subgraph 포함) 경로는 delegate가 depth>1 hydration을 담당하므로 그대로 위임한다
         // (interface default 로 fallback 하면 flat FetchGroup 으로만 풀려 중첩 fetch 가 유실됨).
-        return Mono.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).then(delegate.findById(entityType, id, entityGraph))
-                : delegate.findById(entityType, id, entityGraph));
+        return delegate.findById(entityType, id, entityGraph);
     }
 
     @Override
     public <T> Flux<T> findAll(Class<T> entityType, io.nova.graph.EntityGraph<T> entityGraph) {
-        return Flux.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).thenMany(delegate.findAll(entityType, entityGraph))
-                : delegate.findAll(entityType, entityGraph));
+        return delegate.findAll(entityType, entityGraph);
     }
 
     @Override
     public <T> Flux<T> findAll(Class<T> entityType, CompiledQuery query, Object... bindings) {
-        return Flux.deferContextual(context -> hasActivePhysicalScope(context)
-                ? clearTransactionalCaches(context).thenMany(delegate.findAll(entityType, query, bindings))
-                : delegate.findAll(entityType, query, bindings));
+        return delegate.findAll(entityType, query, bindings);
     }
 
     // --- write invalidation -------------------------------------------------
@@ -452,18 +440,25 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
                 && context.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY).isActive();
     }
 
+    /** Records a physical-transaction clear for after-commit only. */
     private Mono<Void> clearTransactionalCaches(ContextView context) {
-        TransactionEvictionBuffer buffer = transactionBuffer(context, new TransactionEvictionBuffer());
+        TransactionEvictionBuffer buffer = transactionBuffer(context,
+                evictionBuffer != null ? evictionBuffer : new TransactionEvictionBuffer());
         buffer.recordProviderClearAll();
-        return provider.clearAll().then(clearQueries(buffer));
+        buffer.recordQueryClearAll();
+        return Mono.empty();
     }
 
     private Mono<Void> clearAllCaches() {
         return Mono.deferContextual(context -> {
-            if (!hasActivePhysicalScope(context)) {
-                return provider.clearAll().then(clearQueries());
+            if (hasActivePhysicalScope(context)) {
+                return clearTransactionalCaches(context);
             }
-            return clearTransactionalCaches(context);
+            TransactionEvictionBuffer buffer = activeTransactionBuffer(context);
+            if (buffer != null) {
+                buffer.recordProviderClearAll();
+            }
+            return provider.clearAll().then(clearQueries(buffer));
         });
     }
 

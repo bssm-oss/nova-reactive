@@ -6,7 +6,7 @@
 
 A managed `inTransaction` scope always sends entity-loading operations to the delegate, even when a warm entity-cache entry exists. This lets the physical persistence session register its identity and dirty snapshot. `existsById` also bypasses the entity cache in that scope.
 
-When a managed scope loads any entity root (including fetch-group, graph, paged, and compiled entity-read overloads), Nova eagerly clears every entity-cache region and the query cache. The clear is retained by the physical transaction and is applied again only after a successful physical commit. Participating nested transaction wrappers share that retained invalidation; they do not complete it at the nested boundary. Native and compiled writes use the same retained global clear.
+Managed reads never mutate shared caches. A successful write in a physical transaction records one global entity/query invalidation and runs it only after physical commit. Participating nested wrappers share that retained invalidation; rollback, error, and cancellation leave warm entries intact. Direct and legacy transaction writes clear after successful delegate completion, and legacy scopes replay the clear after successful completion. Native and compiled writes use the same global rule.
 
 A rollback never puts loaded or uncommitted values into the shared cache. It can leave an entry evicted, so the next non-transactional lookup reads the committed database value.
 
