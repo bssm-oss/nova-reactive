@@ -157,26 +157,34 @@ class QueryCacheH2IntegrationTest {
     }
 
     @Test
-    void associatedWriteInvalidatesCachedOwnerQuery() {
+    void managedAssociatedDirtyCommitClearsCachedOwnerEntityAndQuery() {
         ConnectionFactory cf = freshConnectionFactory();
         Wiring w = wire(cf);
 
         w.schema().create(QueryPart.class, QueryOwner.class).block();
         QueryPart part = w.cached().save(new QueryPart("alpha")).block();
-        w.cached().save(new QueryOwner("owner", part)).block();
+        QueryOwner owner = w.cached().save(new QueryOwner("owner", part)).block();
 
         QuerySpec all = QuerySpec.empty();
+        w.cached().findById(QueryOwner.class, owner.id).block();
         w.cached().findAll(QueryOwner.class, all).collectList().block();
         long afterWarm = w.listener().selects();
         w.cached().findAll(QueryOwner.class, all).collectList().block();
         assertEquals(afterWarm, w.listener().selects(), "second owner query must use its warmed query cache entry");
 
-        w.cached().save(new QueryPart(part.id(), "beta")).block();
-        long beforeReload = w.listener().selects();
-        List<QueryOwner> reloaded = w.cached().findAll(QueryOwner.class, all).collectList().block();
+        w.cached().inTransaction(tx -> tx.findById(QueryPart.class, part.id())
+                .doOnNext(managed -> managed.name = "beta")).block();
 
-        assertTrue(w.listener().selects() > beforeReload,
-                "a non-cacheable associated write must globally invalidate cached owner queries");
+        long beforeEntityReload = w.listener().selects();
+        QueryOwner entityReloaded = w.cached().findById(QueryOwner.class, owner.id).block();
+        assertTrue(w.listener().selects() > beforeEntityReload,
+                "managed associated dirty commit must globally invalidate cached owner entities");
+        assertEquals("beta", entityReloaded.part.name);
+
+        long beforeQueryReload = w.listener().selects();
+        List<QueryOwner> reloaded = w.cached().findAll(QueryOwner.class, all).collectList().block();
+        assertTrue(w.listener().selects() > beforeQueryReload,
+                "managed associated dirty commit must globally invalidate cached owner queries");
         assertEquals("beta", reloaded.get(0).part.name);
     }
 

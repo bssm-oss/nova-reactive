@@ -11,6 +11,7 @@ import jakarta.persistence.Cacheable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Converter;
+import jakarta.persistence.Converts;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -192,6 +193,10 @@ class MappingAwareEntityGraphCopierTest {
         @Convert(converter = CacheCodeConverter.class)
         private List<CacheCode> codes = new ArrayList<>();
         @ElementCollection
+        @Converts({
+                @Convert(attributeName = "key", converter = CacheCodeConverter.class),
+                @Convert(attributeName = "value", converter = CacheCodeConverter.class)
+        })
         private Map<CacheCode, CacheCode> byCode = new LinkedHashMap<>();
         @Temporal(TemporalType.TIMESTAMP)
         private Date timestamp;

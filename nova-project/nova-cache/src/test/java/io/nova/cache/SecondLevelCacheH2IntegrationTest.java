@@ -194,17 +194,28 @@ class SecondLevelCacheH2IntegrationTest {
         Long id = w.cached().save(new Widget("alpha")).block().id();
         w.cached().findById(Widget.class, id).block();
 
+        long beforeRollbackFlush = w.listener().updates();
         StepVerifier.create(w.cached().inTransaction(tx -> tx.findById(Widget.class, id)
+                .doOnNext(widget -> widget.name = "beta")
+                .then(tx.flush())
                 .then(Mono.error(new IllegalStateException("rollback")))))
                 .verifyErrorMessage("rollback");
+        assertTrue(w.listener().updates() > beforeRollbackFlush,
+                "the rollback case must issue actual DML before testing its missing commit replay");
         long beforeErrorHit = w.listener().selects();
         w.cached().findById(Widget.class, id).block();
         assertEquals(beforeErrorHit, w.listener().selects(),
                 "an errored physical transaction must not replay-clear the warm cache");
 
-        StepVerifier.create(w.cached().inTransaction(tx -> tx.findById(Widget.class, id).then(Mono.never())))
+        long beforeCancellationFlush = w.listener().updates();
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.findById(Widget.class, id)
+                .doOnNext(widget -> widget.name = "beta")
+                .then(tx.flush())
+                .then(Mono.never())))
                 .thenCancel()
                 .verify();
+        assertTrue(w.listener().updates() > beforeCancellationFlush,
+                "the cancellation case must issue actual DML before testing its missing commit replay");
         long beforeCancelHit = w.listener().selects();
         w.cached().findById(Widget.class, id).block();
         assertEquals(beforeCancelHit, w.listener().selects(),
@@ -323,14 +334,17 @@ class SecondLevelCacheH2IntegrationTest {
 
         w.cached().inTransaction(outer -> outer.inTransaction(inner ->
                         inner.findById(Widget.class, id)
+                                .doOnNext(widget -> widget.name = "beta")
+                                .then(inner.flush())
                                 .then(w.cacheProvider().getCache(Widget.class.getName()).put(key, stale)))
                 .then())
                 .block();
 
         long beforeReload = w.listener().selects();
-        w.cached().findById(Widget.class, id).block();
+        Widget reloaded = w.cached().findById(Widget.class, id).block();
         assertTrue(w.listener().selects() > beforeReload,
                 "nested invalidation must still run after the outer physical commit");
+        assertEquals("beta", reloaded.name());
     }
 
     @Test
@@ -351,7 +365,8 @@ class SecondLevelCacheH2IntegrationTest {
         assertNotSame(first.getPart(), hit.getPart());
         assertEquals("alpha", hit.getPart().getName(), "a hit must expose a fresh detached association graph");
 
-        w.cached().save(new PropertyPart(part.id(), "beta")).block();
+        w.cached().inTransaction(tx -> tx.findById(PropertyPart.class, part.id())
+                .doOnNext(managed -> managed.setName("beta"))).block();
         long beforeReload = w.listener().selects();
         PropertyOwner reloaded = w.cached().findById(PropertyOwner.class, ownerId).block();
         assertTrue(w.listener().selects() > beforeReload,
@@ -370,7 +385,8 @@ class SecondLevelCacheH2IntegrationTest {
         PropertyOwner stale = w.cached().findById(PropertyOwner.class, ownerId).block();
         CacheKey ownerKey = new CacheKey(PropertyOwner.class.getName(), PropertyOwner.class, ownerId);
 
-        w.cached().inTransaction(ignored -> w.cached().save(new PropertyPart(part.id(), "beta"))
+        w.cached().inTransaction(tx -> tx.findById(PropertyPart.class, part.id())
+                .doOnNext(managed -> managed.setName("beta"))
                 .then(w.cacheProvider().getCache(PropertyOwner.class.getName()).put(ownerKey, stale))).block();
 
         long beforeReload = w.listener().selects();
