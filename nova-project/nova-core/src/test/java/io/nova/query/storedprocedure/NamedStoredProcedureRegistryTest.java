@@ -113,6 +113,22 @@ class NamedStoredProcedureRegistryTest {
     }
 
     @Test
+    void constructionRejectsDuplicateDeclaredNames() {
+        StoredProcedureException ex = assertThrows(StoredProcedureException.class,
+                () -> new ReactiveStoredProcedureQuery<>(
+                        "duplicate_names",
+                        List.of(
+                                new StoredProcedureParameterDefinition("value", ParameterMode.IN, Integer.class),
+                                new StoredProcedureParameterDefinition("value", ParameterMode.IN, Integer.class)),
+                        row -> row,
+                        operations,
+                        dialect));
+        assertTrue(ex.getMessage().contains("Duplicate stored procedure parameter name 'value'"));
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+    }
+
+    @Test
     void setterRejectsBlankOrUnknownNamesBeforeNativeOperation() {
         NamedStoredProcedureRegistry registry = registry(Person.class);
         ReactiveStoredProcedureQuery<?> query = registry.createNamedStoredProcedureQuery("Person.compute");
@@ -138,6 +154,34 @@ class NamedStoredProcedureRegistryTest {
 
         query.setParameter(1, 1).setParameter(2, 2).getResultList().collectList().block();
         assertEquals(List.of(1, 2), operations.lastQuery.get().bindings());
+    }
+
+    @Test
+    void setterRejectsNamedThenPositionalRebindingBeforeNativeOperation() {
+        NamedStoredProcedureRegistry registry = registry(Person.class);
+        ReactiveStoredProcedureQuery<?> query = registry.createNamedStoredProcedureQuery("Person.compute");
+
+        query.setParameter("a", 1);
+        assertThrows(StoredProcedureException.class, () -> query.setParameter(1, 2));
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+
+        query.setParameter("b", 3).getResultList().collectList().block();
+        assertEquals(List.of(1, 3), operations.lastQuery.get().bindings());
+    }
+
+    @Test
+    void setterRejectsPositionalThenNamedRebindingBeforeNativeOperation() {
+        NamedStoredProcedureRegistry registry = registry(Person.class);
+        ReactiveStoredProcedureQuery<?> query = registry.createNamedStoredProcedureQuery("Person.compute");
+
+        query.setParameter(1, 1);
+        assertThrows(StoredProcedureException.class, () -> query.setParameter("a", 2));
+        assertNull(operations.lastQuery.get());
+        assertNull(operations.lastExecute.get());
+
+        query.setParameter(2, 3).getResultList().collectList().block();
+        assertEquals(List.of(1, 3), operations.lastQuery.get().bindings());
     }
 
     @Test

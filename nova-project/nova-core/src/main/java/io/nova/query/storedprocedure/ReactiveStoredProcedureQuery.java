@@ -56,7 +56,10 @@ public final class ReactiveStoredProcedureQuery<T> {
 
     /**
      * ad-hoc 저장 프로시저 핸들을 만든다. 명명 프로시저는 {@link NamedStoredProcedureRegistry}가, 결과 매핑은
-     * {@code mapper}(null이면 {@code executeUpdate} 전용)가 담당한다.
+     * {@code mapper}(null이면 {@code executeUpdate} 전용)가 담당한다. 선언된 이름은 이 생성 시점에 유일해야
+     * 하며 중복 이름은 거부된다. JPA SPI 1.0은 출력 파라미터 선언을 모델링할 수 있지만 Nova executor/result
+     * API와 H2 baseline은 이식적인 출력 지원을 제공하지 않으므로 OUT/INOUT/REF_CURSOR 선언은 native 작업 전에
+     * 거부된다.
      */
     public ReactiveStoredProcedureQuery(
             String procedureName,
@@ -82,7 +85,12 @@ public final class ReactiveStoredProcedureQuery<T> {
         if (name == null || name.isBlank()) {
             throw new StoredProcedureException("stored procedure parameter name must not be null or blank");
         }
-        StoredProcedureParameterDefinition parameter = parameterByName(name);
+        int position = parameterPositionByName(name);
+        StoredProcedureParameterDefinition parameter = parameters.get(position - 1);
+        if (positionalValues.containsKey(position)) {
+            throw new StoredProcedureException("stored procedure parameter '" + name + "' of '" + procedureName
+                    + "' is already bound at position " + position);
+        }
         validateValue(parameter, value, "'" + name + "'");
         namedValues.put(name, value);
         return this;
@@ -96,6 +104,10 @@ public final class ReactiveStoredProcedureQuery<T> {
      */
     public ReactiveStoredProcedureQuery<T> setParameter(int position, Object value) {
         StoredProcedureParameterDefinition parameter = parameterByPosition(position);
+        if (parameter.name() != null && namedValues.containsKey(parameter.name())) {
+            throw new StoredProcedureException("stored procedure parameter at position " + position + " of '"
+                    + procedureName + "' is already bound by name '" + parameter.name() + "'");
+        }
         validateValue(parameter, value, "at position " + position);
         positionalValues.put(position, value);
         return this;
@@ -181,10 +193,10 @@ public final class ReactiveStoredProcedureQuery<T> {
                 + position + " of '" + procedureName + "'");
     }
 
-    private StoredProcedureParameterDefinition parameterByName(String name) {
-        for (StoredProcedureParameterDefinition parameter : parameters) {
-            if (name.equals(parameter.name())) {
-                return parameter;
+    private int parameterPositionByName(String name) {
+        for (int i = 0; i < parameters.size(); i++) {
+            if (name.equals(parameters.get(i).name())) {
+                return i + 1;
             }
         }
         throw new StoredProcedureException("Unknown stored procedure parameter '" + name + "' of '"
