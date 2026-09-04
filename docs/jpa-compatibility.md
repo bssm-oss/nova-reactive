@@ -60,7 +60,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 |---|---|---|
 | `@Inheritance(SINGLE_TABLE)` + `@DiscriminatorColumn` / `@DiscriminatorValue` | ✅ | |
 | `@Inheritance(JOINED)` | ✅ | Polymorphic SELECT with derived-table wrapping |
-| `@Inheritance(TABLE_PER_CLASS)` | ✅ | |
+| `@Inheritance(TABLE_PER_CLASS)` | ✅ | `IDENTITY` / `AUTO` ids are rejected because independent subtype identities can collide; use `TABLE` or `SEQUENCE`. |
 | `@MappedSuperclass` | ✅ | Fields, ids, listeners inherited via ancestor walk |
 
 ## Relationships

@@ -1278,7 +1278,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         idProperty.write(entity, idProperty.toPropertyValue(key));
                         return entity;
                     })
-                    .defaultIfEmpty(entity);
+                    .switchIfEmpty(Mono.error(new IllegalStateException(
+                            "Database generated id was not returned for " + metadata.entityType().getName())));
         }
         SqlStatement statement = dialect.sqlRenderer().insert(metadata, entity);
         return sqlExecutor.execute(statement).thenReturn(entity);
@@ -1308,7 +1309,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                         idProperty.write(entity, idProperty.toPropertyValue(key));
                         return entity;
                     })
-                    .defaultIfEmpty(entity);
+                    .switchIfEmpty(Mono.error(new IllegalStateException(
+                            "Database generated id was not returned for " + metadata.entityType().getName())));
         } else if (strategy == GenerationType.SEQUENCE) {
             Class<?> idColumnType = wrapPrimitive(idProperty.javaType());
             rootInserted = sqlExecutor.queryOne(

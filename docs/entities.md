@@ -383,7 +383,9 @@ root polymorphically.
 `JOINED` stores root fields in the root table and subtype fields in subtype tables linked by
 the inherited primary key; root and subtype schemas are honored independently.
 `TABLE_PER_CLASS` stores each concrete type in its own table and uses polymorphic unions for
-root reads.
+root reads. Because independent identity columns can collide across subtype tables,
+`@GeneratedValue(strategy = IDENTITY)` and `AUTO` (including bare `@GeneratedValue`) are rejected;
+use a shared `TABLE` or `SEQUENCE` generator for globally unique identifiers.
 
 > Only single-level `JOINED` and `TABLE_PER_CLASS` hierarchies are supported. Querying a
 > non-leaf mid-hierarchy type is not supported, and `@DiscriminatorFormula` remains unsupported.
