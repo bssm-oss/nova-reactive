@@ -48,7 +48,7 @@ class CompositeKeyManyToManyIntegrationTest {
         support = H2IntegrationTestSupport.create();
         SchemaInitializer schema =
                 new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
-        schema.create(Author.class, Book.class, Reader.class, Genre.class).block();
+        schema.create(Author.class, Book.class, Reader.class, Genre.class, CascadeRoot.class).block();
     }
 
     // --- both sides composite ------------------------------------------------
@@ -86,7 +86,8 @@ class CompositeKeyManyToManyIntegrationTest {
         owner.getPersistBooks().add(shared); // PERSIST: existence probe skips this existing target.
         owner.getMergeBooks().add(shared);   // MERGE must still save the same instance.
 
-        support.operations().save(owner).block();
+        // Save through a cascading outer edge so Author's two collection cascades share CASCADE_VISITED_KEY.
+        support.operations().save(new CascadeRoot(owner)).block();
 
         StepVerifier.create(support.operations().findById(Book.class, shared.id))
                 .assertNext(reloaded -> assertEquals("merged", reloaded.title))
@@ -524,6 +525,28 @@ class CompositeKeyManyToManyIntegrationTest {
 
         public Set<Book> getBooks() {
             return books;
+        }
+    }
+
+    @Entity
+    @Table(name = "cascade_root")
+    public static class CascadeRoot {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @jakarta.persistence.ManyToOne(cascade = CascadeType.PERSIST)
+        @jakarta.persistence.JoinColumns({
+                @JoinColumn(name = "author_country", referencedColumnName = "a_country"),
+                @JoinColumn(name = "author_num", referencedColumnName = "a_num")
+        })
+        private Author author;
+
+        public CascadeRoot() {
+        }
+
+        CascadeRoot(Author author) {
+            this.author = author;
         }
     }
 
