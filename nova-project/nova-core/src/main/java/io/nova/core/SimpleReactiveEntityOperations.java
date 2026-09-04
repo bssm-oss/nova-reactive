@@ -2268,7 +2268,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         JoinTableDefinition definition = joinDefinition(metadata, info, targetMetadata);
         // 추가된 대상이 미영속(null id)이면 link 행에 null FK를 쓸 수 없다 — full-replace 경로와 동일한 명확한
         // fail-fast를 유지한다(save 시점 cascade가 이미 영속화했어야 한다).
-        if (addedTargetIds.contains(null)) {
+        if (addedTargetIds.stream()
+                .map(SimpleReactiveEntityOperations::asKey)
+                .anyMatch(key -> key.isEmpty() || key.stream().anyMatch(Objects::isNull))) {
             return Mono.error(new IllegalStateException(
                     "@ManyToMany targets must be persisted before flush on "
                             + property.propertyName() + "; add cascade=PERSIST to cascade transient targets"));

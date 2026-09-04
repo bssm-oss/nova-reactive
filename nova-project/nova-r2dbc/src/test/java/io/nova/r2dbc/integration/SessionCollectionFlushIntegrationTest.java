@@ -353,6 +353,30 @@ class SessionCollectionFlushIntegrationTest {
     }
 
     @Test
+    void uuidManyToManyManagedFlushRejectsTransientTargetBeforeWritingNullLink() {
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(UuidPost.class, UuidTag.class).block();
+
+        UuidPost saved = support.operations().save(new UuidPost("p")).block();
+        listener.clear();
+
+        StepVerifier.create(support.operations().inTransaction(ops -> ops.findById(UuidPost.class, saved.getId())
+                        .doOnNext(loaded -> loaded.getTags().add(new UuidTag("transient")))
+                        .then()))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("must be persisted before flush"))
+                .verify();
+
+        assertEquals(0, listener.count("uuid_post_tag", "insert"));
+        assertEquals(0L, support.operations().queryNativeOne(
+                        io.nova.query.NativeQuery.of("select count(*) as c from "
+                                + support.dialect().quote("uuid_post_tag")),
+                        row -> row.get("c", Long.class))
+                .block());
+    }
+
+    @Test
     void collectionMutationIsFlushedAtCommit() {
         Post seeded = seedPostWithTwoTags();
         Tag c = support.operations().save(new Tag("c")).block();
