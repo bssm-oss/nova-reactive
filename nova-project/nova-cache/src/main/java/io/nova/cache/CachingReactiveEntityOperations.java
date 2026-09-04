@@ -20,6 +20,7 @@ import io.nova.query.Slice;
 import io.nova.query.Updater;
 import io.nova.sql.CompiledQuery;
 import io.nova.tx.PhysicalTransactionScope;
+import io.nova.tx.TransactionWriteObservation;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.util.context.ContextView;
@@ -401,13 +402,16 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         return Mono.deferContextual(context -> {
             boolean participating = hasActivePhysicalScope(context);
             TransactionEvictionBuffer localBuffer = new TransactionEvictionBuffer();
+            TransactionWriteObservation observation = new TransactionWriteObservation();
             Mono<R> body = delegate.inTransaction(inner -> Mono.deferContextual(transactionContext ->
-                    callback.apply(withDelegate(inner, false, transactionBuffer(transactionContext, localBuffer)))));
+                    callback.apply(withDelegate(inner, false, transactionBuffer(transactionContext, localBuffer)))))
+                    .contextWrite(transactionContext ->
+                            transactionContext.put(TransactionWriteObservation.CONTEXT_KEY, observation));
             if (participating) {
                 return body;
             }
-            return body.flatMap(result -> flushLegacyBuffer(localBuffer).thenReturn(result))
-                    .switchIfEmpty(Mono.defer(() -> flushLegacyBuffer(localBuffer).then(Mono.empty())));
+            return body.flatMap(result -> flushLegacyBuffer(localBuffer, observation).thenReturn(result))
+                    .switchIfEmpty(Mono.defer(() -> flushLegacyBuffer(localBuffer, observation).then(Mono.empty())));
         });
     }
 
@@ -439,8 +443,14 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
         });
     }
 
-    private Mono<Void> flushLegacyBuffer(TransactionEvictionBuffer buffer) {
-        return buffer.hasPhysicalReplayRegistered() ? Mono.empty() : buffer.flush(provider, queryCache);
+    private Mono<Void> flushLegacyBuffer(
+            TransactionEvictionBuffer buffer, TransactionWriteObservation observation) {
+        if (buffer.hasPhysicalReplayRegistered() || !observation.hasCompletedWrite()) {
+            return Mono.empty();
+        }
+        buffer.recordProviderClearAll();
+        buffer.recordQueryClearAll();
+        return buffer.flush(provider, queryCache);
     }
 
     private static boolean hasActivePhysicalScope(ContextView context) {
@@ -463,6 +473,13 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
                 return clearTransactionalCaches(context);
             }
             TransactionEvictionBuffer buffer = activeTransactionBuffer(context);
+            if (hasWriteObservation(context)) {
+                if (buffer != null) {
+                    buffer.recordProviderClearAll();
+                    buffer.recordQueryClearAll();
+                }
+                return Mono.empty();
+            }
             if (buffer != null) {
                 buffer.recordProviderClearAll();
             }
@@ -507,6 +524,10 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
             return transactionBuffer(context, evictionBuffer != null ? evictionBuffer : new TransactionEvictionBuffer());
         }
         return evictionBuffer;
+    }
+
+    private static boolean hasWriteObservation(ContextView context) {
+        return context.hasKey(TransactionWriteObservation.CONTEXT_KEY);
     }
 
     @SuppressWarnings("unchecked")

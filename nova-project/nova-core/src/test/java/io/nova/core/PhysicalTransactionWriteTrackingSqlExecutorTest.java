@@ -2,6 +2,7 @@ package io.nova.core;
 
 import io.nova.sql.SqlStatement;
 import io.nova.tx.PhysicalTransactionScope;
+import io.nova.tx.TransactionWriteObservation;
 import org.junit.jupiter.api.Test;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
@@ -19,7 +20,7 @@ class PhysicalTransactionWriteTrackingSqlExecutorTest {
     private static final SqlStatement STATEMENT = new SqlStatement("update widget set name = ?", List.of("name"));
 
     @Test
-    void successfulWriteShapesMarkThePhysicalTransactionScope() {
+    void successfulWriteShapesMarkBothTransactionWriteObservers() {
         RecordingExecutor delegate = new RecordingExecutor();
         PhysicalTransactionWriteTrackingSqlExecutor executor = new PhysicalTransactionWriteTrackingSqlExecutor(delegate);
 
@@ -34,23 +35,25 @@ class PhysicalTransactionWriteTrackingSqlExecutorTest {
     }
 
     @Test
-    void queriesDoNotMarkThePhysicalTransactionScope() {
+    void queriesDoNotMarkTransactionWriteObservers() {
         RecordingExecutor delegate = new RecordingExecutor();
         PhysicalTransactionWriteTrackingSqlExecutor executor = new PhysicalTransactionWriteTrackingSqlExecutor(delegate);
         PhysicalTransactionScope scope = PhysicalTransactionScope.newOwner().scope();
+        TransactionWriteObservation observation = new TransactionWriteObservation();
 
-        StepVerifier.create(executor.queryOne(STATEMENT, row -> "one").contextWrite(context(scope)))
+        StepVerifier.create(executor.queryOne(STATEMENT, row -> "one").contextWrite(context(scope, observation)))
                 .expectNext("one")
                 .verifyComplete();
-        StepVerifier.create(executor.queryMany(STATEMENT, row -> "many").contextWrite(context(scope)))
+        StepVerifier.create(executor.queryMany(STATEMENT, row -> "many").contextWrite(context(scope, observation)))
                 .expectNext("many")
                 .verifyComplete();
 
         assertFalse(scope.hasCompletedWrite());
+        assertFalse(observation.hasCompletedWrite());
     }
 
     @Test
-    void erroredWriteShapesDoNotMarkThePhysicalTransactionScope() {
+    void erroredWriteShapesDoNotMarkTransactionWriteObservers() {
         RecordingExecutor delegate = new RecordingExecutor();
         PhysicalTransactionWriteTrackingSqlExecutor executor = new PhysicalTransactionWriteTrackingSqlExecutor(delegate);
 
@@ -65,7 +68,7 @@ class PhysicalTransactionWriteTrackingSqlExecutorTest {
     }
 
     @Test
-    void cancelledWriteShapesDoNotMarkThePhysicalTransactionScope() {
+    void cancelledWriteShapesDoNotMarkTransactionWriteObservers() {
         RecordingExecutor delegate = new RecordingExecutor();
         PhysicalTransactionWriteTrackingSqlExecutor executor = new PhysicalTransactionWriteTrackingSqlExecutor(delegate);
 
@@ -80,36 +83,44 @@ class PhysicalTransactionWriteTrackingSqlExecutorTest {
     private static void assertMarksWrite(Function<PhysicalTransactionScope, Publisher<?>> operation, Runnable setup) {
         setup.run();
         PhysicalTransactionScope scope = PhysicalTransactionScope.newOwner().scope();
+        TransactionWriteObservation observation = new TransactionWriteObservation();
 
-        StepVerifier.create(Flux.from(operation.apply(scope)).contextWrite(context(scope)).then()).verifyComplete();
+        StepVerifier.create(Flux.from(operation.apply(scope)).contextWrite(context(scope, observation)).then()).verifyComplete();
 
         assertTrue(scope.hasCompletedWrite());
+        assertTrue(observation.hasCompletedWrite());
     }
 
     private static void assertDoesNotMarkOnError(
             Function<PhysicalTransactionScope, Publisher<?>> operation, Runnable setup) {
         setup.run();
         PhysicalTransactionScope scope = PhysicalTransactionScope.newOwner().scope();
+        TransactionWriteObservation observation = new TransactionWriteObservation();
 
-        StepVerifier.create(Flux.from(operation.apply(scope)).contextWrite(context(scope)))
+        StepVerifier.create(Flux.from(operation.apply(scope)).contextWrite(context(scope, observation)))
                 .expectError(IllegalStateException.class)
                 .verify();
 
         assertFalse(scope.hasCompletedWrite());
+        assertFalse(observation.hasCompletedWrite());
     }
 
     private static void assertDoesNotMarkOnCancel(
             Function<PhysicalTransactionScope, Publisher<?>> operation, Runnable setup) {
         setup.run();
         PhysicalTransactionScope scope = PhysicalTransactionScope.newOwner().scope();
+        TransactionWriteObservation observation = new TransactionWriteObservation();
 
-        StepVerifier.create(Flux.from(operation.apply(scope)).contextWrite(context(scope))).thenCancel().verify();
+        StepVerifier.create(Flux.from(operation.apply(scope)).contextWrite(context(scope, observation))).thenCancel().verify();
 
         assertFalse(scope.hasCompletedWrite());
+        assertFalse(observation.hasCompletedWrite());
     }
 
-    private static Context context(PhysicalTransactionScope scope) {
-        return Context.of(PhysicalTransactionScope.CONTEXT_KEY, scope);
+    private static Context context(PhysicalTransactionScope scope, TransactionWriteObservation observation) {
+        return Context.of(
+                PhysicalTransactionScope.CONTEXT_KEY, scope,
+                TransactionWriteObservation.CONTEXT_KEY, observation);
     }
 
     private static final class RecordingExecutor implements SqlExecutor {

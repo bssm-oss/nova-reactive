@@ -2,6 +2,7 @@ package io.nova.core;
 
 import io.nova.sql.SqlStatement;
 import io.nova.tx.PhysicalTransactionScope;
+import io.nova.tx.TransactionWriteObservation;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.util.context.ContextView;
@@ -56,6 +57,9 @@ final class PhysicalTransactionWriteTrackingSqlExecutor implements SqlExecutor {
     private static void markCompletedWrite(ContextView context) {
         if (context.hasKey(PhysicalTransactionScope.CONTEXT_KEY)) {
             context.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY).markWriteCompleted();
+        }
+        if (context.hasKey(TransactionWriteObservation.CONTEXT_KEY)) {
+            context.<TransactionWriteObservation>get(TransactionWriteObservation.CONTEXT_KEY).markWriteCompleted();
         }
     }
 }

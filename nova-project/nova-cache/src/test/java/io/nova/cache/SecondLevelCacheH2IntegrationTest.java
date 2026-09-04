@@ -15,6 +15,10 @@ import io.nova.r2dbc.R2dbcTransactionManager;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
 import io.nova.sql.SqlStatement;
+import io.nova.tx.PhysicalTransactionScope;
+import io.nova.tx.ReactiveTransactionOperations;
+import io.nova.tx.TransactionContext;
+import io.nova.tx.TransactionDefinition;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
 import jakarta.persistence.Cacheable;
@@ -32,6 +36,7 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.util.List;
+import java.util.function.Function;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -73,11 +78,28 @@ class SecondLevelCacheH2IntegrationTest {
     }
 
     private Wiring wire(ConnectionFactory cf) {
+        return wire(cf, new R2dbcTransactionManager(cf));
+    }
+
+    private Wiring wireLegacy(ConnectionFactory cf) {
+        R2dbcTransactionManager physicalManager = new R2dbcTransactionManager(cf);
+        ReactiveTransactionOperations legacyManager = new ReactiveTransactionOperations() {
+            @Override
+            public <T> Mono<T> inTransaction(
+                    TransactionDefinition definition, Function<TransactionContext, Mono<T>> callback) {
+                return physicalManager.inTransaction(definition, context ->
+                        callback.apply(context).contextWrite(
+                                reactorContext -> reactorContext.delete(PhysicalTransactionScope.CONTEXT_KEY)));
+            }
+        };
+        return wire(cf, legacyManager);
+    }
+
+    private Wiring wire(ConnectionFactory cf, ReactiveTransactionOperations txManager) {
         H2Dialect dialect = new H2Dialect();
         SelectCountingListener listener = new SelectCountingListener();
         EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
         R2dbcSqlExecutor executor = new R2dbcSqlExecutor(cf, dialect, listener);
-        R2dbcTransactionManager txManager = new R2dbcTransactionManager(cf);
         SimpleReactiveEntityOperations base = new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, executor, new EntityStateDetector(), txManager);
         ReactiveCacheProvider cacheProvider = new SimpleReactiveCacheProvider();
@@ -194,6 +216,79 @@ class SecondLevelCacheH2IntegrationTest {
         assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
         assertEquals(beforeHit, w.listener().selects(),
                 "a physical read-only transaction must neither clear nor replay-clear a warm shared cache");
+    }
+
+    @Test
+    void legacySuccessfulWriteClearsWarmSharedCacheAfterCommit() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wireLegacy(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        w.cached().inTransaction(tx -> tx.update(new Widget(id, "beta"), List.of("name"))).block();
+
+        assertForcedReload(w, id, "beta");
+    }
+
+    @Test
+    void legacyErroredWriteDoesNotClearWarmSharedCache() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wireLegacy(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.update(new Widget(id, "beta"), List.of("name"))
+                .then(Mono.error(new IllegalStateException("rollback")))))
+                .verifyErrorMessage("rollback");
+
+        long beforeHit = w.listener().selects();
+        assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
+        assertEquals(beforeHit, w.listener().selects(),
+                "an errored legacy transaction must not clear the warm shared cache");
+    }
+
+    @Test
+    void legacyCancelledWriteDoesNotClearWarmSharedCache() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wireLegacy(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        CountDownLatch completedWrite = new CountDownLatch(1);
+        StepVerifier.create(w.cached().inTransaction(tx -> tx.update(new Widget(id, "beta"), List.of("name"))
+                .doOnSuccess(ignored -> completedWrite.countDown())
+                .then(Mono.never())))
+                .then(() -> assertTrue(await(completedWrite), "legacy write did not complete before cancellation"))
+                .thenCancel()
+                .verify();
+
+        long beforeHit = w.listener().selects();
+        assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
+        assertEquals(beforeHit, w.listener().selects(),
+                "a cancelled legacy transaction must not clear the warm shared cache");
+    }
+
+    @Test
+    void legacyReadOnlyTransactionDoesNotClearWarmSharedCache() {
+        ConnectionFactory cf = freshConnectionFactory();
+        Wiring w = wireLegacy(cf);
+
+        w.schema().create(Widget.class).block();
+        Long id = w.cached().save(new Widget("alpha")).block().id();
+        w.cached().findById(Widget.class, id).block();
+
+        w.cached().inTransaction(tx -> tx.findById(Widget.class, id)).block();
+
+        long beforeHit = w.listener().selects();
+        assertEquals("alpha", w.cached().findById(Widget.class, id).block().name());
+        assertEquals(beforeHit, w.listener().selects(),
+                "a read-only legacy transaction must not clear the warm shared cache");
     }
 
     @Test
