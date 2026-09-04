@@ -66,6 +66,19 @@ class PhysicalTransactionScopeTest {
     }
 
     @Test
+    void writeMarkerIsMonotonicAndMayBeSetAfterSeal() {
+        PhysicalTransactionScope.Owner owner = PhysicalTransactionScope.newOwner();
+        PhysicalTransactionScope scope = owner.scope();
+
+        assertFalse(scope.hasCompletedWrite());
+        owner.seal().block();
+        scope.markWriteCompleted();
+        scope.markWriteCompleted();
+
+        assertTrue(scope.hasCompletedWrite());
+    }
+
+    @Test
     void inactiveScopeHasNoResourcesOrCallbacks() {
         PhysicalTransactionScope scope = PhysicalTransactionScope.inactive();
         AtomicInteger invoked = new AtomicInteger();
@@ -75,5 +88,7 @@ class PhysicalTransactionScopeTest {
         scope.beforeCommit(() -> Mono.fromRunnable(invoked::incrementAndGet));
 
         assertEquals(0, invoked.get());
+        scope.markWriteCompleted();
+        assertFalse(scope.hasCompletedWrite());
     }
 }

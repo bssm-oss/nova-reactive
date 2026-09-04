@@ -183,7 +183,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     ) {
         this.metadataFactory = metadataFactory;
         this.dialect = dialect;
-        this.sqlExecutor = sqlExecutor;
+        this.sqlExecutor = new PhysicalTransactionWriteTrackingSqlExecutor(sqlExecutor);
         this.entityStateDetector = entityStateDetector;
         this.transactionOperations = transactionOperations;
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
