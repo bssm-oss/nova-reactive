@@ -163,6 +163,16 @@ nova:
   entity-packages: com.example.domain   # optional; defaults to @SpringBootApplication's package
 ```
 
+The same effective entity packages are the only packages scanned for Jakarta
+`@Converter` classes. The starter registers every discovered converter before it
+preloads any entity metadata, so `@Converter(autoApply = true)` applies
+deterministically at startup. A converter outside those packages is not
+registered merely because it is on the classpath. Standalone
+`Nova.create(connectionFactory)` also does no classpath scan: register an
+auto-apply converter on an `EntityMetadataFactory` before requesting any entity
+metadata, then use that factory in your manually assembled operations. An
+explicit `@Convert(converter = ...)` does not require registration.
+
 See [Spring](spring.md) for the full property reference.
 
 ## Next steps

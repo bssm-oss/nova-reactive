@@ -4,11 +4,20 @@ import io.nova.Nova;
 import io.nova.boot.ddlauto.DdlAutoBootstrapEntity;
 import io.nova.boot.ddlauto.DdlAutoCode;
 import io.nova.boot.ddlauto.DdlAutoConvertedEntity;
+import io.nova.boot.ddlauto.DdlAutoCodeConverter;
+import io.nova.core.EntityStateDetector;
 import io.nova.core.ReactiveEntityOperations;
+import io.nova.core.SimpleReactiveEntityOperations;
 import io.nova.dialect.h2.H2Dialect;
+import io.nova.metadata.DefaultNamingStrategy;
+import io.nova.metadata.EntityMetadataFactory;
 import io.nova.query.QuerySpec;
+import io.nova.r2dbc.R2dbcSqlExecutor;
+import io.nova.r2dbc.R2dbcTransactionManager;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactory;
+import jakarta.persistence.AttributeConverter;
+import jakarta.persistence.Converter;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -74,6 +83,60 @@ class SchemaBootstrapRunnerEffectTest {
                             .assertNext(loaded -> assertEquals(new DdlAutoCode("managed"), loaded.getCode()))
                             .verifyComplete();
                 });
+    }
+
+    @Test
+    void entityPackageScanRegistersOnlyItsAutoApplyConvertersBeforeMetadataPreload() {
+        ConnectionFactory cf = freshConnectionFactory();
+        runner.withUserConfiguration(testInfrastructure(cf))
+                .withPropertyValues(
+                        "nova.ddl-auto=create",
+                        "nova.entity-packages=io.nova.boot.ddlauto")
+                .run(context -> {
+                    assertEquals(null, context.getStartupFailure());
+                    ReactiveEntityOperations operations = context.getBean(ReactiveEntityOperations.class);
+                    StepVerifier.create(operations.save(new DdlAutoConvertedEntity(new DdlAutoCode("managed-only")))
+                            .flatMap(saved -> operations.findById(
+                                    DdlAutoConvertedEntity.class, saved.getId())))
+                            .assertNext(loaded -> assertEquals(
+                                    new DdlAutoCode("managed-only"), loaded.getCode()))
+                            .verifyComplete();
+                });
+    }
+
+    @Test
+    void directNovaCreateDoesNotScanClasspathAndManualRegistrationMustPrecedeMetadata() {
+        ConnectionFactory cf = freshConnectionFactory();
+        runner.withUserConfiguration(testInfrastructure(cf))
+                .withPropertyValues(
+                        "nova.ddl-auto=create",
+                        "nova.entity-packages=io.nova.boot.ddlauto")
+                .run(context -> assertEquals(null, context.getStartupFailure()));
+
+        ReactiveEntityOperations directOperations = Nova.create(cf);
+        assertThrows(Throwable.class,
+                () -> directOperations.save(new DdlAutoConvertedEntity(new DdlAutoCode("unregistered"))).block(),
+                "Nova.create must not scan the classpath for @Converter classes");
+
+        EntityMetadataFactory metadataFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        metadataFactory.registerJpaConverter(DdlAutoCodeConverter.class);
+        ReactiveEntityOperations manuallyRegisteredOperations = new SimpleReactiveEntityOperations(
+                metadataFactory,
+                new H2Dialect(),
+                new R2dbcSqlExecutor(cf, new H2Dialect()),
+                new EntityStateDetector(),
+                new R2dbcTransactionManager(cf));
+        StepVerifier.create(manuallyRegisteredOperations.save(new DdlAutoConvertedEntity(new DdlAutoCode("manual")))
+                .flatMap(saved -> manuallyRegisteredOperations.findById(
+                        DdlAutoConvertedEntity.class, saved.getId())))
+                .assertNext(loaded -> assertEquals(new DdlAutoCode("manual"), loaded.getCode()))
+                .verifyComplete();
+
+        EntityMetadataFactory tooLateFactory = new EntityMetadataFactory(new DefaultNamingStrategy());
+        tooLateFactory.getEntityMetadata(DdlAutoConvertedEntity.class);
+        assertThrows(IllegalStateException.class,
+                () -> tooLateFactory.registerJpaConverter(DdlAutoCodeConverter.class),
+                "manual JPA converter registration must happen before entity metadata is requested");
     }
 
     @Test
@@ -149,5 +212,23 @@ class SchemaBootstrapRunnerEffectTest {
         io.nova.sql.Dialect dialect() {
             return new H2Dialect();
         }
+    }
+
+}
+
+/**
+ * Deliberately outside {@code io.nova.boot.ddlauto}. If package scanning ever expands to the
+ * whole classpath, this competing auto-apply converter makes the managed startup fail.
+ */
+@Converter(autoApply = true)
+class OutsidePackageDdlAutoCodeConverter implements AttributeConverter<DdlAutoCode, String> {
+    @Override
+    public String convertToDatabaseColumn(DdlAutoCode attribute) {
+        throw new AssertionError("outside-package converter must not be registered");
+    }
+
+    @Override
+    public DdlAutoCode convertToEntityAttribute(String dbData) {
+        throw new AssertionError("outside-package converter must not be registered");
     }
 }
