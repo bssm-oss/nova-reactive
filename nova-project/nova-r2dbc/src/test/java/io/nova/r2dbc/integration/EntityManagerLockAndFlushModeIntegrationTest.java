@@ -212,13 +212,14 @@ class EntityManagerLockAndFlushModeIntegrationTest {
     }
 
     @Test
-    void forceIncrementOnDetachedSameIdDoesNotCleanCanonicalSnapshot() {
+    void forceIncrementOnDetachedSameIdFailsBeforeSql() {
         EntityManagerHarness h = harness();
         h.support.execute(h.support.operations().createTableSql(ForceIncrementAccount.class));
 
         ForceIncrementAccount account = new ForceIncrementAccount("canonical@nova.io");
         StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
 
+        listener.clear();
         StepVerifier.create(h.manager.inTransaction(e ->
                         e.find(ForceIncrementAccount.class, account.getId())
                                 .flatMap(canonical -> {
@@ -227,8 +228,12 @@ class EntityManagerLockAndFlushModeIntegrationTest {
                                             canonical.getId(), "detached@nova.io", canonical.getVersion());
                                     return e.lock(detached, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
                                 })))
-                .expectError(OptimisticLockingFailureException.class)
+                .expectError(IllegalArgumentException.class)
                 .verify();
+        assertEquals(1, listener.countMatching("select "),
+                "only the managed-instance lookup may reach SQL: " + listener.snapshot());
+        assertEquals(0, listener.countMatching("update "),
+                "detached same-id lock must fail before force-increment SQL: " + listener.snapshot());
     }
 
     @Test
