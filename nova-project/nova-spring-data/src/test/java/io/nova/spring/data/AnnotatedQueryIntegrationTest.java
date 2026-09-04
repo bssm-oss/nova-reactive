@@ -13,6 +13,7 @@ import io.nova.query.QuerySpec;
 import io.nova.query.Slice;
 import io.nova.query.jpql.JpqlExecutor;
 import io.nova.query.jpql.JpqlException;
+import io.nova.spring.data.query.AnnotatedQueryException;
 import io.nova.spring.data.query.AnnotatedQueries;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
