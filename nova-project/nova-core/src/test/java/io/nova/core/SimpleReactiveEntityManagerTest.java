@@ -555,6 +555,27 @@ class SimpleReactiveEntityManagerTest {
     }
 
     @Test
+    void failedPessimisticReselectDoesNotRecordItsRequestedMode() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        session.registerOnLoad(metadataFactory.getEntityMetadata(VersionedWidget.class), widget);
+        operations.findAllResults = List.of(widget);
+
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.lock(widget, LockModeType.PESSIMISTIC_WRITE), session))
+                .verifyComplete();
+        operations.findAllResults = List.of();
+
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.lock(widget, LockModeType.PESSIMISTIC_READ), session))
+                .expectError(io.nova.exception.OptimisticLockingFailureException.class)
+                .verify();
+        StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                .expectNext(LockModeType.PESSIMISTIC_WRITE)
+                .verifyComplete();
+    }
+
+    @Test
     void cancelledLockDoesNotReplaceThePreviouslyRecordedMode() {
         PersistenceSession session = new PersistenceSession();
         VersionedWidget widget = new VersionedWidget(1L, 0L);

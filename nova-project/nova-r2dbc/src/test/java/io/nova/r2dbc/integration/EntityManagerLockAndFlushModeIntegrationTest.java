@@ -128,6 +128,25 @@ class EntityManagerLockAndFlushModeIntegrationTest {
                 "PESSIMISTIC_WRITE find는 FOR UPDATE 절을 발행해야 한다. 실행 SQL=" + listener.snapshot());
     }
 
+    @Test
+    void managedFindAndSuccessfulPessimisticWriteReportTheirExactLockModes() {
+        EntityManagerHarness h = harness();
+        h.support.execute(h.support.operations().createTableSql(VersionedAccount.class));
+
+        VersionedAccount account = new VersionedAccount("mode@nova.io");
+        StepVerifier.create(h.support.operations().save(account)).expectNextCount(1).verifyComplete();
+
+        StepVerifier.create(h.manager.inTransaction(e ->
+                        e.find(VersionedAccount.class, account.getId())
+                                .flatMap(ordinary -> e.getLockMode(ordinary)
+                                        .doOnNext(mode -> assertEquals(LockModeType.NONE, mode))
+                                        .then(e.find(VersionedAccount.class, account.getId(),
+                                                LockModeType.PESSIMISTIC_WRITE)))
+                                .flatMap(locked -> e.getLockMode(locked))))
+                .expectNext(LockModeType.PESSIMISTIC_WRITE)
+                .verifyComplete();
+    }
+
     // -------------------------------------------------------------------------------------------
     // lock(entity, OPTIMISTIC) — 버전 검증
     // -------------------------------------------------------------------------------------------
