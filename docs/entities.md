@@ -224,6 +224,11 @@ public static class Book {
 
 - For explicit fetch control, pass a `FetchGroup` to `findById(Class, ID, FetchGroup)` / `findAll(Class, FetchGroup)`. User-supplied and annotation-derived specs are deduped by `(childType, FK column)` with the user spec winning, so each child is fetched exactly once. Inside a transaction-bound persistence session, explicit `FetchGroup` and `EntityGraph` reads participate in the same identity map and dirty checking as ordinary reads, including runtime subtype state.
 - If the FK column seen by `@ManyToOne` clashes with another `@Column(name)` on the same entity, `EntityMetadataFactory` raises an explicit error rather than silently merging them.
+- On an owning to-one or `@ManyToMany` with `cascade = PERSIST`, a target with a complete
+  `@EmbeddedId` or `@IdClass` is checked by all id components before the owner/FK or link row is
+  written. An absent target is recursively persisted; an existing target is left untouched (no
+  target update or lifecycle callbacks). `MERGE` / `ALL`, generated ids, incomplete ids, and
+  single preassigned ids retain their normal cascade behavior.
 - Ordinary operations are stateless; an opt-in transaction-bound persistence session provides an identity map,
   dirty checking, and flush. There is no lazy proxy in either mode. For partial collections, drive `FetchGroup`
   explicitly. Collections omitted by a partial nested fetch remain unloaded and are never interpreted as

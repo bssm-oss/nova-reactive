@@ -1,11 +1,15 @@
 package io.nova.r2dbc.integration;
 
 import jakarta.persistence.CascadeType;
+import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
@@ -43,7 +47,7 @@ class ToOneCascadeIntegrationTest {
                 Profile.class, Account.class,
                 MarkerAuthor.class, MarkerArticle.class,
                 Node.class,
-                PersistOnlyRef.class, PersistOnlyOwner.class).block();
+                PersistOnlyRef.class, PersistOnlyOwner.class, CompositePersistRef.class, CompositePersistOwner.class).block();
     }
 
     @Test
@@ -61,6 +65,26 @@ class ToOneCascadeIntegrationTest {
         StepVerifier.create(support.operations().findById(PersistOnlyRef.class, ref.getId()))
                 .assertNext(reloaded -> assertEquals("orig", reloaded.getName(),
                         "PERSIST-only cascade는 이미 영속된 참조를 재저장하지 않아야 한다"))
+                .verifyComplete();
+    }
+
+    @Test
+    void persistOnlyCascadeInsertsAbsentCompleteEmbeddedIdReferenceBeforeOwner() {
+        CompositePersistRef ref = new CompositePersistRef(new CompositeRefId("us", "new"), "new");
+        support.operations().save(new CompositePersistOwner(ref)).block();
+        StepVerifier.create(support.operations().findById(CompositePersistRef.class, ref.id))
+                .assertNext(saved -> assertEquals("new", saved.name))
+                .verifyComplete();
+    }
+
+    @Test
+    void persistOnlyCascadeDoesNotUpdateExistingCompleteEmbeddedIdReference() {
+        CompositePersistRef ref = support.operations()
+                .save(new CompositePersistRef(new CompositeRefId("us", "existing"), "original")).block();
+        ref.name = "changed";
+        support.operations().save(new CompositePersistOwner(ref)).block();
+        StepVerifier.create(support.operations().findById(CompositePersistRef.class, ref.id))
+                .assertNext(saved -> assertEquals("original", saved.name))
                 .verifyComplete();
     }
 
@@ -411,5 +435,34 @@ class ToOneCascadeIntegrationTest {
         public void setRef(PersistOnlyRef ref) {
             this.ref = ref;
         }
+    }
+
+    @Embeddable
+    public static class CompositeRefId {
+        @Column(name = "region") private String region;
+        @Column(name = "code") private String code;
+        public CompositeRefId() { }
+        CompositeRefId(String region, String code) { this.region = region; this.code = code; }
+    }
+
+    @Entity
+    @Table(name = "composite_persist_ref")
+    public static class CompositePersistRef {
+        @EmbeddedId private CompositeRefId id;
+        private String name;
+        public CompositePersistRef() { }
+        CompositePersistRef(CompositeRefId id, String name) { this.id = id; this.name = name; }
+    }
+
+    @Entity
+    @Table(name = "composite_persist_owner")
+    public static class CompositePersistOwner {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+        @ManyToOne(cascade = CascadeType.PERSIST)
+        @JoinColumns({@JoinColumn(name = "ref_region", referencedColumnName = "region"),
+                @JoinColumn(name = "ref_code", referencedColumnName = "code")})
+        private CompositePersistRef ref;
+        public CompositePersistOwner() { }
+        CompositePersistOwner(CompositePersistRef ref) { this.ref = ref; }
     }
 }

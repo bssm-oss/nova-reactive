@@ -280,20 +280,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                             // 이미 cascade 경로에 있는 인스턴스(사이클/공유 참조) → 재저장하지 않는다(무한재귀 방지).
                             return Mono.empty();
                         }
-                        // JPA 의미: PERSIST는 새(transient) 참조에만 전파된다. 이미 영속된(id 존재) 참조는 MERGE가
-                        // 없으면 재저장하지 않는다 — 매 owner save마다 도달 가능한 to-one 그래프 전체를 다시 쓰는
-                        // (존재확인 SELECT + UPDATE) 낭비를 막는다. 참조는 그대로 owner 필드에 남아 있어(이미 id 보유)
-                        // owner row 쓰기에서 FK가 정상 바인딩된다.
+                        // PERSIST-only complete composite ids can still be transient, so probe every component.
                         Class<?> referenceType = property.manyToOneTargetType() != null
                                 ? property.manyToOneTargetType() : reference.getClass();
-                        Object referenceId = metadataFactory.getEntityMetadata(referenceType).readIdValue(reference);
-                        if (referenceId != null && !property.cascadeMergeReference()) {
-                            return Mono.empty();
-                        }
-                        // 참조 엔티티를 먼저 저장해 id를 확보한다. 반환된(=관리되는) 인스턴스를 owner 필드에 다시 set해
-                        // 이후 owner row 쓰기에서 read()가 채워진 @Id를 FK로 추출하도록 한다.
-                        return save(reference).doOnNext(savedReference -> property.writeReference(owner, savedReference))
-                                .then();
+                        EntityMetadata<?> referenceMetadata = metadataFactory.getEntityMetadata(referenceType);
+                        Object referenceId = referenceMetadata.readIdValue(reference);
+                        return shouldCascadePersistTarget(referenceMetadata, referenceId, property.cascadeMergeReference())
+                                .flatMap(shouldSave -> shouldSave
+                                        ? save(reference).doOnNext(savedReference -> property.writeReference(owner, savedReference))
+                                                .then()
+                                        : Mono.empty());
                     })
                     .then();
             // visited 집합을 nested save(reference)가 보도록 Context로 전파한다.
@@ -634,10 +630,6 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             return Flux.fromIterable(elements)
                     .concatMap(element -> {
                         Object targetId = targetMetadata.readIdValue(element);
-                        // 영속 대상 + MERGE 아님 → 재저장 없이 현재 id를 그대로 link한다(PERSIST는 transient에만 전파).
-                        if (!hasIncompleteId(targetMetadata, targetId) && !cascadeMerge) {
-                            return Mono.just(targetId);
-                        }
                         // 사이클/공유 참조: 이미 cascade 경로에 있으면 재저장하지 않고 현재 id를 쓴다.
                         if (!visited.add(element)) {
                             Object idNow = targetMetadata.readIdValue(element);
@@ -646,15 +638,16 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                                     "@ManyToMany cascade encountered a transient target in a reference cycle on "
                                             + ownerMetadata.entityType().getName() + "." + property.propertyName()));
                         }
-                        return save(element).map(saved -> {
-                            Object savedId = targetMetadata.readIdValue(saved);
-                            if (hasIncompleteId(targetMetadata, savedId)) {
-                                throw new IllegalStateException(
-                                        "@ManyToMany cascade-saved target has an incomplete id on "
-                                                + ownerMetadata.entityType().getName() + "." + property.propertyName());
-                            }
-                            return savedId;
-                        });
+                        return shouldCascadePersistTarget(targetMetadata, targetId, cascadeMerge)
+                                .flatMap(shouldSave -> shouldSave ? save(element).map(saved -> {
+                                    Object savedId = targetMetadata.readIdValue(saved);
+                                    if (hasIncompleteId(targetMetadata, savedId)) {
+                                        throw new IllegalStateException(
+                                                "@ManyToMany cascade-saved target has an incomplete id on "
+                                                        + ownerMetadata.entityType().getName() + "." + property.propertyName());
+                                    }
+                                    return savedId;
+                                }) : Mono.just(targetId));
                     })
                     .collectList()
                     .contextWrite(c -> c.put(CASCADE_VISITED_KEY, visited));
@@ -729,6 +722,25 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private static boolean hasIncompleteId(EntityMetadata<?> metadata, Object idObject) {
         return idObject == null || idComponentKey(metadata, idObject).stream().anyMatch(Objects::isNull);
+    }
+
+    /** Complete application-assigned composite ids require an existence decision for PERSIST-only cascade. */
+    @SuppressWarnings("unchecked")
+    private Mono<Boolean> shouldCascadePersistTarget(
+            EntityMetadata<?> targetMetadata, Object targetId, boolean cascadeMerge) {
+        if (cascadeMerge || hasIncompleteId(targetMetadata, targetId)) {
+            return Mono.just(true);
+        }
+        if (!targetMetadata.hasCompositeId()) {
+            return Mono.just(false);
+        }
+        Predicate[] components = targetMetadata.idProperties().stream()
+                .map(idProperty -> (Predicate) Criteria.eq(
+                        idProperty.propertyName(), targetMetadata.idColumnValue(idProperty, targetId)))
+                .toArray(Predicate[]::new);
+        return exists((Class<Object>) targetMetadata.entityType(),
+                QuerySpec.empty().where(Criteria.and(components)))
+                .map(exists -> !exists);
     }
 
     private static Map<String, PersistentProperty> idPropertiesByColumn(EntityMetadata<?> metadata) {
