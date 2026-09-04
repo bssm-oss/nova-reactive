@@ -10,6 +10,7 @@ import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.Transient;
@@ -191,7 +192,10 @@ class EmbeddableInstantiationStrategyTest {
     @Entity
     static class DerivedRecordIdEntity {
         @jakarta.persistence.EmbeddedId DerivedId id;
-        @ManyToOne @MapsId("parentId") DerivedParent parent;
+        @ManyToOne
+        @MapsId("parentId")
+        @JoinColumn(name = "parent_fk")
+        DerivedParent parent;
     }
 
     @Entity

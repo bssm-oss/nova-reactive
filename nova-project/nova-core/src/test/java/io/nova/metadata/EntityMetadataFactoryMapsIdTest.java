@@ -127,7 +127,7 @@ class EntityMetadataFactoryMapsIdTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> factory.getEntityMetadata(NestedRecordOwner.class));
 
-        assertTrue(error.getMessage().contains("flat record"), error.getMessage());
+        assertTrue(error.getMessage().contains("simple (non-embedded)"), error.getMessage());
     }
 
     @Test

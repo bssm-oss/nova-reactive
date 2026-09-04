@@ -429,30 +429,32 @@ class PropertyAccessH2IntegrationTest {
         FieldRecordMapsIdBranch branch = new FieldRecordMapsIdBranch(7L, "seoul");
 
         StepVerifier.create(schema.create(List.of(PropertyMapsIdCompany.class, FieldRecordMapsIdBranch.class))
-                .then(operations.save(company))
+                .then(operations.executeNative(NativeQuery.of(
+                        "insert into \"property_mapsid_companies\" (\"id\") values ('acme')")))
+                .thenReturn(company)
                 .flatMap(savedCompany -> {
                     branch.setCompany(savedCompany);
                     return operations.save(branch);
                 })
                 .flatMap(savedBranch -> {
                     assertEquals(new FieldRecordMapsIdBranchId(new Code("acme"), 7L), savedBranch.getId());
-                    return operations.queryNative(NativeQuery.of(
-                                    "select \"company_ref\", \"company_id\""
-                                            + " from \"property_field_record_mapsid_branches\"",
+                    return operations.queryNative(
+                                    NativeQuery.of("select \"company_ref\", \"company_id\""
+                                            + " from \"property_field_record_mapsid_branches\""),
                                     row -> List.of(
                                             row.get("company_ref", String.class),
                                             row.get("company_id", String.class)))
-                            .single());
+                            .single();
                 }))
                 .assertNext(columns -> assertEquals(List.of("acme", "acme"), columns,
                         "@Convert must apply identically to the record component and @MapsId FK"))
                 .verifyComplete();
 
-        StepVerifier.create(operations.queryNative(NativeQuery.of(
-                        "select \"CONSTRAINT_NAME\" from INFORMATION_SCHEMA.TABLE_CONSTRAINTS"
+        StepVerifier.create(operations.queryNative(
+                        NativeQuery.of("select \"CONSTRAINT_NAME\" from INFORMATION_SCHEMA.TABLE_CONSTRAINTS"
                                 + " where \"TABLE_NAME\" = 'property_field_record_mapsid_branches'"
-                                + " and \"CONSTRAINT_TYPE\" = 'FOREIGN KEY'",
-                        row -> row.get("CONSTRAINT_NAME", String.class)))
+                                + " and \"CONSTRAINT_TYPE\" = 'FOREIGN KEY'"),
+                        row -> row.get("CONSTRAINT_NAME", String.class))
                 .single())
                 .expectNext("fk_property_field_record_mapsid_company")
                 .verifyComplete();
@@ -477,13 +479,14 @@ class PropertyAccessH2IntegrationTest {
 
         StepVerifier.create(schema.create(List.of(
                         PropertyMapsIdCompany.class, PropertySequentialRecordMapsIdBranch.class))
-                .then(operations.save(first))
-                .flatMap(savedFirst -> operations.save(second)
-                        .flatMap(savedSecond -> {
-                            branch.setFirst(savedFirst);
-                            branch.setSecond(savedSecond);
-                            return operations.save(branch);
-                        }))
+                .then(operations.executeNative(NativeQuery.of(
+                        "insert into \"property_mapsid_companies\" (\"id\")"
+                                + " values ('first'), ('second')")))
+                .then(Mono.defer(() -> {
+                    branch.setFirst(first);
+                    branch.setSecond(second);
+                    return operations.save(branch);
+                }))
                 .flatMap(saved -> {
                     assertEquals(new PropertySequentialRecordMapsIdBranchId(
                                     new Code("first"), new Code("second"), 9L),
