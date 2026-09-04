@@ -543,7 +543,7 @@ compatibility surface:
 | Composite-key to-one in `LIKE`, or an entity-returning JPQL `WHERE` predicate | Use a scalar projection or Criteria API; equality, null checks, ordering, `IN`, `BETWEEN`, grouping, and joins are supported. |
 | Nested `EntityGraph` below a composite-key to-one leaf | The composite leaf is hydrated, but a deeper subgraph below it is rejected. |
 | `@MapKeyClass` naming a composite-`@Id` entity key | Basic, enum, `@Embeddable`, and single-`@Id` entity key classes are supported. |
-| `@MapsId` targeting a record `@EmbeddedId`, or nested `@EmbeddedId` values | Flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported. |
+| `@MapsId` targeting a record `@EmbeddedId`, or nested `@EmbeddedId` values | A flat record `@EmbeddedId` supports `@MapsId("component")` only, when the associated entity has one scalar `@Id`. Nova rebuilds the complete record from its existing sibling values and the derived component; FIELD and PROPERTY roots are supported. Blank whole-key `@MapsId`, nested embedded id components, and composite-key association targets are rejected. Ordinary nested record `@Embedded` values are supported. |
 | Session-only collection reparenting without updating the owning `@ManyToOne` | Set the owning side explicitly; membership-only reparenting is rejected. A non-`orphanRemoval` removal with a non-nullable owning FK is likewise rejected. |
 
 `@OneToMany(orphanRemoval = true)` is supported. See the [JPA compatibility matrix](jpa-compatibility.md)

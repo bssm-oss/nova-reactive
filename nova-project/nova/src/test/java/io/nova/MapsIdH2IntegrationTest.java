@@ -1,6 +1,8 @@
 package io.nova;
 
 import jakarta.persistence.AttributeConverter;
+import jakarta.persistence.Access;
+import jakarta.persistence.AccessType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Embeddable;
@@ -194,18 +196,64 @@ class MapsIdH2IntegrationTest {
                 .flatMap(savedBranch -> {
                     assertEquals(0, parentId.value().compareTo(savedBranch.getCompanyRef().value()),
                             "@MapsId must derive the converted BigDecimal ID without scale-sensitive equality");
+                    savedBranch.setCity("busan");
+                    return operations.save(savedBranch);
+                })
+                .flatMap(updatedBranch -> {
                     return operations.findById(DecimalBranch.class,
                             new DecimalBranchId(new DecimalKey(new BigDecimal("12.34")), 7L));
                 }))
                 .assertNext(loaded -> {
                     assertEquals(0, parentId.value().compareTo(loaded.getCompanyRef().value()));
-                    assertEquals("seoul", loaded.getCity());
+                    assertEquals("busan", loaded.getCity());
+                    assertNotNull(loaded.getCompany(), "record @EmbeddedId @MapsId relation must hydrate");
                 })
                 .verifyComplete();
 
         StepVerifier.create(operations.executeNative(NativeQuery.of(
                 "insert into \"maps_id_decimal_branch\" (\"company_ref\", \"branch_no\", \"city\", \"company_id\")"
                         + " values (999.999, 8, 'orphan', 999.999)"))).verifyError();
+    }
+
+    @Test
+    void recordEmbeddedIdMapsIdSupportsPropertyAccessAndSequentialDerivation() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+        Company first = new Company("first");
+        Company second = new Company("second");
+
+        StepVerifier.create(schema.create(List.of(Company.class, PropertyRecordBranch.class, SequentialRecordBranch.class))
+                .then(operations.save(first))
+                .flatMap(savedFirst -> operations.save(second)
+                        .flatMap(savedSecond -> {
+                            PropertyRecordBranch propertyBranch = new PropertyRecordBranch(
+                                    new PropertyRecordBranchId(null, 4L), "incheon");
+                            propertyBranch.setCompany(savedFirst);
+                            SequentialRecordBranch sequentialBranch = new SequentialRecordBranch(
+                                    new SequentialRecordBranchId(null, null, 8L));
+                            sequentialBranch.setFirst(savedFirst);
+                            sequentialBranch.setSecond(savedSecond);
+                            return operations.save(propertyBranch)
+                                    .flatMap(savedProperty -> {
+                                        assertEquals(new PropertyRecordBranchId(savedFirst.getId(), 4L),
+                                                savedProperty.getId());
+                                        return operations.save(sequentialBranch);
+                                    })
+                                    .flatMap(savedSequential -> {
+                                        assertEquals(new SequentialRecordBranchId(
+                                                savedFirst.getId(), savedSecond.getId(), 8L),
+                                                savedSequential.getId());
+                                        return operations.findById(SequentialRecordBranch.class,
+                                                savedSequential.getId());
+                                    });
+                        })))
+                .assertNext(loaded -> {
+                    assertEquals(8L, loaded.getId().local());
+                    assertEquals(first.getId(), loaded.getFirst().getId());
+                    assertEquals(second.getId(), loaded.getSecond().getId());
+                })
+                .verifyComplete();
     }
 
     // --- fixtures -----------------------------------------------------------
@@ -396,21 +444,10 @@ class MapsIdH2IntegrationTest {
     }
 
     @Embeddable
-    static class DecimalBranchId {
-        @Convert(converter = DecimalKeyConverter.class)
-        @Column(name = "company_ref", precision = 12, scale = 3)
-        private DecimalKey companyRef;
-
-        @Column(name = "branch_no")
-        private Long branchNo;
-
-        DecimalBranchId() {
-        }
-
-        DecimalBranchId(DecimalKey companyRef, Long branchNo) {
-            this.companyRef = companyRef;
-            this.branchNo = branchNo;
-        }
+    record DecimalBranchId(
+            @Convert(converter = DecimalKeyConverter.class)
+            @Column(name = "company_ref", precision = 12, scale = 3) DecimalKey companyRef,
+            @Column(name = "branch_no") Long branchNo) {
     }
 
     @Entity
@@ -443,8 +480,119 @@ class MapsIdH2IntegrationTest {
             return city;
         }
 
+        void setCity(String city) {
+            this.city = city;
+        }
+
+        DecimalCompany getCompany() {
+            return company;
+        }
+
         void setCompany(DecimalCompany company) {
             this.company = company;
+        }
+    }
+
+    @Embeddable
+    record PropertyRecordBranchId(
+            @Column(name = "company_ref") Long companyRef,
+            @Column(name = "branch_no") Long branchNo) {
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    @Table(name = "maps_id_property_record_branch")
+    static class PropertyRecordBranch {
+        private PropertyRecordBranchId id;
+        private String city;
+        private Company company;
+
+        PropertyRecordBranch() {
+        }
+
+        PropertyRecordBranch(PropertyRecordBranchId id, String city) {
+            this.id = id;
+            this.city = city;
+        }
+
+        @EmbeddedId
+        PropertyRecordBranchId getId() {
+            return id;
+        }
+
+        void setId(PropertyRecordBranchId id) {
+            this.id = id;
+        }
+
+        @Column(name = "city")
+        String getCity() {
+            return city;
+        }
+
+        void setCity(String city) {
+            this.city = city;
+        }
+
+        @ManyToOne
+        @MapsId("companyRef")
+        @JoinColumn(name = "company_id")
+        Company getCompany() {
+            return company;
+        }
+
+        void setCompany(Company company) {
+            this.company = company;
+        }
+    }
+
+    @Embeddable
+    record SequentialRecordBranchId(
+            @Column(name = "first_ref") Long firstRef,
+            @Column(name = "second_ref") Long secondRef,
+            @Column(name = "local_no") Long local) {
+    }
+
+    @Entity
+    @Table(name = "maps_id_sequential_record_branch")
+    static class SequentialRecordBranch {
+        @EmbeddedId
+        private SequentialRecordBranchId id;
+
+        @ManyToOne
+        @MapsId("firstRef")
+        @JoinColumn(name = "first_id")
+        private Company first;
+
+        @ManyToOne
+        @MapsId("secondRef")
+        @JoinColumn(name = "second_id")
+        private Company second;
+
+        SequentialRecordBranch() {
+        }
+
+        SequentialRecordBranch(SequentialRecordBranchId id) {
+            this.id = id;
+        }
+
+        SequentialRecordBranchId getId() {
+            return id;
+        }
+
+        Company getFirst() {
+            return first;
+        }
+
+        void setFirst(Company first) {
+            this.first = first;
+        }
+
+        Company getSecond() {
+            return second;
+        }
+
+        void setSecond(Company second) {
+            this.second = second;
         }
     }
 

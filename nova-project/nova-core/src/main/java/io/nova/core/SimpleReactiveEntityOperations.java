@@ -446,6 +446,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         if (mapsIdProperties.isEmpty()) {
             return;
         }
+        List<MapsIdDerivedValue> derivedValues = new ArrayList<>(mapsIdProperties.size());
         for (PersistentProperty mapsIdProperty : mapsIdProperties) {
             // 관계 참조는 access 전략(FIELD/PROPERTY)에 맞춰 읽는다 — @Access(PROPERTY) 관계면 getter를 탄다.
             Object associated = mapsIdProperty.readReference(entity);
@@ -470,8 +471,35 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             Object derived = target.javaType().isInstance(associatedId)
                     ? associatedId
                     : target.toPropertyValue(associatedMetadata.idProperty().toColumnValue(associatedId));
-            target.write(entity, derived);
+            derivedValues.add(new MapsIdDerivedValue(target, derived));
         }
+        for (MapsIdDerivedValue derivedValue : derivedValues) {
+            if (isFlatRecordEmbeddedIdComponent(derivedValue.target())) {
+                rebuildRecordEmbeddedId(metadata, entity, derivedValue);
+            } else {
+                derivedValue.target().write(entity, derivedValue.value());
+            }
+        }
+    }
+
+    private static boolean isFlatRecordEmbeddedIdComponent(PersistentProperty property) {
+        return property.embeddedHostAccessPath().size() == 1
+                && property.embeddedHostAccessPath().get(0).javaType().isRecord();
+    }
+
+    private static void rebuildRecordEmbeddedId(
+            EntityMetadata<?> metadata, Object entity, MapsIdDerivedValue derivedValue) {
+        List<EmbeddableInstantiationStrategy.DecodedLeaf> leaves = new ArrayList<>(metadata.idProperties().size());
+        for (PersistentProperty idProperty : metadata.idProperties()) {
+            Object value = idProperty.propertyName().equals(derivedValue.target().propertyName())
+                    ? derivedValue.value()
+                    : idProperty.read(entity);
+            leaves.add(new EmbeddableInstantiationStrategy.DecodedLeaf(idProperty, value));
+        }
+        EmbeddableInstantiationStrategy.hydrateSingleValued(entity, leaves);
+    }
+
+    private record MapsIdDerivedValue(PersistentProperty target, Object value) {
     }
 
     /**
