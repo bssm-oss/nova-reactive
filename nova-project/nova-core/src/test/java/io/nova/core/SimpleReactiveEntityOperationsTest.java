@@ -2186,6 +2186,23 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void deferredPartialUpdateDoesNotFireCallbacksBeforeItsPrecedingOperationCompletes() {
+        EntityWithCallbacks.reset();
+        CapturingExecutor executor = new CapturingExecutor();
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        EntityWithCallbacks entity = new EntityWithCallbacks(7L, "USER@NOVA.IO");
+
+        StepVerifier.create(Mono.<Void>never()
+                        .then(Mono.defer(() -> operations.update(entity, List.of("email")))))
+                .thenCancel()
+                .verify();
+
+        assertEquals(0, EntityWithCallbacks.preUpdateCount.get());
+        assertEquals(0, EntityWithCallbacks.postUpdateCount.get());
+        assertTrue(executor.executedStatements.isEmpty());
+    }
+
+    @Test
     void deleteFiresPreRemoveCallback() {
         EntityWithCallbacks.reset();
         CapturingExecutor executor = new CapturingExecutor();

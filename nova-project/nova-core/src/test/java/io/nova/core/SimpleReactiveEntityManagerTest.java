@@ -211,6 +211,29 @@ class SimpleReactiveEntityManagerTest {
     }
 
     @Test
+    void sameIdStandInsCannotObserveEvictOrRefreshManagedState() {
+        PersistenceSession session = new PersistenceSession();
+        Widget managed = new Widget(12L, "canonical");
+        Widget standIn = new Widget(12L, "stand-in");
+        EntityMetadata<Widget> metadata = metadataFor(Widget.class);
+        session.registerOnLoad(metadata, managed);
+
+        StepVerifier.create(withSession(manager.contains(standIn), session))
+                .expectNext(Boolean.FALSE)
+                .verifyComplete();
+        StepVerifier.create(withSession(manager.detach(standIn), session))
+                .verifyComplete();
+        assertTrue(session.isManagedExactInstance(metadata, managed));
+
+        StepVerifier.create(withSession(manager.refresh(standIn), session))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+        assertEquals("canonical", managed.getName());
+        assertTrue(session.isManagedExactInstance(metadata, managed));
+        assertTrue(operations.findByIdIds.isEmpty(), "detached refresh must fail before its SELECT");
+    }
+
+    @Test
     void refreshRejectsTransientEntity() {
         StepVerifier.create(manager.refresh(new Widget(null, "x")))
                 .expectError(IllegalArgumentException.class)
@@ -588,9 +611,10 @@ class SimpleReactiveEntityManagerTest {
         operations.findAllNever = true;
 
         StepVerifier.create(withSessionAndActiveTransaction(
-                        manager.lock(widget, LockModeType.PESSIMISTIC_READ), session))
+                        manager.lock(widget, LockModeType.PESSIMISTIC_FORCE_INCREMENT), session))
                 .thenCancel()
                 .verify();
+        assertTrue(operations.updated.isEmpty(), "cancelled lock reselect must not invoke force-increment update");
         StepVerifier.create(withSession(manager.getLockMode(widget), session))
                 .expectNext(LockModeType.PESSIMISTIC_WRITE)
                 .verifyComplete();
@@ -633,6 +657,69 @@ class SimpleReactiveEntityManagerTest {
         StepVerifier.create(withSession(manager.getLockMode(widget), session))
                 .expectNext(LockModeType.NONE)
                 .verifyComplete();
+    }
+
+    @Test
+    void lockedRefreshDoesNotMutateStateOrModeWhenFreshReadFailsOrIsCancelled() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        EntityMetadata<VersionedWidget> metadata = metadataFactory.getEntityMetadata(VersionedWidget.class);
+        session.registerOnLoad(metadata, widget);
+        operations.existsResult = true;
+        StepVerifier.create(withSession(manager.lock(widget, LockModeType.OPTIMISTIC), session))
+                .verifyComplete();
+
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.refresh(widget, LockModeType.PESSIMISTIC_WRITE), session))
+                .expectError(EntityNotFoundException.class)
+                .verify();
+        assertEquals(0L, widget.version);
+        StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                .expectNext(LockModeType.OPTIMISTIC)
+                .verifyComplete();
+
+        operations.findAllNever = true;
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.refresh(widget, LockModeType.PESSIMISTIC_FORCE_INCREMENT), session))
+                .thenCancel()
+                .verify();
+        assertTrue(operations.updated.isEmpty(), "cancelled refresh reselect must not invoke force increment");
+        assertEquals(0L, widget.version);
+        StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                .expectNext(LockModeType.OPTIMISTIC)
+                .verifyComplete();
+    }
+
+    @Test
+    void successfulLockedRefreshReplacesStateAndRecordsRequestedMode() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget widget = new VersionedWidget(1L, 0L);
+        EntityMetadata<VersionedWidget> metadata = metadataFactory.getEntityMetadata(VersionedWidget.class);
+        session.registerOnLoad(metadata, widget);
+        VersionedWidget fresh = new VersionedWidget(1L, 4L);
+        operations.findAllResults = List.of(fresh);
+
+        StepVerifier.create(withSessionAndActiveTransaction(
+                        manager.refresh(widget, LockModeType.PESSIMISTIC_WRITE), session))
+                .expectNext(widget)
+                .verifyComplete();
+        assertEquals(4L, widget.version);
+        StepVerifier.create(withSession(manager.getLockMode(widget), session))
+                .expectNext(LockModeType.PESSIMISTIC_WRITE)
+                .verifyComplete();
+    }
+
+    @Test
+    void lockedRefreshValidatesVersionBeforeIssuingSql() {
+        PersistenceSession session = new PersistenceSession();
+        Widget widget = new Widget(1L, "value");
+        session.registerOnLoad(metadataFor(Widget.class), widget);
+
+        StepVerifier.create(withSession(manager.refresh(widget, LockModeType.OPTIMISTIC), session))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+        assertTrue(operations.findByIdIds.isEmpty());
+        assertTrue(operations.findAllSpecs.isEmpty());
     }
 
     private EntityMetadata<Widget> metadataFor(Class<Widget> type) {

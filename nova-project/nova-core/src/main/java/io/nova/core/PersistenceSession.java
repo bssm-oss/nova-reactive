@@ -265,9 +265,16 @@ final class PersistenceSession {
         }
     }
 
+    void refreshManagedExactInstanceSnapshot(EntityMetadata<?> metadata, Object entity) {
+        ManagedEntry entry = managedEntry(metadata, entity);
+        if (entry != null && !entry.isRemoved() && entry.entity() == entity) {
+            entry.refreshSnapshot();
+        }
+    }
+
     boolean isRemoved(EntityMetadata<?> metadata, Object entity) {
         ManagedEntry entry = managedEntry(metadata, entity);
-        return entry != null && entry.isRemoved();
+        return entry != null && entry.isRemoved() && entry.entity() == entity;
     }
 
     /**
@@ -277,7 +284,10 @@ final class PersistenceSession {
     void markRemoved(EntityMetadata<?> metadata, Object entity) {
         EntityKey key = keyFor(metadata, entity);
         if (key != null) {
-            markRemoved(key);
+            ManagedEntry entry = identityMap.get(key);
+            if (entry != null && entry.entity() == entity) {
+                entry.markRemoved();
+            }
         }
     }
 
@@ -324,7 +334,7 @@ final class PersistenceSession {
         EntityKey key = keyFor(metadata, entity);
         if (key != null) {
             ManagedEntry entry = identityMap.get(key);
-            if (entry == null || !entry.isRemoved()) {
+            if (entry != null && !entry.isRemoved() && entry.entity() == entity) {
                 identityMap.remove(key);
             }
         }
