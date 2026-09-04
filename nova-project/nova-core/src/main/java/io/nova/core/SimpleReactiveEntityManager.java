@@ -178,7 +178,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
             // SESSION_KEY를 제거한 컨텍스트로 조회 = 세션-less raw read(auto-flush/identity 편입 없음). 커넥션 키는
             // 남으므로 동일 트랜잭션 커넥션에서 현재 DB 상태를 읽는다 — 방금 폐기한 미flush 변경은 반영되지 않는다.
             return operations.findById(entityType, id)
-                    .contextWrite(context -> context.delete(SimpleReactiveEntityOperations.SESSION_KEY))
+                    .contextWrite(context -> context
+                            .delete(SimpleReactiveEntityOperations.SESSION_KEY)
+                            .put(EntityReadIntent.class, EntityReadIntent.REFRESH))
                     .switchIfEmpty(Mono.error(() -> new EntityNotFoundException(
                             "Unable to refresh " + entityType.getName() + " with id " + id
                                     + "; the row no longer exists")))
@@ -396,7 +398,9 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
                         "Cannot refresh detached entity " + entity.getClass().getName()));
             }
             return find(metadata.entityType(), id, lockMode)
-                    .contextWrite(context -> context.delete(SimpleReactiveEntityOperations.SESSION_KEY))
+                    .contextWrite(context -> context
+                            .delete(SimpleReactiveEntityOperations.SESSION_KEY)
+                            .put(EntityReadIntent.class, EntityReadIntent.REFRESH))
                     .switchIfEmpty(Mono.error(() -> new EntityNotFoundException(
                             "Unable to refresh " + metadata.entityType().getName() + " with id " + id
                                     + "; the row no longer exists")))

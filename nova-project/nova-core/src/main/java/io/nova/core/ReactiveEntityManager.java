@@ -97,6 +97,9 @@ public interface ReactiveEntityManager {
      * state/snapshot을 보존한다. id가 {@code null}이면(transient) 실패하고, 행이 더 이상 없으면
      * {@code EntityNotFoundException}으로 실패한다.
      * <p>
+     * 캐시 데코레이터를 통해 실행해도 이 fresh read는 shared cache를 조회하거나 채우지 않으며, 기존 cache
+     * entry를 evict하지 않는다.
+     * <p>
      * 스칼라/임베디드/FK 컬럼 상태만 재적재한다 — 연관(@OneToMany 등) 컬렉션의 in-place 재적재는 범위 밖이며
      * 필요하면 명시적 fetch로 다시 로드해야 한다.
      */
@@ -188,6 +191,8 @@ public interface ReactiveEntityManager {
      * 버전 모드를 {@code @Version} 없는 엔티티에 요청하면 fresh read 전에 fail-fast한다. fresh/locked read와
      * 필요한 force-increment가 모두 성공한 뒤에만 entity state, clean snapshot, 그리고 recorded lock mode를
      * 교체한다; 오류 또는 cancellation은 모두 기존 state/snapshot/mode를 보존한다.
+     * 캐시 데코레이터를 통해 실행해도 fresh read는 shared cache를 조회하거나 채우지 않으며, 기존 cache entry를
+     * evict하지 않는다.
      */
     default <T> Mono<T> refresh(T entity, LockModeType lockMode) {
         return Mono.error(new UnsupportedOperationException(

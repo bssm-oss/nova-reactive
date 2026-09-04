@@ -4,6 +4,7 @@ import io.nova.cache.spi.CacheKey;
 import io.nova.cache.spi.ReactiveCache;
 import io.nova.cache.spi.ReactiveCacheProvider;
 import io.nova.cache.spi.ReactiveQueryCache;
+import io.nova.core.EntityReadIntent;
 import io.nova.core.ReactiveEntityOperations;
 import io.nova.core.RowAccessor;
 import io.nova.fetch.FetchGroup;
@@ -147,7 +148,7 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     @SuppressWarnings("unchecked")
     public <T, ID> Mono<T> findById(Class<T> entityType, ID id) {
         return Mono.deferContextual(context -> {
-            if (hasActivePhysicalScope(context)) {
+            if (isRefreshRead(context) || hasActivePhysicalScope(context)) {
                 return delegate.findById(entityType, id);
             }
             CacheConfiguration config = resolver.resolve(entityType);
@@ -468,6 +469,11 @@ public final class CachingReactiveEntityOperations implements ReactiveEntityOper
     private static boolean hasActivePhysicalScope(ContextView context) {
         return context.hasKey(PhysicalTransactionScope.CONTEXT_KEY)
                 && context.<PhysicalTransactionScope>get(PhysicalTransactionScope.CONTEXT_KEY).isActive();
+    }
+
+    private static boolean isRefreshRead(ContextView context) {
+        return context.hasKey(EntityReadIntent.class)
+                && context.get(EntityReadIntent.class) == EntityReadIntent.REFRESH;
     }
 
     /** Records a physical-transaction clear for after-commit only. */
