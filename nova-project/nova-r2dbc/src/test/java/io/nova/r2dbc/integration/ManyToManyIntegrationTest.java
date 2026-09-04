@@ -9,19 +9,25 @@ import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
+import io.nova.core.SqlExecutionListener;
+import io.nova.query.NativeQuery;
 import io.nova.schema.SchemaInitializer;
 import io.nova.schema.SimpleSchemaInitializer;
+import io.nova.sql.SqlStatement;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * {@code @ManyToMany}(owning {@code @JoinTable} + inverse {@code mappedBy})가 H2 in-memory R2DBC driver와
@@ -91,6 +97,48 @@ class ManyToManyIntegrationTest {
         StepVerifier.create(support.operations().findById(UuidStudent.class, saved.getId()))
                 .assertNext(loaded -> assertEquals(0, loaded.getCourses().size()))
                 .verifyComplete();
+    }
+
+    @Test
+    void statelessUuidJoinInsertBindsVarcharIdsAndHydratesBothUuidIdsWithoutDuplicateLinks() {
+        RecordingSqlListener listener = new RecordingSqlListener();
+        H2IntegrationTestSupport uuidSupport = H2IntegrationTestSupport.createWithManagedTransactions(listener);
+        SchemaInitializer schema = new SimpleSchemaInitializer(
+                uuidSupport.operations(), uuidSupport.metadataFactory(), uuidSupport.dialect());
+        schema.create(UuidStudent.class, UuidCourse.class).block();
+
+        UuidCourse course = uuidSupport.operations().save(new UuidCourse("Math")).block();
+        UuidStudent student = new UuidStudent("ada");
+        student.getCourses().add(course);
+
+        listener.clear();
+        UuidStudent saved = uuidSupport.operations().save(student).block();
+        SqlStatement joinInsert = listener.lastWrite("uuid_student_course", "insert");
+        assertNotNull(joinInsert, "stateless save must insert its join link");
+        assertEquals(List.of(saved.getId().toString(), course.getId().toString()), joinInsert.bindings(),
+                "single-column UUID join ids must be bound as their varchar storage values");
+
+        StepVerifier.create(uuidSupport.operations().findById(UuidStudent.class, saved.getId()))
+                .assertNext(loaded -> {
+                    UuidCourse hydratedCourse = loaded.getCourses().iterator().next();
+                    assertEquals(course.getId(), hydratedCourse.getId(),
+                            "owning hydration must decode the varchar join id to UUID");
+                })
+                .verifyComplete();
+        StepVerifier.create(uuidSupport.operations().findById(UuidCourse.class, course.getId()))
+                .assertNext(loaded -> {
+                    UuidStudent hydratedStudent = loaded.getStudents().iterator().next();
+                    assertEquals(saved.getId(), hydratedStudent.getId(),
+                            "inverse hydration must decode the varchar join id to UUID");
+                })
+                .verifyComplete();
+
+        uuidSupport.operations().save(saved).block();
+        assertEquals(1L, uuidSupport.operations().queryNativeOne(
+                        NativeQuery.of("select count(*) as c from "
+                                + uuidSupport.dialect().quote("uuid_student_course")),
+                        row -> row.get("c", Long.class))
+                .block(), "re-saving a stateless UUID owner must not leave duplicate links");
     }
 
     @Test
@@ -297,6 +345,30 @@ class ManyToManyIntegrationTest {
 
         public Set<UuidStudent> getStudents() {
             return students;
+        }
+    }
+
+    private static final class RecordingSqlListener implements SqlExecutionListener {
+        private final List<SqlStatement> statements = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void onBeforeExecution(SqlStatement statement) {
+            statements.add(statement);
+        }
+
+        void clear() {
+            statements.clear();
+        }
+
+        SqlStatement lastWrite(String table, String operation) {
+            SqlStatement found = null;
+            for (SqlStatement statement : statements) {
+                String sql = statement.sql().toLowerCase(Locale.ROOT);
+                if (sql.startsWith(operation) && sql.contains(table)) {
+                    found = statement;
+                }
+            }
+            return found;
         }
     }
 }
