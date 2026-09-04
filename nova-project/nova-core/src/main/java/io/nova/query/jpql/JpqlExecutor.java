@@ -58,8 +58,10 @@ public final class JpqlExecutor {
     }
 
     /**
-     * JPQL을 파싱해 {@code resultType}으로 결과를 발행하는 쿼리를 만든다. 엔티티 반환 SELECT는
-     * {@code resultType}이 그 엔티티 타입이어야 하며, 스칼라 단일 컬럼 결과는 해당 타입으로 캐스팅된다.
+     * JPQL을 파싱해 {@code resultType}으로 결과를 발행하는 쿼리를 만든다. 엔티티 및 constructor projection은
+     * 선언 타입에 assignable해야 한다. 단일 스칼라는 선언 타입으로 검증되고, multi-select는
+     * {@code Object[]} 선언을 요구한다. {@code Object}는 projection shape를 자동 감지한다. Primitive 선언은
+     * boxed 값으로 발행되며, top-level null 또는 타입 불일치는 구독 시 {@link JpqlException}으로 실패한다.
      */
     public <T> JpqlQuery<T> createQuery(String jpql, Class<T> resultType) {
         Objects.requireNonNull(resultType, "resultType must not be null");

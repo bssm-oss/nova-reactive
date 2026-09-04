@@ -209,7 +209,11 @@ alias, and can order only a single-column projection.
 enforce the declared result type. A single scalar must be assignable to that type, a
 multi-select returns `Object[]` and must be declared as `Object[]`, and `SELECT NEW`
 must construct a type assignable to the declaration. `Object` retains automatic shape
-detection for scalar, multi-select, and constructor projections. A mismatch is emitted
-reactively as `JpqlException`; Nova never emits a value through an unchecked cast.
+detection for scalar, multi-select, and constructor projections on ordinary `Flux`/`Mono`
+Spring query methods. Pageable Spring query paths remain entity-only and use the repository
+entity type. A mismatch is emitted reactively as `JpqlException`; Nova never emits a value
+through an unchecked cast.
 Primitive scalar declarations are checked against their boxed type and emit boxed
-publisher values; a null scalar for a primitive declaration fails with `JpqlException`.
+publisher values. Any top-level null scalar—including reference and `Object` declarations—
+fails with `JpqlException`; null remains representable inside `Object[]` rows and constructor
+arguments.

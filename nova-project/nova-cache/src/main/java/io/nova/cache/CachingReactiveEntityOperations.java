@@ -72,7 +72,8 @@ import java.util.function.Function;
  *       캐시와 EM은 같은 데코레이터 스택으로 결합해야 이 after-commit 경계를 공유한다.</li>
  * </ul>
  *
- * <p>{@code @Cacheable}이 아닌 타입은 캐시 없이 그대로 delegate로 통과한다 — 기존 리액티브 동작과 동일하다.
+ * <p>{@code @Cacheable}이 아닌 타입의 read는 캐시 없이 delegate로 통과한다. Write는 eager graph에 포함된
+ * cacheable 연관 타입이 stale해지지 않도록 cacheable 여부와 무관하게 전역 무효화에 참여한다.
  */
 public final class CachingReactiveEntityOperations implements ReactiveEntityOperations {
 

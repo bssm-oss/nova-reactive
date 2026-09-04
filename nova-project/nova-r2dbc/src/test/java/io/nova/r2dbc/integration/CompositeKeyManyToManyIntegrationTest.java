@@ -100,6 +100,43 @@ class CompositeKeyManyToManyIntegrationTest {
     }
 
     @Test
+    void fullReplacementRejectsPartialCompositeTargetIdBeforeDeletingExistingLinks() {
+        Book persisted = support.operations().save(new Book(new BookId("978", 1L), "A")).block();
+        Author author = new Author(new AuthorId("US", 10L), "Ada");
+        author.getBooks().add(persisted);
+        support.operations().save(author).block();
+
+        author.getBooks().clear();
+        author.getBooks().add(new Book(new BookId("978", null), "partial"));
+        StepVerifier.create(support.operations().save(author))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("every id component non-null"))
+                .verify();
+
+        assertPersistedBookLinks("A");
+
+        StepVerifier.create(support.operations().inTransaction(ops ->
+                        ops.findById(Author.class, new AuthorId("US", 10L))
+                                .doOnNext(loaded -> {
+                                    loaded.getBooks().clear();
+                                    loaded.getBooks().add(new Book(new BookId("partial", null), "partial"));
+                                })
+                                .then()))
+                .expectErrorMatches(error -> error instanceof IllegalStateException
+                        && error.getMessage().contains("every id component non-null"))
+                .verify();
+
+        assertPersistedBookLinks("A");
+    }
+
+    private void assertPersistedBookLinks(String... expectedTitles) {
+        StepVerifier.create(support.operations().findById(Author.class, new AuthorId("US", 10L)))
+                .assertNext(found -> assertEquals(Set.of(expectedTitles),
+                        found.getBooks().stream().map(Book::getTitle).collect(Collectors.toSet())))
+                .verifyComplete();
+    }
+
+    @Test
     void sessionMinimalDiffAddRemoveOnCompositeLinks() {
         Book a = support.operations().save(new Book(new BookId("978", 1L), "A")).block();
         Book b = support.operations().save(new Book(new BookId("978", 2L), "B")).block();

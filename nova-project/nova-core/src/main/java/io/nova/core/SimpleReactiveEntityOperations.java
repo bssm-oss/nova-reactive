@@ -616,9 +616,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             List<Object> ids = new ArrayList<>();
             for (Object element : elements) {
                 Object targetId = targetMetadata.readIdValue(element);
-                if (targetId == null) {
+                if (hasIncompleteId(targetMetadata, targetId)) {
                     return Mono.error(new IllegalStateException(
-                            "@ManyToMany targets must be persisted (non-null id) before saving the owner on "
+                            "@ManyToMany targets must be persisted (every id component non-null)"
+                                    + " before saving the owner on "
                                     + ownerMetadata.entityType().getName() + "." + property.propertyName()
                                     + "; add cascade=PERSIST to cascade transient targets"));
                 }
@@ -634,21 +635,22 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     .concatMap(element -> {
                         Object targetId = targetMetadata.readIdValue(element);
                         // 영속 대상 + MERGE 아님 → 재저장 없이 현재 id를 그대로 link한다(PERSIST는 transient에만 전파).
-                        if (targetId != null && !cascadeMerge) {
+                        if (!hasIncompleteId(targetMetadata, targetId) && !cascadeMerge) {
                             return Mono.just(targetId);
                         }
                         // 사이클/공유 참조: 이미 cascade 경로에 있으면 재저장하지 않고 현재 id를 쓴다.
                         if (!visited.add(element)) {
                             Object idNow = targetMetadata.readIdValue(element);
-                            return idNow != null ? Mono.just(idNow) : Mono.error(new IllegalStateException(
+                            return !hasIncompleteId(targetMetadata, idNow)
+                                    ? Mono.just(idNow) : Mono.error(new IllegalStateException(
                                     "@ManyToMany cascade encountered a transient target in a reference cycle on "
                                             + ownerMetadata.entityType().getName() + "." + property.propertyName()));
                         }
                         return save(element).map(saved -> {
                             Object savedId = targetMetadata.readIdValue(saved);
-                            if (savedId == null) {
+                            if (hasIncompleteId(targetMetadata, savedId)) {
                                 throw new IllegalStateException(
-                                        "@ManyToMany cascade-saved target has a null id on "
+                                        "@ManyToMany cascade-saved target has an incomplete id on "
                                                 + ownerMetadata.entityType().getName() + "." + property.propertyName());
                             }
                             return savedId;
@@ -661,8 +663,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
 
     private JoinTableDefinition joinDefinition(
             EntityMetadata<?> ownerMetadata, ManyToManyInfo info, EntityMetadata<?> targetMetadata) {
-        // 단일키·복합키를 한 자리에서 조립한다 — 단일키는 기존 도메인 타입 + varchar 255, 복합키는 참조 @Id
-        // 컴포넌트 저장타입/길이. DDL(schema init)과 runtime SQL이 동일한 정의를 공유한다.
+        // 단일키·복합키를 한 자리에서 조립하고 양쪽 참조 @Id의 실제 저장 타입/shape를 그대로 재사용한다.
+        // DDL(schema init)과 runtime SQL이 동일한 정의를 공유한다.
         return JoinTableDefinition.of(ownerMetadata, info, targetMetadata);
     }
 
@@ -723,6 +725,10 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
             key.add(metadata.idColumnValue(idProperty, idObject));
         }
         return key;
+    }
+
+    private static boolean hasIncompleteId(EntityMetadata<?> metadata, Object idObject) {
+        return idObject == null || idComponentKey(metadata, idObject).stream().anyMatch(Objects::isNull);
     }
 
     private static Map<String, PersistentProperty> idPropertiesByColumn(EntityMetadata<?> metadata) {
@@ -2272,7 +2278,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                 .map(SimpleReactiveEntityOperations::asKey)
                 .anyMatch(key -> key.isEmpty() || key.stream().anyMatch(Objects::isNull))) {
             return Mono.error(new IllegalStateException(
-                    "@ManyToMany targets must be persisted before flush on "
+                    "@ManyToMany targets must be persisted with every id component non-null before flush on "
                             + property.propertyName() + "; add cascade=PERSIST to cascade transient targets"));
         }
         SqlRenderer renderer = dialect.sqlRenderer();
@@ -2668,8 +2674,8 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
     }
 
     /**
-     * owning {@code @ManyToMany}의 현재 대상 id들을 동기로 읽는다(flush 전용, cascade 없음). 대상이 미영속이면
-     * (cascade 미설정 + 직접 저장 안 함) fail-fast — save 시점 cascade가 이미 영속화했어야 한다.
+     * owning {@code @ManyToMany}의 현재 대상 id들을 동기로 읽는다(flush 전용, cascade 없음). 대상 id가 없거나
+     * 복합 id 컴포넌트가 하나라도 null이면 fail-fast — save 시점 cascade가 이미 완전한 id를 채웠어야 한다.
      */
     private List<Object> readManyToManyTargetIds(
             PersistentProperty property, EntityMetadata<?> targetMetadata, Object owner) {
@@ -2680,9 +2686,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
         }
         for (Object element : (Iterable<?>) collection) {
             Object targetId = targetMetadata.readIdValue(element);
-            if (targetId == null) {
+            if (hasIncompleteId(targetMetadata, targetId)) {
                 throw new IllegalStateException(
-                        "@ManyToMany targets must be persisted before flush on "
+                        "@ManyToMany targets must be persisted with every id component non-null before flush on "
                                 + property.propertyName() + "; add cascade=PERSIST to cascade transient targets");
             }
             ids.add(targetId);
@@ -3259,10 +3265,9 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
      * ({@code delete(entity)}/{@code deleteById}/{@code deleteAll(Iterable)}/{@code deleteAllById}와 그들을
      * 경유하는 cascade-remove)가 공유한다. 임의 조건 bulk {@code deleteAll(Class, QuerySpec)}은 매칭 owner id를
      * 알 수 없어 정리하지 않는다(JPA bulk delete가 cascade를 우회하는 것과 동일).
-     * <p>v1 한계: owning 측만 정리한다 — inverse {@code @ManyToMany} 엔티티를 삭제할 때 그 엔티티를 target으로 가리키는
-     * 다른 owner의 link 행은 정리되지 않는다. enforced {@code @ForeignKey}가 있으면 그 link 행의 고아화가 아니라
-     * target hard delete가 FK 위반으로 실패할 수 있다. soft delete는 owner 행을 논리 보존하므로 호출자가 hard
-     * delete에서만 부른다.
+     * <p>Owning과 inverse 양쪽 metadata가 모두 같은 join table을 현재 엔티티 기준으로 정규화하므로 어느 쪽을
+     * hard delete해도 그 엔티티를 참조하는 link 행을 먼저 정리한다. Soft delete는 owner/target 행을 논리
+     * 보존하므로 이 정리는 hard delete에서만 수행한다.
      */
     private Mono<Void> removeOwnedCollectionRows(EntityMetadata<?> metadata, Object ownerId) {
         SqlRenderer renderer = dialect.sqlRenderer();
