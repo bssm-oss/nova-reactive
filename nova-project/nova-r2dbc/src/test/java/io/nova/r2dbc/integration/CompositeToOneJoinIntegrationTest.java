@@ -55,7 +55,7 @@ class CompositeToOneJoinIntegrationTest {
         support.execute("insert into \"wj_parent\" (\"region\", \"code\", \"name\") values ('US', 2, 'Eng')");
         support.execute("insert into \"wj_parent\" (\"region\", \"code\", \"name\") values ('EU', 1, 'Other')");
 
-        // 자식: alpha→(US,1), beta→(US,2), gamma→(EU,1), delta→참조 없음.
+        // 자식: alpha→(US,1), beta→(US,2), gamma→(EU,1), delta→완전 null, epsilon→부분 null.
         support.execute("insert into \"wj_child\" (\"id\", \"label\", \"parent_region\", \"parent_code\") "
                 + "values (1, 'alpha', 'US', 1)");
         support.execute("insert into \"wj_child\" (\"id\", \"label\", \"parent_region\", \"parent_code\") "
@@ -64,6 +64,8 @@ class CompositeToOneJoinIntegrationTest {
                 + "values (3, 'gamma', 'EU', 1)");
         support.execute("insert into \"wj_child\" (\"id\", \"label\", \"parent_region\", \"parent_code\") "
                 + "values (4, 'delta', null, null)");
+        support.execute("insert into \"wj_child\" (\"id\", \"label\", \"parent_region\", \"parent_code\") "
+                + "values (5, 'epsilon', 'US', null)");
 
         jpql = new JpqlExecutor(support.operations(), support.dialect(), support.metadataFactory(),
                 WjChild.class, WjParent.class);
@@ -133,17 +135,19 @@ class CompositeToOneJoinIntegrationTest {
 
     @Test
     void jpqlTerminalIsNullOnAllForeignKeyColumns() {
+        // 복합 FK IS NULL은 모든 컴포넌트가 null일 때만 참이다. epsilon은 한 컴포넌트만 null이므로 제외된다.
         StepVerifier.create(
                         jpql.createQuery("SELECT c.label FROM WjChild c WHERE c.parent IS NULL", String.class)
                                 .getResultList())
                 .expectNext("delta")
                 .verifyComplete();
 
+        // IS NOT NULL은 하나 이상의 컴포넌트가 non-null이면 참이다. epsilon은 포함되고 delta는 제외된다.
         StepVerifier.create(
                         jpql.createQuery("SELECT c.label FROM WjChild c WHERE c.parent IS NOT NULL ORDER BY c.label",
                                         String.class)
                                 .getResultList())
-                .expectNext("alpha", "beta", "gamma")
+                .expectNext("alpha", "beta", "epsilon", "gamma")
                 .verifyComplete();
     }
 
@@ -216,6 +220,21 @@ class CompositeToOneJoinIntegrationTest {
 
         StepVerifier.create(criteria.createQuery(cq).getResultList())
                 .assertNext(x -> assertEquals("delta", x.getLabel()))
+                .verifyComplete();
+    }
+
+    @Test
+    void criteriaTerminalIsNotNullOnAnyForeignKeyColumn() {
+        CriteriaBuilder cb = criteria.getCriteriaBuilder();
+        CriteriaQuery<WjChild> cq = cb.createQuery(WjChild.class);
+        Root<WjChild> c = cq.from(WjChild.class);
+        cq.select(c).where(cb.isNotNull(c.get("parent"))).orderBy(cb.asc(c.<String>get("label")));
+
+        StepVerifier.create(criteria.createQuery(cq).getResultList())
+                .assertNext(x -> assertEquals("alpha", x.getLabel()))
+                .assertNext(x -> assertEquals("beta", x.getLabel()))
+                .assertNext(x -> assertEquals("epsilon", x.getLabel()))
+                .assertNext(x -> assertEquals("gamma", x.getLabel()))
                 .verifyComplete();
     }
 
