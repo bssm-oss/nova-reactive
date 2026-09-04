@@ -63,12 +63,9 @@ class ReactiveStoredProcedureQueryValidationTest {
     @Test
     void duplicateNamedDeclarationsCannotSilentlySelectOneBeforeOperations() {
         CapturingOperations operations = new CapturingOperations();
-        ReactiveStoredProcedureQuery<Object> query = query(operations, List.of(
+        assertRejectsWithoutOperations(operations, () -> query(operations, List.of(
                 parameter("duplicate", Integer.class),
-                parameter("duplicate", Integer.class)));
-
-        query.setParameter("duplicate", 1);
-        assertRejectsWithoutOperations(operations, () -> query.getResultList().collectList().block());
+                parameter("duplicate", Integer.class))));
     }
 
     @Test

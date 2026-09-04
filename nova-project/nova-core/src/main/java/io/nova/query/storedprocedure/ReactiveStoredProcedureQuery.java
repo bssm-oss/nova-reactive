@@ -10,9 +10,11 @@ import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -64,6 +66,7 @@ public final class ReactiveStoredProcedureQuery<T> {
             Dialect dialect) {
         this.procedureName = Objects.requireNonNull(procedureName, "procedureName must not be null");
         this.parameters = List.copyOf(Objects.requireNonNull(parameters, "parameters must not be null"));
+        validateParameterDeclarations(this.parameters);
         this.mapper = mapper;
         this.operations = Objects.requireNonNull(operations, "operations must not be null");
         this.dialect = Objects.requireNonNull(dialect, "dialect must not be null");
@@ -186,6 +189,16 @@ public final class ReactiveStoredProcedureQuery<T> {
         }
         throw new StoredProcedureException("Unknown stored procedure parameter '" + name + "' of '"
                 + procedureName + "'");
+    }
+
+    private static void validateParameterDeclarations(List<StoredProcedureParameterDefinition> parameters) {
+        Set<String> names = new HashSet<>();
+        for (StoredProcedureParameterDefinition parameter : parameters) {
+            if (parameter.name() != null && !names.add(parameter.name())) {
+                throw new StoredProcedureException(
+                        "Duplicate stored procedure parameter name '" + parameter.name() + "'");
+            }
+        }
     }
 
     private StoredProcedureParameterDefinition parameterByPosition(int position) {
