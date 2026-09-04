@@ -6,6 +6,7 @@ import io.nova.query.Page;
 import io.nova.query.Pageable;
 import io.nova.query.Slice;
 import io.nova.query.jpql.JpqlExecutor;
+import io.nova.query.jpql.JpqlException;
 import io.nova.query.jpql.JpqlQuery;
 import io.nova.spring.data.springdata.SpringDataQuerySupport;
 import io.nova.sql.Dialect;
@@ -104,8 +105,7 @@ public final class AnnotatedQueries {
             case MODIFYING -> adaptModifying(
                     Mono.defer(() -> jpqlQuery(meta, args, null).executeUpdate()), meta.modifyingResultType());
             case FLUX -> Flux.defer(() -> pagedEntityQueryOrPlain(meta, args).getResultList());
-            case MONO_SINGLE -> Mono.defer(() -> jpqlQuery(meta, args, resultTypeFor(meta))
-                    .getResultList().next());
+            case MONO_SINGLE -> Mono.defer(() -> zeroOrOneJpqlResult(jpqlQuery(meta, args, resultTypeFor(meta))));
             case NOVA_PAGE -> novaPage(meta, args);
             case NOVA_SLICE -> novaSlice(meta, args);
             case SPRING_PAGE -> Mono.defer(() -> novaPage(meta, args)
@@ -182,6 +182,20 @@ public final class AnnotatedQueries {
                 ? jpqlExecutor().createQuery(meta.query())
                 : jpqlExecutor().createQuery(meta.query(), resultType);
         return bindParameters(query, meta, args);
+    }
+
+    /**
+     * Repository {@code Mono} queries are optional single-result queries: no row remains empty,
+     * while more than one row has the same non-unique-result failure as {@link JpqlQuery}.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private Mono zeroOrOneJpqlResult(JpqlQuery query) {
+        return query.getResultList().take(2).collectList().flatMap(rows -> {
+            if (rows.size() > 1) {
+                return Mono.error(new JpqlException("getSingleResult() found more than one row"));
+            }
+            return rows.isEmpty() ? Mono.empty() : Mono.just(rows.get(0));
+        });
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

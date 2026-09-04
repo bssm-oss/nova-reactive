@@ -105,6 +105,13 @@ Mono<Long> delete(T entity);
 Mono<Long> deleteAll(Iterable<T> entities);
 ```
 
+### Annotated JPQL queries
+
+JPQL-backed `@Query` methods returning `Mono<T>` are zero-or-one queries: zero rows
+complete empty, one row is emitted, and multiple rows fail with `JpqlException`. This
+does not truncate results. Derived `findFirst` and `findTop` methods are distinct
+explicit limiting operations and use `LIMIT 1`.
+
 ### Derived query methods
 
 For familiarity with Spring Data, the proxy also parses method names that follow a `find / findFirst / count / exists / delete` convention. Anything the fixed-name switch above does not match falls through to the derived query parser; if that succeeds, it dispatches to `ReactiveEntityOperations`. If neither matches, the call returns `Mono.error(UnsupportedOperationException)`.

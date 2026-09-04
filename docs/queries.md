@@ -217,3 +217,7 @@ Primitive scalar declarations are checked against their boxed type and emit boxe
 publisher values. Any top-level null scalar—including reference and `Object` declarations—
 fails with `JpqlException`; null remains representable inside `Object[]` rows and constructor
 arguments.
+
+JPQL-backed repository `Mono<T>` methods use zero-or-one cardinality: no matching row
+completes empty, exactly one row emits that value, and a second row emits `JpqlException`.
+Use `Flux<T>` when a query can return multiple rows.

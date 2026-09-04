@@ -113,14 +113,24 @@ class AnnotatedQueryIntegrationTest {
     }
 
     @Test
-    @DisplayName("JPQL @Query 엔티티 Mono 단건 + positional 파라미터")
-    void jpqlEntityMonoPositional() {
+    @DisplayName("JPQL @Query 엔티티 Mono는 0 또는 정확히 한 행을 발행한다")
+    void jpqlEntityMonoZeroOrOne() {
         StepVerifier.create(repository.byName("Bob"))
                 .assertNext(a -> {
                     assertEquals("Bob", a.getName());
                     assertEquals(10, a.getScore());
                 })
                 .verifyComplete();
+        StepVerifier.create(repository.byName("Nobody"))
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("JPQL @Query 엔티티 Mono는 여러 행을 거부한다")
+    void jpqlEntityMonoRejectsMultipleRows() {
+        StepVerifier.create(repository.accountsWithMinScore(20))
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
     }
 
     @Test
@@ -129,6 +139,24 @@ class AnnotatedQueryIntegrationTest {
         StepVerifier.create(repository.namesWithMinScore(40))
                 .expectNext("Dan", "Eve")
                 .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("JPQL @Query 스칼라 Mono는 0 또는 정확히 한 행을 발행한다")
+    void jpqlScalarMonoZeroOrOne() {
+        StepVerifier.create(repository.nameByScore(30))
+                .expectNext("Ada")
+                .verifyComplete();
+        StepVerifier.create(repository.nameByScore(-1))
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("JPQL @Query 스칼라 Mono는 여러 행을 거부한다")
+    void jpqlScalarMonoRejectsMultipleRows() {
+        StepVerifier.create(repository.nameWithMinScore(20))
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
     }
 
     @Test
@@ -146,8 +174,8 @@ class AnnotatedQueryIntegrationTest {
                 .expectNext("Ada", "Bob", "Cara", "Dan", "Eve")
                 .verifyComplete();
         StepVerifier.create(repository.firstObjectName())
-                .expectNext("Ada")
-                .verifyComplete();
+                .expectErrorSatisfies(error -> assertEquals(JpqlException.class, error.getClass()))
+                .verify();
         StepVerifier.create(repository.objectNameAndScores())
                 .assertNext(values -> {
                     assertEquals("Ada", values[0]);
@@ -426,8 +454,17 @@ class AnnotatedQueryIntegrationTest {
         @Query("SELECT a FROM Account a WHERE a.name = ?1")
         Mono<Account> byName(String name);
 
+        @Query("SELECT a FROM Account a WHERE a.score >= :min ORDER BY a.name")
+        Mono<Account> accountsWithMinScore(@Param("min") int min);
+
         @Query("SELECT a.name FROM Account a WHERE a.score >= :min ORDER BY a.name")
         Flux<String> namesWithMinScore(@Param("min") int min);
+
+        @Query("SELECT a.name FROM Account a WHERE a.score = :score")
+        Mono<String> nameByScore(@Param("score") int score);
+
+        @Query("SELECT a.name FROM Account a WHERE a.score >= :min ORDER BY a.name")
+        Mono<String> nameWithMinScore(@Param("min") int min);
 
         @Query("SELECT a.name FROM Account a")
         Flux<Integer> scoresDeclaredAsNames();
