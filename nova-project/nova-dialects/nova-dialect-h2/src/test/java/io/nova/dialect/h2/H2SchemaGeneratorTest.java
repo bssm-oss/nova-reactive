@@ -6,6 +6,7 @@ import io.nova.metadata.EntityMetadataFactory;
 import io.nova.metadata.TableGeneratorInfo;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,16 @@ class H2SchemaGeneratorTest {
 
         assertEquals(
                 "create table \"accounts\" (\"id\" bigint generated always as identity primary key, \"email_address\" varchar(255), \"active\" boolean not null)",
+                dialect.schemaGenerator().createTable(metadata)
+        );
+    }
+
+    @Test
+    void rendersCreateTableWithAutoColumnUsingGeneratedAlwaysAsIdentity() {
+        EntityMetadata<H2AutoAccount> metadata = metadataFactory.getEntityMetadata(H2AutoAccount.class);
+
+        assertEquals(
+                "create table \"auto_accounts\" (\"id\" bigint generated always as identity primary key, \"email_address\" varchar(255))",
                 dialect.schemaGenerator().createTable(metadata)
         );
     }
@@ -117,6 +128,17 @@ class H2SchemaGeneratorTest {
         BigDecimal scaleOnly;
 
         BigDecimal unspecified;
+    }
+
+    @Entity
+    @Table(name = "auto_accounts")
+    static class H2AutoAccount {
+        @Id
+        @GeneratedValue
+        Long id;
+
+        @Column(name = "email_address")
+        String email;
     }
 
     @Entity

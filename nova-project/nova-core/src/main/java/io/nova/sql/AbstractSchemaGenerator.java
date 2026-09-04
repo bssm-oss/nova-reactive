@@ -551,7 +551,9 @@ public abstract class AbstractSchemaGenerator implements SchemaGenerator {
      * {@code @EmbeddedId} 복합키처럼 PK가 여러 컬럼에 걸쳐 테이블 레벨 제약으로 따로 emit될 때 사용한다.
      */
     protected String columnDefinition(PersistentProperty property, boolean suppressInlinePrimaryKey) {
-        if (property.generated() && property.generationType() == GenerationType.IDENTITY) {
+        if (property.generated()
+                && (property.generationType() == GenerationType.IDENTITY
+                || property.generationType() == GenerationType.AUTO)) {
             return appendColumnDdl(identityColumn(property), property);
         }
         // @Column(columnDefinition=...)이 지정되면 dialect가 유도한 타입 대신 raw DDL 조각을 그대로 쓴다.
