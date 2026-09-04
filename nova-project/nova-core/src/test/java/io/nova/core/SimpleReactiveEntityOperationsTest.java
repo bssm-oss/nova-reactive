@@ -2341,6 +2341,30 @@ class SimpleReactiveEntityOperationsTest {
     }
 
     @Test
+    void cancelledPartialUpdateDoesNotRefreshManagedBaseline() {
+        CapturingExecutor executor = new CapturingExecutor();
+        executor.executePublishers.addLast(Mono.never());
+        executor.executeResults.addLast(1L);
+        SimpleReactiveEntityOperations operations = newOperations(executor, new RecordingTransactions());
+        SampleAccount account = new SampleAccount(7L, "before@nova.io", true);
+        var metadata = metadata(SampleAccount.class);
+        PersistenceSession session = new PersistenceSession();
+        session.registerOnLoad(metadata, account);
+        metadata.findProperty("email").orElseThrow().write(account, "after@nova.io");
+
+        StepVerifier.create(operations.update(account, List.of("email"))
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .thenCancel()
+                .verify();
+        StepVerifier.create(operations.flush()
+                        .contextWrite(context -> context.put(SimpleReactiveEntityOperations.SESSION_KEY, session)))
+                .verifyComplete();
+
+        assertEquals(2, executor.executedStatements.size(),
+                "a cancelled explicit update must leave its managed dirty field pending");
+    }
+
+    @Test
     void deleteFiresPreRemoveCallback() {
         EntityWithCallbacks.reset();
         CapturingExecutor executor = new CapturingExecutor();
@@ -3738,6 +3762,7 @@ class SimpleReactiveEntityOperationsTest {
         private final Deque<List<RowAccessor>> queryManyResults = new ArrayDeque<>();
         private final Deque<Long> executeResults = new ArrayDeque<>();
         private final Deque<Throwable> executeErrors = new ArrayDeque<>();
+        private final Deque<Mono<Long>> executePublishers = new ArrayDeque<>();
         private final List<BatchCall> batchCalls = new ArrayList<>();
         private final List<SqlStatement> executedStatements = new ArrayList<>();
         private final List<String> chronologicalSqlCalls = new ArrayList<>();
@@ -3766,6 +3791,9 @@ class SimpleReactiveEntityOperationsTest {
             }
             if (!executeErrors.isEmpty()) {
                 return Mono.error(executeErrors.removeFirst());
+            }
+            if (!executePublishers.isEmpty()) {
+                return executePublishers.removeFirst();
             }
             long result = executeResults.isEmpty() ? 1L : executeResults.removeFirst();
             return Mono.just(result);
