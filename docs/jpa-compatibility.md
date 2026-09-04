@@ -147,7 +147,10 @@ These declare cleanly but are rejected with a message until implemented — Nova
 - Under a session, removing a child from a non-`orphanRemoval` `@OneToMany` collection when the child's
   owning `@ManyToOne` foreign key is non-nullable (`optional = false` / `@JoinColumn(nullable = false)`) —
   nulling it would violate the column constraint. Use `orphanRemoval = true` or reparent explicitly instead.
-- Nested `@EmbeddedId` values and `@MapsId` targeting a record `@EmbeddedId` are rejected explicitly; flat record `@EmbeddedId` and ordinary nested record `@Embedded` values are supported.
+- Nested `@EmbeddedId` values are rejected explicitly. A flat record `@EmbeddedId` supports
+  `@MapsId("component")` under FIELD or PROPERTY access only when the associated entity has one
+  `@Id`; whole-key `@MapsId`, nested record-id components, and composite-key association targets
+  remain rejected. Ordinary nested record `@Embedded` values are supported.
 - Owning `@OneToOne(orphanRemoval = true)` with `@MapsId` or a non-updatable join column is
   rejected. Support includes FIELD and PROPERTY access plus scalar/composite owner and target
   keys. The same-owner shared-reference guard is deliberately bounded; it does not discover

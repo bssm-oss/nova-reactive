@@ -2,6 +2,7 @@ package io.nova;
 
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
+
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.CollectionTable;
@@ -11,6 +12,7 @@ import jakarta.persistence.Embeddable;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
+import jakarta.persistence.ForeignKey;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
@@ -22,6 +24,7 @@ import jakarta.persistence.JoinColumns;
 import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MapsId;
 import jakarta.persistence.MapKeyColumn;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderColumn;
@@ -413,6 +416,91 @@ class PropertyAccessH2IntegrationTest {
                     assertEquals(new Code("acme"), loaded.getTarget().getCode());
                     assertEquals(9L, loaded.getTarget().getSequence());
                     assertTrue(loaded.targetSetterInvoked);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void fieldRecordEmbeddedIdMapsIdUsesConvertedStorageAndForeignKey() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+        PropertyMapsIdCompany company = new PropertyMapsIdCompany(new Code("acme"));
+        FieldRecordMapsIdBranch branch = new FieldRecordMapsIdBranch(7L, "seoul");
+
+        StepVerifier.create(schema.create(List.of(PropertyMapsIdCompany.class, FieldRecordMapsIdBranch.class))
+                .then(operations.save(company))
+                .flatMap(savedCompany -> {
+                    branch.setCompany(savedCompany);
+                    return operations.save(branch);
+                })
+                .flatMap(savedBranch -> {
+                    assertEquals(new FieldRecordMapsIdBranchId(new Code("acme"), 7L), savedBranch.getId());
+                    return operations.queryNative(NativeQuery.of(
+                                    "select \"company_ref\", \"company_id\""
+                                            + " from \"property_field_record_mapsid_branches\"",
+                                    row -> List.of(
+                                            row.get("company_ref", String.class),
+                                            row.get("company_id", String.class)))
+                            .single());
+                }))
+                .assertNext(columns -> assertEquals(List.of("acme", "acme"), columns,
+                        "@Convert must apply identically to the record component and @MapsId FK"))
+                .verifyComplete();
+
+        StepVerifier.create(operations.queryNative(NativeQuery.of(
+                        "select \"CONSTRAINT_NAME\" from INFORMATION_SCHEMA.TABLE_CONSTRAINTS"
+                                + " where \"TABLE_NAME\" = 'property_field_record_mapsid_branches'"
+                                + " and \"CONSTRAINT_TYPE\" = 'FOREIGN KEY'",
+                        row -> row.get("CONSTRAINT_NAME", String.class)))
+                .single())
+                .expectNext("fk_property_field_record_mapsid_company")
+                .verifyComplete();
+
+        StepVerifier.create(operations.executeNative(NativeQuery.of(
+                "insert into \"property_field_record_mapsid_branches\""
+                        + " (\"company_ref\", \"local_no\", \"city\", \"company_id\")"
+                        + " values ('orphan', 8, 'orphan', 'orphan')")))
+                .verifyError();
+    }
+
+    @Test
+    void propertyRecordEmbeddedIdMapsIdRebuildsSequentialComponentsAndUpdates() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+        PropertyMapsIdCompany first = new PropertyMapsIdCompany(new Code("first"));
+        PropertyMapsIdCompany second = new PropertyMapsIdCompany(new Code("second"));
+        PropertySequentialRecordMapsIdBranch branch =
+                new PropertySequentialRecordMapsIdBranch(
+                        new PropertySequentialRecordMapsIdBranchId(null, null, 9L), "seoul");
+
+        StepVerifier.create(schema.create(List.of(
+                        PropertyMapsIdCompany.class, PropertySequentialRecordMapsIdBranch.class))
+                .then(operations.save(first))
+                .flatMap(savedFirst -> operations.save(second)
+                        .flatMap(savedSecond -> {
+                            branch.setFirst(savedFirst);
+                            branch.setSecond(savedSecond);
+                            return operations.save(branch);
+                        }))
+                .flatMap(saved -> {
+                    assertEquals(new PropertySequentialRecordMapsIdBranchId(
+                                    new Code("first"), new Code("second"), 9L),
+                            saved.getId(), "each named component must rebuild the complete immutable id");
+                    assertTrue(saved.idSetterCalls >= 2,
+                            "PROPERTY root setter must receive each sequentially derived record id");
+                    saved.setCity("busan");
+                    return operations.save(saved);
+                })
+                .flatMap(updated -> operations.findById(PropertySequentialRecordMapsIdBranch.class, updated.getId())))
+                .assertNext(loaded -> {
+                    assertEquals(new PropertySequentialRecordMapsIdBranchId(
+                                    new Code("first"), new Code("second"), 9L),
+                            loaded.getId(), "derived components must not overwrite their sibling");
+                    assertEquals("busan", loaded.getCity(), "second save must take the update path");
+                    assertNotNull(loaded.getFirst());
+                    assertNotNull(loaded.getSecond());
                 })
                 .verifyComplete();
     }
@@ -1255,6 +1343,127 @@ class PropertyAccessH2IntegrationTest {
         public void setTarget(PropertyCompositeTarget target) {
             targetSetterInvoked = true;
             this.target = target;
+        }
+    }
+
+    @Entity
+    @Table(name = "property_mapsid_companies")
+    static class PropertyMapsIdCompany {
+        @Id
+        @Convert(converter = CodeConverter.class)
+        @Column(name = "id")
+        private Code id;
+
+        PropertyMapsIdCompany() {
+        }
+
+        PropertyMapsIdCompany(Code id) {
+            this.id = id;
+        }
+    }
+
+    @Embeddable
+    record FieldRecordMapsIdBranchId(
+            @Convert(converter = CodeConverter.class) @Column(name = "company_ref") Code companyRef,
+            @Column(name = "local_no") Long localNo) {
+    }
+
+    @Entity
+    @Table(name = "property_field_record_mapsid_branches")
+    static class FieldRecordMapsIdBranch {
+        @EmbeddedId
+        private FieldRecordMapsIdBranchId id;
+
+        @Column(name = "city")
+        private String city;
+
+        @ManyToOne
+        @MapsId("companyRef")
+        @JoinColumn(name = "company_id",
+                foreignKey = @ForeignKey(name = "fk_property_field_record_mapsid_company"))
+        private PropertyMapsIdCompany company;
+
+        FieldRecordMapsIdBranch() {
+        }
+
+        FieldRecordMapsIdBranch(Long localNo, String city) {
+            this.id = new FieldRecordMapsIdBranchId(null, localNo);
+            this.city = city;
+        }
+
+        FieldRecordMapsIdBranchId getId() {
+            return id;
+        }
+
+        void setCompany(PropertyMapsIdCompany company) {
+            this.company = company;
+        }
+    }
+
+    @Embeddable
+    record PropertySequentialRecordMapsIdBranchId(
+            @Convert(converter = CodeConverter.class) @Column(name = "first_ref") Code firstRef,
+            @Convert(converter = CodeConverter.class) @Column(name = "second_ref") Code secondRef,
+            @Column(name = "local_no") Long localNo) {
+    }
+
+    @Entity
+    @Access(AccessType.PROPERTY)
+    @Table(name = "property_sequential_record_mapsid_branches")
+    static class PropertySequentialRecordMapsIdBranch {
+        private PropertySequentialRecordMapsIdBranchId id;
+        private String city;
+        private PropertyMapsIdCompany first;
+        private PropertyMapsIdCompany second;
+        int idSetterCalls;
+
+        PropertySequentialRecordMapsIdBranch() {
+        }
+
+        PropertySequentialRecordMapsIdBranch(PropertySequentialRecordMapsIdBranchId id, String city) {
+            this.id = id;
+            this.city = city;
+        }
+
+        @EmbeddedId
+        PropertySequentialRecordMapsIdBranchId getId() {
+            return id;
+        }
+
+        void setId(PropertySequentialRecordMapsIdBranchId id) {
+            idSetterCalls++;
+            this.id = id;
+        }
+
+        @Column(name = "city")
+        String getCity() {
+            return city;
+        }
+
+        void setCity(String city) {
+            this.city = city;
+        }
+
+        @ManyToOne
+        @MapsId("firstRef")
+        @JoinColumn(name = "first_id")
+        PropertyMapsIdCompany getFirst() {
+            return first;
+        }
+
+        void setFirst(PropertyMapsIdCompany first) {
+            this.first = first;
+        }
+
+        @ManyToOne
+        @MapsId("secondRef")
+        @JoinColumn(name = "second_id")
+        PropertyMapsIdCompany getSecond() {
+            return second;
+        }
+
+        void setSecond(PropertyMapsIdCompany second) {
+            this.second = second;
         }
     }
 }
