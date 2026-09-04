@@ -158,6 +158,11 @@ Mono<Slice<Author>> findByActiveTrue(Pageable page);          // window + hasNex
 
 A `Pageable` parameter is only valid on the `find`-all subject. Pairing it with a non-paging shape or subject — `count`/`exists`/`delete`, or a single-result `Mono<T>` / `findFirst` / `findOne` / `findTop` / `findTop<N>` — fails fast at parse time with an `IllegalArgumentException`.
 
-**Limitations** — `@Embedded` paths in projections and `@Query`-style native queries are not supported. Use `findAll(QuerySpec)` (or, with [`nova-metamodel`](metamodel.md), the generated property-name constants) for those cases.
+**Limitations** — `@Embedded` paths in projections are unsupported. Native `@Query` supports
+entity `SELECT` statements that select all entity columns and `@Modifying` bulk `UPDATE`,
+`DELETE`, and `INSERT`; native scalar and constructor projections, and native
+`Pageable`/`Page`/`Slice` query shapes, fail fast. Use JPQL for unsupported projection and
+paging shapes, or `findAll(QuerySpec)` (with [`nova-metamodel`](metamodel.md)'s generated
+property-name constants where useful).
 
 Misuse — unknown property, parameter-count mismatch, unrecognized keyword suffix — fails at the first call to that method with an `IllegalArgumentException` carrying a precise diagnostic. Method names whose subject prefix does not match (`saveAndPublish`, `magicMethod`, …) fall through to the existing `UnsupportedOperationException` as before.

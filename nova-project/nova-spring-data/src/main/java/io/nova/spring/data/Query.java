@@ -51,9 +51,9 @@ public @interface Query {
     boolean nativeQuery() default false;
 
     /**
-     * {@code Pageable}이 있는 쿼리에서 전체 행 수를 계산할 count 쿼리(JPQL 또는 native, {@code value()}와
-     * 동일한 언어). 비우면 Nova가 원 쿼리를 페이징 없이 실행한 결과 개수로 total을 계산한다(정확하지만
-     * 추가 조회 비용이 있다).
+     * JPQL {@code Pageable} 쿼리에서 전체 행 수를 계산할 count 쿼리. native {@code @Query}는
+     * {@code Pageable}/Page/Slice를 지원하지 않으므로 이 속성을 사용하지 않는다. 비우면 Nova가 원 JPQL
+     * 쿼리를 페이징 없이 실행한 결과 개수로 total을 계산한다(정확하지만 추가 조회 비용이 있다).
      */
     String countQuery() default "";
 }
