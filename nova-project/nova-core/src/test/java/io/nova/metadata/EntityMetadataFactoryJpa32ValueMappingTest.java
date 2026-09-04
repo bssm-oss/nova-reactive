@@ -169,7 +169,8 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
     void excludesIdsVersionsRelationshipsAndExplicitValueMappingsFromAutoApply() {
         EntityMetadataFactory factory = new EntityMetadataFactory(new DefaultNamingStrategy(), new TestJsonCodec());
         factory.registerManagedClasses(List.of(
-                CodeConverter.class, LongStringConverter.class, RelatedConverter.class));
+                CodeConverter.class, LongStringConverter.class, RelatedConverter.class,
+                TextStatusConverter.class, DateStringConverter.class));
         EntityMetadata<ExcludedAutoApplyEntity> metadata =
                 factory.getEntityMetadata(ExcludedAutoApplyEntity.class);
 
@@ -319,7 +320,7 @@ class EntityMetadataFactoryJpa32ValueMappingTest {
     public static class ConcreteCodeConverter extends IntermediateCodeConverter<Code> {
     }
 
-    @Converter
+    @Converter(autoApply = true)
     public static class DateStringConverter implements jakarta.persistence.AttributeConverter<Date, String> {
         public String convertToDatabaseColumn(Date value) { return value == null ? null : Long.toString(value.getTime()); }
         public Date convertToEntityAttribute(String value) { return value == null ? null : new Date(Long.parseLong(value)); }

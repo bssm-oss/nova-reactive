@@ -32,7 +32,14 @@ dependencies {
 
 Add a `SqlExecutionListener` bean (e.g. `MicrometerSqlExecutionListener`) to the context and it is automatically composed into the executor.
 
-The starter also registers `novaEntityPreloadRunner`, which eagerly builds metadata for every `@Entity` in `nova.entity-packages` (or the auto-configuration packages) at startup — regardless of `nova.ddl-auto`. This mirrors a JPA persistence unit knowing all of its entities up front, and is what lets `SINGLE_TABLE` inheritance dispatch a polymorphic `findAll(Vehicle.class)` to the right concrete subtypes. Entity metadata build errors surface at startup (fail-fast) rather than on first query.
+The starter also registers `novaEntityPreloadRunner`, which at startup scans
+`nova.entity-packages` (or the auto-configuration packages) for both `@Entity` and Jakarta
+`@Converter` classes — regardless of `nova.ddl-auto`. It registers every discovered converter
+before eagerly building metadata for every discovered entity, so `autoApply` conversion is
+deterministic. This mirrors a JPA persistence unit knowing all of its entities up front, and is
+what lets `SINGLE_TABLE` inheritance dispatch a polymorphic `findAll(Vehicle.class)` to the
+right concrete subtypes. Entity metadata build errors surface at startup (fail-fast) rather than
+on first query. Only schema creation or validation is conditional on `nova.ddl-auto`.
 
 ### Schema bootstrap (`nova.ddl-auto`)
 
