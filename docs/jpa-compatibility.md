@@ -136,7 +136,7 @@ These declare cleanly but are rejected with a message until implemented — Nova
   `GROUP BY` / `ORDER BY`, and multi-column **joins** are supported.
 - A deeper subgraph declared **under** a composite-key to-one leaf inside a nested `EntityGraph`
   (the composite leaf itself is now hydrated at any depth).
-- Stored-procedure `OUT` / `INOUT` / `REF_CURSOR` output retrieval. R2DBC SPI 1.0 declarations are modeled, but Nova executor/result APIs plus the H2 baseline lack portable support; any such declaration fails before native work. Use `IN` parameters and a result set instead.
+- Stored-procedure `OUT` / `INOUT` / `REF_CURSOR` output retrieval. R2DBC SPI 1.0 portably models `OUT`/`INOUT`, while `REF_CURSOR` is vendor-specific; Nova executor/result APIs plus the H2 baseline lack portable support for either form, so any such declaration fails before native work. Use `IN` parameters and a result set instead.
 - `@MapKeyClass` naming a **composite-`@Id`** entity key class (single-`@Id` entity and `@Embeddable` key classes are supported).
 - In-place mutation of a *loaded* referenced entity's `@Id` (JPA-forbidden) is not change-tracked.
 - Under a transaction-bound persistence session, moving an already-managed `@OneToMany` child between two
