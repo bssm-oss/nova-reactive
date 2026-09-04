@@ -56,8 +56,9 @@ public interface ReactiveEntityManager {
     <T> Mono<T> merge(T entity);
 
     /**
-     * 엔티티를 삭제한다(JPA {@code remove}). 세션이 있으면 먼저 세션에서 분리해 이 엔티티의 미flush 변경이
-     * 뒤늦게 UPDATE로 나가지 않게 한 뒤 DELETE를 발행한다.
+     * 엔티티를 삭제한다(JPA {@code remove}). 활성 세션에서는 정확히 같은 관리 인스턴스만 삭제할 수 있으며,
+     * 같은 id를 가진 detached 인스턴스는 DELETE, cascade, lifecycle callback 전에 실패한다. 세션 밖에서는
+     * stateless DELETE로 동작한다.
      */
     Mono<Void> remove(Object entity);
 
@@ -91,9 +92,10 @@ public interface ReactiveEntityManager {
 
     /**
      * DB에서 현재 컬럼 상태를 재조회해 주어진 엔티티 인스턴스에 in-place로 재적재하고 그 엔티티를 발행한다
-     * (JPA {@code refresh}). 재조회 전에 이 엔티티를 세션에서 분리하므로 보류 변경은 폐기되고, 재적재 후
-     * 다시 관리 상태(clean snapshot)로 편입한다. id가 {@code null}이면(transient) 실패하고, 행이 더 이상
-     * 없으면 {@code EntityNotFoundException}으로 실패한다.
+     * (JPA {@code refresh}). 활성 세션에서는 정확히 같은 관리 인스턴스만 허용하며, pre-query detach를 하지
+     * 않는다. fresh read가 성공한 뒤에만 state와 clean snapshot을 교체하므로, 오류 또는 cancellation은 기존
+     * state/snapshot을 보존한다. id가 {@code null}이면(transient) 실패하고, 행이 더 이상 없으면
+     * {@code EntityNotFoundException}으로 실패한다.
      * <p>
      * 스칼라/임베디드/FK 컬럼 상태만 재적재한다 — 연관(@OneToMany 등) 컬렉션의 in-place 재적재는 범위 밖이며
      * 필요하면 명시적 fetch로 다시 로드해야 한다.
@@ -179,12 +181,13 @@ public interface ReactiveEntityManager {
     }
 
     /**
-     * DB 재조회로 엔티티를 재적재({@link #refresh(Object)})한 뒤 주어진 {@link LockModeType}를 적용한다
-     * (JPA {@code refresh(Object, LockModeType)}).
+     * 주어진 {@link LockModeType}를 적용한 단일 fresh-read 경로로 엔티티를 재적재한다
+     * (JPA {@code refresh(Object, LockModeType)}). 활성 세션에서는 정확히 같은 관리 인스턴스만 허용한다.
      * PESSIMISTIC_* 모드는 활성 물리 트랜잭션이 필요하며, 없으면 refresh SELECT 전에
      * {@link jakarta.persistence.TransactionRequiredException}으로 실패한다.
-     * <p><b>기록:</b> 활성 트랜잭션에서는 refresh reload SELECT 후 잠금 재조회 SELECT가 이어져 SELECT를 두 번
-     * 발행한다(refresh SELECT 안에서 바로 잠그는 최적화는 후속 과제).
+     * 버전 모드를 {@code @Version} 없는 엔티티에 요청하면 fresh read 전에 fail-fast한다. fresh/locked read와
+     * 필요한 force-increment가 모두 성공한 뒤에만 entity state, clean snapshot, 그리고 recorded lock mode를
+     * 교체한다; 오류 또는 cancellation은 모두 기존 state/snapshot/mode를 보존한다.
      */
     default <T> Mono<T> refresh(T entity, LockModeType lockMode) {
         return Mono.error(new UnsupportedOperationException(

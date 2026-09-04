@@ -96,7 +96,15 @@ public final class SimpleReactiveEntityManager implements ReactiveEntityManager 
         Objects.requireNonNull(entity, "entity must not be null");
         // delete() turns a managed entry into a tombstone only after successful DML. Detaching first would
         // lose failed-delete recovery and would permit a same-session re-persist.
-        return operations.delete(entity).then();
+        return Mono.deferContextual(ctx -> {
+            EntityMetadata<?> metadata = metadataFor(entity);
+            Optional<PersistenceSession> session = currentSession(ctx);
+            if (session.isPresent() && !session.get().isManagedExactInstance(metadata, entity)) {
+                return Mono.error(new IllegalArgumentException(
+                        "Cannot remove detached entity " + metadata.entityType().getName()));
+            }
+            return operations.delete(entity).then();
+        });
     }
 
     @Override

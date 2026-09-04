@@ -173,6 +173,31 @@ class SimpleReactiveEntityManagerTest {
     }
 
     @Test
+    void removeRejectsSameIdDetachedStandInBeforeDeleteCallbackOrSql() {
+        PersistenceSession session = new PersistenceSession();
+        VersionedWidget managed = new VersionedWidget(11L, 0L);
+        VersionedWidget standIn = new VersionedWidget(11L, 0L);
+        EntityMetadata<VersionedWidget> metadata = metadataFactory.getEntityMetadata(VersionedWidget.class);
+        session.registerOnLoad(metadata, managed);
+        operations.existsResult = true;
+        StepVerifier.create(withSession(manager.lock(managed, LockModeType.OPTIMISTIC), session))
+                .verifyComplete();
+
+        StepVerifier.create(withSession(manager.remove(standIn), session))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+
+        assertTrue(operations.deleted.isEmpty(), "detached remove must not reach DELETE");
+        assertEquals(0, operations.deleteCallbackCount, "detached remove must not reach lifecycle callbacks");
+        StepVerifier.create(withSession(manager.contains(managed), session))
+                .expectNext(Boolean.TRUE)
+                .verifyComplete();
+        StepVerifier.create(withSession(manager.getLockMode(managed), session))
+                .expectNext(LockModeType.OPTIMISTIC)
+                .verifyComplete();
+    }
+
+    @Test
     void refreshRejectsRemovedEntityWithoutErasingTombstone() {
         PersistenceSession session = new PersistenceSession();
         Widget widget = new Widget(11L, "k");
@@ -915,6 +940,7 @@ class SimpleReactiveEntityManagerTest {
         private boolean findAllNever;
         private boolean existsResult;
         private int flushCount;
+        private int deleteCallbackCount;
 
         @Override
         @SuppressWarnings("unchecked")
@@ -948,6 +974,7 @@ class SimpleReactiveEntityManagerTest {
 
         @Override
         public <T> Mono<Long> delete(T entity) {
+            deleteCallbackCount++;
             deleted.add(entity);
             return Mono.just(1L);
         }
