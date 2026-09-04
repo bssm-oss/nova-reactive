@@ -26,9 +26,9 @@ import java.util.function.Function;
  *
  * <p><b>파라미터 모드.</b> JPA SPI는 출력 파라미터 선언을 모델링할 수 있지만 Nova의 리액티브 R2DBC 경로와
  * r2dbc-h2 계약은 이를 이식성 있게 노출하지 않는다. 따라서 {@link ParameterMode#OUT}/
- * {@link ParameterMode#INOUT}/{@link ParameterMode#REF_CURSOR} 파라미터가 하나라도 선언되면 native
- * 작업 전에 {@link StoredProcedureException}으로 fail-fast 한다(조용한 무시 금지). 결과가 필요하면 IN
- * 파라미터 + result-set 을 반환하는 프로시저를 사용한다.
+ * {@link ParameterMode#INOUT}/{@link ParameterMode#REF_CURSOR} 파라미터가 하나라도 선언되면 모든 실행
+ * 경로에서 binding이나 native 작업 전에 {@link StoredProcedureException}으로 fail-fast 한다(조용한 무시
+ * 금지). 결과가 필요하면 IN 파라미터 + result-set 을 반환하는 프로시저를 사용한다.
  *
  * <p><b>IN 바인딩 검증.</b> {@link #setParameter(String, Object)}와
  * {@link #setParameter(int, Object)}는 이름/1-based 위치가 선언된 파라미터를 가리키는지와 non-null 값이
