@@ -1761,7 +1761,7 @@ public final class SimpleReactiveEntityOperations implements ReactiveEntityOpera
                     ? primaryUpdate.flatMap(saved ->
                             Flux.fromIterable(secondaryStatements)
                                     .concatMap(sqlExecutor::execute)
-                                    .thenReturn(saved))
+                                    .then(Mono.just(saved)))
                     : primaryUpdate;
             return result.map(updated -> {
                 listenerInvoker.invokePostUpdate(updated, metadata);
