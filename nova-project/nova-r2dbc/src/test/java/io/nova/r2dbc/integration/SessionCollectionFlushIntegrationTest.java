@@ -283,6 +283,38 @@ class SessionCollectionFlushIntegrationTest {
     }
 
     @Test
+    void uuidManyToManySessionDiffEncodesIdsAndReloads() {
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(UuidPost.class, UuidTag.class).block();
+
+        UuidTag keep = support.operations().save(new UuidTag("keep")).block();
+        UuidTag drop = support.operations().save(new UuidTag("drop")).block();
+        UuidTag add = support.operations().save(new UuidTag("add")).block();
+        UuidPost post = new UuidPost("p");
+        post.getTags().add(keep);
+        post.getTags().add(drop);
+        UuidPost saved = support.operations().save(post).block();
+
+        listener.clear();
+        StepVerifier.create(support.operations().inTransaction(ops -> ops.findById(UuidPost.class, saved.getId())
+                .doOnNext(loaded -> loaded.getTags().add(add)).then())).verifyComplete();
+        assertEquals(1, listener.count("uuid_post_tag", "insert"));
+        assertEquals(0, listener.count("uuid_post_tag", "delete"));
+
+        listener.clear();
+        StepVerifier.create(support.operations().inTransaction(ops -> ops.findById(UuidPost.class, saved.getId())
+                .doOnNext(loaded -> loaded.getTags().remove(drop)).then())).verifyComplete();
+        assertEquals(1, listener.count("uuid_post_tag", "delete"));
+        assertEquals(0, listener.count("uuid_post_tag", "insert"));
+
+        StepVerifier.create(support.operations().findById(UuidPost.class, saved.getId()))
+                .assertNext(loaded -> assertEquals(Set.of("keep", "add"), loaded.getTags().stream()
+                        .map(UuidTag::getName).collect(Collectors.toSet())))
+                .verifyComplete();
+    }
+
+    @Test
     void collectionMutationIsFlushedAtCommit() {
         Post seeded = seedPostWithTwoTags();
         Tag c = support.operations().save(new Tag("c")).block();
@@ -494,6 +526,56 @@ class SessionCollectionFlushIntegrationTest {
 
         public Set<java.util.UUID> getRefs() {
             return refs;
+        }
+    }
+
+    @Entity
+    @Table(name = "uuid_post")
+    public static class UuidPost {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private java.util.UUID id;
+        private String title;
+
+        @ManyToMany
+        @JoinTable(name = "uuid_post_tag",
+                joinColumns = @JoinColumn(name = "post_id"),
+                inverseJoinColumns = @JoinColumn(name = "tag_id"))
+        private Set<UuidTag> tags = new LinkedHashSet<>();
+
+        public UuidPost() {
+        }
+
+        public UuidPost(String title) {
+            this.title = title;
+        }
+
+        public java.util.UUID getId() {
+            return id;
+        }
+
+        public Set<UuidTag> getTags() {
+            return tags;
+        }
+    }
+
+    @Entity
+    @Table(name = "uuid_tag")
+    public static class UuidTag {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private java.util.UUID id;
+        private String name;
+
+        public UuidTag() {
+        }
+
+        public UuidTag(String name) {
+            this.name = name;
+        }
+
+        public String getName() {
+            return name;
         }
     }
 }

@@ -71,7 +71,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@ManyToOne` / `@OneToOne` → **composite-key** target | ✅ | Multi-column FK (one column per referenced `@Id` component) + composite FK constraint |
 | inverse `@OneToOne` (`mappedBy`) | ✅ | Hydration only; `orphanRemoval` and mutating `PERSIST`/`MERGE`/`REMOVE`/`ALL` cascades fail fast |
 | `@OneToMany` (`cascade`, `orphanRemoval`, `@OrderColumn`, `@OrderBy`) | ✅ | |
-| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration |
+| `@ManyToMany` (owning + inverse, `cascade`, `@OrderBy`) | ✅ | Join-table row diffing; owning + inverse delete cleanup; ordered `List` hydration; single-column IDs (including `UUID`) are encoded to referenced-`@Id` physical storage and decoded before lookup |
 | `@ManyToMany` → **composite-key** owner/target | ✅ | Multi-column join table (composite PK + composite FK) |
 | `@ElementCollection` | ✅ | Basic / enum / `UUID` elements, mutable and record `@Embeddable` values, `Map` keys/values (including records), `@OrderColumn`, `List` |
 | `@MapKeyColumn` / `@MapKeyEnumerated` / `@MapKeyTemporal` / `@MapKeyClass` | ✅ | `@MapKeyClass` supports basic / enum / `@Embeddable` / single-`@Id` **entity** key classes (entity key stored as its `@Id` FK column, batch-hydrated); composite-`@Id` entity key classes fail-fast |

@@ -18,6 +18,7 @@ import reactor.test.StepVerifier;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -63,6 +64,32 @@ class ManyToManyIntegrationTest {
                     assertEquals(1, course.getStudents().size());
                     assertEquals("ada", course.getStudents().iterator().next().getName());
                 })
+                .verifyComplete();
+    }
+
+    @Test
+    void uuidIdsUseJoinColumnStorageForOwningInverseHydrationAndInverseDelete() {
+        SchemaInitializer schema =
+                new SimpleSchemaInitializer(support.operations(), support.metadataFactory(), support.dialect());
+        schema.create(UuidStudent.class, UuidCourse.class).block();
+
+        UuidCourse course = support.operations().save(new UuidCourse("Math")).block();
+        UuidStudent student = new UuidStudent("ada");
+        student.getCourses().add(course);
+        UuidStudent saved = support.operations().save(student).block();
+
+        StepVerifier.create(support.operations().findById(UuidStudent.class, saved.getId()))
+                .assertNext(loaded -> assertEquals(Set.of("Math"), loaded.getCourses().stream()
+                        .map(UuidCourse::getTitle).collect(Collectors.toSet())))
+                .verifyComplete();
+        StepVerifier.create(support.operations().findById(UuidCourse.class, course.getId()))
+                .assertNext(loaded -> assertEquals(Set.of("ada"), loaded.getStudents().stream()
+                        .map(UuidStudent::getName).collect(Collectors.toSet())))
+                .verifyComplete();
+
+        support.operations().delete(course).block();
+        StepVerifier.create(support.operations().findById(UuidStudent.class, saved.getId()))
+                .assertNext(loaded -> assertEquals(0, loaded.getCourses().size()))
                 .verifyComplete();
     }
 
@@ -204,6 +231,71 @@ class ManyToManyIntegrationTest {
         }
 
         public List<Student> getStudents() {
+            return students;
+        }
+    }
+
+    @Entity
+    @Table(name = "uuid_student")
+    public static class UuidStudent {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private UUID id;
+        private String name;
+
+        @ManyToMany
+        @JoinTable(name = "uuid_student_course",
+                joinColumns = @JoinColumn(name = "student_id"),
+                inverseJoinColumns = @JoinColumn(name = "course_id"))
+        private Set<UuidCourse> courses = new java.util.LinkedHashSet<>();
+
+        public UuidStudent() {
+        }
+
+        public UuidStudent(String name) {
+            this.name = name;
+        }
+
+        public UUID getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public Set<UuidCourse> getCourses() {
+            return courses;
+        }
+    }
+
+    @Entity
+    @Table(name = "uuid_course")
+    public static class UuidCourse {
+        @Id
+        @GeneratedValue(strategy = GenerationType.UUID)
+        private UUID id;
+        private String title;
+
+        @ManyToMany(mappedBy = "courses")
+        private Set<UuidStudent> students = new java.util.LinkedHashSet<>();
+
+        public UuidCourse() {
+        }
+
+        public UuidCourse(String title) {
+            this.title = title;
+        }
+
+        public UUID getId() {
+            return id;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public Set<UuidStudent> getStudents() {
             return students;
         }
     }
