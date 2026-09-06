@@ -147,9 +147,9 @@ public class NovaAutoConfiguration {
     }
 
     /**
-     * Eagerly builds metadata for every scanned {@code @Entity} at startup so the full entity set
-     * (including SINGLE_TABLE inheritance hierarchies) is known up front, JPA-style. Runs regardless
-     * of {@code nova.ddl-auto}.
+     * Registers scanned Jakarta {@code @Converter} classes before eagerly building metadata for every
+     * scanned {@code @Entity}, so converter selection and the full entity set (including SINGLE_TABLE
+     * inheritance hierarchies) are known up front. Runs regardless of {@code nova.ddl-auto}.
      */
     @Bean
     @ConditionalOnMissingBean

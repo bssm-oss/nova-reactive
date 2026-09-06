@@ -2,7 +2,7 @@
 
 # Getting started
 
-Nova `2.32.0` is available from Maven Central. Nova runs on Java 17 and
+Nova `2.33.0` is available from Maven Central. Nova runs on Java 17 and
 newer runtimes; the CI matrix verifies Temurin 17, 21, 25, and 26. Use the
 Gradle wrapper for development; Gradle 9.4 or newer is required when launching
 the build on Java 26. Entities are mapped with the standard
@@ -29,7 +29,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.32.0")
+    implementation("io.github.bssm-oss:nova:2.33.0")
 
     // The R2DBC driver for your database (pick one)
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
@@ -43,9 +43,9 @@ To pull in only a specific dialect instead of the aggregate, depend on `nova-cor
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-core:2.32.0")
-    implementation("io.github.bssm-oss:nova-r2dbc:2.32.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.32.0")
+    implementation("io.github.bssm-oss:nova-core:2.33.0")
+    implementation("io.github.bssm-oss:nova-r2dbc:2.33.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.33.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -55,12 +55,12 @@ Groovy DSL:
 ```groovy
 // build.gradle
 dependencies {
-    implementation 'io.github.bssm-oss:nova:2.32.0'
+    implementation 'io.github.bssm-oss:nova:2.33.0'
     runtimeOnly 'io.r2dbc:r2dbc-h2:1.0.0.RELEASE'
 }
 ```
 
-> **Source builds**: the development default is `2.32.0-SNAPSHOT`. Build from
+> **Source builds**: the development default is `2.33.0-SNAPSHOT`. Build from
 > source with that version or use the Central snapshots repository.
 >
 > ```kotlin
@@ -139,7 +139,7 @@ schema.create(Account.class)
       .block();
 ```
 
-By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. This also preserves existing `@TableGenerator` counters: only a missing generator row is seeded, so a restart never reuses identifiers. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
+By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. This also preserves existing `@TableGenerator` counters: only a missing generator row is seeded, so a restart never reuses identifiers. Multiple `@TableGenerator` declarations can share one physical generator table when they use the exact same `pkColumnName` and `valueColumnName`; give each declaration a distinct `pkColumnValue` so it owns a separate counter row. Reusing the same row is accepted only for identical complete definitions. Conflicting column layouts or row definitions are rejected before `create` or `recreate` emits DDL. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
 
 Batch and lifecycle variants:
 
@@ -162,6 +162,16 @@ nova:
   ddl-auto: create-drop
   entity-packages: com.example.domain   # optional; defaults to @SpringBootApplication's package
 ```
+
+The same effective entity packages are the only packages scanned for Jakarta
+`@Converter` classes. The starter registers every discovered converter before it
+preloads any entity metadata, so `@Converter(autoApply = true)` applies
+deterministically at startup. A converter outside those packages is not
+registered merely because it is on the classpath. Standalone
+`Nova.create(connectionFactory)` also does no classpath scan: register an
+auto-apply converter on an `EntityMetadataFactory` before requesting any entity
+metadata, then use that factory in your manually assembled operations. An
+explicit `@Convert(converter = ...)` does not require registration.
 
 See [Spring](spring.md) for the full property reference.
 

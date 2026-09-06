@@ -64,6 +64,13 @@ class AnnotatedQueryMethodTest {
         @Query(value = "SELECT * FROM accounts WHERE email = :email", nativeQuery = true)
         Flux<Account> nativeByEmail(@Param("email") String email);
 
+        @Query(value = "SELECT * FROM accounts WHERE email = :email", nativeQuery = true)
+        Mono<Account> nativeOneByEmail(@Param("email") String email);
+
+        Mono<Account> findFirstByEmailOrderByIdAsc(String email);
+
+        Mono<Account> findTopByEmailOrderByIdAsc(String email);
+
         @Modifying
         @Query("UPDATE Account a SET a.email = :email WHERE a.id = :id")
         Mono<Long> renameById(@Param("email") String email, @Param("id") Long id);
@@ -124,6 +131,27 @@ class AnnotatedQueryMethodTest {
         assertTrue(meta.nativeQuery());
         assertEquals(AnnotatedQueryMethod.Shape.FLUX, meta.shape());
         assertTrue(meta.isEntityElement(Account.class));
+    }
+
+    @Test
+    @DisplayName("native와 JPQL 엔티티 Mono는 같은 단건 반환 계약으로 파싱된다")
+    void nativeAndJpqlEntityMonoHaveMatchingSingleResultMetadata() {
+        AnnotatedQueryMethod jpql = parse(Repo.class, "byEmail", String.class);
+        AnnotatedQueryMethod nativeQuery = parse(Repo.class, "nativeOneByEmail", String.class);
+
+        assertEquals(AnnotatedQueryMethod.Shape.MONO_SINGLE, jpql.shape());
+        assertEquals(jpql.shape(), nativeQuery.shape());
+        assertEquals(jpql.elementType(), nativeQuery.elementType());
+        assertEquals(jpql.bindables(), nativeQuery.bindables());
+        assertFalse(jpql.nativeQuery());
+        assertTrue(nativeQuery.nativeQuery());
+    }
+
+    @Test
+    @DisplayName("derived findFirst/findTop은 @Query 파서가 가로채지 않는다")
+    void derivedFirstAndTopRemainOutsideAnnotatedQueryDispatch() {
+        assertNull(parse(Repo.class, "findFirstByEmailOrderByIdAsc", String.class));
+        assertNull(parse(Repo.class, "findTopByEmailOrderByIdAsc", String.class));
     }
 
     @Test

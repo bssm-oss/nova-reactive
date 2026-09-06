@@ -79,14 +79,17 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         List<Class<?>> all = copyOf(entityTypes);
         // generator 테이블(@TableGenerator)을 먼저 만들고 seed → entity 테이블 → link/collection table → FK 제약 순서로 만든다.
         // FK 제약(@ForeignKey)은 모든 테이블이 존재한 뒤 마지막 phase로 발행해 forward reference를 안전하게 처리한다.
-        return createTableGenerators(all, options)
-                .then(Flux.fromIterable(collapseToRoots(all))
-                        .concatMap(type -> createOne(type, options))
-                        .then())
-                .then(addOneToManyOrderColumns(all, options))
-                .then(createJoinTables(all, options))
-                .then(createCollectionTables(all, options))
-                .then(addForeignKeys(all, options));
+        return Mono.defer(() -> {
+            validateTableGeneratorLayouts(all);
+            return createTableGenerators(all, options)
+                    .then(Flux.fromIterable(collapseToRoots(all))
+                            .concatMap(type -> createOne(type, options))
+                            .then())
+                    .then(addOneToManyOrderColumns(all, options))
+                    .then(createJoinTables(all, options))
+                    .then(createCollectionTables(all, options))
+                    .then(addForeignKeys(all, options));
+        });
     }
 
     @Override
@@ -140,26 +143,29 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     @Override
     public Mono<Void> recreate(Iterable<Class<?>> entityTypes) {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
-        // Reverse drop order vs create so child tables are dropped before their parents
-        // (FK constraint friendly) and parents are created before children.
         List<Class<?>> all = copyOf(entityTypes);
-        List<Class<?>> ordered = collapseToRoots(all);
-        List<Class<?>> reversed = new ArrayList<>(ordered);
-        java.util.Collections.reverse(reversed);
         SchemaOptions dropOptions = SchemaOptions.defaults().withIfNotExists(true);
         SchemaOptions createOptions = SchemaOptions.defaults().withIfNotExists(false);
         // link/collection 드롭 → entity 드롭 → generator 테이블 드롭 → generator 테이블 생성+seed →
         // entity 생성 → link/collection 생성.
-        return dropCollectionTables(all, dropOptions)
-                .then(dropJoinTables(all, dropOptions))
-                .then(Flux.fromIterable(reversed).concatMap(type -> dropOne(type, dropOptions)).then())
-                .then(dropTableGenerators(all))
-                .then(createTableGenerators(all, createOptions))
-                .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
-                .then(addOneToManyOrderColumns(all, createOptions))
-                .then(createJoinTables(all, createOptions))
-                .then(createCollectionTables(all, createOptions))
-                .then(addForeignKeys(all, createOptions));
+        return Mono.defer(() -> {
+            validateTableGeneratorLayouts(all);
+            // Metadata-derived ordering is also deferred so invalid hierarchy metadata is a cold error
+            // and cannot escape while the recreate publisher is being assembled.
+            List<Class<?>> ordered = collapseToRoots(all);
+            List<Class<?>> reversed = new ArrayList<>(ordered);
+            java.util.Collections.reverse(reversed);
+            return dropCollectionTables(all, dropOptions)
+                    .then(dropJoinTables(all, dropOptions))
+                    .then(Flux.fromIterable(reversed).concatMap(type -> dropOne(type, dropOptions)).then())
+                    .then(dropTableGenerators(all))
+                    .then(createTableGenerators(all, createOptions))
+                    .then(Flux.fromIterable(ordered).concatMap(type -> createOne(type, createOptions)).then())
+                    .then(addOneToManyOrderColumns(all, createOptions))
+                    .then(createJoinTables(all, createOptions))
+                    .then(createCollectionTables(all, createOptions))
+                    .then(addForeignKeys(all, createOptions));
+        });
     }
 
     @Override
@@ -674,6 +680,50 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     }
 
     /**
+     * A physical generator table has exactly one pair of column names. Multiple
+     * logical generators may share it only when their {@code pkColumnValue}s
+     * identify distinct rows using that same layout.
+     */
+    private void validateTableGeneratorLayouts(List<Class<?>> types) {
+        LinkedHashMap<String, TableGeneratorInfo> firstByTable = new LinkedHashMap<>();
+        LinkedHashMap<String, TableGeneratorInfo> firstByRow = new LinkedHashMap<>();
+        for (Class<?> type : types) {
+            EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(schemaRootClass(type));
+            metadata.tableGenerator().ifPresent(info -> {
+                TableGeneratorInfo first = firstByTable.putIfAbsent(info.table(), info);
+                if (first != null && (!first.pkColumnName().equals(info.pkColumnName())
+                        || !first.valueColumnName().equals(info.valueColumnName()))) {
+                    throw new IllegalArgumentException("Conflicting @TableGenerator layouts for table '"
+                            + info.table() + "': " + tableGeneratorLayout(first) + " vs "
+                            + tableGeneratorLayout(info));
+                }
+                String rowKey = tableGeneratorRowKey(info);
+                TableGeneratorInfo firstRow = firstByRow.putIfAbsent(rowKey, info);
+                if (firstRow != null && !firstRow.equals(info)) {
+                    throw new IllegalArgumentException("Conflicting @TableGenerator definitions for table '"
+                            + info.table() + "' row '" + info.pkColumnValue() + "': "
+                            + tableGeneratorDefinition(firstRow) + " vs "
+                            + tableGeneratorDefinition(info));
+                }
+            });
+        }
+    }
+
+    private static String tableGeneratorLayout(TableGeneratorInfo info) {
+        return "(pkColumnName='" + info.pkColumnName() + "', valueColumnName='"
+                + info.valueColumnName() + "')";
+    }
+
+    private static String tableGeneratorDefinition(TableGeneratorInfo info) {
+        return tableGeneratorLayout(info) + ", initialValue=" + info.initialValue()
+                + ", allocationSize=" + info.allocationSize();
+    }
+
+    private static String tableGeneratorRowKey(TableGeneratorInfo info) {
+        return info.table() + "\u0000" + info.pkColumnValue();
+    }
+
+    /**
      * 주어진 엔티티들의 {@code @TableGenerator} 정의를 (table, pkColumnValue)별로 dedupe해 모은다.
      */
     private List<TableGeneratorInfo> tableGeneratorDefinitions(List<Class<?>> types) {
@@ -681,7 +731,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         for (Class<?> type : types) {
             EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(schemaRootClass(type));
             metadata.tableGenerator().ifPresent(info ->
-                    byRow.putIfAbsent(info.table() + ' ' + info.pkColumnValue(), info));
+                    byRow.putIfAbsent(tableGeneratorRowKey(info), info));
         }
         return new ArrayList<>(byRow.values());
     }

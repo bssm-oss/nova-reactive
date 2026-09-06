@@ -21,17 +21,17 @@ import java.lang.annotation.Target;
  *       {@code Mono<T>}/{@code Mono<Page<T>>}/{@code Mono<Slice<T>>}(Nova 또는 Spring 타입), 스칼라
  *       {@code SELECT} → {@code Flux<scalar>}/{@code Mono<scalar>}. Wave1 JPQL 서브시스템으로 실행한다.</li>
  *   <li><b>native</b>({@code nativeQuery=true}): 엔티티 반환 {@code SELECT}(엔티티 컬럼을 모두 select)와
- *       {@link Modifying} 벌크 UPDATE/DELETE/INSERT. native 스칼라 투영과 native+{@code Pageable}은
- *       v1 미지원(fail-fast).</li>
+ *       {@link Modifying} 벌크 UPDATE/DELETE/INSERT. native 스칼라 및 생성자 투영, native
+ *       {@code Pageable}은 v1 미지원(fail-fast).</li>
  *   <li>{@link Modifying}가 붙은 메서드는 {@code executeUpdate} 경로(영향 행 수)로 실행된다.
  *       {@code @Modifying} 없이 UPDATE/DELETE JPQL을 지정하면 fail-fast 거부한다.</li>
  * </ul>
  *
- * <p><b>단건 반환 시맨틱:</b> JPQL {@code @Query}의 {@code Mono<T>}(비-Page/Slice) 반환은
- * zero-or-one이다. 행이 없으면 빈 {@code Mono}로 완료하고, 정확히 한 행을 발행하며, 여러 행이면
- * {@code JpqlException}으로 실패한다. native {@code @Query}의 {@code Mono<T>}는 기존처럼 결과
- * 스트림의 첫 행만 발행한다. 파생 쿼리 {@code findFirst*}/{@code findTop*}는 {@code LIMIT 1}을
- * 적용하는 명시적 제한 연산이다.
+ * <p><b>단건 반환 시맨틱:</b> JPQL 또는 native {@code @Query}의 {@code Mono<T>}(비-Page/Slice)
+ * 반환은 zero-or-one이다. 행이 없으면 빈 {@code Mono}로 완료하고, 정확히 한 행을 발행하며, 여러 행이면
+ * JPQL은 {@code JpqlException}, native는 {@code AnnotatedQueryException}으로 실패한다. 파생 쿼리
+ * {@code findFirst*}/{@code findTop*}와 SQL의 명시적 {@code LIMIT}은 첫 행으로 제한하는 opt-in
+ * 연산이다.
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
@@ -51,9 +51,9 @@ public @interface Query {
     boolean nativeQuery() default false;
 
     /**
-     * {@code Pageable}이 있는 쿼리에서 전체 행 수를 계산할 count 쿼리(JPQL 또는 native, {@code value()}와
-     * 동일한 언어). 비우면 Nova가 원 쿼리를 페이징 없이 실행한 결과 개수로 total을 계산한다(정확하지만
-     * 추가 조회 비용이 있다).
+     * JPQL {@code Pageable} 쿼리에서 전체 행 수를 계산할 count 쿼리. native {@code @Query}는
+     * {@code Pageable}/Page/Slice를 지원하지 않으므로 이 속성을 사용하지 않는다. 비우면 Nova가 원 JPQL
+     * 쿼리를 페이징 없이 실행한 결과 개수로 total을 계산한다(정확하지만 추가 조회 비용이 있다).
      */
     String countQuery() default "";
 }

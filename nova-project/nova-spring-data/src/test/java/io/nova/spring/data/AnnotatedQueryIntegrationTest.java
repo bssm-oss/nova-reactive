@@ -13,6 +13,7 @@ import io.nova.query.QuerySpec;
 import io.nova.query.Slice;
 import io.nova.query.jpql.JpqlExecutor;
 import io.nova.query.jpql.JpqlException;
+import io.nova.spring.data.query.AnnotatedQueryException;
 import io.nova.spring.data.query.AnnotatedQueries;
 import io.nova.r2dbc.R2dbcSqlExecutor;
 import io.nova.r2dbc.R2dbcTransactionManager;
@@ -206,14 +207,34 @@ class AnnotatedQueryIntegrationTest {
     }
 
     @Test
-    @DisplayName("native @Query 엔티티 Mono")
-    void nativeEntityMono() {
+    @DisplayName("native @Query 엔티티 Mono는 0 또는 정확히 한 행을 발행한다")
+    void nativeEntityMonoZeroOrOne() {
         StepVerifier.create(repository.nativeByName("Cara"))
                 .assertNext(a -> {
                     assertEquals("Cara", a.getName());
                     assertEquals(20, a.getScore());
                 })
                 .verifyComplete();
+        StepVerifier.create(repository.nativeByName("Nobody"))
+                .verifyComplete();
+        StepVerifier.create(repository.nativeWithMinScore(20))
+                .expectErrorSatisfies(error -> assertEquals(AnnotatedQueryException.class, error.getClass()))
+                .verify();
+    }
+
+    @Test
+    @DisplayName("native @Query 엔티티 Mono는 두 번째 행 후 취소하고 세 번째 행을 요청하지 않는다")
+    void nativeEntityMonoCancelsAfterSecondRow() {
+        TestPublisher<Account> rows = TestPublisher.create();
+
+        StepVerifier.create(deferredNativeEntityMono(rows))
+                .then(() -> rows.next(new Account(1L, "Ada", 30)))
+                .then(() -> rows.next(new Account(2L, "Bob", 10)))
+                .expectErrorSatisfies(error -> assertEquals(AnnotatedQueryException.class, error.getClass()))
+                .verify();
+
+        rows.assertCancelled();
+        rows.assertMaxRequested(2);
     }
 
     @Test
@@ -420,6 +441,28 @@ class AnnotatedQueryIntegrationTest {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private Mono<Account> deferredNativeEntityMono(TestPublisher<Account> rows) {
+        ReactiveEntityOperations deferredOperations = (ReactiveEntityOperations) Proxy.newProxyInstance(
+                ReactiveEntityOperations.class.getClassLoader(),
+                new Class<?>[]{ReactiveEntityOperations.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("findAll") && args.length == 3) {
+                        return rows.flux();
+                    }
+                    throw new UnsupportedOperationException(method.toString());
+                });
+        AnnotatedQueries queries = new AnnotatedQueries(
+                Account.class, deferredOperations, null, new H2Dialect());
+        try {
+            return (Mono<Account>) queries.tryDispatch(
+                    AccountRepository.class.getMethod("nativeAll"),
+                    new Object[0]).orElseThrow();
+        } catch (NoSuchMethodException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
     // ------------------------------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------------------------------
@@ -504,6 +547,13 @@ class AnnotatedQueryIntegrationTest {
 
         @Query(value = "SELECT * FROM \"accounts_q\" WHERE \"name\" = :name", nativeQuery = true)
         Mono<Account> nativeByName(@Param("name") String name);
+
+        @Query(value = "SELECT * FROM \"accounts_q\" WHERE \"score\" >= :min ORDER BY \"name\"",
+                nativeQuery = true)
+        Mono<Account> nativeWithMinScore(@Param("min") int min);
+
+        @Query(value = "SELECT * FROM \"accounts_q\"", nativeQuery = true)
+        Mono<Account> nativeAll();
 
         @Modifying
         @Query("UPDATE Account a SET a.score = a.score + :delta WHERE a.score >= :min")

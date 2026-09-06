@@ -140,6 +140,72 @@ class TableGeneratorH2IntegrationTest {
                 "동시 발급된 TABLE 전략 id는 전부 유일해야 한다(중복 없음)");
     }
 
+    @Test
+    void sharedTableGeneratorUsesOneLayoutWithIndependentCounterRows() {
+        ConnectionFactory cf = freshConnectionFactory();
+        SchemaInitializer schema = Nova.schemaInitializer(cf);
+        ReactiveEntityOperations operations = Nova.create(cf);
+
+        StepVerifier.create(
+                schema.create(SharedGeneratorLeft.class, SharedGeneratorRight.class)
+                        .then(operations.save(new SharedGeneratorLeft()))
+                        .flatMap(left -> {
+                            assertEquals(7L, left.getId());
+                            return operations.save(new SharedGeneratorRight());
+                        })
+                        .flatMap(right -> {
+                            assertEquals(20L, right.getId());
+                            return operations.save(new SharedGeneratorLeft());
+                        })
+        ).assertNext(left -> assertEquals(8L, left.getId(),
+                "a shared generator table must keep each pkColumnValue counter independent"))
+                .verifyComplete();
+    }
+
+    @Entity
+    @Table(name = "shared_generator_left")
+    static class SharedGeneratorLeft {
+        @Id
+        @GeneratedValue(strategy = GenerationType.TABLE, generator = "shared_left")
+        @TableGenerator(
+                name = "shared_left",
+                table = "shared_id_generators",
+                pkColumnName = "generator_key",
+                valueColumnName = "generator_value",
+                pkColumnValue = "left",
+                initialValue = 7)
+        private Long id;
+
+        SharedGeneratorLeft() {
+        }
+
+        Long getId() {
+            return id;
+        }
+    }
+
+    @Entity
+    @Table(name = "shared_generator_right")
+    static class SharedGeneratorRight {
+        @Id
+        @GeneratedValue(strategy = GenerationType.TABLE, generator = "shared_right")
+        @TableGenerator(
+                name = "shared_right",
+                table = "shared_id_generators",
+                pkColumnName = "generator_key",
+                valueColumnName = "generator_value",
+                pkColumnValue = "right",
+                initialValue = 20)
+        private Long id;
+
+        SharedGeneratorRight() {
+        }
+
+        Long getId() {
+            return id;
+        }
+    }
+
     @Entity
     @Table(name = "single_alloc_accounts")
     static class SingleAllocAccount {

@@ -9,8 +9,8 @@ Adding `nova-spring-boot-starter` registers every core bean via `NovaAutoConfigu
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.32.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.32.0")
+    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.33.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.33.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -32,7 +32,14 @@ dependencies {
 
 Add a `SqlExecutionListener` bean (e.g. `MicrometerSqlExecutionListener`) to the context and it is automatically composed into the executor.
 
-The starter also registers `novaEntityPreloadRunner`, which eagerly builds metadata for every `@Entity` in `nova.entity-packages` (or the auto-configuration packages) at startup — regardless of `nova.ddl-auto`. This mirrors a JPA persistence unit knowing all of its entities up front, and is what lets `SINGLE_TABLE` inheritance dispatch a polymorphic `findAll(Vehicle.class)` to the right concrete subtypes. Entity metadata build errors surface at startup (fail-fast) rather than on first query.
+The starter also registers `novaEntityPreloadRunner`, which at startup scans
+`nova.entity-packages` (or the auto-configuration packages) for both `@Entity` and Jakarta
+`@Converter` classes — regardless of `nova.ddl-auto`. It registers every discovered converter
+before eagerly building metadata for every discovered entity, so `autoApply` conversion is
+deterministic. This mirrors a JPA persistence unit knowing all of its entities up front, and is
+what lets `SINGLE_TABLE` inheritance dispatch a polymorphic `findAll(Vehicle.class)` to the
+right concrete subtypes. Entity metadata build errors surface at startup (fail-fast) rather than
+on first query. Only schema creation or validation is conditional on `nova.ddl-auto`.
 
 ### Schema bootstrap (`nova.ddl-auto`)
 
@@ -66,7 +73,7 @@ nova:
 | `nova.pool.acquire-timeout`       | `Duration`      | `PoolConfig.defaults()` value | Acquire wait timeout                                  |
 | `nova.slow-query.threshold-ms`    | `Long`          | (unset)                       | When set, registers `SlowQueryLoggingListener`         |
 | `nova.ddl-auto`                   | `DdlAuto`       | `none`                        | `none` / `create` / `create-drop` schema bootstrap     |
-| `nova.entity-packages`            | `List<String>`  | (empty → AutoConfigurationPackages) | Packages to scan for `@Entity` when `ddl-auto` runs |
+| `nova.entity-packages`            | `List<String>`  | (empty → AutoConfigurationPackages) | Startup packages for managed `@Entity` and Jakarta `@Converter` discovery; schema creation still depends on `ddl-auto` |
 
 > The starter only exposes a `PoolConfig` bean; it does not bundle a pool implementation such as `r2dbc-pool`. If you need pooling, add the dependency yourself and feed this `PoolConfig` into your `ConnectionFactory` bean.
 
@@ -74,7 +81,7 @@ nova:
 
 ## Spring Data-style repositories (`nova-spring-data`)
 
-The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.32.0`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
+The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.33.0`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
 
 ```java
 import io.nova.spring.data.ReactiveCrudRepository;
@@ -105,12 +112,18 @@ Mono<Long> delete(T entity);
 Mono<Long> deleteAll(Iterable<T> entities);
 ```
 
-### Annotated JPQL queries
+### Annotated queries
 
-JPQL-backed `@Query` methods returning `Mono<T>` are zero-or-one queries: zero rows
-complete empty, one row is emitted, and multiple rows fail with `JpqlException`. This
-does not truncate results. Derived `findFirst` and `findTop` methods are distinct
-explicit limiting operations and use `LIMIT 1`.
+JPQL-backed and native entity `@Query` methods returning `Mono<T>` are zero-or-one
+queries: zero rows complete empty, one row is emitted, and multiple rows fail with
+`JpqlException` for JPQL or `AnnotatedQueryException` for native SQL. This does not
+truncate results. Derived `findFirst` and `findTop` methods, and an explicit SQL
+`LIMIT`, are distinct opt-in limiting operations.
+
+Native `@Query(nativeQuery = true)` supports entity `SELECT` statements that select all
+entity columns and `@Modifying` bulk `UPDATE`, `DELETE`, and `INSERT` statements.
+Native scalar and constructor projections, and native queries with `Pageable`, fail fast;
+use JPQL for those query shapes.
 
 ### Derived query methods
 
@@ -152,6 +165,11 @@ Mono<Slice<Author>> findByActiveTrue(Pageable page);          // window + hasNex
 
 A `Pageable` parameter is only valid on the `find`-all subject. Pairing it with a non-paging shape or subject — `count`/`exists`/`delete`, or a single-result `Mono<T>` / `findFirst` / `findOne` / `findTop` / `findTop<N>` — fails fast at parse time with an `IllegalArgumentException`.
 
-**Limitations** — `@Embedded` paths in projections and `@Query`-style native queries are not supported. Use `findAll(QuerySpec)` (or, with [`nova-metamodel`](metamodel.md), the generated property-name constants) for those cases.
+**Limitations** — `@Embedded` paths in projections are unsupported. Native `@Query` supports
+entity `SELECT` statements that select all entity columns and `@Modifying` bulk `UPDATE`,
+`DELETE`, and `INSERT`; native scalar and constructor projections, and native
+`Pageable`/`Page`/`Slice` query shapes, fail fast. Use JPQL for unsupported projection and
+paging shapes, or `findAll(QuerySpec)` (with [`nova-metamodel`](metamodel.md)'s generated
+property-name constants where useful).
 
 Misuse — unknown property, parameter-count mismatch, unrecognized keyword suffix — fails at the first call to that method with an `IllegalArgumentException` carrying a precise diagnostic. Method names whose subject prefix does not match (`saveAndPublish`, `magicMethod`, …) fall through to the existing `UnsupportedOperationException` as before.

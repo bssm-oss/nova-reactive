@@ -35,7 +35,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | `@Entity` / `@Table` / `@Column` | ✅ | `name` / `length` / `precision` / `scale` / `secondPrecision` / `insertable` / `updatable` / `nullable`; JPA 3.2 `check`, `comment`, and `options` are rendered for newly-created tables/columns |
-| `@Id` + `@GeneratedValue` | ✅ | `IDENTITY`, `SEQUENCE`, `TABLE` (`@TableGenerator`), `AUTO` (maps to `IDENTITY`), `UUID` |
+| `@Id` + `@GeneratedValue` | ✅ | `IDENTITY`, `SEQUENCE`, `TABLE` (`@TableGenerator`), `AUTO` (maps to `IDENTITY`), `UUID`; `@TableGenerator`s sharing a table use the same pk/value column names and distinct row keys. A duplicate row key requires an identical complete definition; conflicts fail before DDL. |
 | `@Basic` | ✅ | `optional = false` enforced as `NOT NULL` (combines with `@Column(nullable)`); `fetch` is accepted but inert |
 | `@EmbeddedId` / `@IdClass` composite keys | ✅ | `findById` / `deleteById` / soft-delete / batch-delete / optimistic + pessimistic lock |
 | `@Embeddable` / `@Embedded` / `@AttributeOverride` | ✅ | Mutable and Java record value types are flattened into the owner table; otherwise-unmapped embeddable-typed attributes are implicit; nested outer overrides take precedence |
@@ -43,7 +43,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | `@EnumeratedValue` (JPA 3.2) | ✅ | Enum constant field values are used as the stored representation; requires a supported `String`/numeric value type |
 | `@Temporal` (`java.util.Date` / `Calendar`) | ✅ | `DATE` / `TIME` / `TIMESTAMP`; `java.time.*` supported natively |
 | `@Lob` | ✅ | |
-| `@Convert` + `jakarta.persistence.AttributeConverter` | ✅ | Storage-type driven read/write; managed converter classes support `autoApply`, explicit override, and disable semantics |
+| `@Convert` + `jakarta.persistence.AttributeConverter` | ✅ | Storage-type driven read/write; a Jakarta converter must be registered before metadata build (`registerJpaConverter` or `registerManagedClasses`), unless named explicitly by `@Convert`. Managed `autoApply` covers basic/inherited/embedded/element-collection key/value attributes, not ids, versions, relationships, or explicit enum/temporal/JSON mappings; explicit conversion overrides and `disableConversion` suppresses it. `attributeName` supports embedded paths and map `key` / `value`. Spring discovery registers scanned `@Converter` classes before preloading metadata. Nova `registerConverter` is a separate SPI, not Jakarta discovery. |
 | Scalar types | ✅ | `UUID`, `Float`, `Short`, `BigDecimal`, `BigInteger`(driver-permitting), … — driver-verified. `BigDecimal` DDL preserves declared `@Column(precision, scale)` on scalar, id/FK, join-table, and collection-table storage; `@Column(columnDefinition)` is rejected on every physical `BigDecimal` storage column. MySQL/MariaDB reject only a fully unspecified shape and normalize scale-only to `decimal(65, scale)`. |
 | `@Version` optimistic locking | ✅ | `Long` / `Integer` / `Short` / `LocalDateTime`; surfaces `OptimisticLockingFailureException` |
 | `@Transient` | ✅ | Field annotations are excluded; under effective `@Access(PROPERTY)`, getter annotations are also excluded |
@@ -122,7 +122,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | Spring Data-style `ReactiveCrudRepository<T, ID>` + `Pageable` / `Sort` | ✅ | `nova-spring-data`, opt-in `SpringDataReactiveCrudRepository` |
-| `@Query` (JPQL) on repository methods | ✅ | `@EnableNovaRepositories`, `BeanFactoryAware` auto-wiring. `Mono<T>` is zero-or-one; non-unique results fail rather than truncate. Use derived `findFirst...` / `findTop...` for explicit one-row truncation. |
+| `@Query` (JPQL or native) on repository methods | ✅ | `@EnableNovaRepositories`, `BeanFactoryAware` auto-wiring. Entity-returning `Mono<T>` is zero-or-one for both JPQL and native queries: a second row fails rather than truncating, and the bounded two-row check cancels upstream before a third row is requested. Use derived `findFirst...` / `findTop...` for explicit one-row truncation. Native reads support entity `Mono`/`Flux` only; scalar/projection results and `Pageable`/`Page`/`Slice` are unsupported — use JPQL for those forms. |
 
 ---
 
@@ -165,4 +165,4 @@ These declare cleanly but are rejected with a message until implemented — Nova
 > `BigDecimal` whose scale identity matters as an id, composite-id component, or relationship key;
 > use a round-trip-stable key and `compareTo` for numeric business equality.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.32.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.33.0`).
