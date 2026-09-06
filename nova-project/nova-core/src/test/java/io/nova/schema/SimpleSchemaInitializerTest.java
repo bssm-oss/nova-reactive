@@ -259,6 +259,27 @@ class SimpleSchemaInitializerTest {
                 executor.executed);
     }
 
+    @Test
+    void conflictingSharedTableGeneratorRowDefinitionsFailIndependentOfInputOrder() {
+        for (List<Class<?>> order : List.of(
+                List.of(ConflictingGeneratorRowLeft.class, ConflictingGeneratorRowRight.class),
+                List.of(ConflictingGeneratorRowRight.class, ConflictingGeneratorRowLeft.class))) {
+            executor.executed.clear();
+
+            StepVerifier.create(initializer.create(order))
+                    .expectErrorSatisfies(error -> {
+                        assertTrue(error instanceof IllegalArgumentException);
+                        assertTrue(error.getMessage().contains("shared_row_generators"));
+                        assertTrue(error.getMessage().contains("shared"));
+                        assertTrue(error.getMessage().contains("initialValue"));
+                    })
+                    .verify();
+
+            assertEquals(List.of(), executor.executed,
+                    "conflicting duplicate generator rows must fail before DDL");
+        }
+    }
+
     @jakarta.persistence.Entity
     @jakarta.persistence.Table(name = "conflicting_generator_left")
     static class ConflictingGeneratorLeft {
@@ -300,6 +321,28 @@ class SimpleSchemaInitializerTest {
         @jakarta.persistence.TableGenerator(
                 name = "right", table = "shared_id_generators", pkColumnName = "generator_key",
                 valueColumnName = "generator_value", pkColumnValue = "right", initialValue = 20)
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class ConflictingGeneratorRowLeft {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.TABLE, generator = "left")
+        @jakarta.persistence.TableGenerator(
+                name = "left", table = "shared_row_generators", pkColumnName = "generator_key",
+                valueColumnName = "generator_value", pkColumnValue = "shared",
+                initialValue = 3, allocationSize = 1)
+        Long id;
+    }
+
+    @jakarta.persistence.Entity
+    static class ConflictingGeneratorRowRight {
+        @jakarta.persistence.Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.TABLE, generator = "right")
+        @jakarta.persistence.TableGenerator(
+                name = "right", table = "shared_row_generators", pkColumnName = "generator_key",
+                valueColumnName = "generator_value", pkColumnValue = "shared",
+                initialValue = 9, allocationSize = 5)
         Long id;
     }
 

@@ -29,8 +29,10 @@ public class NovaProperties {
     private DdlAuto ddlAuto = DdlAuto.NONE;
 
     /**
-     * Explicit list of packages to scan for {@code @Entity} classes when
-     * {@link #ddlAuto} runs the bootstrap. When empty, the starter falls back
+     * Explicit list of packages scanned at startup for managed {@code @Entity} and Jakarta
+     * {@code @Converter} classes. Converters are registered before entity metadata is preloaded,
+     * regardless of {@link #ddlAuto}; only schema creation depends on that setting. When empty,
+     * the starter falls back
      * to the packages registered by
      * {@code @SpringBootApplication}/{@code @EnableAutoConfiguration} via
      * {@code AutoConfigurationPackages}.

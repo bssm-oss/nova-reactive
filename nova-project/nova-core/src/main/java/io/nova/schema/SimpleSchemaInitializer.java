@@ -143,18 +143,18 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     @Override
     public Mono<Void> recreate(Iterable<Class<?>> entityTypes) {
         Objects.requireNonNull(entityTypes, "entityTypes must not be null");
-        // Reverse drop order vs create so child tables are dropped before their parents
-        // (FK constraint friendly) and parents are created before children.
         List<Class<?>> all = copyOf(entityTypes);
-        List<Class<?>> ordered = collapseToRoots(all);
-        List<Class<?>> reversed = new ArrayList<>(ordered);
-        java.util.Collections.reverse(reversed);
         SchemaOptions dropOptions = SchemaOptions.defaults().withIfNotExists(true);
         SchemaOptions createOptions = SchemaOptions.defaults().withIfNotExists(false);
         // link/collection 드롭 → entity 드롭 → generator 테이블 드롭 → generator 테이블 생성+seed →
         // entity 생성 → link/collection 생성.
         return Mono.defer(() -> {
             validateTableGeneratorLayouts(all);
+            // Metadata-derived ordering is also deferred so invalid hierarchy metadata is a cold error
+            // and cannot escape while the recreate publisher is being assembled.
+            List<Class<?>> ordered = collapseToRoots(all);
+            List<Class<?>> reversed = new ArrayList<>(ordered);
+            java.util.Collections.reverse(reversed);
             return dropCollectionTables(all, dropOptions)
                     .then(dropJoinTables(all, dropOptions))
                     .then(Flux.fromIterable(reversed).concatMap(type -> dropOne(type, dropOptions)).then())
@@ -686,6 +686,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
      */
     private void validateTableGeneratorLayouts(List<Class<?>> types) {
         LinkedHashMap<String, TableGeneratorInfo> firstByTable = new LinkedHashMap<>();
+        LinkedHashMap<String, TableGeneratorInfo> firstByRow = new LinkedHashMap<>();
         for (Class<?> type : types) {
             EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(schemaRootClass(type));
             metadata.tableGenerator().ifPresent(info -> {
@@ -696,6 +697,14 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
                             + info.table() + "': " + tableGeneratorLayout(first) + " vs "
                             + tableGeneratorLayout(info));
                 }
+                String rowKey = tableGeneratorRowKey(info);
+                TableGeneratorInfo firstRow = firstByRow.putIfAbsent(rowKey, info);
+                if (firstRow != null && !firstRow.equals(info)) {
+                    throw new IllegalArgumentException("Conflicting @TableGenerator definitions for table '"
+                            + info.table() + "' row '" + info.pkColumnValue() + "': "
+                            + tableGeneratorDefinition(firstRow) + " vs "
+                            + tableGeneratorDefinition(info));
+                }
             });
         }
     }
@@ -703,6 +712,15 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
     private static String tableGeneratorLayout(TableGeneratorInfo info) {
         return "(pkColumnName='" + info.pkColumnName() + "', valueColumnName='"
                 + info.valueColumnName() + "')";
+    }
+
+    private static String tableGeneratorDefinition(TableGeneratorInfo info) {
+        return tableGeneratorLayout(info) + ", initialValue=" + info.initialValue()
+                + ", allocationSize=" + info.allocationSize();
+    }
+
+    private static String tableGeneratorRowKey(TableGeneratorInfo info) {
+        return info.table() + "\u0000" + info.pkColumnValue();
     }
 
     /**
@@ -713,7 +731,7 @@ public final class SimpleSchemaInitializer implements SchemaInitializer {
         for (Class<?> type : types) {
             EntityMetadata<?> metadata = metadataFactory.getEntityMetadata(schemaRootClass(type));
             metadata.tableGenerator().ifPresent(info ->
-                    byRow.putIfAbsent(info.table() + ' ' + info.pkColumnValue(), info));
+                    byRow.putIfAbsent(tableGeneratorRowKey(info), info));
         }
         return new ArrayList<>(byRow.values());
     }

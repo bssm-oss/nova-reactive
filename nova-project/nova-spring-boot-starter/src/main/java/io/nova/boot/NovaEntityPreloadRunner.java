@@ -15,9 +15,10 @@ import java.util.List;
 import java.util.ArrayList;
 
 /**
- * Eagerly builds {@link io.nova.metadata.EntityMetadata} for every {@code @Entity} discovered in the
- * configured {@code nova.entity-packages} (or {@link AutoConfigurationPackages} when unset) at context
- * refresh — mirroring how a JPA persistence unit knows all of its entities at bootstrap.
+ * Registers each Jakarta {@code @Converter} and eagerly builds
+ * {@link io.nova.metadata.EntityMetadata} for every {@code @Entity} discovered in configured
+ * {@code nova.entity-packages} (or {@link AutoConfigurationPackages} when unset) at context refresh.
+ * Converter registration precedes metadata construction and runs regardless of schema bootstrap mode.
  *
  * <p>This matters for SINGLE_TABLE inheritance: a polymorphic root query ({@code findAll(Vehicle.class)})
  * can only dispatch each row to the right concrete subtype if every subtype's metadata has already been

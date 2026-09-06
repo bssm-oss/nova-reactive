@@ -35,7 +35,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 | Feature | Status | Notes |
 |---|---|---|
 | `@Entity` / `@Table` / `@Column` | ✅ | `name` / `length` / `precision` / `scale` / `secondPrecision` / `insertable` / `updatable` / `nullable`; JPA 3.2 `check`, `comment`, and `options` are rendered for newly-created tables/columns |
-| `@Id` + `@GeneratedValue` | ✅ | `IDENTITY`, `SEQUENCE`, `TABLE` (`@TableGenerator`), `AUTO` (maps to `IDENTITY`), `UUID`; `@TableGenerator`s sharing a generator table must use the same pk and value column names, while distinct pk values are seeded as separate rows |
+| `@Id` + `@GeneratedValue` | ✅ | `IDENTITY`, `SEQUENCE`, `TABLE` (`@TableGenerator`), `AUTO` (maps to `IDENTITY`), `UUID`; `@TableGenerator`s sharing a table use the same pk/value column names and distinct row keys. A duplicate row key requires an identical complete definition; conflicts fail before DDL. |
 | `@Basic` | ✅ | `optional = false` enforced as `NOT NULL` (combines with `@Column(nullable)`); `fetch` is accepted but inert |
 | `@EmbeddedId` / `@IdClass` composite keys | ✅ | `findById` / `deleteById` / soft-delete / batch-delete / optimistic + pessimistic lock |
 | `@Embeddable` / `@Embedded` / `@AttributeOverride` | ✅ | Mutable and Java record value types are flattened into the owner table; otherwise-unmapped embeddable-typed attributes are implicit; nested outer overrides take precedence |

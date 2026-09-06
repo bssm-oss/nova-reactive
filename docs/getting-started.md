@@ -139,7 +139,7 @@ schema.create(Account.class)
       .block();
 ```
 
-By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. This also preserves existing `@TableGenerator` counters: only a missing generator row is seeded, so a restart never reuses identifiers. Multiple `@TableGenerator` declarations can share one physical generator table when they use the exact same `pkColumnName` and `valueColumnName`; give each declaration a distinct `pkColumnValue` so it owns a separate counter row. Conflicting column layouts are rejected before `create` or `recreate` emits DDL. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
+By default, statements are emitted as `CREATE TABLE IF NOT EXISTS` so re-running the bootstrap is safe. This also preserves existing `@TableGenerator` counters: only a missing generator row is seeded, so a restart never reuses identifiers. Multiple `@TableGenerator` declarations can share one physical generator table when they use the exact same `pkColumnName` and `valueColumnName`; give each declaration a distinct `pkColumnValue` so it owns a separate counter row. Reusing the same row is accepted only for identical complete definitions. Conflicting column layouts or row definitions are rejected before `create` or `recreate` emits DDL. Pass `SchemaOptions.defaults().withIfNotExists(false)` to force a raw `CREATE TABLE` instead.
 
 Batch and lifecycle variants:
 
