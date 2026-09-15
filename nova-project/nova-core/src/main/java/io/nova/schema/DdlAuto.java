@@ -11,11 +11,15 @@ public enum DdlAuto {
     NONE,
 
     /**
-     * Validate that every entity's primary and secondary tables and their mapped
-     * columns exist, failing startup with the collected missing-table/column problems.
-     * Names are obtained through the dialect's catalog queries and compared
-     * case-insensitively. Column types and constraints are not compared. For full
-     * schema validation use a migration tool such as Flyway or Liquibase.
+     * Validate catalog-visible tables and columns represented by each ordinary entity
+     * or collapsed inheritance root, failing startup with the collected problems.
+     * Ordinary entity primary columns, secondary tables, and their mapped columns
+     * are checked; a {@code SINGLE_TABLE} root also includes its mapped columns and
+     * discriminator.
+     * {@code JOINED}/{@code TABLE_PER_CLASS} subtype tables, subtype-only secondary
+     * tables, generator/join/collection tables, order columns, indexes, constraints,
+     * and column types are not checked. Names are compared case-insensitively. Use a
+     * migration tool such as Flyway or Liquibase for complete validation.
      */
     VALIDATE,
 

@@ -51,7 +51,15 @@ The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set
 | `update` | `CREATE TABLE IF NOT EXISTS` (plus indexes) — creates missing tables only, never drops. Unlike Hibernate, Nova does not `ALTER` existing tables to add missing columns. |
 | `create` | Drop the tables (if any) and recreate them — destructive, matching Hibernate's `create`. |
 | `create-drop` | Like `create`, and also `DROP TABLE IF EXISTS` in reverse order on context close via `DisposableBean#destroy()` (FK-friendly). |
-| `validate` | Checks that a table **and all mapped columns** exist for every entity (via the dialect's catalog queries, e.g. `information_schema.tables` / `.columns`); **fails startup** listing any missing tables/columns. Column types are not compared. |
+| `validate` | Uses the dialect's catalog queries (for example, `information_schema.tables` / `.columns`) to check ordinary entity tables and inheritance-root metadata, and **fails startup** with the collected missing-table/column problems. |
+
+Validation collapses inheritance hierarchies to their roots. It checks an ordinary entity's
+primary table columns plus its secondary tables and their mapped columns; for `SINGLE_TABLE`, it
+checks the root table's mapped columns and discriminator plus secondary tables present on the
+collapsed root metadata. It does not validate `JOINED` / `TABLE_PER_CLASS` subtype physical
+tables, subtype-only secondary tables, generator tables, join tables, collection tables, order
+columns, indexes, constraints, or column types. Use a migration tool for complete schema
+validation.
 
 Production deployments should keep the default of `none` and manage schema with a real migration tool such as Flyway or Liquibase.
 

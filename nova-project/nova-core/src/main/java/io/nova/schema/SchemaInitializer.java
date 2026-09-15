@@ -62,11 +62,15 @@ public interface SchemaInitializer {
     Mono<Void> recreate(Iterable<Class<?>> entityTypes);
 
     /**
-     * Verifies that every given entity's primary and secondary tables and mapped
-     * columns exist. Completes empty when all are present, or errors with the
-     * collected missing-table/column problems. Table and column names are compared
-     * case-insensitively so dialect identifier case-folding does not cause false
-     * negatives. Column types and constraints are not compared.
+     * Verifies catalog-visible tables and columns represented by each ordinary entity
+     * or collapsed inheritance root. Ordinary entity primary columns, secondary
+     * tables, and their mapped columns are checked; a {@code SINGLE_TABLE} root also
+     * includes its mapped columns and discriminator. Completes empty when that scope
+     * is present, or errors with the collected missing-table/column problems. Table
+     * and column names are compared case-insensitively.
+     * {@code JOINED}/{@code TABLE_PER_CLASS} subtype tables,
+     * subtype-only secondary tables, generator/join/collection tables, order columns,
+     * indexes, constraints, and column types are not checked.
      */
     Mono<Void> validate(Iterable<Class<?>> entityTypes);
 }

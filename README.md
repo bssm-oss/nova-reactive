@@ -29,7 +29,8 @@ It keeps the JPA-style annotation model that Java developers already know
 while exposing every persistence API as `Mono` / `Flux`, so it fits naturally
 into non-blocking data pipelines. Inside a transaction, Nova provides a
 transaction-scoped persistence session with identity-map semantics, dirty
-checking, and flush; it does not use blocking calls or lazy-loading proxies.
+checking, and flush. Public persistence operations remain `Mono` / `Flux`-based,
+and Nova does not use lazy-loading proxies.
 The core module depends on Project Reactor, the R2DBC SPI, and the Jakarta
 Persistence API, but never on a database driver.
 

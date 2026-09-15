@@ -23,10 +23,13 @@ public class NovaProperties {
      * {@link DdlAuto#NONE} so the starter never touches an unsuspecting
      * database. {@code NONE}, {@code UPDATE} (create missing tables),
      * {@code CREATE} and {@code CREATE_DROP} (drop + recreate) are executed;
-     * {@code VALIDATE} checks that every entity's primary and secondary tables and
-     * mapped columns exist (via dialect catalog queries) and fails startup with the
-     * collected missing-table/column problems. It does not compare column types or
-     * constraints.
+     * {@code VALIDATE} uses dialect catalog queries to check ordinary entity primary
+     * and secondary tables and their mapped columns plus collapsed inheritance-root
+     * metadata, and fails startup with the collected problems. It includes
+     * {@code SINGLE_TABLE} root columns and the discriminator, but not
+     * {@code JOINED}/{@code TABLE_PER_CLASS} subtype tables, subtype-only secondary
+     * tables, auxiliary generator/join/collection tables, order columns, indexes,
+     * constraints, or column types.
      */
     private DdlAuto ddlAuto = DdlAuto.NONE;
 
