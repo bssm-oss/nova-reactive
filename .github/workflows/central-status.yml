@@ -6,7 +6,7 @@ on:
       version:
         description: Release version to verify
         required: true
-        default: '2.34.0'
+        default: '2.35.0'
       namespace:
         description: Central namespace
         required: true

@@ -101,7 +101,9 @@ public class NovaAutoConfiguration {
             Dialect dialect,
             SqlExecutor sqlExecutor,
             EntityStateDetector entityStateDetector,
-            ReactiveTransactionManager transactionManager) {
+            ReactiveTransactionManager transactionManager,
+            BeanFactory beanFactory) {
+        initializeEntityPreloaders(beanFactory);
         return new SimpleReactiveEntityOperations(
                 metadataFactory, dialect, sqlExecutor, entityStateDetector, transactionManager);
     }
@@ -209,9 +211,20 @@ public class NovaAutoConfiguration {
             SchemaInitializer schemaInitializer,
             NovaProperties properties,
             BeanFactory beanFactory) {
-        beanFactory.getBeanProvider(NovaEntityPreloadRunner.class).orderedStream().forEach(ignored -> {
-            // Resolving the provider element initializes the runner before schema lifecycle startup.
-        });
+        initializeEntityPreloaders(beanFactory);
         return new SchemaBootstrapRunner(schemaInitializer, properties, beanFactory);
+    }
+
+    /**
+     * Resolves every entity preloader before any operations bean can be injected into a repository
+     * factory. Repository factories build derived-query metadata during their own initialization;
+     * without this ordering, they can close converter registration before the preloader discovers
+     * managed Jakarta converters. Type-based resolution also honors a user-supplied preloader whose
+     * bean name differs from the auto-configured default.
+     */
+    private void initializeEntityPreloaders(BeanFactory beanFactory) {
+        beanFactory.getBeanProvider(NovaEntityPreloadRunner.class).orderedStream().forEach(ignored -> {
+            // Resolving the provider element invokes InitializingBean before operations are exposed.
+        });
     }
 }
