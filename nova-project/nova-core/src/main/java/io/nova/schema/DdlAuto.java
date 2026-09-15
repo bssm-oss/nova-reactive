@@ -14,12 +14,16 @@ public enum DdlAuto {
      * Validate catalog-visible tables and columns represented by each ordinary entity
      * or collapsed inheritance root, failing startup with the collected problems.
      * Ordinary entity primary columns, secondary tables, and their mapped columns
-     * are checked; a {@code SINGLE_TABLE} root also includes its mapped columns and
-     * discriminator.
+     * are checked. For every inheritance strategy, the collapsed root's primary
+     * mapped columns and configured discriminator are checked, along with secondary
+     * tables represented on that root metadata.
      * {@code JOINED}/{@code TABLE_PER_CLASS} subtype tables, subtype-only secondary
      * tables, generator/join/collection tables, order columns, indexes, constraints,
-     * and column types are not checked. Names are compared case-insensitively. Use a
-     * migration tool such as Flyway or Liquibase for complete validation.
+     * and column types are not checked. {@code TABLE_PER_CLASS} validation still
+     * targets the root table/discriminator even though creation emits subtype tables,
+     * so it is not a complete or appropriate physical-schema check for that strategy.
+     * Names are compared case-insensitively. Use a migration tool such as Flyway or
+     * Liquibase for complete validation.
      */
     VALIDATE,
 

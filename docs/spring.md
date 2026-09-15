@@ -54,12 +54,15 @@ The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set
 | `validate` | Uses the dialect's catalog queries (for example, `information_schema.tables` / `.columns`) to check ordinary entity tables and inheritance-root metadata, and **fails startup** with the collected missing-table/column problems. |
 
 Validation collapses inheritance hierarchies to their roots. It checks an ordinary entity's
-primary table columns plus its secondary tables and their mapped columns; for `SINGLE_TABLE`, it
-checks the root table's mapped columns and discriminator plus secondary tables present on the
-collapsed root metadata. It does not validate `JOINED` / `TABLE_PER_CLASS` subtype physical
-tables, subtype-only secondary tables, generator tables, join tables, collection tables, order
-columns, indexes, constraints, or column types. Use a migration tool for complete schema
-validation.
+primary table columns plus its secondary tables and their mapped columns. For every inheritance
+strategy, it instead checks the collapsed root's primary table metadata, including its mapped
+columns and configured discriminator, plus secondary tables present on that root metadata. It
+does not validate `JOINED` / `TABLE_PER_CLASS` subtype physical tables, subtype-only secondary
+tables, generator tables, join tables, collection tables, order columns, indexes, constraints, or
+column types. In particular, `TABLE_PER_CLASS` validation still targets the root table and
+discriminator even though schema creation emits subtype tables, so `validate` is not a complete
+or appropriate check for a `TABLE_PER_CLASS` physical schema. Use a migration tool for complete
+schema validation.
 
 Production deployments should keep the default of `none` and manage schema with a real migration tool such as Flyway or Liquibase.
 

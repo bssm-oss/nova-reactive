@@ -25,11 +25,13 @@ public class NovaProperties {
      * {@code CREATE} and {@code CREATE_DROP} (drop + recreate) are executed;
      * {@code VALIDATE} uses dialect catalog queries to check ordinary entity primary
      * and secondary tables and their mapped columns plus collapsed inheritance-root
-     * metadata, and fails startup with the collected problems. It includes
-     * {@code SINGLE_TABLE} root columns and the discriminator, but not
+     * metadata, and fails startup with the collected problems. Every collapsed root
+     * check includes its primary mapped columns and configured discriminator, but not
      * {@code JOINED}/{@code TABLE_PER_CLASS} subtype tables, subtype-only secondary
      * tables, auxiliary generator/join/collection tables, order columns, indexes,
-     * constraints, or column types.
+     * constraints, or column types. {@code TABLE_PER_CLASS} validation still targets
+     * the root table/discriminator even though creation emits subtype tables, so it is
+     * not a complete or appropriate physical-schema check for that strategy.
      */
     private DdlAuto ddlAuto = DdlAuto.NONE;
 

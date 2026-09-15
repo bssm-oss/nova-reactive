@@ -64,13 +64,18 @@ public interface SchemaInitializer {
     /**
      * Verifies catalog-visible tables and columns represented by each ordinary entity
      * or collapsed inheritance root. Ordinary entity primary columns, secondary
-     * tables, and their mapped columns are checked; a {@code SINGLE_TABLE} root also
-     * includes its mapped columns and discriminator. Completes empty when that scope
-     * is present, or errors with the collected missing-table/column problems. Table
-     * and column names are compared case-insensitively.
+     * tables, and their mapped columns are checked. For every inheritance strategy,
+     * the collapsed root's primary mapped columns and configured discriminator are
+     * checked, along with secondary tables represented on that root metadata.
+     * Completes empty when that scope is present, or errors with the collected
+     * missing-table/column problems. Table and column names are compared
+     * case-insensitively.
      * {@code JOINED}/{@code TABLE_PER_CLASS} subtype tables,
      * subtype-only secondary tables, generator/join/collection tables, order columns,
-     * indexes, constraints, and column types are not checked.
+     * indexes, constraints, and column types are not checked. For
+     * {@code TABLE_PER_CLASS}, validation still targets the root table/discriminator
+     * even though creation emits subtype tables, so it is not a complete or
+     * appropriate physical-schema check for that strategy.
      */
     Mono<Void> validate(Iterable<Class<?>> entityTypes);
 }
