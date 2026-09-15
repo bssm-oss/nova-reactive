@@ -47,7 +47,7 @@ Persistence API, but never on a database driver.
 repositories { mavenCentral() }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.33.0")
+    implementation("io.github.bssm-oss:nova:2.34.0")
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
     // runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
@@ -137,7 +137,7 @@ Nova core depends on Project Reactor, the R2DBC **SPI**, and the Jakarta Persist
 | `nova-cache`                 | 2nd-level cache — reactive read-through cache SPI + `@Cacheable`/`@Cache` wiring |
 | `nova-example`               | Published side-by-side Nova and Hibernate Reactive example application          |
 
-Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.33.0`.
+Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.34.0`.
 
 ---
 
@@ -184,7 +184,7 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 - [x] `@Column(length / precision / scale)` and `BigDecimal` columns
 - [x] 1.0 GA released to Maven Central (`io.github.bssm-oss:nova:1.0.0` — all 11 modules published)
 
-### JPA / jakarta.persistence parity (`2.0.0` → `2.33.0`)
+### JPA / jakarta.persistence parity (`2.0.0` → `2.34.0`)
 
 Reactive equivalents of the standard `jakarta.persistence` surface — see the full
 [JPA compatibility matrix](docs/jpa-compatibility.md).

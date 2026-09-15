@@ -9,8 +9,8 @@ Adding `nova-spring-boot-starter` registers every core bean via `NovaAutoConfigu
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.33.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.33.0")
+    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.34.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.34.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -92,11 +92,11 @@ nova:
 
 ## Spring Data-style repositories (`nova-spring-data`)
 
-The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.33.0`). Its normal repository API exports Spring Framework's `spring-context` and does not add Spring Data Commons transitively. The module is compiled against Spring Data Commons only for an optional standard `Pageable` / `Sort` / `Page` / `Slice` bridge.
+The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.34.0`). Its normal repository API exports Spring Framework's `spring-context` and does not add Spring Data Commons transitively. The module is compiled against Spring Data Commons only for an optional standard `Pageable` / `Sort` / `Page` / `Slice` bridge.
 
 ```kotlin
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-data:2.33.0")
+    implementation("io.github.bssm-oss:nova-spring-data:2.34.0")
 
     // Only when using SpringDataReactiveCrudRepository or the standard bridge helpers:
     implementation("org.springframework.data:spring-data-commons:3.4.5")
