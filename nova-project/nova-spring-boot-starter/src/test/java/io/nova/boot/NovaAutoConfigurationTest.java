@@ -70,6 +70,20 @@ class NovaAutoConfigurationTest {
     }
 
     @Test
+    void initializesCustomNamedPreloaderBeforeEntityOperations() {
+        CustomNamedPreloaderConfig.CREATED.set(false);
+        runner.withUserConfiguration(CustomNamedPreloaderConfig.class)
+                .run(context -> {
+                    assertNull(context.getStartupFailure());
+                    assertTrue(CustomNamedPreloaderConfig.CREATED.get(),
+                            "entity operations must initialize the managed-class preloader first");
+                    assertTrue(context.containsBean("customNamedPreloader"));
+                    assertFalse(context.containsBean("novaEntityPreloadRunner"));
+                    assertNotNull(context.getBean(ReactiveEntityOperations.class));
+                });
+    }
+
+    @Test
     void autoConfiguresCoreBeansWhenConnectionFactoryAndDialectPresent() {
         runner.run(context -> {
             assertFalse(context.getStartupFailure() != null,

@@ -9,8 +9,8 @@ Adding `nova-spring-boot-starter` registers every core bean via `NovaAutoConfigu
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.34.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.34.0")
+    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.35.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.35.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -40,6 +40,10 @@ deterministic. This mirrors a JPA persistence unit knowing all of its entities u
 what lets `SINGLE_TABLE` inheritance dispatch a polymorphic `findAll(Vehicle.class)` to the
 right concrete subtypes. Entity metadata build errors surface at startup (fail-fast) rather than
 on first query. Only schema creation or validation is conditional on `nova.ddl-auto`.
+The auto-configured `ReactiveEntityOperations` bean explicitly initializes this preloader first,
+so an `@EnableNovaRepositories` repository cannot request derived-query metadata before converter
+discovery completes. A user-provided `NovaEntityPreloadRunner` is honored by type even when it uses
+a custom bean name.
 
 ### Schema bootstrap (`nova.ddl-auto`)
 
@@ -92,11 +96,11 @@ nova:
 
 ## Spring Data-style repositories (`nova-spring-data`)
 
-The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.34.0`). Its normal repository API exports Spring Framework's `spring-context` and does not add Spring Data Commons transitively. The module is compiled against Spring Data Commons only for an optional standard `Pageable` / `Sort` / `Page` / `Slice` bridge.
+The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.35.0`). Its normal repository API exports Spring Framework's `spring-context` and does not add Spring Data Commons transitively. The module is compiled against Spring Data Commons only for an optional standard `Pageable` / `Sort` / `Page` / `Slice` bridge.
 
 ```kotlin
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-data:2.34.0")
+    implementation("io.github.bssm-oss:nova-spring-data:2.35.0")
 
     // Only when using SpringDataReactiveCrudRepository or the standard bridge helpers:
     implementation("org.springframework.data:spring-data-commons:3.4.5")
