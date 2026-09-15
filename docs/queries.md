@@ -10,6 +10,7 @@
 public interface ReactiveEntityOperations {
     // Single-row
     <T>      Mono<T>       save(T entity);
+             Mono<Void>    flush();
     <T>      Mono<T>       update(T entity, Iterable<String> fields);          // partial update
     <T, ID>  Mono<T>       findById(Class<T> entityType, ID id);
     <T>      Mono<Long>    delete(T entity);
@@ -36,6 +37,10 @@ public interface ReactiveEntityOperations {
     <P>      Mono<P>        findById(Class<P> entityType, Object id, FetchGroup<P> fetchGroup);
     <P>      Flux<P>        findAll(Class<P> entityType, FetchGroup<P> fetchGroup);
 
+    // JPA-style EntityGraph resolves to the same batch-fetch plan
+    <T, ID>  Mono<T>        findById(Class<T> entityType, ID id, EntityGraph<T> entityGraph);
+    <T>      Flux<T>        findAll(Class<T> entityType, EntityGraph<T> entityGraph);
+
     // Updater DSL — criteria-based partial UPDATE without an entity instance
     <T>      Mono<Long>    update(Class<T> entityType, Updater<T> updater);
 
@@ -57,6 +62,7 @@ public interface ReactiveEntityOperations {
 
     // Transaction
     <R>      Mono<R>       inTransaction(Function<ReactiveEntityOperations, Mono<R>> callback);
+    <R>      Mono<R>       inReadSession(Function<ReactiveEntityOperations, Mono<R>> callback);
 }
 ```
 
@@ -148,7 +154,7 @@ page.subscribe(p -> {
 });
 ```
 
-`findAll(Class, QuerySpec, Pageable)` issues the SELECT and COUNT via `Mono.zip` so content and `totalElements` arrive together. When you do not need a total count, `findSlice(...)` uses the `limit+1` trick to decide `hasNext` without an extra COUNT query.
+`findAll(Class, QuerySpec, Pageable)` completes and collects the page SELECT first, then issues a separate COUNT for `totalElements`. Outside a transaction, inserts or deletes between those two statements can make the content and total reflect slightly different snapshots. When you do not need a total count, `findSlice(...)` uses the `limit+1` trick to decide `hasNext` without an extra COUNT query.
 
 `PageRequest` exposes a Spring Data-friendly page-number / size API with chainable `next()` / `previous()` / `first()` and a `toPageable()` conversion. Where limit / offset semantics read more naturally, you can keep using `Pageable.of(limit, offset)` directly.
 
@@ -184,12 +190,16 @@ R2DBC SPI 1.0 models `OUT` and `INOUT`, but has no portable `REF_CURSOR` type. N
 ### NativeQuery — raw SQL
 
 ```java
-NativeQuery query = NativeQuery.of("select count(*) from accounts where active = ?")
+NativeQuery query = NativeQuery.of("select count(*) as total_count from accounts where active = ?")
         .bind(true);
 
 Mono<Long> total = operations.queryNativeOne(query,
-        row -> row.get("count", Long.class));
+        row -> row.get("total_count", Long.class));
 ```
+
+Native SQL is executed as supplied. Nova does not add an `@SoftDelete` alive predicate to
+`NativeQuery`, named native queries, or stored-procedure SQL; include that predicate explicitly
+when the query should exclude soft-deleted rows.
 
 ### Named native queries
 

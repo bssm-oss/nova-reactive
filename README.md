@@ -27,9 +27,11 @@
 **Nova** is a lightweight **reactive ORM** built on R2DBC and Project Reactor.
 It keeps the JPA-style annotation model that Java developers already know
 while exposing every persistence API as `Mono` / `Flux`, so it fits naturally
-into non-blocking data pipelines. Nova avoids the persistence-context,
-first-level-cache, and lazy-loading complexity of full-stack ORMs, and the
-core module depends only on the R2DBC SPI.
+into non-blocking data pipelines. Inside a transaction, Nova provides a
+transaction-scoped persistence session with identity-map semantics, dirty
+checking, and flush; it does not use blocking calls or lazy-loading proxies.
+The core module depends on Project Reactor, the R2DBC SPI, and the Jakarta
+Persistence API, but never on a database driver.
 
 > **Nova is not** a streaming framework, a query builder for arbitrary SQL,
 > or a drop-in replacement for JPA. The goal is a small-surface-area reactive
@@ -111,7 +113,7 @@ Full documentation index: [`docs/`](docs/README.md).
 | H2               | 2.x                             | `nova-dialect-h2`                  |
 | Oracle           | 12c+, 19c, 21c+                 | `nova-dialect-oracle`              |
 
-Nova core depends only on the R2DBC **SPI**. Add the matching R2DBC driver (`r2dbc-postgresql`, `r2dbc-mysql`, etc.) as a separate runtime dependency.
+Nova core depends on Project Reactor, the R2DBC **SPI**, and the Jakarta Persistence API. Add the matching R2DBC driver (`r2dbc-postgresql`, `r2dbc-mysql`, etc.) as a separate runtime dependency.
 
 ---
 
@@ -132,6 +134,7 @@ Nova core depends only on the R2DBC **SPI**. Add the matching R2DBC driver (`r2d
 | `nova-metrics-micrometer`    | Micrometer adapter (`MicrometerSqlExecutionListener`)                          |
 | `nova-metamodel`             | Annotation processor — compile-time property-name constants for type-safe `Criteria` references |
 | `nova-cache`                 | 2nd-level cache — reactive read-through cache SPI + `@Cacheable`/`@Cache` wiring |
+| `nova-example`               | Published side-by-side Nova and Hibernate Reactive example application          |
 
 Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.33.0`.
 
@@ -151,8 +154,8 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 
 ## Roadmap
 
-- [x] Optimistic locking (`@Version`) — Long / Integer / Short, surfaces `OptimisticLockingFailureException` on conflict
-- [x] Soft delete (`@SoftDelete`) — rewrites DELETE as UPDATE; SELECT gets an automatic alive guard
+- [x] Optimistic locking (`@Version`) — Long / Integer / Short / LocalDateTime, surfaces `OptimisticLockingFailureException` on conflict
+- [x] Soft delete (`@SoftDelete`) — rewrites DELETE as UPDATE; Nova-generated entity SELECTs get an automatic alive guard
 - [x] Audit fields (`@CreatedAt` / `@UpdatedAt`) — injectable `Clock`
 - [x] Entity lifecycle callbacks (`@PrePersist` / `@PostPersist` / `@PreUpdate` / `@PostUpdate` / `@PostLoad` / `@PreRemove` / `@PostRemove`)
 - [x] Updater builder DSL — criteria-based partial UPDATE without an entity instance
@@ -175,7 +178,7 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 - [x] Retry helper (`ReactiveRetryTemplate` — exponential backoff + jitter)
 - [x] FetchGroup DSL + relationship mapping (`@ManyToOne` / `@OneToMany` automatic hydration)
 - [x] `Page` / `Slice` result types + `PageRequest` page-number-friendly API
-- [x] Spring Data-style repositories (`nova-spring-data`, no dependency on Spring Data Commons)
+- [x] Spring Data-style repositories (`nova-spring-data`, Spring Data Commons bridge available as an optional dependency)
 - [x] JSON column type (`@Json` — pluggable `JsonCodec` SPI)
 - [x] `@Column(length / precision / scale)` and `BigDecimal` columns
 - [x] 1.0 GA released to Maven Central (`io.github.bssm-oss:nova:1.0.0` — all 11 modules published)

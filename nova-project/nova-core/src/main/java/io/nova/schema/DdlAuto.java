@@ -11,10 +11,11 @@ public enum DdlAuto {
     NONE,
 
     /**
-     * Validate that a table exists in the database for every entity, failing startup
-     * with the list of missing tables otherwise. This is a table-existence check only
-     * (via the dialect's catalog query) — it does not compare columns or types. For
-     * full schema validation use a migration tool such as Flyway or Liquibase.
+     * Validate that every entity's primary and secondary tables and their mapped
+     * columns exist, failing startup with the collected missing-table/column problems.
+     * Names are obtained through the dialect's catalog queries and compared
+     * case-insensitively. Column types and constraints are not compared. For full
+     * schema validation use a migration tool such as Flyway or Liquibase.
      */
     VALIDATE,
 

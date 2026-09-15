@@ -14,17 +14,17 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 |-------------------|------------------------------------------------------------------------------------------|
 | `@Entity`         | Marks a class as persistent. Without `name`, the class-name-based default naming applies. |
 | `@Table`          | Explicit table name (+ optional `schema`; `catalog` is ignored). JPA 3.2 `check`, `comment`, and `options` are emitted when creating a table. When omitted, the `NamingStrategy` decides. |
-| `@Id`             | Single identifier field. Exactly one `@Id` **or** one `@EmbeddedId` is required per entity. |
+| `@Id`             | Identifier attribute. Without `@IdClass`, exactly one `@Id` or one `@EmbeddedId` is required. With `@IdClass`, two or more top-level `@Id` attributes form the composite key. |
 | `@EmbeddedId`     | Composite primary key. The field's type is an `@Embeddable` whose fields become the key columns (no host-field prefix; `@AttributeOverride` renames them). The key is application-assigned — `save()` resolves insert vs. update with an existence check. `@GeneratedValue` on a component is rejected. |
-| `@IdClass`        | Composite primary key declared as several top-level `@Id` fields plus a mirror id class. The id class must declare a matching field (name + type) for each `@Id` and a no-arg constructor. Same application-assigned semantics as `@EmbeddedId`; cannot be combined with it. |
+| `@IdClass`        | Composite primary key declared as two or more top-level `@Id` attributes plus a mirror id class. A mutable id class must expose matching members (name + type) and a no-arg constructor; a record id class uses matching record components and its canonical constructor. Same application-assigned semantics as `@EmbeddedId`; cannot be combined with it. |
 | `@GeneratedValue` | Identifier strategy (`IDENTITY`, `AUTO`, `SEQUENCE`, `TABLE`, `UUID`). `AUTO` (including bare `@GeneratedValue`) is an alias for the active dialect's `IDENTITY` DDL and generated-key path. Omit `@GeneratedValue` for an application-assigned id. For `SEQUENCE`, `generator` is the sequence name directly, or the `name` of a `@SequenceGenerator` whose `sequenceName` is then used. `TABLE` allocates ids from a `@TableGenerator` row (or Nova's default `nova_sequences` row when none is declared); `initialValue` is the first issued id and `allocationSize` is the in-memory block size. Declarations sharing a physical generator table must use identical `pkColumnName` and `valueColumnName`, with distinct `pkColumnValue` rows. Reusing one row requires identical complete definitions; conflicting layouts or row definitions fail before DDL is emitted. |
-| `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). |
+| `@SequenceGenerator` | Maps a logical `@GeneratedValue(generator=...)` name to a real `sequenceName`. `allocationSize` / `initialValue` are ignored (Nova issues a plain `nextval` per insert). The sequence must already exist; `SchemaInitializer` does not create it. |
 | `@Column`         | Column name, `nullable`, `length` / `precision` / `scale` / JPA 3.2 `secondPrecision`, `insertable` / `updatable` / `unique` / `columnDefinition`, plus JPA 3.2 `check`, `comment`, and `options`. |
 | `@Lob`            | Maps the column to the dialect LOB type — character LOB (`clob` / `text` / `longtext`) for `String`, binary LOB (`blob` / `bytea` / `longblob`) for `byte[]`. |
 | `@CreatedAt`      | Auto-populates the field with the current time on insert (`Instant` / `LocalDateTime` / `OffsetDateTime`). Preserves a value the user pre-sets. |
 | `@UpdatedAt`      | Overwritten with the current time on insert, update, partial update, and Updater paths.   |
-| `@SoftDelete`     | Rewrites DELETE as `UPDATE deleted_at = now`. Every SELECT path automatically gets a `WHERE deleted_at IS NULL` guard. |
-| `@Version`        | Optimistic locking. `Long` / `Integer` / `Short` supported. Surfaces `OptimisticLockingFailureException` on conflict. |
+| `@SoftDelete`     | Rewrites DELETE as `UPDATE deleted_at = now`. Nova-generated entity SELECT paths automatically get a `WHERE deleted_at IS NULL` guard. Raw `NativeQuery`, named-native-query, and stored-procedure paths execute the supplied SQL and do not inject this predicate. |
+| `@Version`        | Optimistic locking. `Long` / `Integer` / `Short` / `LocalDateTime` supported. Surfaces `OptimisticLockingFailureException` on conflict. |
 | `@PrePersist`     | Entity lifecycle callback — invoked just before insert (`void`, no-arg).                  |
 | `@PostPersist`    | Invoked right after a successful insert (generated id already assigned).                   |
 | `@PreUpdate`      | Invoked just before update / partial update.                                              |
@@ -58,8 +58,8 @@ Nova-specific extensions that JPA has no equivalent for live in `io.nova.annotat
 Entity metadata is parsed once and cached by `EntityMetadataFactory`. The factory enforces the following invariants:
 
 - `@Entity` is required.
-- Exactly one `@Id` field — or one `@EmbeddedId` composite key — must be present.
-- A no-arg constructor is required for mutable entities and embeddables; record embeddables use their canonical constructor instead.
+- Without `@IdClass`, exactly one `@Id` attribute or one `@EmbeddedId` composite key must be present. `@IdClass` requires at least two top-level `@Id` attributes.
+- A no-arg constructor is required for mutable entities, embeddables, and mutable id classes. Record embeddables and record id classes use their canonical constructors instead.
 - Unsupported types are rejected explicitly and can be extended via `AttributeConverter`.
 - Duplicate `@CreatedAt` / `@UpdatedAt` / `@SoftDelete` / `@Version`, or those markers on unsupported types, fail-fast at metadata build time.
 - A `property name → PersistentProperty` index is built once so every lookup is O(1).
@@ -140,7 +140,7 @@ public class OrderLine {
 `@IdClass` models the same composite key as several top-level `@Id` fields plus a separate mirror class, instead of an embedded value type:
 
 ```java
-public class BookId {           // mirror class — plain class, no-arg ctor + equals/hashCode
+public class BookId {           // mutable mirror class — no-arg ctor + equals/hashCode
     private Long publisherId;
     private String isbn;
 }
@@ -155,7 +155,7 @@ public class Book {
 }
 ```
 
-- The id class must declare a field with the **same name and type** as each `@Id`, plus a no-arg constructor — both are validated fail-fast at metadata build time. `@IdClass` and `@EmbeddedId` cannot be combined.
+- A mutable id class must expose an attribute with the **same name and type** as each `@Id`, plus a no-arg constructor. A record id class instead declares matching record components and is hydrated through its canonical constructor. These rules are validated fail-fast at metadata build time; `@IdClass` and `@EmbeddedId` cannot be combined.
 - `findById` / `deleteById` take an id-class instance: `findById(Book.class, new BookId(7L, "978-1"))`. Insert/update/DDL and the existence-check `save()` behave exactly as for `@EmbeddedId`.
 
 ---

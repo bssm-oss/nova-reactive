@@ -29,10 +29,15 @@ import java.util.Objects;
  * {@link EntityMetadataFactory} (which is itself cache-backed) and issues a
  * fresh DDL string.
  *
- * <p>Batch ordering: when multiple entity types are passed, statements run
- * sequentially in the iteration order. For {@code drop(...)}, this means
- * children must be listed before parents when FKs are in play; for
- * {@code create(...)}, parents before children.
+ * <p>Batch ordering is phase-based. {@code create(...)} runs table-generator
+ * creation/seed, entity and secondary tables, order columns, join and collection
+ * tables, and finally foreign keys. Statements are sequential within a phase, and
+ * the final foreign-key phase makes parent-before-child input ordering unnecessary.
+ * {@code drop(...)} removes collection and join tables first, entity tables in the
+ * supplied order, and table generators last, so child entities must still precede
+ * parents when entity-to-entity foreign keys are present. {@code recreate(...)}
+ * reverses the supplied entity order for its drop phase before recreating in the
+ * supplied order.
  */
 public final class SimpleSchemaInitializer implements SchemaInitializer {
 

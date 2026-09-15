@@ -21,12 +21,12 @@ public interface Dialect {
 | `PostgresqlDialect`  | `$1`, `$2`  | `bigserial` / `serial` primary key                              | `" "`      | `RETURNING` clause        | `nextval('seq')`         |
 | `MySqlDialect`       | `?`         | `bigint primary key auto_increment`                             | `` ` ` ``  | `Statement.returnGeneratedValues` | not supported (UOE) |
 | `H2Dialect`          | `?`         | `bigint generated always as identity primary key`               | `" "`      | `Statement.returnGeneratedValues` (driver-side) | not supported (UOE) |
-| `MariaDbDialect`     | `?`         | `bigint primary key auto_increment`                             | `` ` ` ``  | `Statement.returnGeneratedValues` | not supported (UOE) |
+| `MariaDbDialect`     | `?`         | `bigint primary key auto_increment`                             | `` ` ` ``  | `Statement.returnGeneratedValues` | `nextval(seq)`       |
 | `OracleDialect`      | `?`         | `number(19) generated always as identity primary key`           | `" "`      | `Statement.returnGeneratedValues` | `<seq>.nextval from dual` |
 
 > **Oracle specifics**: there is no `LIMIT/OFFSET`, so pagination renders as `OFFSET ? ROWS FETCH NEXT ? ROWS ONLY` and `exists()` renders as `FETCH FIRST 1 ROWS ONLY`. `FOR SHARE` row locking is unsupported and throws `UnsupportedOperationException`. `@Json` columns map to `clob` (override per-dialect for native `JSON` on 21c+).
 
-`@GeneratedValue(strategy = AUTO)` and bare `@GeneratedValue` use the `IDENTITY / AUTO column` and generated-key path shown above for the active dialect. For `@GeneratedValue(strategy = SEQUENCE, generator = "account_seq")`, Nova issues a SELECT aliased as `Dialect.SEQUENCE_VALUE_COLUMN` using the dialect's `sequenceNextValueSql(generator)` to fetch the id beforehand. For `UUID`, ops stamp `UUID.randomUUID()` just before INSERT for `java.util.UUID` or `String` fields.
+`@GeneratedValue(strategy = AUTO)` and bare `@GeneratedValue` use the `IDENTITY / AUTO column` and generated-key path shown above for the active dialect. For `@GeneratedValue(strategy = SEQUENCE, generator = "account_seq")`, Nova issues a SELECT aliased as `Dialect.SEQUENCE_VALUE_COLUMN` using the dialect's `sequenceNextValueSql(generator)` to fetch the id beforehand. PostgreSQL, MariaDB, and Oracle support this path, but Nova's schema initializer does not create sequences: the named sequence must already exist, normally through an external migration. For `UUID`, ops stamp `UUID.randomUUID()` just before INSERT for `java.util.UUID` or `String` fields.
 
 A new dialect extends `AbstractSqlRenderer` and `AbstractSchemaGenerator` and overrides only the differences.
 

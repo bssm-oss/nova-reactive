@@ -43,7 +43,7 @@ on first query. Only schema creation or validation is conditional on `nova.ddl-a
 
 ### Schema bootstrap (`nova.ddl-auto`)
 
-The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set binds. A `SchemaBootstrapRunner` runs during context refresh via `InitializingBean#afterPropertiesSet()` (so the schema is ready before any other refresh-time bean queries it) and scans the configured packages for `@jakarta.persistence.Entity` classes.
+The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set binds. A `SchemaBootstrapRunner` runs synchronously during its own context-refresh initialization via `InitializingBean#afterPropertiesSet()` and scans the configured packages for `@jakarta.persistence.Entity` classes. Spring does not globally order unrelated beans' initialization, so a bean that queries the database from its own initialization callback must explicitly be ordered after the active `SchemaBootstrapRunner` when schema bootstrap must finish first.
 
 | `nova.ddl-auto` | Behavior |
 |-----------------|----------|
@@ -57,7 +57,7 @@ Production deployments should keep the default of `none` and manage schema with 
 
 ```yaml
 nova:
-  ddl-auto: create-drop          # none | create | create-drop
+  ddl-auto: create-drop          # none | update | create | create-drop | validate
   entity-packages:               # optional; falls back to @SpringBootApplication's package
     - com.example.domain
     - com.example.billing.domain
@@ -72,7 +72,7 @@ nova:
 | `nova.pool.max-idle-time`         | `Duration`      | `PoolConfig.defaults()` value | Idle-connection expiration                            |
 | `nova.pool.acquire-timeout`       | `Duration`      | `PoolConfig.defaults()` value | Acquire wait timeout                                  |
 | `nova.slow-query.threshold-ms`    | `Long`          | (unset)                       | When set, registers `SlowQueryLoggingListener`         |
-| `nova.ddl-auto`                   | `DdlAuto`       | `none`                        | `none` / `create` / `create-drop` schema bootstrap     |
+| `nova.ddl-auto`                   | `DdlAuto`       | `none`                        | `none` / `update` / `create` / `create-drop` / `validate` schema lifecycle |
 | `nova.entity-packages`            | `List<String>`  | (empty → AutoConfigurationPackages) | Startup packages for managed `@Entity` and Jakarta `@Converter` discovery; schema creation still depends on `ddl-auto` |
 
 > The starter only exposes a `PoolConfig` bean; it does not bundle a pool implementation such as `r2dbc-pool`. If you need pooling, add the dependency yourself and feed this `PoolConfig` into your `ConnectionFactory` bean.
@@ -81,7 +81,16 @@ nova:
 
 ## Spring Data-style repositories (`nova-spring-data`)
 
-The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.33.0`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
+The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.33.0`). Its normal repository API exports Spring Framework's `spring-context` and does not add Spring Data Commons transitively. The module is compiled against Spring Data Commons only for an optional standard `Pageable` / `Sort` / `Page` / `Slice` bridge.
+
+```kotlin
+dependencies {
+    implementation("io.github.bssm-oss:nova-spring-data:2.33.0")
+
+    // Only when using SpringDataReactiveCrudRepository or the standard bridge helpers:
+    implementation("org.springframework.data:spring-data-commons:3.4.5")
+}
+```
 
 ```java
 import io.nova.spring.data.ReactiveCrudRepository;
@@ -93,6 +102,11 @@ public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
 @EnableNovaRepositories(basePackages = "com.example.author")
 class AppConfig {}
 ```
+
+Extend `SpringDataReactiveCrudRepository<T, ID>` instead when repository methods should use
+`org.springframework.data.domain.Pageable`, `Sort`, `Page`, or `Slice`. Those standard types
+require `spring-data-commons` on the consumer's runtime classpath. Repositories that extend the
+base `ReactiveCrudRepository` keep using Nova's own paging and sorting types and do not require it.
 
 `@EnableNovaRepositories` scans the base packages and registers a JDK proxy + `NovaRepositoryFactoryBean` for every discovered interface. Every method delegates to `ReactiveEntityOperations` (the `novaEntityOperations` bean). Methods provided:
 
