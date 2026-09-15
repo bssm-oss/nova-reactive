@@ -9,8 +9,8 @@ Adding `nova-spring-boot-starter` registers every core bean via `NovaAutoConfigu
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.33.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.33.0")
+    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.34.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.34.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -43,7 +43,7 @@ on first query. Only schema creation or validation is conditional on `nova.ddl-a
 
 ### Schema bootstrap (`nova.ddl-auto`)
 
-The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set binds. A `SchemaBootstrapRunner` runs during context refresh via `InitializingBean#afterPropertiesSet()` (so the schema is ready before any other refresh-time bean queries it) and scans the configured packages for `@jakarta.persistence.Entity` classes.
+The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set binds. A `SchemaBootstrapRunner` runs synchronously during its own context-refresh initialization via `InitializingBean#afterPropertiesSet()` and scans the configured packages for `@jakarta.persistence.Entity` classes. Spring does not globally order unrelated beans' initialization, so a bean that queries the database from its own initialization callback must explicitly be ordered after the active `SchemaBootstrapRunner` when schema bootstrap must finish first.
 
 | `nova.ddl-auto` | Behavior |
 |-----------------|----------|
@@ -51,13 +51,24 @@ The starter mirrors JPA's `spring.jpa.hibernate.ddl-auto`, so the same value set
 | `update` | `CREATE TABLE IF NOT EXISTS` (plus indexes) — creates missing tables only, never drops. Unlike Hibernate, Nova does not `ALTER` existing tables to add missing columns. |
 | `create` | Drop the tables (if any) and recreate them — destructive, matching Hibernate's `create`. |
 | `create-drop` | Like `create`, and also `DROP TABLE IF EXISTS` in reverse order on context close via `DisposableBean#destroy()` (FK-friendly). |
-| `validate` | Checks that a table **and all mapped columns** exist for every entity (via the dialect's catalog queries, e.g. `information_schema.tables` / `.columns`); **fails startup** listing any missing tables/columns. Column types are not compared. |
+| `validate` | Uses the dialect's catalog queries (for example, `information_schema.tables` / `.columns`) to check ordinary entity tables and inheritance-root metadata, and **fails startup** with the collected missing-table/column problems. |
+
+Validation collapses inheritance hierarchies to their roots. It checks an ordinary entity's
+primary table columns plus its secondary tables and their mapped columns. For every inheritance
+strategy, it instead checks the collapsed root's primary table metadata, including its mapped
+columns and configured discriminator, plus secondary tables present on that root metadata. It
+does not validate `JOINED` / `TABLE_PER_CLASS` subtype physical tables, subtype-only secondary
+tables, generator tables, join tables, collection tables, order columns, indexes, constraints, or
+column types. In particular, `TABLE_PER_CLASS` validation still targets the root table and
+discriminator even though schema creation emits subtype tables, so `validate` is not a complete
+or appropriate check for a `TABLE_PER_CLASS` physical schema. Use a migration tool for complete
+schema validation.
 
 Production deployments should keep the default of `none` and manage schema with a real migration tool such as Flyway or Liquibase.
 
 ```yaml
 nova:
-  ddl-auto: create-drop          # none | create | create-drop
+  ddl-auto: create-drop          # none | update | create | create-drop | validate
   entity-packages:               # optional; falls back to @SpringBootApplication's package
     - com.example.domain
     - com.example.billing.domain
@@ -72,7 +83,7 @@ nova:
 | `nova.pool.max-idle-time`         | `Duration`      | `PoolConfig.defaults()` value | Idle-connection expiration                            |
 | `nova.pool.acquire-timeout`       | `Duration`      | `PoolConfig.defaults()` value | Acquire wait timeout                                  |
 | `nova.slow-query.threshold-ms`    | `Long`          | (unset)                       | When set, registers `SlowQueryLoggingListener`         |
-| `nova.ddl-auto`                   | `DdlAuto`       | `none`                        | `none` / `create` / `create-drop` schema bootstrap     |
+| `nova.ddl-auto`                   | `DdlAuto`       | `none`                        | `none` / `update` / `create` / `create-drop` / `validate` schema lifecycle |
 | `nova.entity-packages`            | `List<String>`  | (empty → AutoConfigurationPackages) | Startup packages for managed `@Entity` and Jakarta `@Converter` discovery; schema creation still depends on `ddl-auto` |
 
 > The starter only exposes a `PoolConfig` bean; it does not bundle a pool implementation such as `r2dbc-pool`. If you need pooling, add the dependency yourself and feed this `PoolConfig` into your `ConnectionFactory` bean.
@@ -81,7 +92,16 @@ nova:
 
 ## Spring Data-style repositories (`nova-spring-data`)
 
-The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.33.0`). It depends only on Spring Framework's `spring-context` — not on Spring Data Commons.
+The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.34.0`). Its normal repository API exports Spring Framework's `spring-context` and does not add Spring Data Commons transitively. The module is compiled against Spring Data Commons only for an optional standard `Pageable` / `Sort` / `Page` / `Slice` bridge.
+
+```kotlin
+dependencies {
+    implementation("io.github.bssm-oss:nova-spring-data:2.34.0")
+
+    // Only when using SpringDataReactiveCrudRepository or the standard bridge helpers:
+    implementation("org.springframework.data:spring-data-commons:3.4.5")
+}
+```
 
 ```java
 import io.nova.spring.data.ReactiveCrudRepository;
@@ -93,6 +113,11 @@ public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
 @EnableNovaRepositories(basePackages = "com.example.author")
 class AppConfig {}
 ```
+
+Extend `SpringDataReactiveCrudRepository<T, ID>` instead when repository methods should use
+`org.springframework.data.domain.Pageable`, `Sort`, `Page`, or `Slice`. Those standard types
+require `spring-data-commons` on the consumer's runtime classpath. Repositories that extend the
+base `ReactiveCrudRepository` keep using Nova's own paging and sorting types and do not require it.
 
 `@EnableNovaRepositories` scans the base packages and registers a JDK proxy + `NovaRepositoryFactoryBean` for every discovered interface. Every method delegates to `ReactiveEntityOperations` (the `novaEntityOperations` bean). Methods provided:
 

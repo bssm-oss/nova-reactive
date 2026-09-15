@@ -2,7 +2,7 @@ plugins {
     application
 }
 
-description = "Nova vs Hibernate Reactive side-by-side examples (not published)."
+description = "Nova vs Hibernate Reactive side-by-side examples."
 
 dependencies {
     // ----- Nova side -----

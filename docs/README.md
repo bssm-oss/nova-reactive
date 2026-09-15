@@ -29,7 +29,7 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 
 ## Module coordinates (Maven Central)
 
-All modules under the `io.github.bssm-oss` group are published at the same version (currently `2.33.0`).
+All modules under the `io.github.bssm-oss` group are published at the same version (currently `2.34.0`).
 
 ```
 io.github.bssm-oss:nova                          # aggregate (core + r2dbc + all dialects)
@@ -45,4 +45,5 @@ io.github.bssm-oss:nova-spring-data
 io.github.bssm-oss:nova-metrics-micrometer
 io.github.bssm-oss:nova-metamodel                # opt-in annotation processor (compile-time only)
 io.github.bssm-oss:nova-cache                    # opt-in 2nd-level cache
+io.github.bssm-oss:nova-example                  # Nova / Hibernate Reactive example application
 ```

@@ -14,9 +14,14 @@ import reactor.core.publisher.Mono;
  *   <li>{@code create(Class...)} — varargs batch</li>
  *   <li>{@code create(Iterable)} — programmatic batch</li>
  * </ul>
- * For the batch variants, statements are emitted sequentially in the order the
- * classes are given. Callers must order parent entities before children when
- * foreign keys are involved.
+ * For the batch variants, work is emitted sequentially within each schema phase.
+ * Creation provisions table generators, entity/secondary tables, order columns,
+ * join and collection tables, then foreign keys. Deferring foreign keys until all
+ * tables exist means callers do not need to place parent entities before children.
+ * Drop removes collection and join tables first, then entity tables in the supplied
+ * order, and finally table generators; callers must still place child entities before
+ * parents when entity-to-entity foreign keys are involved. Recreate reverses the
+ * supplied entity order for its drop phase and uses the supplied order for creation.
  *
  * <p>Every {@link Mono} returned is cold: nothing runs until subscribed. The
  * Mono completes with no value (use {@link Mono#then()} to chain follow-up
@@ -57,11 +62,20 @@ public interface SchemaInitializer {
     Mono<Void> recreate(Iterable<Class<?>> entityTypes);
 
     /**
-     * Verifies that a table exists in the database for every given entity. Completes
-     * empty when all are present, or errors with the list of missing tables. Table
-     * names are compared case-insensitively so dialect identifier case-folding does
-     * not cause false negatives. This is a table-existence check only — it does not
-     * compare columns or types.
+     * Verifies catalog-visible tables and columns represented by each ordinary entity
+     * or collapsed inheritance root. Ordinary entity primary columns, secondary
+     * tables, and their mapped columns are checked. For every inheritance strategy,
+     * the collapsed root's primary mapped columns and configured discriminator are
+     * checked, along with secondary tables represented on that root metadata.
+     * Completes empty when that scope is present, or errors with the collected
+     * missing-table/column problems. Table and column names are compared
+     * case-insensitively.
+     * {@code JOINED}/{@code TABLE_PER_CLASS} subtype tables,
+     * subtype-only secondary tables, generator/join/collection tables, order columns,
+     * indexes, constraints, and column types are not checked. For
+     * {@code TABLE_PER_CLASS}, validation still targets the root table/discriminator
+     * even though creation emits subtype tables, so it is not a complete or
+     * appropriate physical-schema check for that strategy.
      */
     Mono<Void> validate(Iterable<Class<?>> entityTypes);
 }
