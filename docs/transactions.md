@@ -46,10 +46,26 @@ txManager.inTransaction(def, ctx ->
 ).subscribe();
 ```
 
-In a Spring Boot application, the `novaTransactionManager` bean already is this
-`R2dbcTransactionManager` — inject `ReactiveTransactionManager` alongside
-`ReactiveEntityOperations` instead of constructing your own. See
-[Spring](spring.md) for the bean reference.
+In a Spring Boot application, the `novaTransactionManager` bean already is this Nova
+`R2dbcTransactionManager` — inject `io.nova.tx.ReactiveTransactionManager` alongside
+`ReactiveEntityOperations` instead of constructing your own.
+
+The starter also supports Spring's standard reactive `@Transactional`. Spring Boot supplies an
+`org.springframework.transaction.ReactiveTransactionManager`, and Nova participates in the same
+R2DBC connection automatically:
+
+```java
+@Transactional
+public Mono<Void> transfer(Account from, Account to) {
+    return accounts.save(from).then(accounts.save(to)).then();
+}
+```
+
+An error signal or cancellation rolls back the Spring transaction; successful completion commits.
+`Mono` and `Flux` are both supported. This Spring-managed boundary guarantees statement atomicity,
+but it does not activate Nova's identity map or commit-time dirty checking. Wrap unit-of-work code
+with `ReactiveEntityOperations.inTransaction(...)` when the persistence session is required. See
+[Spring](spring.md#reactive-transactional) for configuration and proxy rules.
 
 Supported `Propagation` values: `REQUIRED`, `REQUIRES_NEW`, `NESTED` (SAVEPOINT), `MANDATORY`, `SUPPORTS`, `NOT_SUPPORTED`, `NEVER` — Spring semantics.
 

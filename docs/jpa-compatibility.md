@@ -123,6 +123,7 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 |---|---|---|
 | Spring Data-style `ReactiveCrudRepository<T, ID>` + `Pageable` / `Sort` | ✅ | `nova-spring-data`, opt-in `SpringDataReactiveCrudRepository` |
 | `@Query` (JPQL or native) on repository methods | ✅ | `@EnableNovaRepositories`, `BeanFactoryAware` auto-wiring. Entity-returning `Mono<T>` is zero-or-one for both JPQL and native queries: a second row fails rather than truncating, and the bounded two-row check cancels upstream before a third row is requested. Use derived `findFirst...` / `findTop...` for explicit one-row truncation. Native reads support entity `Mono`/`Flux` only; scalar/projection results and `Pageable`/`Page`/`Slice` are unsupported — use JPQL for those forms. |
+| Spring reactive `@Transactional` | ✅ | `nova-spring-boot-starter` joins Spring Boot's R2DBC transaction for `Mono`/`Flux` methods, including commit/rollback and Spring propagation/isolation attributes. Nova identity-map/dirty-checking sessions remain opt-in through `ReactiveEntityOperations.inTransaction(...)`. |
 
 ---
 

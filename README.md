@@ -79,7 +79,7 @@ Nova.schemaInitializer(cf).create(Account.class)
     .subscribe(System.out::println);
 ```
 
-`Nova.create(cf)` and `Nova.schemaInitializer(cf)` auto-detect the dialect (PostgreSQL / MySQL / MariaDB / H2 / Oracle) from the R2DBC driver metadata. In Spring Boot, the starter wires both beans automatically and supports JPA-style `nova.ddl-auto=create-drop`. See [Getting started](docs/getting-started.md) for details.
+`Nova.create(cf)` and `Nova.schemaInitializer(cf)` auto-detect the dialect (PostgreSQL / MySQL / MariaDB / H2 / Oracle) from the R2DBC driver metadata. In Spring Boot, the starter wires both beans automatically, supports JPA-style `nova.ddl-auto=create-drop`, and makes Nova operations participate in Spring's reactive `@Transactional` boundary. See [Getting started](docs/getting-started.md) for details.
 
 ---
 
@@ -91,7 +91,7 @@ Nova.schemaInitializer(cf).create(Account.class)
 | [Entities](docs/entities.md)                   | Annotations, composite types, relationships, indexes                       |
 | [JPA compatibility](docs/jpa-compatibility.md) | `jakarta.persistence` feature matrix — supported / reactive-equivalent / fail-fast |
 | [Queries](docs/queries.md)                     | CRUD, Query DSL, Updater, Projection, Aggregations, Page/Slice, Cursor     |
-| [Transactions](docs/transactions.md)           | Propagation / isolation, pessimistic locking, retry                        |
+| [Transactions](docs/transactions.md)           | Native transactions, Spring reactive `@Transactional`, locking, retry      |
 | [Dialects & Schema](docs/dialects.md)          | `Dialect` SPI, the five bundled dialects, `SchemaGenerator`, migration     |
 | [Spring](docs/spring.md)                       | Spring Boot starter, `nova-spring-data` repositories                       |
 | [Observability](docs/observability.md)         | `SqlExecutionListener`, Micrometer adapter, pool reachability              |
@@ -130,7 +130,7 @@ Nova core depends on Project Reactor, the R2DBC **SPI**, and the Jakarta Persist
 | `nova-dialect-h2`            | H2 dialect (`GENERATED ALWAYS AS IDENTITY`)                                    |
 | `nova-dialect-mariadb`       | MariaDB dialect                                                                |
 | `nova-dialect-oracle`        | Oracle dialect (`OFFSET..FETCH`, `<seq>.nextval from dual`)                    |
-| `nova-spring-boot-starter`   | Spring Boot auto-configuration — dialect auto-detect, `nova.*` properties     |
+| `nova-spring-boot-starter`   | Spring Boot auto-configuration — dialect auto-detect, reactive `@Transactional`, `nova.*` properties |
 | `nova-spring-data`           | Spring Data-style `ReactiveCrudRepository<T, ID>` + `@EnableNovaRepositories` |
 | `nova-metrics-micrometer`    | Micrometer adapter (`MicrometerSqlExecutionListener`)                          |
 | `nova-metamodel`             | Annotation processor — compile-time property-name constants for type-safe `Criteria` references |
@@ -173,7 +173,7 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 - [x] Table-level `@Index` / `@UniqueConstraint`
 - [x] Schema migration helpers (`createIndexes`, `alterTableAddColumn`, `alterTableDropColumn`)
 - [x] H2 / MariaDB / Oracle dialects
-- [x] Spring Boot auto-configuration (`nova-spring-boot-starter`) with dialect auto-detect
+- [x] Spring Boot auto-configuration (`nova-spring-boot-starter`) with dialect auto-detect and reactive `@Transactional`
 - [x] Pessimistic locking (`QuerySpec.forUpdate()` / `forShare()`)
 - [x] Metrics adapter (`nova-metrics-micrometer` — Micrometer)
 - [x] Retry helper (`ReactiveRetryTemplate` — exponential backoff + jitter)

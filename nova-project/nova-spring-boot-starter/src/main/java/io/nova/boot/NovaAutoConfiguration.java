@@ -91,7 +91,12 @@ public class NovaAutoConfiguration {
         SqlExecutionListener listener = listeners.isEmpty()
                 ? SqlExecutionListener.NO_OP
                 : CompositeSqlExecutionListener.of(listeners.toArray(SqlExecutionListener[]::new));
-        return new R2dbcSqlExecutor(connectionFactory, dialect, listener);
+        // Spring Boot's R2dbcTransactionManager binds its connection to Reactor Context. This
+        // starter-local adapter lets Nova borrow that connection while leaving its lifecycle with
+        // Spring. Native Nova transactions still take the executor's direct Context-key fast path.
+        ConnectionFactory transactionAwareConnectionFactory =
+                new SpringTransactionAwareConnectionFactory(connectionFactory);
+        return new R2dbcSqlExecutor(transactionAwareConnectionFactory, dialect, listener);
     }
 
     @Bean

@@ -32,6 +32,43 @@ dependencies {
 
 Add a `SqlExecutionListener` bean (e.g. `MicrometerSqlExecutionListener`) to the context and it is automatically composed into the executor.
 
+### Reactive `@Transactional`
+
+The starter includes Spring R2DBC integration, so the standard Spring annotation works on
+`Mono`- and `Flux`-returning service methods. Spring Boot auto-configures an
+`org.springframework.r2dbc.connection.R2dbcTransactionManager`, and Nova automatically borrows
+its Reactor-context-bound connection for every operation in the publisher.
+
+```java
+@Service
+class CheckoutService {
+    private final OrderRepository orders;
+    private final PaymentRepository payments;
+
+    CheckoutService(OrderRepository orders, PaymentRepository payments) {
+        this.orders = orders;
+        this.payments = payments;
+    }
+
+    @Transactional
+    public Mono<Order> checkout(Order order, Payment payment) {
+        return orders.save(order)
+                .flatMap(saved -> payments.save(payment).thenReturn(saved));
+    }
+}
+```
+
+The transaction starts on subscription, commits after successful publisher completion, and rolls
+back on an error signal or cancellation. Spring propagation, isolation, timeout, and read-only
+attributes keep their normal reactive R2DBC semantics. The usual Spring proxy rules also apply:
+self-invocation does not cross the transactional proxy, and the annotated method must expose a
+reactive return type rather than calling `block()`.
+
+This annotation provides a Spring-managed atomic database boundary. Nova's transaction-bound
+persistence session (identity map, snapshot dirty checking, and commit-time flush) remains the
+scope of `ReactiveEntityOperations.inTransaction(...)`; use that API when those unit-of-work
+semantics are required in addition to atomic statements.
+
 The starter also registers `novaEntityPreloadRunner`, which at startup scans
 `nova.entity-packages` (or the auto-configuration packages) for both `@Entity` and Jakarta
 `@Converter` classes — regardless of `nova.ddl-auto`. It registers every discovered converter

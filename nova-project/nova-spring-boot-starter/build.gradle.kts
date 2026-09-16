@@ -8,6 +8,7 @@ dependencies {
     // starter가 ConnectionFactory driver 메타데이터 기반 dialect auto-detection을 컴파일/런타임에 쓸 수 있다.
     api(project(":nova-project:nova"))
     api("org.springframework.boot:spring-boot-autoconfigure:3.4.0")
+    api("org.springframework:spring-r2dbc:6.2.0")
     compileOnly("org.springframework.boot:spring-boot-configuration-processor:3.4.0")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor:3.4.0")
 
