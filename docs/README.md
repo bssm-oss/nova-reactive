@@ -12,10 +12,10 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 | [Entities](entities.md)               | Annotation reference, composite types (`@Embeddable`), relationships, indexes    |
 | [JPA compatibility](jpa-compatibility.md) | `jakarta.persistence` feature matrix — supported / reactive-equivalent / fail-fast |
 | [Queries](queries.md)                 | CRUD, Query DSL, Updater, Projection, Aggregations, Page/Slice, Cursor, NativeQuery, CompiledQuery |
-| [Transactions](transactions.md)       | `inTransaction`, Propagation / Isolation / readOnly, pessimistic locking, retry  |
+| [Transactions](transactions.md)       | `inTransaction`, Spring reactive `@Transactional`, propagation / isolation, locking, retry |
 | [Caching](caching.md)                 | `nova-cache`, transaction isolation, invalidation, and consistency trade-offs    |
 | [Dialects & Schema](dialects.md)      | `Dialect` interface, the five bundled dialects, `SchemaGenerator`, alter helpers |
-| [Spring](spring.md)                   | Spring Boot starter (auto-detect, properties), `nova-spring-data` repositories   |
+| [Spring](spring.md)                   | Spring Boot starter, reactive `@Transactional`, `nova-spring-data` repositories  |
 | [Observability](observability.md)     | `SqlExecutionListener`, Micrometer adapter, pool reachability probe              |
 | [Metamodel](metamodel.md)             | `nova-metamodel` annotation processor for compile-time property-name constants   |
 

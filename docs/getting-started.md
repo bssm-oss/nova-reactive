@@ -153,7 +153,7 @@ For lower-level control, the raw `dialect.schemaGenerator()` DDL strings stay av
 
 ## With Spring Boot
 
-In a Spring Boot application, the [`nova-spring-boot-starter`](spring.md) reads your `ConnectionFactory` bean, auto-detects the dialect, and registers a `ReactiveEntityOperations` bean. No explicit `Nova.create(...)` call is needed.
+In a Spring Boot application, the [`nova-spring-boot-starter`](spring.md) reads your `ConnectionFactory` bean, auto-detects the dialect, and registers a `ReactiveEntityOperations` bean. No explicit `Nova.create(...)` call is needed. The starter also integrates Nova operations with Spring's reactive `@Transactional`, so an error or cancellation from an annotated `Mono`/`Flux` rolls the shared R2DBC transaction back.
 
 The starter also exposes a `SchemaInitializer` bean and supports JPA-style `nova.ddl-auto` configuration. Set `nova.ddl-auto=create` (or `create-drop`) and the starter scans for `@Entity` classes and provisions the schema on startup — perfect for integration tests:
 
