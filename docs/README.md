@@ -15,7 +15,7 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 | [Transactions](transactions.md)       | `inTransaction`, Spring reactive `@Transactional`, propagation / isolation, locking, retry |
 | [Caching](caching.md)                 | `nova-cache`, transaction isolation, invalidation, and consistency trade-offs    |
 | [Dialects & Schema](dialects.md)      | `Dialect` interface, the five bundled dialects, `SchemaGenerator`, alter helpers |
-| [Spring](spring.md)                   | Spring Boot starter, reactive `@Transactional`, `nova-spring-data` repositories  |
+| [Spring](spring.md)                   | Spring Boot starter, automatic repositories, reactive `@Transactional`           |
 | [Observability](observability.md)     | `SqlExecutionListener`, Micrometer adapter, pool reachability probe              |
 | [Metamodel](metamodel.md)             | `nova-metamodel` annotation processor for compile-time property-name constants   |
 
@@ -29,7 +29,7 @@ Detailed documentation for Nova. For a quick start, see the root [`README.md`](.
 
 ## Module coordinates (Maven Central)
 
-All modules under the `io.github.bssm-oss` group are published at the same version (currently `2.36.0`).
+All modules under the `io.github.bssm-oss` group are published at the same version (currently `2.37.0`).
 
 ```
 io.github.bssm-oss:nova                          # aggregate (core + r2dbc + all dialects)

@@ -9,8 +9,8 @@ Adding `nova-spring-boot-starter` registers every core bean via `NovaAutoConfigu
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.36.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.36.0")
+    implementation("io.github.bssm-oss:nova-spring-boot-starter:2.37.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.37.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -78,9 +78,9 @@ what lets `SINGLE_TABLE` inheritance dispatch a polymorphic `findAll(Vehicle.cla
 right concrete subtypes. Entity metadata build errors surface at startup (fail-fast) rather than
 on first query. Only schema creation or validation is conditional on `nova.ddl-auto`.
 The auto-configured `ReactiveEntityOperations` bean explicitly initializes this preloader first,
-so an `@EnableNovaRepositories` repository cannot request derived-query metadata before converter
-discovery completes. A user-provided `NovaEntityPreloadRunner` is honored by type even when it uses
-a custom bean name.
+so an auto-discovered repository cannot request derived-query metadata before converter discovery
+completes. A user-provided `NovaEntityPreloadRunner` is honored by type even when it uses a custom
+bean name.
 
 ### Schema bootstrap (`nova.ddl-auto`)
 
@@ -126,6 +126,7 @@ nova:
 | `nova.slow-query.threshold-ms`    | `Long`          | (unset)                       | When set, registers `SlowQueryLoggingListener`         |
 | `nova.ddl-auto`                   | `DdlAuto`       | `none`                        | `none` / `update` / `create` / `create-drop` / `validate` schema lifecycle |
 | `nova.entity-packages`            | `List<String>`  | (empty → AutoConfigurationPackages) | Startup packages for managed `@Entity` and Jakarta `@Converter` discovery; schema creation still depends on `ddl-auto` |
+| `nova.repositories.enabled`       | `boolean`       | `true`                        | Discover `ReactiveCrudRepository` interfaces below the Spring Boot application packages |
 
 > The starter only exposes a `PoolConfig` bean; it does not bundle a pool implementation such as `r2dbc-pool`. If you need pooling, add the dependency yourself and feed this `PoolConfig` into your `ConnectionFactory` bean.
 
@@ -133,11 +134,25 @@ nova:
 
 ## Spring Data-style repositories (`nova-spring-data`)
 
-The familiar `interface ... extends ReactiveCrudRepository<T, ID>` pattern is available as a separate dependency (`io.github.bssm-oss:nova-spring-data:2.36.0`). Its normal repository API exports Spring Framework's `spring-context` and does not add Spring Data Commons transitively. The module is compiled against Spring Data Commons only for an optional standard `Pageable` / `Sort` / `Page` / `Slice` bridge.
+The starter includes `nova-spring-data` transitively and discovers repository interfaces below
+the package of `@SpringBootApplication`, matching Spring Boot's normal repository experience.
+Define the interface; no repository configuration annotation is required:
+
+```java
+import io.nova.spring.data.ReactiveCrudRepository;
+
+public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
+}
+```
+
+When using `nova-spring-data` without the starter, add it directly and enable the packages to scan.
+Its normal repository API exports Spring Framework's `spring-context` and does not add Spring Data
+Commons transitively. The module is compiled against Spring Data Commons only for an optional
+standard `Pageable` / `Sort` / `Page` / `Slice` bridge.
 
 ```kotlin
 dependencies {
-    implementation("io.github.bssm-oss:nova-spring-data:2.36.0")
+    implementation("io.github.bssm-oss:nova-spring-data:2.37.0")
 
     // Only when using SpringDataReactiveCrudRepository or the standard bridge helpers:
     implementation("org.springframework.data:spring-data-commons:3.4.5")
@@ -145,22 +160,25 @@ dependencies {
 ```
 
 ```java
-import io.nova.spring.data.ReactiveCrudRepository;
-
-public interface AuthorRepository extends ReactiveCrudRepository<Author, Long> {
-}
-
 @Configuration
 @EnableNovaRepositories(basePackages = "com.example.author")
 class AppConfig {}
 ```
+
+An explicit `@EnableNovaRepositories` declaration disables the starter's default repository scan
+and becomes the sole repository configuration. Use it when repositories live outside the Boot
+application packages or when selecting custom `entityOperationsRef`, `dialectRef`, or
+`entityMetadataFactoryRef` beans. Set `nova.repositories.enabled=false` to disable automatic
+repository discovery without adding an explicit configuration.
 
 Extend `SpringDataReactiveCrudRepository<T, ID>` instead when repository methods should use
 `org.springframework.data.domain.Pageable`, `Sort`, `Page`, or `Slice`. Those standard types
 require `spring-data-commons` on the consumer's runtime classpath. Repositories that extend the
 base `ReactiveCrudRepository` keep using Nova's own paging and sorting types and do not require it.
 
-`@EnableNovaRepositories` scans the base packages and registers a JDK proxy + `NovaRepositoryFactoryBean` for every discovered interface. Every method delegates to `ReactiveEntityOperations` (the `novaEntityOperations` bean). Methods provided:
+Both automatic and explicit discovery register a JDK proxy + `NovaRepositoryFactoryBean` for every
+discovered interface. Every method delegates to `ReactiveEntityOperations` (the
+`novaEntityOperations` bean by default). Methods provided:
 
 ```java
 Mono<T> save(T entity);

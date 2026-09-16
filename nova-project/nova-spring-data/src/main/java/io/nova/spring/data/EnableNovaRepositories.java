@@ -16,6 +16,10 @@ import java.lang.annotation.Target;
  * <p>등록된 프록시는 {@code entityOperationsRef}로 가리키는 {@link io.nova.core.ReactiveEntityOperations}
  * 빈으로 위임한다 — 기본값은 {@code novaEntityOperations}로 nova-spring-boot-starter의 자동 구성 빈 이름과
  * 일치한다.
+ *
+ * <p>nova-spring-boot-starter는 {@code @SpringBootApplication} 패키지 아래의 repository를
+ * 자동으로 탐색하므로 이 애너테이션이 필요하지 않다. 이 애너테이션을 명시하면 starter의 기본 탐색은
+ * 완전히 물러나며, 여기서 선언한 package와 bean reference만 사용된다.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)

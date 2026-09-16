@@ -1,1 +1,2 @@
 io.nova.boot.NovaAutoConfiguration
+io.nova.boot.NovaRepositoriesAutoConfiguration

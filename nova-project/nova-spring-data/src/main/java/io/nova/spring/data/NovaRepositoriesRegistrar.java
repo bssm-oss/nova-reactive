@@ -1,8 +1,5 @@
 package io.nova.spring.data;
 
-import org.springframework.beans.factory.config.BeanDefinition;
-import org.springframework.beans.factory.config.RuntimeBeanReference;
-import org.springframework.beans.factory.support.BeanDefinitionBuilder;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
 import org.springframework.core.annotation.AnnotationAttributes;
@@ -30,54 +27,15 @@ public final class NovaRepositoriesRegistrar implements ImportBeanDefinitionRegi
             throw new IllegalStateException(
                     "@EnableNovaRepositories metadata missing on " + importingClassMetadata.getClassName());
         }
-        Set<String> basePackages = resolveBasePackages(importingClassMetadata, attributes);
-        String entityOperationsRef = attributes.getString("entityOperationsRef");
-        if (!StringUtils.hasText(entityOperationsRef)) {
-            entityOperationsRef = "novaEntityOperations";
-        }
-        // dialect/entityMetadataFactory ref는 선택이다. 지정되면 이름으로 배선하고, 비어 있으면 factory
-        // bean이 컨테이너에서 타입 기준으로 자동 해석한다(@Query 자동 배선, optionality 보존).
-        String dialectRef = attributes.getString("dialectRef");
-        String entityMetadataFactoryRef = attributes.getString("entityMetadataFactoryRef");
-
-        RepositoryScanner scanner = new RepositoryScanner();
-        ClassLoader classLoader = resolveClassLoader(importingClassMetadata);
-
-        for (String basePackage : basePackages) {
-            Set<BeanDefinition> candidates = scanner.scan(basePackage);
-            for (BeanDefinition candidate : candidates) {
-                String className = candidate.getBeanClassName();
-                if (className == null) {
-                    continue;
-                }
-                Class<?> repositoryInterface;
-                try {
-                    repositoryInterface = ClassUtils.forName(className, classLoader);
-                } catch (ClassNotFoundException exception) {
-                    throw new IllegalStateException(
-                            "Could not load repository interface " + className, exception);
-                }
-                if (!repositoryInterface.isInterface()) {
-                    continue;
-                }
-                if (ReactiveCrudRepository.class.equals(repositoryInterface)) {
-                    continue;
-                }
-                BeanDefinitionBuilder builder = BeanDefinitionBuilder
-                        .genericBeanDefinition(NovaRepositoryFactoryBean.class)
-                        .addConstructorArgValue(repositoryInterface)
-                        .addPropertyValue("entityOperations", new RuntimeBeanReference(entityOperationsRef));
-                if (StringUtils.hasText(dialectRef)) {
-                    builder.addPropertyValue("dialect", new RuntimeBeanReference(dialectRef));
-                }
-                if (StringUtils.hasText(entityMetadataFactoryRef)) {
-                    builder.addPropertyValue("entityMetadataFactory",
-                            new RuntimeBeanReference(entityMetadataFactoryRef));
-                }
-                String beanName = defaultBeanName(repositoryInterface);
-                registry.registerBeanDefinition(beanName, builder.getBeanDefinition());
-            }
-        }
+        NovaRepositoryBeanDefinitionRegistrar registrar = new NovaRepositoryBeanDefinitionRegistrar();
+        registrar.markExplicitConfiguration(registry);
+        registrar.registerRepositories(
+                registry,
+                resolveBasePackages(importingClassMetadata, attributes),
+                attributes.getString("entityOperationsRef"),
+                attributes.getString("dialectRef"),
+                attributes.getString("entityMetadataFactoryRef"),
+                false);
     }
 
     private Set<String> resolveBasePackages(AnnotationMetadata metadata, AnnotationAttributes attributes) {
@@ -98,22 +56,6 @@ public final class NovaRepositoriesRegistrar implements ImportBeanDefinitionRegi
             packages.add(ClassUtils.getPackageName(metadata.getClassName()));
         }
         return packages;
-    }
-
-    private ClassLoader resolveClassLoader(AnnotationMetadata metadata) {
-        ClassLoader loader = NovaRepositoriesRegistrar.class.getClassLoader();
-        if (loader != null) {
-            return loader;
-        }
-        return ClassUtils.getDefaultClassLoader();
-    }
-
-    private String defaultBeanName(Class<?> repositoryInterface) {
-        String simpleName = repositoryInterface.getSimpleName();
-        if (simpleName.isEmpty()) {
-            return repositoryInterface.getName();
-        }
-        return Character.toLowerCase(simpleName.charAt(0)) + simpleName.substring(1);
     }
 
     /**
