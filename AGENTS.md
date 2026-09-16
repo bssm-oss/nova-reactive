@@ -126,3 +126,13 @@ the 4-worktree spawn → 4-reviewer → sequential ff-merge → cleanup → next
 confirm workflow, including hub-conflict abort criteria and marker-namespace
 separation for parallel metadata changes. Single isolated changes (typo fix,
 one-file refactor) skip the skill and proceed directly.
+
+Treat release publication as a separate asynchronous lane after a PR is merged
+and its release tag is pushed. Run GitHub Actions, Maven Central publication,
+Central Portal synchronization, and GitHub Release verification through a
+background watcher or a separate task; do not keep the main implementation lane
+idle while those remote systems finish. During that wait, scope, design, review,
+or implement the next disjoint cycle. Continue to poll and report failures, and
+do not call the release complete until both Maven Central and the GitHub Release
+are publicly verified. Do not push another release tag while the previous
+release is still unresolved.
