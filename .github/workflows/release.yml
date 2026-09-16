@@ -16,7 +16,7 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
       latest: ${{ steps.version.outputs.latest }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
