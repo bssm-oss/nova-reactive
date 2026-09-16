@@ -2,7 +2,7 @@
 
 # Getting started
 
-Nova `2.36.0` is available from Maven Central. Nova runs on Java 17 and
+Nova `2.37.0` is available from Maven Central. Nova runs on Java 17 and
 newer runtimes; the CI matrix verifies Temurin 17, 21, 25, and 26. Use the
 Gradle wrapper for development; Gradle 9.4 or newer is required when launching
 the build on Java 26. Entities are mapped with the standard
@@ -29,7 +29,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.36.0")
+    implementation("io.github.bssm-oss:nova:2.37.0")
 
     // The R2DBC driver for your database (pick one)
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
@@ -43,9 +43,9 @@ To pull in only a specific dialect instead of the aggregate, depend on `nova-cor
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.bssm-oss:nova-core:2.36.0")
-    implementation("io.github.bssm-oss:nova-r2dbc:2.36.0")
-    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.36.0")
+    implementation("io.github.bssm-oss:nova-core:2.37.0")
+    implementation("io.github.bssm-oss:nova-r2dbc:2.37.0")
+    implementation("io.github.bssm-oss:nova-dialect-postgresql:2.37.0")
     runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
 ```
@@ -55,12 +55,12 @@ Groovy DSL:
 ```groovy
 // build.gradle
 dependencies {
-    implementation 'io.github.bssm-oss:nova:2.36.0'
+    implementation 'io.github.bssm-oss:nova:2.37.0'
     runtimeOnly 'io.r2dbc:r2dbc-h2:1.0.0.RELEASE'
 }
 ```
 
-> **Source builds**: the development default is `2.36.0-SNAPSHOT`. Build from
+> **Source builds**: the development default is `2.37.0-SNAPSHOT`. Build from
 > source with that version or use the Central snapshots repository.
 >
 > ```kotlin
@@ -153,7 +153,7 @@ For lower-level control, the raw `dialect.schemaGenerator()` DDL strings stay av
 
 ## With Spring Boot
 
-In a Spring Boot application, the [`nova-spring-boot-starter`](spring.md) reads your `ConnectionFactory` bean, auto-detects the dialect, and registers a `ReactiveEntityOperations` bean. No explicit `Nova.create(...)` call is needed. The starter also integrates Nova operations with Spring's reactive `@Transactional`, so an error or cancellation from an annotated `Mono`/`Flux` rolls the shared R2DBC transaction back.
+In a Spring Boot application, the [`nova-spring-boot-starter`](spring.md) reads your `ConnectionFactory` bean, auto-detects the dialect, registers `ReactiveEntityOperations`, and discovers `ReactiveCrudRepository` interfaces below the `@SpringBootApplication` package. No explicit `Nova.create(...)` call or `@EnableNovaRepositories` annotation is needed. The starter also integrates Nova operations with Spring's reactive `@Transactional`, so an error or cancellation from an annotated `Mono`/`Flux` rolls the shared R2DBC transaction back.
 
 The starter also exposes a `SchemaInitializer` bean and supports JPA-style `nova.ddl-auto` configuration. Set `nova.ddl-auto=create` (or `create-drop`) and the starter scans for `@Entity` classes and provisions the schema on startup — perfect for integration tests:
 

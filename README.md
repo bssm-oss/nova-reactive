@@ -47,7 +47,7 @@ Persistence API, but never on a database driver.
 repositories { mavenCentral() }
 
 dependencies {
-    implementation("io.github.bssm-oss:nova:2.36.0")
+    implementation("io.github.bssm-oss:nova:2.37.0")
     runtimeOnly("io.r2dbc:r2dbc-h2:1.0.0.RELEASE")
     // runtimeOnly("org.postgresql:r2dbc-postgresql:1.0.7.RELEASE")
 }
@@ -130,14 +130,14 @@ Nova core depends on Project Reactor, the R2DBC **SPI**, and the Jakarta Persist
 | `nova-dialect-h2`            | H2 dialect (`GENERATED ALWAYS AS IDENTITY`)                                    |
 | `nova-dialect-mariadb`       | MariaDB dialect                                                                |
 | `nova-dialect-oracle`        | Oracle dialect (`OFFSET..FETCH`, `<seq>.nextval from dual`)                    |
-| `nova-spring-boot-starter`   | Spring Boot auto-configuration — dialect auto-detect, reactive `@Transactional`, `nova.*` properties |
-| `nova-spring-data`           | Spring Data-style `ReactiveCrudRepository<T, ID>` + `@EnableNovaRepositories` |
+| `nova-spring-boot-starter`   | Spring Boot auto-configuration — repository discovery, dialect auto-detect, reactive `@Transactional`, `nova.*` properties |
+| `nova-spring-data`           | Spring Data-style `ReactiveCrudRepository<T, ID>`; standalone scanning via `@EnableNovaRepositories` |
 | `nova-metrics-micrometer`    | Micrometer adapter (`MicrometerSqlExecutionListener`)                          |
 | `nova-metamodel`             | Annotation processor — compile-time property-name constants for type-safe `Criteria` references |
 | `nova-cache`                 | 2nd-level cache — reactive read-through cache SPI + `@Cacheable`/`@Cache` wiring |
 | `nova-example`               | Published side-by-side Nova and Hibernate Reactive example application          |
 
-Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.36.0`.
+Maven coordinates stay flat under `io.github.bssm-oss:<module>:2.37.0`.
 
 ---
 
@@ -173,7 +173,7 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 - [x] Table-level `@Index` / `@UniqueConstraint`
 - [x] Schema migration helpers (`createIndexes`, `alterTableAddColumn`, `alterTableDropColumn`)
 - [x] H2 / MariaDB / Oracle dialects
-- [x] Spring Boot auto-configuration (`nova-spring-boot-starter`) with dialect auto-detect and reactive `@Transactional`
+- [x] Spring Boot auto-configuration (`nova-spring-boot-starter`) with repository discovery, dialect auto-detect, and reactive `@Transactional`
 - [x] Pessimistic locking (`QuerySpec.forUpdate()` / `forShare()`)
 - [x] Metrics adapter (`nova-metrics-micrometer` — Micrometer)
 - [x] Retry helper (`ReactiveRetryTemplate` — exponential backoff + jitter)
@@ -184,7 +184,7 @@ The Gradle Wrapper (`./gradlew`) is bundled — no separate Gradle install is re
 - [x] `@Column(length / precision / scale)` and `BigDecimal` columns
 - [x] 1.0 GA released to Maven Central (`io.github.bssm-oss:nova:1.0.0` — all 11 modules published)
 
-### JPA / jakarta.persistence parity (`2.0.0` → `2.36.0`)
+### JPA / jakarta.persistence parity (`2.0.0` → `2.37.0`)
 
 Reactive equivalents of the standard `jakarta.persistence` surface — see the full
 [JPA compatibility matrix](docs/jpa-compatibility.md).

@@ -121,8 +121,8 @@ Legend: **✅ supported** · **⟳ reactive-equivalent** (Mono/Flux instead of t
 
 | Feature | Status | Notes |
 |---|---|---|
-| Spring Data-style `ReactiveCrudRepository<T, ID>` + `Pageable` / `Sort` | ✅ | `nova-spring-data`, opt-in `SpringDataReactiveCrudRepository` |
-| `@Query` (JPQL or native) on repository methods | ✅ | `@EnableNovaRepositories`, `BeanFactoryAware` auto-wiring. Entity-returning `Mono<T>` is zero-or-one for both JPQL and native queries: a second row fails rather than truncating, and the bounded two-row check cancels upstream before a third row is requested. Use derived `findFirst...` / `findTop...` for explicit one-row truncation. Native reads support entity `Mono`/`Flux` only; scalar/projection results and `Pageable`/`Page`/`Slice` are unsupported — use JPQL for those forms. |
+| Spring Data-style `ReactiveCrudRepository<T, ID>` + `Pageable` / `Sort` | ✅ | The Spring Boot starter includes `nova-spring-data` and auto-discovers repositories below the application package; standalone use supports explicit `@EnableNovaRepositories`. `SpringDataReactiveCrudRepository` is opt-in for Spring Data Commons types. |
+| `@Query` (JPQL or native) on repository methods | ✅ | Starter auto-discovery or explicit `@EnableNovaRepositories`, with `BeanFactoryAware` auto-wiring. Entity-returning `Mono<T>` is zero-or-one for both JPQL and native queries: a second row fails rather than truncating, and the bounded two-row check cancels upstream before a third row is requested. Use derived `findFirst...` / `findTop...` for explicit one-row truncation. Native reads support entity `Mono`/`Flux` only; scalar/projection results and `Pageable`/`Page`/`Slice` are unsupported — use JPQL for those forms. |
 | Spring reactive `@Transactional` | ✅ | `nova-spring-boot-starter` joins Spring Boot's R2DBC transaction for `Mono`/`Flux` methods, including commit/rollback and Spring propagation/isolation attributes. Nova identity-map/dirty-checking sessions remain opt-in through `ReactiveEntityOperations.inTransaction(...)`. |
 
 ---
@@ -166,4 +166,4 @@ These declare cleanly but are rejected with a message until implemented — Nova
 > `BigDecimal` whose scale identity matters as an id, composite-id component, or relationship key;
 > use a round-trip-stable key and `compareTo` for numeric business equality.
 
-For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.36.0`).
+For status and history of the parity work, see the module changelog / release notes (`v2.0.0`–`v2.37.0`).

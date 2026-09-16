@@ -16,6 +16,7 @@ public class NovaProperties {
 
     private final Pool pool = new Pool();
     private final SlowQuery slowQuery = new SlowQuery();
+    private final Repositories repositories = new Repositories();
 
     /**
      * Schema lifecycle policy applied on Spring context startup, mirroring
@@ -52,6 +53,10 @@ public class NovaProperties {
 
     public SlowQuery getSlowQuery() {
         return slowQuery;
+    }
+
+    public Repositories getRepositories() {
+        return repositories;
     }
 
     public DdlAuto getDdlAuto() {
@@ -131,6 +136,19 @@ public class NovaProperties {
 
         public void setThresholdMs(Long thresholdMs) {
             this.thresholdMs = thresholdMs;
+        }
+    }
+
+    /** Controls Spring Boot application-package repository auto-discovery. */
+    public static class Repositories {
+        private boolean enabled = true;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
         }
     }
 }
