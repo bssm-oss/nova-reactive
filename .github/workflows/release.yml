@@ -118,12 +118,12 @@ jobs:
             exit 1
           fi
 
-          for attempt in $(seq 1 120); do
+          for attempt in $(seq 1 360); do
             status="$(curl --fail-with-body --silent --show-error --request POST \
               -H "Authorization: $AUTH" \
               "https://central.sonatype.com/api/v1/publisher/status?id=$deployment_id")"
             state="$(echo "$status" | jq -r '.deploymentState')"
-            echo "Central deployment $deployment_id state: $state (attempt $attempt/120)"
+            echo "Central deployment $deployment_id state: $state (attempt $attempt/360)"
             case "$state" in
               PUBLISHED) exit 0 ;;
               FAILED)
@@ -137,7 +137,7 @@ jobs:
                 ;;
             esac
           done
-          echo "Central deployment $deployment_id did not publish within 20 minutes." >&2
+          echo "Central deployment $deployment_id did not publish within 60 minutes." >&2
           exit 1
 
   github-release:
